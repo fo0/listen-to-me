@@ -27,6 +27,7 @@ flowchart TD
         Assistant("Assistant — LLM post-process"):::backend
         Injector("Injector — paste/type at cursor"):::backend
         Mute("MuteIntegrations — mute other apps"):::backend
+        Diag("DiagnosticsEngine — settings self-tests"):::backend
     end
 
     subgraph "Persistence"
@@ -69,6 +70,11 @@ flowchart TD
     Transcriber -->|"text (assistant off)"| Injector
     App -->|"on record start/stop"| Mute
 
+    Settings -->|"model download / mic + transcription test"| Diag
+    Diag -->|"test clip"| Recorder
+    Diag -->|"snapshot transcriber"| Transcriber
+    Diag -->|"snapshot transcriber"| TranscriberOV
+
     Injector -->|"insert at cursor"| OS
     Mute -->|"synthesize mute keybind"| OS
     Transcriber -->|"first-use download"| HF
@@ -96,6 +102,7 @@ flowchart TD
     click Autostart "src/listen_to_me/autostart.py"
     click Updater "src/listen_to_me/updater.py"
     click Net "src/listen_to_me/netutil.py"
+    click Diag "src/listen_to_me/diagnostics.py"
 
     classDef frontend fill:#42b883,stroke:#35495e,color:#fff
     classDef backend fill:#3178c6,stroke:#265a8f,color:#fff

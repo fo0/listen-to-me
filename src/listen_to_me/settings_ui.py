@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from . import APP_NAME, REPO_URL, __version__
 from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
+from .diagnostics import DiagnosticsEngine
 from .hotkeys import Hotkeys
 from .widgets import HotkeyCaptureDialog
 
@@ -50,6 +51,27 @@ class _UpdateSignals(QObject):
     progress = Signal(int, int)  # bytes done, total (0 = unknown)
     downloaded = Signal(str)  # path to the downloaded exe
     download_failed = Signal(str)
+
+
+class _DiagSignals(QObject):
+    """Marshals diagnostics results (model download, microphone/transcription
+    test, hotkey test) from worker threads back to the Qt main thread."""
+
+    model_status = Signal(str)
+    model_done = Signal(str)
+    model_failed = Signal(str)
+    mic_level = Signal(float)  # recent peak 0.0-1.0 while the mic test records
+    mic_done = Signal(object)  # diagnostics.clip_stats() dict
+    mic_failed = Signal(str)
+    tx_status = Signal(str)
+    tx_level = Signal(float)
+    tx_done = Signal(str)  # recognized text ("" = nothing understood/cancelled)
+    tx_failed = Signal(str)
+    hotkey_detected = Signal()
+
+
+# How long the hotkey test waits for the combination before giving up.
+_HOTKEY_TEST_TIMEOUT_MS = 10_000
 
 
 # (model id, short benefit shown in parentheses in the dropdown)
@@ -270,6 +292,29 @@ class SettingsWindow(QDialog):
         self._update_busy = False
         self._updates_auto_checked = False
 
+        # Diagnostics state (Download model / Test transcription on the Whisper
+        # page, Test microphone on the Audio page, Test hotkey on General),
+        # wired before the pages are built below.
+        self._diag = DiagnosticsEngine()
+        self._dsig = _DiagSignals()
+        self._dsig.model_status.connect(self._on_diag_status)
+        self._dsig.model_done.connect(self._on_model_done)
+        self._dsig.model_failed.connect(self._on_model_failed)
+        self._dsig.mic_level.connect(self._on_mic_level)
+        self._dsig.mic_done.connect(self._on_mic_done)
+        self._dsig.mic_failed.connect(self._on_mic_failed)
+        self._dsig.tx_status.connect(self._on_diag_status)
+        self._dsig.tx_level.connect(self._on_tx_level)
+        self._dsig.tx_done.connect(self._on_tx_done)
+        self._dsig.tx_failed.connect(self._on_tx_failed)
+        self._dsig.hotkey_detected.connect(self._on_hotkey_detected)
+        self._diag_busy = False
+        self._diag_cancel = False
+        self._hotkey_test: Hotkeys | None = None
+        # Bumped on every test start so a stale timeout timer from an earlier
+        # (already finished) test can't cancel a later one.
+        self._hotkey_test_gen = 0
+
         self._page_index: dict[str, int] = {}
         for index, (title, builder) in enumerate(
             [
@@ -414,6 +459,22 @@ class SettingsWindow(QDialog):
         mv.addWidget(self.rb_toggle)
         mv.addWidget(self.rb_hold)
         form.addRow("Hotkey mode:", modes)
+
+        hotkey_test = QWidget()
+        ht = QHBoxLayout(hotkey_test)
+        ht.setContentsMargins(0, 0, 0, 0)
+        ht.setSpacing(8)
+        self.hotkey_test_button = QPushButton("Test hotkey")
+        self.hotkey_test_button.setAutoDefault(False)
+        self.hotkey_test_button.setToolTip(
+            "Listen for the combination above for 10 seconds and confirm it "
+            "arrives — recording stays paused during the test, nothing is transcribed."
+        )
+        self.hotkey_test_button.clicked.connect(self._test_hotkey)
+        ht.addWidget(self.hotkey_test_button)
+        self.hotkey_test_status = self._hint("")
+        ht.addWidget(self.hotkey_test_status, 1)
+        form.addRow("", hotkey_test)
 
         insert = QWidget()
         iv = QVBoxLayout(insert)
@@ -602,6 +663,41 @@ class SettingsWindow(QDialog):
         ))
         layout.addWidget(folder)
 
+        tools = QGroupBox("Model check && transcription test")
+        tv = QVBoxLayout(tools)
+        tv.setSpacing(8)
+        tools_row = QHBoxLayout()
+        self.model_download_button = QPushButton("Download / load model")
+        self.model_download_button.setAutoDefault(False)
+        self.model_download_button.setToolTip(
+            "Fetch the selected model now (first use downloads, later runs load "
+            "from disk) instead of waiting for your first recording. Uses the "
+            "values above and the model from the General page — no Save needed."
+        )
+        self.model_download_button.clicked.connect(self._download_model)
+        tools_row.addWidget(self.model_download_button)
+        self.tx_test_button = QPushButton("Test transcription (5 s)")
+        self.tx_test_button.setAutoDefault(False)
+        self.tx_test_button.setToolTip(
+            "End-to-end check: record five seconds from the microphone (Audio "
+            "page) and transcribe them with the settings above. The result is "
+            "shown below only — nothing is inserted or saved to the history."
+        )
+        self.tx_test_button.clicked.connect(self._test_transcription)
+        tools_row.addWidget(self.tx_test_button)
+        tools_row.addStretch(1)
+        tv.addLayout(tools_row)
+        self.diag_progress = QProgressBar()
+        self.diag_progress.setTextVisible(False)
+        self.diag_progress.setVisible(False)
+        tv.addWidget(self.diag_progress)
+        self.diag_status = self._hint(
+            "Both buttons use the values currently entered — no Save needed."
+        )
+        self.diag_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        tv.addWidget(self.diag_status)
+        layout.addWidget(tools)
+
         prompt = QGroupBox("Initial prompt (domain vocabulary hint)")
         pv = QVBoxLayout(prompt)
         self.initial_prompt_edit = QPlainTextEdit(self.cfg["initial_prompt"])
@@ -647,6 +743,28 @@ class SettingsWindow(QDialog):
             "Safety cap for a single recording — it stops automatically when the limit is reached."
         )
         form.addRow("Max recording length (s):", self.max_seconds_spin)
+
+        mic_test = QWidget()
+        mh = QHBoxLayout(mic_test)
+        mh.setContentsMargins(0, 0, 0, 0)
+        self.mic_test_button = QPushButton("Test microphone (3 s)")
+        self.mic_test_button.setAutoDefault(False)
+        self.mic_test_button.setToolTip(
+            "Record three seconds from the selected device and check that a "
+            "signal arrives. Speak normally — the level bar should move."
+        )
+        self.mic_test_button.clicked.connect(self._test_microphone)
+        mh.addWidget(self.mic_test_button)
+        mh.addStretch(1)
+        form.addRow("", mic_test)
+        self.mic_level_bar = QProgressBar()
+        self.mic_level_bar.setRange(0, 100)
+        self.mic_level_bar.setValue(0)
+        self.mic_level_bar.setTextVisible(False)
+        self.mic_level_bar.setToolTip("Input level while the microphone test records.")
+        form.addRow("Level:", self.mic_level_bar)
+        self.mic_status = self._hint("")
+        form.addRow("", self.mic_status)
         layout.addWidget(card)
 
         layout.addWidget(self._hint("Recording stops automatically when the limit is reached."))
@@ -911,6 +1029,9 @@ class SettingsWindow(QDialog):
         """Open the key picker with the live global hotkey paused, otherwise
         pressing keys to pick a combo would trigger a real recording behind the
         dialog. Nothing is applied until Save, so the old hotkey is restored."""
+        if self._hotkey_test is not None:
+            # A running hotkey test would swallow the picker's key presses.
+            self._finish_hotkey_test("")
         self.app.hotkeys.stop()
         try:
             return HotkeyCaptureDialog.ask(self)
@@ -955,6 +1076,241 @@ class SettingsWindow(QDialog):
 
     def _reset_prompt(self) -> None:
         self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
+
+    # --------------------------------------------------------- diagnostics
+
+    def _diag_snapshot(self) -> dict:
+        """The UI values the transcribers read, as a plain dict — so the
+        diagnostics test exactly what is entered right now, saved or not."""
+        return {
+            "backend": self._selected_backend(),
+            "model": self._selected_model(),
+            "device": self.device_combo.currentText(),
+            "compute_type": self.compute_combo.currentText(),
+            "model_dir": self.model_dir_edit.text().strip() or None,
+            "language": self._selected_language(),
+            "initial_prompt": self.initial_prompt_edit.toPlainText().strip(),
+            "vad_filter": self.chk_vad.isChecked(),
+            "openvino_device": self.ov_device_combo.currentText(),
+            "openvino_precision": self.ov_precision_combo.currentText(),
+        }
+
+    def _set_diag_busy(self, busy: bool) -> None:
+        # One diagnostic at a time: they share the recorder/model, and two
+        # concurrent tests would interleave their status output anyway.
+        self._diag_busy = busy
+        for button in (self.model_download_button, self.tx_test_button, self.mic_test_button):
+            button.setEnabled(not busy)
+
+    def _on_diag_status(self, message: str) -> None:
+        self.diag_status.setText(message)
+
+    def _download_model(self) -> None:
+        if self._diag_busy:
+            return
+        snapshot = self._diag_snapshot()
+        self._set_diag_busy(True)
+        self.diag_progress.setRange(0, 0)  # indeterminate — no byte progress
+        self.diag_progress.setVisible(True)
+        self.diag_status.setText(f"Preparing model '{snapshot['model']}'…")
+
+        def work():
+            try:
+                message = self._diag.prepare_model(
+                    snapshot,
+                    notify=lambda text, force=False: self._dsig.model_status.emit(str(text)),
+                )
+                self._dsig.model_done.emit(message)
+            except Exception as exc:  # surfaced in the UI
+                log.exception("model download/load failed")
+                self._dsig.model_failed.emit(str(exc))
+
+        threading.Thread(target=work, name="diag-model", daemon=True).start()
+
+    def _on_model_done(self, message: str) -> None:
+        self._set_diag_busy(False)
+        self.diag_progress.setVisible(False)
+        self.diag_status.setText(message)
+
+    def _on_model_failed(self, message: str) -> None:
+        self._set_diag_busy(False)
+        self.diag_progress.setVisible(False)
+        self.diag_status.setText(f"Model download/load failed: {message}")
+
+    def _test_transcription(self) -> None:
+        if self._diag_busy:
+            return
+        if getattr(self.app, "state", "idle") != "idle":
+            self.diag_status.setText("Finish the current recording first, then run the test.")
+            return
+        snapshot = self._diag_snapshot()
+        device = self._selected_input_device()
+        self._set_diag_busy(True)
+        self._diag_cancel = False
+        self.diag_progress.setRange(0, 0)  # indeterminate while the model loads
+        self.diag_progress.setVisible(True)
+        self.diag_status.setText("Preparing model…")
+
+        def work():
+            try:
+                text = self._diag.transcription_test(
+                    snapshot,
+                    device,
+                    seconds=5.0,
+                    on_status=lambda message: self._dsig.tx_status.emit(str(message)),
+                    on_level=lambda level: self._dsig.tx_level.emit(float(level)),
+                    is_cancelled=lambda: self._diag_cancel,
+                )
+                self._dsig.tx_done.emit(text)
+            except Exception as exc:  # surfaced in the UI
+                log.exception("transcription test failed")
+                self._dsig.tx_failed.emit(str(exc))
+
+        threading.Thread(target=work, name="diag-transcribe", daemon=True).start()
+
+    def _on_tx_level(self, level: float) -> None:
+        # First level tick = recording started: switch the bar from the
+        # indeterminate "loading model" state to a live input level meter.
+        if self.diag_progress.maximum() == 0:
+            self.diag_progress.setRange(0, 100)
+        self.diag_progress.setValue(int(level * 100))
+
+    def _on_tx_done(self, text: str) -> None:
+        self._set_diag_busy(False)
+        self.diag_progress.setVisible(False)
+        if self._diag_cancel:
+            return
+        if text:
+            self.diag_status.setText(f"Transcription works ✓ — result: “{text}”")
+        else:
+            self.diag_status.setText(
+                "No speech detected in the test recording — try the microphone "
+                "test on the Audio page."
+            )
+
+    def _on_tx_failed(self, message: str) -> None:
+        self._set_diag_busy(False)
+        self.diag_progress.setVisible(False)
+        self.diag_status.setText(f"Transcription test failed: {message}")
+
+    def _test_microphone(self) -> None:
+        if self._diag_busy:
+            return
+        if getattr(self.app, "state", "idle") != "idle":
+            self.mic_status.setText("Finish the current recording first, then run the test.")
+            return
+        device = self._selected_input_device()
+        self._set_diag_busy(True)
+        self._diag_cancel = False
+        self.mic_level_bar.setValue(0)
+        self.mic_status.setText("Recording 3 s — speak now…")
+
+        def work():
+            try:
+                result = self._diag.mic_test(
+                    device,
+                    seconds=3.0,
+                    on_level=lambda level: self._dsig.mic_level.emit(float(level)),
+                    is_cancelled=lambda: self._diag_cancel,
+                )
+                self._dsig.mic_done.emit(result)
+            except Exception as exc:  # surfaced in the UI
+                log.exception("microphone test failed")
+                self._dsig.mic_failed.emit(str(exc))
+
+        threading.Thread(target=work, name="diag-mic", daemon=True).start()
+
+    def _on_mic_level(self, level: float) -> None:
+        self.mic_level_bar.setValue(int(level * 100))
+
+    def _on_mic_done(self, result: dict) -> None:
+        self._set_diag_busy(False)
+        if self._diag_cancel:
+            return
+        peak = int(result["peak"] * 100)
+        verdict = result["verdict"]
+        if verdict == "silent":
+            self.mic_status.setText(
+                "No signal — check that the right device is selected and the "
+                "OS allows microphone access."
+            )
+        elif verdict == "quiet":
+            self.mic_status.setText(
+                f"Signal is very quiet (peak {peak} %) — move closer to the "
+                "microphone or raise its input volume."
+            )
+        else:
+            self.mic_status.setText(f"Microphone works ✓ — peak level {peak} %.")
+
+    def _on_mic_failed(self, message: str) -> None:
+        self._set_diag_busy(False)
+        self.mic_status.setText(f"Microphone test failed: {message}")
+
+    def _test_hotkey(self) -> None:
+        if self._hotkey_test is not None:
+            return  # already listening
+        combo = self.hotkey_edit.text().strip()
+        if not Hotkeys.validate(combo):
+            self.hotkey_test_status.setText("Invalid hotkey — fix the combination first.")
+            return
+        # Pause the app's real listener so the test press can't start a real
+        # recording behind the dialog (same pattern as _capture_hotkey).
+        self.app.hotkeys.stop()
+        test = Hotkeys(lambda: self._dsig.hotkey_detected.emit())
+        try:
+            test.register(combo, mode="toggle")
+        except Exception as exc:
+            log.exception("could not register the test hotkey")
+            self.app._register_hotkey()
+            self.hotkey_test_status.setText(f"Could not listen for the hotkey: {exc}")
+            return
+        self._hotkey_test = test
+        self._hotkey_test_gen += 1
+        generation = self._hotkey_test_gen
+        self.hotkey_test_button.setEnabled(False)
+        self.hotkey_test_status.setText(f"Press {combo} now…")
+        QTimer.singleShot(
+            _HOTKEY_TEST_TIMEOUT_MS, lambda: self._hotkey_test_timeout(generation)
+        )
+
+    def _on_hotkey_detected(self) -> None:
+        if self._hotkey_test is None:
+            return
+        self._finish_hotkey_test("Hotkey works ✓ — combination detected.")
+
+    def _hotkey_test_timeout(self, generation: int) -> None:
+        if self._hotkey_test is None or generation != self._hotkey_test_gen:
+            return
+        self._finish_hotkey_test(
+            "Nothing detected within 10 s — check the combination, or set it "
+            "via “Change…”."
+        )
+
+    def _finish_hotkey_test(self, message: str) -> None:
+        """Stop the temporary test listener, give the global hotkey back to
+        the app and show `message` (also used as the cancel path on close)."""
+        test, self._hotkey_test = self._hotkey_test, None
+        if test is not None:
+            try:
+                test.stop()
+            except Exception:
+                log.debug("error stopping the test hotkey listener", exc_info=True)
+        self.app._register_hotkey()
+        self.hotkey_test_button.setEnabled(True)
+        self.hotkey_test_status.setText(message)
+
+    def _cancel_diagnostics(self) -> None:
+        """Stop any running diagnostic when the dialog closes: unblock the
+        recording loops and give the global hotkey back to the app."""
+        self._diag_cancel = True
+        if self._hotkey_test is not None:
+            self._finish_hotkey_test("")
+
+    def done(self, result: int) -> None:
+        # Covers every way the dialog closes: Save, Cancel, Esc and the
+        # window's close button.
+        self._cancel_diagnostics()
+        super().done(result)
 
     # ------------------------------------------------------------- updates
 

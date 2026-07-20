@@ -133,7 +133,7 @@ Qt, `sounddevice`, `pynput`, `faster_whisper`, `numpy` are imported **inside** f
 `config.py` — `Config` loads/merges a JSON file under the platform config dir over a `DEFAULTS` dict (deep-merge, so new keys appear on upgrade). `atomic_write_json` writes via temp-file + `os.replace`. Access with `cfg["key"]`.
 
 ### Qt-free modules (headless-testable)
-`icons.py` (Pillow), `keymap.py` (QtCore only), `help_content.py`, and the low-level parts of `qtutil.py`/`selftest.py` avoid `QtWidgets`/`QtGui` so they import and test on a headless machine. Keep new pure logic Qt-free when practical.
+`icons.py` (Pillow), `keymap.py` (QtCore only), `help_content.py`, `diagnostics.py`, and the low-level parts of `qtutil.py`/`selftest.py` avoid `QtWidgets`/`QtGui` so they import and test on a headless machine. Keep new pure logic Qt-free when practical.
 
 ### Transcription + CUDA→CPU fallback
 `transcriber.py` — wraps faster-whisper; on a missing/unloadable CUDA library it forces CPU **for the session** (not for transient OOM) and retries. `_lock` guards model load, `_use_lock` serializes decodes. `audio.py` `Recorder` captures via sounddevice; `snapshot()` feeds the live preview cheaply.
@@ -142,7 +142,7 @@ Qt, `sounddevice`, `pynput`, `faster_whisper`, `numpy` are imported **inside** f
 `create_transcriber(cfg)` in `transcriber.py` picks the backend from `cfg["backend"]`: the default `Transcriber` (faster-whisper) or `transcriber_openvino.py` `OpenVinoTranscriber` (OpenVINO GenAI `WhisperPipeline`, Intel CPU/GPU/NPU, config keys `openvino_device`/`openvino_precision`). Both expose the same surface (`ensure_loaded`/`transcribe`/`preview`/`loaded`/`backend`); `App.apply_settings` re-creates the instance on a backend switch. The OpenVINO backend downloads pre-converted `OpenVINO/whisper-*-ov` models from Hugging Face (`openvino_model_repo()` maps preset+precision; `distil-*.en` presets have no conversion) and mirrors the session CPU fallback. `openvino`/`openvino_genai` are optional deps — imported lazily, never at module top; the app must run without them.
 
 ### Component modules (one responsibility each)
-`hotkeys.py` (global hotkey, toggle/hold), `injector.py` (paste/type at cursor), `integrations.py` (mute Discord/Teams/… while recording), `assistant.py` (optional OpenAI-compatible post-processing), `history.py` (transcript JSON), `autostart.py` (start-with-OS), `updater.py` (GitHub Releases), `netutil.py` (app-wide `insecure_ssl` switch — disables TLS verification for corporate proxies: requests `verify=` + the huggingface_hub client factory, httpx-based `set_client_factory` on hub >= 1.0 / `configure_http_backend` on < 1.0), `tray.py` (`QSystemTrayIcon`), `overlay.py` + `voice_mic_widget.py` (floating animated icon), `settings_ui.py` (settings window — **largest file, 1300+ lines**), `theme.py` (Qt Fusion light/dark), `widgets.py` (hotkey capture dialog).
+`hotkeys.py` (global hotkey, toggle/hold), `injector.py` (paste/type at cursor), `integrations.py` (mute Discord/Teams/… while recording), `assistant.py` (optional OpenAI-compatible post-processing), `history.py` (transcript JSON), `autostart.py` (start-with-OS), `updater.py` (GitHub Releases), `netutil.py` (app-wide `insecure_ssl` switch — disables TLS verification for corporate proxies: requests `verify=` + the huggingface_hub client factory, httpx-based `set_client_factory` on hub >= 1.0 / `configure_http_backend` on < 1.0), `tray.py` (`QSystemTrayIcon`), `overlay.py` + `voice_mic_widget.py` (floating animated icon), `settings_ui.py` (settings window — **largest file, 1700+ lines**), `theme.py` (Qt Fusion light/dark), `widgets.py` (hotkey capture dialog), `diagnostics.py` (Qt-free engine behind the Settings self-test buttons — model download/load, mic level check, end-to-end transcription test; runs on worker threads, results marshaled to the UI via `_DiagSignals`).
 
 ### Error Handling
 Desktop app that must never crash: broad `except Exception` at boundaries, logged via module-level `log = logging.getLogger(__name__)` with `log.exception(...)`; user-facing failures surface through `App.notify(...)`. Logs go to a rotating file in the config dir + stderr (absent in `--windowed` builds). Best-effort cleanup (`_quit`, `integrations.reset()`) must never leave a target app stuck muted.
@@ -276,7 +276,7 @@ Full guide: `agent_docs/review_process.md → Subagent Delegation`.
 
 ## Refactoring Notes
 
-- `settings_ui.py` (~1300 lines) far exceeds the size guideline — a candidate to split into per-page modules (General/Whisper/Audio/Overlay/Integrations/Assistant/History/Help) if it hinders a change. Refactor only when it blocks work (see `agent_docs/refactoring_guidelines.md`).
+- `settings_ui.py` (~1750 lines) far exceeds the size guideline — a candidate to split into per-page modules (General/Whisper/Audio/Overlay/Integrations/Assistant/History/Help) if it hinders a change. Refactor only when it blocks work (see `agent_docs/refactoring_guidelines.md`).
 - `app.py` (~500 lines) is at the threshold; keep new behavior in the component modules, not in `App`.
 
 Details: `agent_docs/refactoring_guidelines.md`.

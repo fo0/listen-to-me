@@ -30,6 +30,10 @@ standalone system-tray app that works in *every* application.
 - **Settings window** — language, model, hotkey (with a press-the-keys
   **shortcut picker**), microphone, insert mode, notifications, autostart,
   model download folder and more — with explanatory tooltips on every option.
+- **Built-in self-tests** — test the hotkey, the microphone (with a live level
+  bar), download the model ahead of time and run a 5-second end-to-end
+  transcription test, all from the settings window before the first real
+  dictation.
 - **Choose your spoken language** for better accuracy, or let Whisper
   auto-detect it. Swap the model (tiny → large-v3, distil, turbo, or any
   CTranslate2 model from Hugging Face).
@@ -75,9 +79,9 @@ Right-click the tray icon → **Settings…**
 
 | Tab | Options |
 | --- | --- |
-| **General** | Hotkey (type it or use the **“Change…” key picker**), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), clipboard restore, notifications, beep, **autostart**, **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
-| **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model precision, VAD silence filter (faster-whisper only), **model download folder** (view, change, open — defaults to the Hugging Face cache), initial prompt (domain vocabulary hint) |
-| **Audio** | Microphone selection, maximum recording length |
+| **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), clipboard restore, notifications, beep, **autostart**, **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
+| **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model precision, VAD silence filter (faster-whisper only), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), initial prompt (domain vocabulary hint) |
+| **Audio** | Microphone selection, **Test microphone** (3-second check with a live level bar and a clear verdict: works / too quiet / no signal), maximum recording length |
 | **Overlay** | Floating always-on-top icon on/off, transcript bubble after each recording, experimental **live transcript preview while recording**, preview display time |
 | **Integrations** | **Mute other apps while recording** (Discord, …): master switch plus a list of apps, each with an enabled toggle, name, **mute keybind** (with the same key picker) and **mode** (*push-to-mute* / *toggle mute*). Add or remove apps freely. |
 | **Assistant** | Enable/disable, API base URL, model, API key, temperature, **system prompt** (editable, with *Reset to default*) |
