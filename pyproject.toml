@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "listen-to-me"
+description = "Push-to-talk voice typing for the desktop: record with a hotkey, transcribe locally with Whisper, insert the text at the cursor."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dynamic = ["version"]
+dependencies = [
+    "faster-whisper>=1.1.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24,<3",
+    "PySide6>=6.6",
+    "Pillow>=10.0",
+    "pynput>=1.7.7",
+    "pyperclip>=1.8.2",
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+# Intel GPU/NPU transcription backend (Settings → Whisper → Backend = OpenVINO).
+openvino = [
+    "openvino-genai>=2025.2",
+    "huggingface_hub>=0.23",
+]
+
+[project.urls]
+Homepage = "https://github.com/fo0/listen-to-me"
+
+[project.scripts]
+listen-to-me = "listen_to_me.app:main"
+
+[project.gui-scripts]
+listen-to-me-gui = "listen_to_me.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "listen_to_me.__version__" }

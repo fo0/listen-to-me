@@ -1,0 +1,1395 @@
+"""Settings window (PySide6/Qt): a sidebar of pages with grouped cards."""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+import webbrowser
+
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
+    QSpinBox,
+    QStackedWidget,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
+
+from . import APP_NAME, REPO_URL, __version__
+from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
+from .hotkeys import Hotkeys
+from .widgets import HotkeyCaptureDialog
+
+log = logging.getLogger(__name__)
+
+
+class _UpdateSignals(QObject):
+    """Marshals results from updater worker threads back to the Qt main thread."""
+
+    checked = Signal(list)  # list[updater.Release]
+    check_failed = Signal(str)
+    progress = Signal(int, int)  # bytes done, total (0 = unknown)
+    downloaded = Signal(str)  # path to the downloaded exe
+    download_failed = Signal(str)
+
+
+# (model id, short benefit shown in parentheses in the dropdown)
+MODEL_CHOICES = [
+    ("tiny", "fastest, lowest accuracy, ~75 MB"),
+    ("base", "very fast, basic accuracy, ~140 MB"),
+    ("small", "recommended — good balance of speed and accuracy, ~460 MB"),
+    ("medium", "high accuracy, noticeably slower, ~1.5 GB"),
+    ("large-v3", "best accuracy, slow without a GPU, ~3 GB"),
+    ("large-v3-turbo", "near large-v3 accuracy at much higher speed, ~1.6 GB"),
+    ("distil-large-v3", "distilled large — fast, English only, ~1.5 GB"),
+    ("tiny.en", "English only — more accurate than tiny for English"),
+    ("base.en", "English only — more accurate than base for English"),
+    ("small.en", "English only — more accurate than small for English"),
+    ("medium.en", "English only — more accurate than medium for English"),
+    ("distil-small.en", "distilled English only — very fast"),
+    ("distil-medium.en", "distilled English only — fast with good accuracy"),
+]
+
+LANGUAGES = [
+    ("auto", "Auto-detect"),
+    ("de", "German — Deutsch"),
+    ("en", "English"),
+    ("fr", "French — Français"),
+    ("es", "Spanish — Español"),
+    ("it", "Italian — Italiano"),
+    ("pt", "Portuguese — Português"),
+    ("nl", "Dutch — Nederlands"),
+    ("pl", "Polish — Polski"),
+    ("cs", "Czech — Čeština"),
+    ("sk", "Slovak — Slovenčina"),
+    ("hu", "Hungarian — Magyar"),
+    ("ro", "Romanian — Română"),
+    ("bg", "Bulgarian"),
+    ("el", "Greek"),
+    ("sv", "Swedish — Svenska"),
+    ("da", "Danish — Dansk"),
+    ("no", "Norwegian — Norsk"),
+    ("fi", "Finnish — Suomi"),
+    ("ru", "Russian"),
+    ("uk", "Ukrainian"),
+    ("tr", "Turkish — Türkçe"),
+    ("ar", "Arabic"),
+    ("he", "Hebrew"),
+    ("hi", "Hindi"),
+    ("id", "Indonesian"),
+    ("vi", "Vietnamese"),
+    ("th", "Thai"),
+    ("zh", "Chinese"),
+    ("ja", "Japanese"),
+    ("ko", "Korean"),
+    ("ca", "Catalan"),
+    ("hr", "Croatian"),
+    ("sl", "Slovenian"),
+    ("sr", "Serbian"),
+]
+
+DEVICES = ["auto", "cpu", "cuda"]
+COMPUTE_TYPES = ["auto", "int8", "int8_float16", "float16", "float32"]
+
+# (backend id, label shown in the dropdown)
+BACKENDS = [
+    ("faster-whisper", "faster-whisper — NVIDIA GPU (CUDA) / CPU"),
+    ("openvino", "OpenVINO — Intel GPU / NPU / CPU"),
+]
+OPENVINO_DEVICES = ["auto", "cpu", "gpu", "npu"]
+OPENVINO_PRECISIONS = ["int8", "fp16", "int4"]
+
+_SYSTEM_DEFAULT_DEVICE = "System default"
+
+# Cap how many transcript rows the History page renders at once. The store keeps
+# up to `history_max`; rendering every one as widgets would be slow for large
+# histories, so only the most recent are shown (with a note about the rest).
+_HISTORY_RENDER_LIMIT = 300
+
+
+def _language_label(code: str) -> str:
+    for lang_code, name in LANGUAGES:
+        if lang_code == code:
+            return f"{name} [{lang_code}]" if lang_code != "auto" else name
+    return code
+
+
+def _model_label(name: str) -> str:
+    for model, benefit in MODEL_CHOICES:
+        if model == name:
+            return f"{model}  ({benefit})"
+    return name
+
+
+def _backend_label(backend: str) -> str:
+    for backend_id, label in BACKENDS:
+        if backend_id == backend:
+            return label
+    return backend
+
+
+class MuteTargetRow(QGroupBox):
+    """One configurable app to mute while recording (Integrations page).
+
+    Holds an enabled toggle, a display name, the mute keybind (with the shared
+    key picker) and the mode. ``values()`` returns the config dict; removal is
+    delegated to the owning page via ``on_remove``.
+    """
+
+    def __init__(self, data: dict, capture_hotkey, on_remove):
+        super().__init__()
+        self._capture_hotkey = capture_hotkey
+        self._on_remove = on_remove
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(10, 8, 10, 10)
+        outer.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        self.chk_enabled = QCheckBox("Enabled")
+        self.chk_enabled.setChecked(bool(data.get("enabled")))
+        self.chk_enabled.setToolTip("Send this app its mute keybind while recording.")
+        header.addWidget(self.chk_enabled)
+        self.name_edit = QLineEdit(str(data.get("name", "")))
+        self.name_edit.setPlaceholderText("App name (e.g. Discord)")
+        self.name_edit.setToolTip("A label for this app — shown here only.")
+        header.addWidget(self.name_edit, 1)
+        remove = QPushButton("Remove")
+        remove.setToolTip("Delete this app from the list.")
+        remove.setAutoDefault(False)
+        remove.clicked.connect(lambda: self._on_remove(self))
+        header.addWidget(remove)
+        outer.addLayout(header)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(6)
+
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Push-to-mute — hold the key while recording", "hold")
+        self.mode_combo.addItem("Toggle mute — tap once at start and once at stop", "toggle")
+        self.mode_combo.setCurrentIndex(1 if data.get("mode") == "toggle" else 0)
+        self.mode_combo.setToolTip(
+            "Match this to the kind of keybind the app uses:\n"
+            "• Push-to-mute (recommended): the key is held down for the whole "
+            "recording — stateless, it can never get stuck muted.\n"
+            "• Toggle mute: the key is tapped to mute at start and again to "
+            "unmute at stop."
+        )
+        form.addRow("Mode:", self.mode_combo)
+
+        key_row = QWidget()
+        kh = QHBoxLayout(key_row)
+        kh.setContentsMargins(0, 0, 0, 0)
+        self.hotkey_edit = QLineEdit(str(data.get("hotkey", "")))
+        self.hotkey_edit.setPlaceholderText("e.g. <ctrl>+<alt>+m")
+        self.hotkey_edit.setToolTip(
+            "The exact combination this app has bound to mute / push-to-mute. "
+            "Set the SAME combination in the app's own keybind settings."
+        )
+        kh.addWidget(self.hotkey_edit, 1)
+        change = QPushButton("Change…")
+        change.setToolTip("Press the key combination to use — no typing needed.")
+        change.setAutoDefault(False)
+        change.clicked.connect(self._change_hotkey)
+        kh.addWidget(change)
+        form.addRow("Mute keybind:", key_row)
+        outer.addLayout(form)
+
+    def _change_hotkey(self) -> None:
+        combo = self._capture_hotkey()
+        if combo:
+            self.hotkey_edit.setText(combo)
+
+    def values(self) -> dict:
+        return {
+            "name": self.name_edit.text().strip() or "App",
+            "enabled": self.chk_enabled.isChecked(),
+            "mode": self.mode_combo.currentData() or "hold",
+            "hotkey": self.hotkey_edit.text().strip(),
+        }
+
+
+class SettingsWindow(QDialog):
+    def __init__(self, app):
+        super().__init__(None)
+        self.app = app
+        self.cfg = app.cfg
+        self.setWindowTitle(f"{APP_NAME} — Settings")
+        self.resize(940, 700)
+        self.setMinimumSize(820, 580)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        outer.addLayout(body, 1)
+
+        self.nav = QListWidget()
+        self.nav.setObjectName("nav")
+        body.addWidget(self.nav)
+
+        self.stack = QStackedWidget()
+        # Keep the detail pane comfortably wide so fields aren't cramped and the
+        # user doesn't have to drag the window wider.
+        self.stack.setMinimumWidth(600)
+        body.addWidget(self.stack, 1)
+
+        # Updater state, wired before the Updates page is built below.
+        self._usig = _UpdateSignals()
+        self._usig.checked.connect(self._on_update_check_done)
+        self._usig.check_failed.connect(self._on_update_check_failed)
+        self._usig.progress.connect(self._on_update_progress)
+        self._usig.downloaded.connect(self._on_update_downloaded)
+        self._usig.download_failed.connect(self._on_update_download_failed)
+        self._releases_newer: list = []
+        self._update_busy = False
+        self._updates_auto_checked = False
+
+        self._page_index: dict[str, int] = {}
+        for index, (title, builder) in enumerate(
+            [
+                ("General", self._build_general),
+                ("Whisper", self._build_whisper),
+                ("Audio", self._build_audio),
+                ("Overlay", self._build_overlay),
+                ("Integrations", self._build_integrations),
+                ("Assistant", self._build_assistant),
+                ("History", self._build_history),
+                ("Updates", self._build_updates),
+                ("Help", self._build_help),
+            ]
+        ):
+            self.nav.addItem(title)
+            self.stack.addWidget(builder(title))
+            self._page_index[title] = index
+
+        self._history_index = self._page_index["History"]
+        self._updates_index = self._page_index["Updates"]
+        self._help_index = self._page_index["Help"]
+        self.nav.currentRowChanged.connect(self._on_page_changed)
+        self.nav.setCurrentRow(0)
+
+        # Footer with the version and the action buttons.
+        footer = QHBoxLayout()
+        footer.setContentsMargins(14, 10, 14, 12)
+        footer.addWidget(QLabel(f"{APP_NAME} {__version__}"))
+        footer.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.setToolTip("Close without saving. All changes on every page are discarded.")
+        cancel.setAutoDefault(False)
+        cancel.clicked.connect(self.reject)
+        footer.addWidget(cancel)
+        save = QPushButton("Save")
+        save.setProperty("accent", True)
+        save.setToolTip("Save all settings and apply them immediately — no restart needed.")
+        # Make Enter (e.g. from a text field) trigger Save, not the first
+        # auto-default button (Cancel), which would silently discard changes.
+        save.setDefault(True)
+        save.clicked.connect(self._save)
+        footer.addWidget(save)
+        outer.addLayout(footer)
+
+    # ------------------------------------------------------ page helpers
+
+    @staticmethod
+    def _page(title: str) -> tuple[QWidget, QVBoxLayout]:
+        """A scrollable page with a heading; returns (page, content layout)."""
+        page = QWidget()
+        wrap = QVBoxLayout(page)
+        wrap.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        wrap.addWidget(scroll)
+
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(14)
+        heading = QLabel(title)
+        heading.setProperty("role", "title")
+        layout.addWidget(heading)
+        scroll.setWidget(inner)
+        return page, layout
+
+    @staticmethod
+    def _card(title: str) -> tuple[QGroupBox, QFormLayout]:
+        box = QGroupBox(title)
+        form = QFormLayout(box)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(8)
+        return box, form
+
+    @staticmethod
+    def _hint(text: str) -> QLabel:
+        label = QLabel(text)
+        label.setProperty("role", "hint")
+        label.setWordWrap(True)
+        return label
+
+    @staticmethod
+    def _select_combo(combo: QComboBox, value: str) -> None:
+        """Show `value` in a (non-editable) combo even if it isn't a preset, so a
+        hand-edited/unlisted config value is preserved instead of resetting to
+        item 0 (setCurrentText is a no-op for a missing item on a fixed combo)."""
+        if value and combo.findText(value) < 0:
+            combo.addItem(value)
+        combo.setCurrentText(value)
+
+    @staticmethod
+    def _to_int(value, default: int) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _to_float(value, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    # -------------------------------------------------------------- pages
+
+    def _build_general(self, title: str) -> QWidget:
+        page, layout = self._page(title)
+
+        rec, form = self._card("Recording")
+        hotkey_row = QWidget()
+        hk = QHBoxLayout(hotkey_row)
+        hk.setContentsMargins(0, 0, 0, 0)
+        self.hotkey_edit = QLineEdit(self.cfg["hotkey"])
+        self.hotkey_edit.setToolTip(
+            "The key combination that starts/stops recording from any application. "
+            "pynput format, e.g. <ctrl>+<alt>+<space>. Easiest: click “Change…” and press the keys."
+        )
+        hk.addWidget(self.hotkey_edit, 1)
+        pick = QPushButton("Change…")
+        pick.setToolTip("Records the next key combination you press — no typing needed.")
+        pick.clicked.connect(self._pick_hotkey)
+        hk.addWidget(pick)
+        form.addRow("Global hotkey:", hotkey_row)
+
+        modes = QWidget()
+        mv = QVBoxLayout(modes)
+        mv.setContentsMargins(0, 0, 0, 0)
+        mv.setSpacing(2)
+        self.rb_toggle = QRadioButton("Toggle — press once to start, press again to stop")
+        self.rb_toggle.setToolTip("One press starts the recording, the next press stops it and inserts the text.")
+        self.rb_hold = QRadioButton("Hold (push-to-talk) — record only while the keys are held down")
+        self.rb_hold.setToolTip("Recording runs while the full combination is held and stops the moment you release it.")
+        mode_group = QButtonGroup(self)
+        mode_group.addButton(self.rb_toggle)
+        mode_group.addButton(self.rb_hold)
+        (self.rb_hold if self.cfg["hotkey_mode"] == "hold" else self.rb_toggle).setChecked(True)
+        mv.addWidget(self.rb_toggle)
+        mv.addWidget(self.rb_hold)
+        form.addRow("Hotkey mode:", modes)
+
+        insert = QWidget()
+        iv = QVBoxLayout(insert)
+        iv.setContentsMargins(0, 0, 0, 0)
+        iv.setSpacing(2)
+        self.rb_paste = QRadioButton("Paste via clipboard (recommended)")
+        self.rb_paste.setToolTip("Copies the text to the clipboard and sends Ctrl+V. Fast and reliable in almost every app.")
+        self.rb_type = QRadioButton("Simulate typing")
+        self.rb_type.setToolTip("Types the text key by key. Works where pasting is blocked, but slower.")
+        insert_group = QButtonGroup(self)
+        insert_group.addButton(self.rb_paste)
+        insert_group.addButton(self.rb_type)
+        (self.rb_type if self.cfg["injection_mode"] == "type" else self.rb_paste).setChecked(True)
+        iv.addWidget(self.rb_paste)
+        iv.addWidget(self.rb_type)
+        form.addRow("Insert text by:", insert)
+        layout.addWidget(rec)
+
+        speech, sform = self._card("Speech recognition")
+        self.language_combo = QComboBox()
+        self.language_combo.addItems([_language_label(code) for code, _ in LANGUAGES])
+        self._select_combo(self.language_combo, _language_label(self.cfg["language"]))
+        self.language_combo.setToolTip(
+            "The language you dictate in. Fixing it improves accuracy and speed over auto-detect."
+        )
+        sform.addRow("Spoken language:", self.language_combo)
+
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(True)
+        self.model_combo.addItems([_model_label(m) for m, _ in MODEL_CHOICES])
+        self.model_combo.setCurrentText(_model_label(self.cfg["model"]))
+        self.model_combo.setToolTip(
+            "The speech-recognition model. Bigger = more accurate but slower and larger. "
+            "You can also type any CTranslate2 model id from Hugging Face."
+        )
+        sform.addRow("Whisper model:", self.model_combo)
+        sform.addRow(self._hint(
+            "Downloaded automatically on first use (folder on the Whisper page). "
+            "Pick a preset or type any CTranslate2 model id from Hugging Face."
+        ))
+        layout.addWidget(speech)
+
+        options = QGroupBox("Options")
+        ov = QVBoxLayout(options)
+        ov.setSpacing(4)
+        self.chk_restore = self._checkbox(
+            "Restore previous clipboard content after pasting",
+            self.cfg["restore_clipboard"],
+            "After inserting the transcript, put whatever was on the clipboard before back again.",
+        )
+        self.chk_notifications = self._checkbox(
+            "Show desktop notifications",
+            self.cfg["notifications"],
+            "Tray notifications for status messages (downloads, errors, limits …). Errors always show.",
+        )
+        self.chk_beep = self._checkbox(
+            "Beep on start/stop of a recording",
+            self.cfg["beep"],
+            "Short beep when a recording starts (high tone) and stops (low tone). Windows only.",
+        )
+        self.chk_autostart = self._checkbox(
+            "Start with the system (run in background)",
+            self.cfg["autostart"],
+            "Launch the app automatically when you log in, so the hotkey is always available.",
+        )
+        self.chk_start_in_tray = self._checkbox(
+            "Start minimized to the system tray",
+            self.cfg["start_in_tray"],
+            "When enabled the app starts silently into the tray with no window. "
+            "When disabled (default) this settings window opens on launch.",
+        )
+        self.chk_insecure_ssl = self._checkbox(
+            "Ignore SSL certificate errors (corporate proxy) — insecure",
+            self.cfg["insecure_ssl"],
+            "Skip TLS certificate verification for model downloads, the update check and "
+            "the assistant. Only enable behind a corporate proxy that intercepts HTTPS "
+            "with its own (self-signed) certificate — connections are then encrypted but "
+            "no longer authenticated.",
+        )
+        for chk in (self.chk_restore, self.chk_notifications, self.chk_beep,
+                    self.chk_autostart, self.chk_start_in_tray, self.chk_insecure_ssl):
+            ov.addWidget(chk)
+        layout.addWidget(options)
+
+        layout.addStretch(1)
+        return page
+
+    def _build_whisper(self, title: str) -> QWidget:
+        page, layout = self._page(title)
+
+        engine, form = self._card("Engine")
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems([label for _, label in BACKENDS])
+        self._select_combo(self.backend_combo, _backend_label(self.cfg["backend"]))
+        self.backend_combo.setToolTip(
+            "The transcription engine. faster-whisper accelerates on NVIDIA GPUs (CUDA); "
+            "OpenVINO accelerates on Intel GPUs and NPUs and needs the optional "
+            "openvino-genai package (pip install openvino-genai; the portable "
+            "Windows build ships it already)."
+        )
+        form.addRow("Backend:", self.backend_combo)
+
+        self.device_combo = QComboBox()
+        self.device_combo.addItems(DEVICES)
+        self._select_combo(self.device_combo, self.cfg["device"])
+        self.device_combo.setToolTip(
+            "Where the model runs. auto picks an NVIDIA GPU (CUDA) when available, otherwise the CPU."
+        )
+        form.addRow("Device:", self.device_combo)
+
+        self.compute_combo = QComboBox()
+        self.compute_combo.addItems(COMPUTE_TYPES)
+        self._select_combo(self.compute_combo, self.cfg["compute_type"])
+        self.compute_combo.setToolTip(
+            "Numeric precision. int8 is fastest on CPU; float16 needs a GPU; float32 is the slow reference."
+        )
+        form.addRow("Compute type:", self.compute_combo)
+
+        self.ov_device_combo = QComboBox()
+        self.ov_device_combo.addItems(OPENVINO_DEVICES)
+        self._select_combo(self.ov_device_combo, self.cfg["openvino_device"])
+        self.ov_device_combo.setToolTip(
+            "Which Intel device runs the model. auto prefers the GPU, then the NPU "
+            "(Core Ultra “AI Boost”), then the CPU. GPU/NPU need a current Intel driver."
+        )
+        form.addRow("Intel device:", self.ov_device_combo)
+
+        self.ov_precision_combo = QComboBox()
+        self.ov_precision_combo.addItems(OPENVINO_PRECISIONS)
+        self._select_combo(self.ov_precision_combo, self.cfg["openvino_precision"])
+        self.ov_precision_combo.setToolTip(
+            "Which pre-converted variant of the model to download: int8 is small and fast "
+            "(recommended), fp16 the most accurate, int4 the smallest. Changing this "
+            "downloads the model again in the new precision."
+        )
+        form.addRow("Model precision:", self.ov_precision_combo)
+
+        self.chk_vad = self._checkbox(
+            "Filter silence with VAD (recommended)",
+            self.cfg["vad_filter"],
+            "Voice activity detection removes silent stretches — faster and avoids hallucinated "
+            "text in silence. faster-whisper backend only.",
+        )
+        form.addRow("", self.chk_vad)
+        self._engine_form = form
+        self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        self._on_backend_changed()
+        layout.addWidget(engine)
+        layout.addWidget(self._hint(
+            "Running on the GPU (CUDA) needs the NVIDIA CUDA 12 libraries "
+            "(cuBLAS + cuDNN). If they're missing, transcription switches to the "
+            "CPU automatically — see the Help page for how to enable the GPU. "
+            "The OpenVINO backend accelerates on Intel GPUs and NPUs instead; "
+            "models are fetched pre-converted from Hugging Face (OpenVINO/whisper-…-ov)."
+        ))
+
+        folder = QGroupBox("Model download folder")
+        fv = QVBoxLayout(folder)
+        fv.setSpacing(8)
+        dir_row = QWidget()
+        dh = QHBoxLayout(dir_row)
+        dh.setContentsMargins(0, 0, 0, 0)
+        self.model_dir_edit = QLineEdit(self.cfg["model_dir"] or "")
+        # Empty is the deliberate default (= the Hugging Face cache). Show the
+        # resolved cache path as a greyed-out placeholder so the empty field
+        # reads as "using this" instead of looking unset — without persisting
+        # it, which would break the "Use default" button and cache relocation.
+        self.model_dir_edit.setPlaceholderText(str(default_model_dir()))
+        self.model_dir_edit.setToolTip(
+            "Where Whisper models are downloaded to and loaded from. "
+            "Leave empty to use the Hugging Face cache shown below."
+        )
+        dh.addWidget(self.model_dir_edit, 1)
+        browse = QPushButton("Browse…")
+        browse.clicked.connect(self._browse_model_dir)
+        default_btn = QPushButton("Use default")
+        default_btn.clicked.connect(lambda: self.model_dir_edit.setText(""))
+        open_btn = QPushButton("Open folder")
+        open_btn.clicked.connect(self._open_model_dir)
+        for b in (browse, default_btn, open_btn):
+            dh.addWidget(b)
+        fv.addWidget(dir_row)
+        fv.addWidget(self._hint(
+            "Models are fetched from Hugging Face on first use and stored here.\n"
+            f"Empty = default cache: {default_model_dir()}"
+        ))
+        layout.addWidget(folder)
+
+        prompt = QGroupBox("Initial prompt (domain vocabulary hint)")
+        pv = QVBoxLayout(prompt)
+        self.initial_prompt_edit = QPlainTextEdit(self.cfg["initial_prompt"])
+        self.initial_prompt_edit.setToolTip(
+            "Names, acronyms and spellings Whisper should prefer (e.g. “Kubernetes, PostgreSQL, Jira”). "
+            "It biases recognition — it is NOT an instruction prompt."
+        )
+        self.initial_prompt_edit.setFixedHeight(80)
+        pv.addWidget(self.initial_prompt_edit)
+        pv.addWidget(self._hint(
+            "Names, jargon and spellings Whisper should prefer — not an instruction prompt. "
+            "Use the Assistant page for rewriting/cleanup."
+        ))
+        layout.addWidget(prompt)
+
+        layout.addStretch(1)
+        return page
+
+    def _build_audio(self, title: str) -> QWidget:
+        page, layout = self._page(title)
+
+        card, form = self._card("Microphone")
+        device_row = QWidget()
+        dh = QHBoxLayout(device_row)
+        dh.setContentsMargins(0, 0, 0, 0)
+        self.input_combo = QComboBox()
+        self.input_combo.setToolTip(
+            "The microphone used for recording. “System default” follows the OS sound settings."
+        )
+        dh.addWidget(self.input_combo, 1)
+        refresh = QPushButton("Refresh")
+        refresh.setToolTip("Re-scan the audio devices, e.g. after plugging in a headset.")
+        refresh.clicked.connect(self._load_devices)
+        dh.addWidget(refresh)
+        form.addRow("Input device:", device_row)
+        self._load_devices()
+
+        self.max_seconds_spin = QSpinBox()
+        self.max_seconds_spin.setRange(10, 3600)
+        self.max_seconds_spin.setSingleStep(10)
+        self.max_seconds_spin.setValue(self._to_int(self.cfg["max_seconds"], 300))
+        self.max_seconds_spin.setToolTip(
+            "Safety cap for a single recording — it stops automatically when the limit is reached."
+        )
+        form.addRow("Max recording length (s):", self.max_seconds_spin)
+        layout.addWidget(card)
+
+        layout.addWidget(self._hint("Recording stops automatically when the limit is reached."))
+        layout.addStretch(1)
+        return page
+
+    def _build_overlay(self, title: str) -> QWidget:
+        page, layout = self._page(title)
+        ocfg = self.cfg["overlay"]
+
+        card = QGroupBox("Floating icon")
+        cv = QVBoxLayout(card)
+        cv.setSpacing(4)
+        self.chk_o_enabled = self._checkbox(
+            "Show floating microphone icon (always on top)",
+            ocfg["enabled"],
+            "A small round always-on-top icon showing the state. Click = start/stop, drag = move, right-click = menu.",
+        )
+        cv.addWidget(self.chk_o_enabled)
+        cv.addWidget(self._hint("Click = start/stop • drag = move (position is saved) • right-click = menu."))
+        self.chk_o_preview = self._checkbox(
+            "Show the transcribed text next to the icon after each recording",
+            ocfg["show_preview"],
+            "After a recording, the text pops up in a small bubble next to the icon for a few seconds.",
+        )
+        cv.addWidget(self.chk_o_preview)
+        self.chk_o_live = self._checkbox(
+            "Live transcript preview while recording (experimental)",
+            ocfg["live_preview"],
+            "Transcribes in the background while you speak and shows a rolling preview. Costs extra CPU.",
+        )
+        cv.addWidget(self.chk_o_live)
+        cv.addWidget(self._hint(
+            "The live preview transcribes in parallel while you speak — it needs a fast machine "
+            "(or a small model) and shows only the most recent sentences."
+        ))
+        layout.addWidget(card)
+
+        timing, form = self._card("Timing")
+        self.preview_seconds_spin = QSpinBox()
+        self.preview_seconds_spin.setRange(2, 60)
+        self.preview_seconds_spin.setValue(self._to_int(ocfg["preview_seconds"], 6))
+        self.preview_seconds_spin.setToolTip("How long the finished transcript bubble stays visible.")
+        form.addRow("Preview display time (s):", self.preview_seconds_spin)
+        layout.addWidget(timing)
+
+        layout.addStretch(1)
+        return page
+
+    def _build_integrations(self, title: str) -> QWidget:
+        page, layout = self._page(title)
+        icfg = self.cfg["integrations"] if isinstance(self.cfg.data.get("integrations"), dict) else {}
+
+        self.chk_mute_enabled = self._checkbox(
+            "Mute other apps while recording",
+            icfg.get("mute_while_recording", True),
+            "Master switch. While you dictate, each enabled app below is sent its "
+            "mute keybind so your dictation isn't transmitted into a voice call — "
+            "then restored the moment the recording stops.",
+        )
+        layout.addWidget(self.chk_mute_enabled)
+        layout.addWidget(self._hint(
+            "For each app, set the SAME key combination here and in that app.\n"
+            "Discord: User Settings → Keybinds → add a “Push to Mute” keybind "
+            "(use Push-to-mute mode) or a “Toggle Mute” keybind (use Toggle mode) "
+            "with the same combination as below.\n"
+            "Prefer a modifier chord or an F-key so the combo doesn't disturb the "
+            "app you're typing into, and don't reuse your recording hotkey's keys."
+        ))
+
+        box = QGroupBox("Apps to mute")
+        bv = QVBoxLayout(box)
+        bv.setSpacing(8)
+        self._targets_layout = QVBoxLayout()
+        self._targets_layout.setSpacing(8)
+        bv.addLayout(self._targets_layout)
+
+        self._target_rows: list[MuteTargetRow] = []
+        for target in icfg.get("targets") or []:
+            if isinstance(target, dict):
+                self._add_target_row(target)
+
+        add_row = QHBoxLayout()
+        add_btn = QPushButton("Add app")
+        add_btn.setToolTip("Add another application to mute while recording.")
+        add_btn.setAutoDefault(False)
+        add_btn.clicked.connect(
+            lambda: self._add_target_row({"name": "", "enabled": True, "mode": "hold", "hotkey": ""})
+        )
+        add_row.addWidget(add_btn)
+        add_row.addStretch(1)
+        bv.addLayout(add_row)
+        layout.addWidget(box)
+
+        layout.addStretch(1)
+        return page
+
+    def _add_target_row(self, data: dict) -> None:
+        row = MuteTargetRow(data, self._capture_hotkey, self._remove_target_row)
+        self._target_rows.append(row)
+        self._targets_layout.addWidget(row)
+
+    def _remove_target_row(self, row: MuteTargetRow) -> None:
+        if row in self._target_rows:
+            self._target_rows.remove(row)
+        self._targets_layout.removeWidget(row)
+        row.deleteLater()
+
+    def _build_assistant(self, title: str) -> QWidget:
+        page, layout = self._page(title)
+        acfg = self.cfg["assistant"]
+
+        self.chk_a_enabled = self._checkbox(
+            "Post-process the transcript with an assistant (LLM)",
+            acfg["enabled"],
+            "Send the raw transcript through a language model for cleanup before it is inserted. "
+            "Needs a running OpenAI-compatible endpoint.",
+        )
+        layout.addWidget(self.chk_a_enabled)
+        layout.addWidget(self._hint(
+            "Optional. Sends the transcript to an OpenAI-compatible API for cleanup — "
+            "e.g. a local Ollama (default), LM Studio, llama.cpp or a hosted service."
+        ))
+
+        conn, form = self._card("Connection")
+        self.a_url_edit = QLineEdit(acfg["base_url"])
+        self.a_url_edit.setToolTip("Base URL of the OpenAI-compatible API, e.g. http://localhost:11434/v1 for Ollama.")
+        form.addRow("API base URL:", self.a_url_edit)
+        self.a_model_edit = QLineEdit(acfg["model"])
+        self.a_model_edit.setToolTip("Model name as the endpoint knows it, e.g. llama3.2, qwen2.5:14b or gpt-4o-mini.")
+        form.addRow("Model:", self.a_model_edit)
+        self.a_key_edit = QLineEdit(acfg["api_key"])
+        self.a_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.a_key_edit.setToolTip("Only needed for hosted services. Local Ollama/LM Studio usually run without a key.")
+        form.addRow("API key (optional):", self.a_key_edit)
+        self.a_temp_spin = QDoubleSpinBox()
+        self.a_temp_spin.setRange(0.0, 2.0)
+        self.a_temp_spin.setSingleStep(0.1)
+        self.a_temp_spin.setDecimals(2)
+        self.a_temp_spin.setValue(self._to_float(acfg["temperature"], 0.2))
+        self.a_temp_spin.setToolTip("Keep low (0.0–0.3) for faithful cleanup; higher values rewrite more freely.")
+        form.addRow("Temperature:", self.a_temp_spin)
+        layout.addWidget(conn)
+
+        prompt = QGroupBox("System prompt")
+        pv = QVBoxLayout(prompt)
+        header = QHBoxLayout()
+        header.addStretch(1)
+        reset = QPushButton("Reset to default")
+        reset.setToolTip("Replace the prompt below with the built-in default cleanup prompt.")
+        reset.clicked.connect(self._reset_prompt)
+        header.addWidget(reset)
+        pv.addLayout(header)
+        self.a_prompt_edit = QPlainTextEdit(acfg["system_prompt"])
+        self.a_prompt_edit.setToolTip(
+            "Instructions for the assistant. The transcript is sent as the user message; "
+            "whatever the model returns is inserted instead of the raw transcript."
+        )
+        self.a_prompt_edit.setMinimumHeight(160)
+        pv.addWidget(self.a_prompt_edit)
+        layout.addWidget(prompt, 1)
+
+        return page
+
+    def _build_history(self, title: str) -> QWidget:
+        page, layout = self._page(title)
+
+        top, form = self._card("History")
+        self.chk_history_enabled = self._checkbox(
+            "Keep a history of transcribed text",
+            self.cfg["history_enabled"],
+            "Store the transcribed text (never the audio) locally so you can copy it again here. "
+            "Turn off to stop recording new entries; existing entries stay until cleared.",
+        )
+        form.addRow("", self.chk_history_enabled)
+        self.history_max_spin = QSpinBox()
+        self.history_max_spin.setRange(10, 5000)
+        self.history_max_spin.setSingleStep(10)
+        self.history_max_spin.setValue(self._to_int(self.cfg["history_max"], 200))
+        self.history_max_spin.setToolTip("How many of the most recent transcripts to keep. Older ones are dropped.")
+        form.addRow("Keep last:", self.history_max_spin)
+        layout.addWidget(top)
+
+        layout.addWidget(self._hint(
+            "Stored locally on this computer only. Click a transcript's “Copy” button to put it back on the clipboard."
+        ))
+
+        # Scrollable list of past transcripts, rendered lazily on first view.
+        self._history_scroll = QScrollArea()
+        self._history_scroll.setWidgetResizable(True)
+        self._history_inner = QWidget()
+        self._history_layout = QVBoxLayout(self._history_inner)
+        self._history_layout.setContentsMargins(2, 2, 2, 2)
+        self._history_layout.setSpacing(6)
+        self._history_layout.addStretch(1)
+        self._history_scroll.setWidget(self._history_inner)
+        self._history_rendered = False
+        layout.addWidget(self._history_scroll, 1)
+
+        bottom = QHBoxLayout()
+        refresh = QPushButton("Refresh")
+        refresh.setToolTip("Reload the list — useful if you recorded something while this window was open.")
+        refresh.clicked.connect(self._refresh_history)
+        bottom.addWidget(refresh)
+        bottom.addStretch(1)
+        clear = QPushButton("Clear history")
+        clear.setToolTip("Permanently delete every stored transcript.")
+        clear.clicked.connect(self._clear_history)
+        bottom.addWidget(clear)
+        layout.addLayout(bottom)
+
+        return page
+
+    def _build_help(self, title: str) -> QWidget:
+        page, layout = self._page(title)
+        from . import help_content
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)  # http(s) links → default browser
+        browser.document().setDefaultStyleSheet(self._help_stylesheet())
+        browser.setHtml(help_content.help_html())
+        browser.setToolTip("Common problems and fixes. Links open in your web browser.")
+        layout.addWidget(browser, 1)
+        return page
+
+    @staticmethod
+    def _help_stylesheet() -> str:
+        """A tiny theme-aware style sheet for the Help browser: accent links and
+        a subtle background behind inline <code> so DLL/command names stand out."""
+        from .theme import ACCENT, is_dark
+
+        code_bg = "#3a3d41" if is_dark() else "#eceef1"
+        return (
+            f"a {{ color: {ACCENT}; }}"
+            f"h3 {{ margin-top: 4px; }}"
+            f"code {{ background-color: {code_bg}; }}"
+        )
+
+    def show_help_page(self) -> None:
+        """Open the Help / Troubleshooting page (used by the tray menu)."""
+        self.nav.setCurrentRow(self._help_index)
+
+    # ------------------------------------------------------ small helpers
+
+    def _checkbox(self, text: str, checked: bool, tip: str) -> QCheckBox:
+        chk = QCheckBox(text)
+        chk.setChecked(bool(checked))
+        chk.setToolTip(tip)
+        return chk
+
+    def _on_page_changed(self, index: int) -> None:
+        self.stack.setCurrentIndex(index)
+        # Build the transcript rows only when the History page is first shown.
+        if index == self._history_index and not self._history_rendered:
+            self._refresh_history()
+        # Check for updates the first time the Updates page is opened.
+        if index == self._updates_index and not self._updates_auto_checked:
+            self._updates_auto_checked = True
+            self._check_updates()
+
+    def _capture_hotkey(self) -> str | None:
+        """Open the key picker with the live global hotkey paused, otherwise
+        pressing keys to pick a combo would trigger a real recording behind the
+        dialog. Nothing is applied until Save, so the old hotkey is restored."""
+        self.app.hotkeys.stop()
+        try:
+            return HotkeyCaptureDialog.ask(self)
+        finally:
+            self.app._register_hotkey()
+
+    def _pick_hotkey(self) -> None:
+        combo = self._capture_hotkey()
+        if combo:
+            self.hotkey_edit.setText(combo)
+
+    def _browse_model_dir(self) -> None:
+        initial = self.model_dir_edit.text().strip() or str(default_model_dir())
+        chosen = QFileDialog.getExistingDirectory(self, "Choose model download folder", initial)
+        if chosen:
+            self.model_dir_edit.setText(chosen)
+
+    def _open_model_dir(self) -> None:
+        from pathlib import Path
+
+        path = Path(self.model_dir_edit.text().strip() or default_model_dir())
+        path.mkdir(parents=True, exist_ok=True)
+        open_path(path)
+
+    def _load_devices(self) -> None:
+        values = [_SYSTEM_DEFAULT_DEVICE]
+        current = _SYSTEM_DEFAULT_DEVICE
+        try:
+            from .audio import list_input_devices
+
+            for idx, name in list_input_devices():
+                entry = f"{idx}: {name}"
+                values.append(entry)
+                if self.cfg["input_device"] == idx:
+                    current = entry
+        except Exception as exc:
+            log.exception("could not list audio devices")
+            values.append(f"(error listing devices: {exc})")
+        self.input_combo.clear()
+        self.input_combo.addItems(values)
+        self.input_combo.setCurrentText(current)
+
+    def _reset_prompt(self) -> None:
+        self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
+
+    # ------------------------------------------------------------- updates
+
+    def _build_updates(self, title: str) -> QWidget:
+        page, layout = self._page(title)
+
+        card, form = self._card("This version")
+        self.update_current_label = QLabel(__version__)
+        form.addRow("Installed:", self.update_current_label)
+        self.chk_update_on_start = self._checkbox(
+            "Check for updates on startup",
+            self.cfg["update_check_on_start"],
+            "On launch, quietly check the GitHub releases and notify you if a newer version exists.",
+        )
+        form.addRow("", self.chk_update_on_start)
+        self.chk_prereleases = self._checkbox(
+            "Include pre-releases",
+            self.cfg["include_prereleases"],
+            "Also offer pre-release (beta) builds, not just stable releases.",
+        )
+        form.addRow("", self.chk_prereleases)
+        self.update_check_button = QPushButton("Check now")
+        self.update_check_button.setToolTip("Fetch the latest releases from GitHub now.")
+        self.update_check_button.clicked.connect(self._check_updates)
+        form.addRow("", self.update_check_button)
+        layout.addWidget(card)
+
+        self.update_status = self._hint("Not checked yet.")
+        layout.addWidget(self.update_status)
+
+        self.update_list = QListWidget()
+        self.update_list.setMaximumHeight(140)
+        self.update_list.currentRowChanged.connect(self._on_release_selected)
+        self.update_list.setToolTip(
+            "Newer releases, newest first. Pick one to read its changelog — you can jump "
+            "straight to any of them, skipping the ones in between."
+        )
+        layout.addWidget(self.update_list)
+
+        self.update_changelog = QTextBrowser()
+        self.update_changelog.setOpenExternalLinks(True)
+        layout.addWidget(self.update_changelog, 1)
+
+        self.update_progress = QProgressBar()
+        self.update_progress.setVisible(False)
+        layout.addWidget(self.update_progress)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.update_button = QPushButton("Install selected")
+        self.update_button.setProperty("accent", True)
+        self.update_button.setEnabled(False)
+        self.update_button.clicked.connect(self._install_selected_update)
+        actions.addWidget(self.update_button)
+        layout.addLayout(actions)
+        return page
+
+    def show_updates_page(self) -> None:
+        """Open the Updates page and start a fresh check (used by the tray)."""
+        self.nav.setCurrentRow(self._updates_index)
+        self._updates_auto_checked = True
+        self._check_updates()
+
+    def _check_updates(self) -> None:
+        if self._update_busy:
+            return
+        self._update_busy = True
+        self.update_check_button.setEnabled(False)
+        self.update_button.setEnabled(False)
+        self.update_list.clear()
+        self.update_changelog.clear()
+        self.update_status.setText("Checking for updates…")
+        include_pre = self.chk_prereleases.isChecked()
+
+        def work():
+            try:
+                from . import updater
+
+                releases = updater.fetch_releases(include_prerelease=include_pre)
+                self._usig.checked.emit(updater.newer_releases(releases))
+            except Exception as exc:  # surfaced in the UI
+                self._usig.check_failed.emit(str(exc))
+
+        threading.Thread(target=work, name="update-check", daemon=True).start()
+
+    def _on_update_check_done(self, newer: list) -> None:
+        self._update_busy = False
+        self.update_check_button.setEnabled(True)
+        self._releases_newer = newer
+        self.update_list.clear()
+        if not newer:
+            self.update_status.setText("You're on the latest version.")
+            self.update_changelog.clear()
+            self.update_button.setEnabled(False)
+            return
+        self.update_status.setText(
+            f"{len(newer)} newer release{'s' if len(newer) != 1 else ''} available."
+        )
+        for release in newer:
+            label = f"{release.tag or release.title}   ·   {release.date}"
+            if release.prerelease:
+                label += "   (pre-release)"
+            self.update_list.addItem(label)
+        self.update_list.setCurrentRow(0)  # latest: shows changelog, enables the button
+
+    def _on_update_check_failed(self, message: str) -> None:
+        self._update_busy = False
+        self.update_check_button.setEnabled(True)
+        self.update_button.setEnabled(False)
+        self.update_status.setText(f"Update check failed: {message}")
+
+    def _on_release_selected(self, row: int) -> None:
+        if row < 0 or row >= len(self._releases_newer):
+            self.update_changelog.clear()
+            self.update_button.setEnabled(False)
+            return
+        release = self._releases_newer[row]
+        self.update_changelog.setMarkdown(release.body or "_No changelog provided._")
+        from . import updater
+
+        if updater.can_self_update() and release.asset_url:
+            self.update_button.setText("Download && install")
+            self.update_button.setToolTip("Download this version and restart to apply it.")
+        else:
+            self.update_button.setText("Open release page")
+            self.update_button.setToolTip("Open this release on GitHub to download it manually.")
+        self.update_button.setEnabled(True)
+
+    def _install_selected_update(self) -> None:
+        row = self.update_list.currentRow()
+        if row < 0 or row >= len(self._releases_newer):
+            return
+        release = self._releases_newer[row]
+        from . import updater
+
+        if not (updater.can_self_update() and release.asset_url):
+            webbrowser.open(release.html_url or REPO_URL)
+            return
+        confirm = QMessageBox.question(
+            self,
+            APP_NAME,
+            f"Download {release.tag} and restart {APP_NAME} to update?\n\n"
+            f"{APP_NAME} will close, replace its program file and reopen automatically.\n\n"
+            "The download is not code-signed (Windows SmartScreen may warn).",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self._start_update_download(release)
+
+    def _start_update_download(self, release) -> None:
+        if self._update_busy:
+            return
+        self._update_busy = True
+        self.update_button.setEnabled(False)
+        self.update_check_button.setEnabled(False)
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setValue(0)
+        self.update_progress.setVisible(True)
+        self.update_status.setText(f"Downloading {release.tag}…")
+        from . import updater
+
+        url = release.asset_url
+        dest = updater.download_path_for()
+
+        def work():
+            try:
+                updater.download_asset(
+                    url, dest, progress_cb=lambda done, total: self._usig.progress.emit(done, total)
+                )
+                self._usig.downloaded.emit(str(dest))
+            except Exception as exc:  # surfaced in the UI
+                self._usig.download_failed.emit(str(exc))
+
+        threading.Thread(target=work, name="update-download", daemon=True).start()
+
+    def _on_update_progress(self, done: int, total: int) -> None:
+        if total > 0:
+            self.update_progress.setRange(0, 100)
+            self.update_progress.setValue(int(done * 100 / total))
+        else:
+            self.update_progress.setRange(0, 0)  # indeterminate
+
+    def _on_update_downloaded(self, path: str) -> None:
+        self._update_busy = False
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setValue(100)
+        from pathlib import Path
+
+        from . import updater
+
+        try:
+            updater.apply_update_windows(Path(path))
+        except Exception as exc:  # surfaced in the UI
+            log.exception("could not apply update")
+            self.update_status.setText(f"Could not apply update: {exc}")
+            self.update_button.setEnabled(True)
+            self.update_check_button.setEnabled(True)
+            return
+        self.update_status.setText("Update downloaded — restarting…")
+        # Quit so the detached swapper can replace the (now unlocked) exe.
+        self.app.post("quit")
+
+    def _on_update_download_failed(self, message: str) -> None:
+        self._update_busy = False
+        self.update_progress.setVisible(False)
+        self.update_check_button.setEnabled(True)
+        self.update_button.setEnabled(True)
+        self.update_status.setText(f"Download failed: {message}")
+
+    # ---------------------------------------------------------- history UI
+
+    def _clear_history_rows(self) -> None:
+        # Remove every row widget but keep the trailing stretch.
+        while self._history_layout.count() > 1:
+            item = self._history_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _refresh_history(self) -> None:
+        self._history_rendered = True
+        self._clear_history_rows()
+        entries = self.app.history.entries()
+        if not entries:
+            self._history_layout.insertWidget(0, self._hint("No transcripts yet."))
+            return
+        shown = entries[:_HISTORY_RENDER_LIMIT]
+        insert_at = 0
+        if len(entries) > len(shown):
+            note = self._hint(f"Showing the {len(shown)} most recent of {len(entries)} transcripts.")
+            self._history_layout.insertWidget(insert_at, note)
+            insert_at += 1
+        for entry in shown:
+            self._history_layout.insertWidget(insert_at, self._history_row(entry))
+            insert_at += 1
+
+    def _history_row(self, entry: dict) -> QWidget:
+        text = entry.get("text", "")
+        row = QGroupBox()
+        rv = QVBoxLayout(row)
+        rv.setContentsMargins(10, 6, 10, 8)
+        rv.setSpacing(2)
+
+        header = QHBoxLayout()
+        stamp = ""
+        when = entry.get("time")
+        if when:
+            try:
+                stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(when)))
+            except (ValueError, OSError):
+                stamp = ""
+        stamp_label = QLabel(stamp)
+        stamp_label.setProperty("role", "hint")
+        header.addWidget(stamp_label)
+        header.addStretch(1)
+        copy_btn = QPushButton("Copy")
+        copy_btn.clicked.connect(lambda _checked=False, t=text, b=copy_btn: self._copy_history(t, b))
+        header.addWidget(copy_btn)
+        rv.addLayout(header)
+
+        body = QLabel(text)
+        body.setWordWrap(True)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        rv.addWidget(body)
+        return row
+
+    def _copy_history(self, text: str, button: QPushButton) -> None:
+        if not text:
+            return
+        copied = False
+        try:
+            import pyperclip
+
+            pyperclip.copy(text)
+            copied = True
+        except Exception:
+            try:
+                from PySide6.QtWidgets import QApplication
+
+                QApplication.clipboard().setText(text)
+                copied = True
+            except Exception:
+                log.exception("could not copy transcript to clipboard")
+        if copied:
+            button.setText("Copied ✓")
+
+            def restore():
+                # The dialog (and this button) may be gone 1.2 s later.
+                try:
+                    button.setText("Copy")
+                except RuntimeError:
+                    pass
+
+            QTimer.singleShot(1200, restore)
+
+    def _clear_history(self) -> None:
+        if not self.app.history.entries():
+            return
+        confirm = QMessageBox.question(
+            self, APP_NAME, "Delete the entire transcript history?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            self.app.history.clear()
+            self._refresh_history()
+
+    # --------------------------------------------------- selection readers
+
+    def _selected_language(self) -> str:
+        label = self.language_combo.currentText()
+        for code, _ in LANGUAGES:
+            if label == _language_label(code):
+                return code
+        return label.strip() or "auto"
+
+    def _selected_backend(self) -> str:
+        label = self.backend_combo.currentText()
+        for backend, backend_label in BACKENDS:
+            if label == backend_label:
+                return backend
+        return "faster-whisper"
+
+    def _on_backend_changed(self) -> None:
+        """Show only the Engine rows that apply to the selected backend."""
+        openvino = self._selected_backend() == "openvino"
+        form = self._engine_form
+        form.setRowVisible(self.device_combo, not openvino)
+        form.setRowVisible(self.compute_combo, not openvino)
+        form.setRowVisible(self.chk_vad, not openvino)  # VAD is faster-whisper only
+        form.setRowVisible(self.ov_device_combo, openvino)
+        form.setRowVisible(self.ov_precision_combo, openvino)
+
+    def _selected_model(self) -> str:
+        label = self.model_combo.currentText().strip()
+        for model, _ in MODEL_CHOICES:
+            if label == _model_label(model):
+                return model
+        # Custom Hugging Face model id typed by the user — keep it verbatim.
+        return label or "small"
+
+    def _selected_input_device(self):
+        value = self.input_combo.currentText()
+        if not value or value == _SYSTEM_DEFAULT_DEVICE or ":" not in value:
+            return None
+        try:
+            return int(value.split(":", 1)[0])
+        except ValueError:
+            return None
+
+    # -------------------------------------------------------------- save
+
+    def _save(self) -> None:
+        hotkey = self.hotkey_edit.text().strip()
+        if not Hotkeys.validate(hotkey):
+            QMessageBox.critical(
+                self,
+                APP_NAME,
+                f"Invalid hotkey: {hotkey}\n\nUse the pynput format, e.g. <ctrl>+<alt>+<space> — "
+                "or click “Change…” and press the keys.",
+            )
+            return
+
+        # Only enabled mute targets need a valid keybind; a disabled row may be
+        # left half-configured without blocking Save.
+        target_values = [row.values() for row in self._target_rows]
+        for target in target_values:
+            if not target["enabled"]:
+                continue
+            if not Hotkeys.validate(target["hotkey"]):
+                QMessageBox.critical(
+                    self,
+                    APP_NAME,
+                    f"“{target['name']}” is enabled but its mute keybind "
+                    f"“{target['hotkey']}” is not a valid combination.\n\n"
+                    "Click “Change…” to set it, or turn that app off.",
+                )
+                return
+            if Hotkeys.equal(target["hotkey"], hotkey):
+                QMessageBox.critical(
+                    self,
+                    APP_NAME,
+                    f"“{target['name']}” uses the same keybind as the recording "
+                    f"hotkey ({hotkey}).\n\nGive the app a different combination — "
+                    "otherwise muting it would also start/stop your recording.",
+                )
+                return
+
+        cfg = self.cfg.data
+        cfg["hotkey"] = hotkey
+        cfg["hotkey_mode"] = "hold" if self.rb_hold.isChecked() else "toggle"
+        cfg["language"] = self._selected_language()
+        cfg["model"] = self._selected_model()
+        cfg["model_dir"] = self.model_dir_edit.text().strip() or None
+        cfg["injection_mode"] = "type" if self.rb_type.isChecked() else "paste"
+        cfg["restore_clipboard"] = self.chk_restore.isChecked()
+        cfg["notifications"] = self.chk_notifications.isChecked()
+        cfg["beep"] = self.chk_beep.isChecked()
+        cfg["autostart"] = self.chk_autostart.isChecked()
+        cfg["start_in_tray"] = self.chk_start_in_tray.isChecked()
+        cfg["backend"] = self._selected_backend()
+        cfg["device"] = self.device_combo.currentText()
+        cfg["compute_type"] = self.compute_combo.currentText()
+        cfg["openvino_device"] = self.ov_device_combo.currentText()
+        cfg["openvino_precision"] = self.ov_precision_combo.currentText()
+        cfg["vad_filter"] = self.chk_vad.isChecked()
+        cfg["history_enabled"] = self.chk_history_enabled.isChecked()
+        cfg["history_max"] = int(self.history_max_spin.value())
+        cfg["update_check_on_start"] = self.chk_update_on_start.isChecked()
+        cfg["include_prereleases"] = self.chk_prereleases.isChecked()
+        cfg["insecure_ssl"] = self.chk_insecure_ssl.isChecked()
+        cfg["initial_prompt"] = self.initial_prompt_edit.toPlainText().strip()
+        cfg["input_device"] = self._selected_input_device()
+        cfg["max_seconds"] = int(self.max_seconds_spin.value())
+
+        ocfg = cfg["overlay"]
+        ocfg["enabled"] = self.chk_o_enabled.isChecked()
+        ocfg["show_preview"] = self.chk_o_preview.isChecked()
+        ocfg["live_preview"] = self.chk_o_live.isChecked()
+        ocfg["preview_seconds"] = int(self.preview_seconds_spin.value())
+
+        acfg = cfg["assistant"]
+        acfg["enabled"] = self.chk_a_enabled.isChecked()
+        acfg["base_url"] = self.a_url_edit.text().strip()
+        acfg["model"] = self.a_model_edit.text().strip()
+        acfg["api_key"] = self.a_key_edit.text().strip()
+        acfg["temperature"] = float(self.a_temp_spin.value())
+        acfg["system_prompt"] = self.a_prompt_edit.toPlainText().strip() or DEFAULT_ASSISTANT_PROMPT
+
+        icfg = cfg.setdefault("integrations", {})
+        icfg["mute_while_recording"] = self.chk_mute_enabled.isChecked()
+        icfg["targets"] = target_values
+
+        self.cfg.save()
+        self.app.apply_settings()
+        self.accept()

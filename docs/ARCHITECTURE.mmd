@@ -1,0 +1,105 @@
+flowchart TD
+    subgraph "Entry"
+        Main["__main__ / app.main()"]:::infra
+        Single(["single-instance lock (localhost:52697)"]):::infra
+    end
+
+    subgraph "Core"
+        App("App — state machine idle/recording/processing"):::backend
+        Events(["event queue (App.post)"]):::queue
+        Poll("QTimer poll (main thread, 100ms)"):::backend
+        Config[("config.json (DEFAULTS)")]:::database
+        Net["netutil — insecure-SSL switch (corporate proxy)"]:::infra
+    end
+
+    subgraph "Input and UI (Qt main thread)"
+        Hotkeys("Hotkeys — global hotkey, pynput"):::frontend
+        Tray("Tray — QSystemTrayIcon"):::frontend
+        Overlay("Overlay + VoiceMicWidget"):::frontend
+        Settings("SettingsWindow"):::frontend
+        Theme["theme / icons / qtutil / keymap / widgets"]:::frontend
+    end
+
+    subgraph "Processing (worker threads)"
+        Recorder("Recorder — sounddevice"):::backend
+        Transcriber("Transcriber — faster-whisper"):::backend
+        TranscriberOV("OpenVinoTranscriber — OpenVINO GenAI (Intel GPU/NPU)"):::backend
+        Assistant("Assistant — LLM post-process"):::backend
+        Injector("Injector — paste/type at cursor"):::backend
+        Mute("MuteIntegrations — mute other apps"):::backend
+    end
+
+    subgraph "Persistence"
+        History[("history.json — text only")]:::database
+        Autostart["autostart — start with OS"]:::infra
+        Updater("Updater — GitHub Releases"):::backend
+    end
+
+    subgraph "External"
+        HF{{"Hugging Face — model download"}}:::external
+        LLM{{"OpenAI-compatible API (Ollama, ...)"}}:::external
+        GH{{"GitHub Releases API"}}:::external
+        OS{{"Focused window / other apps"}}:::external
+    end
+
+    Main -->|"acquire"| Single
+    Main -->|"run"| App
+    App --> Config
+    App -->|"apply insecure_ssl (verify= + HF backend)"| Net
+    App --> Poll
+    Poll -->|"drain"| Events
+
+    Hotkeys -->|"post press/release"| Events
+    Tray -->|"post toggle/settings/quit"| Events
+    Overlay -->|"post toggle/cancel"| Events
+    Settings -->|"apply_settings"| App
+    App --> Tray
+    App --> Overlay
+    App --> Settings
+    Overlay --- Theme
+    Settings --- Theme
+
+    App -->|"start/stop"| Recorder
+    App -->|"_process worker"| Transcriber
+    App -->|"backend = openvino (factory)"| TranscriberOV
+    Recorder -->|"audio frames"| Transcriber
+    Recorder -->|"audio frames"| TranscriberOV
+    Transcriber -->|"text"| Assistant
+    Assistant -->|"cleaned text"| Injector
+    Transcriber -->|"text (assistant off)"| Injector
+    App -->|"on record start/stop"| Mute
+
+    Injector -->|"insert at cursor"| OS
+    Mute -->|"synthesize mute keybind"| OS
+    Transcriber -->|"first-use download"| HF
+    TranscriberOV -->|"first-use download (OpenVINO IR)"| HF
+    Assistant -->|"chat/completions"| LLM
+    Updater -->|"check/download"| GH
+    App --> Updater
+    App -->|"record text"| History
+    App --> Autostart
+
+    click Main "src/listen_to_me/app.py"
+    click App "src/listen_to_me/app.py"
+    click Config "src/listen_to_me/config.py"
+    click Hotkeys "src/listen_to_me/hotkeys.py"
+    click Tray "src/listen_to_me/tray.py"
+    click Overlay "src/listen_to_me/overlay.py"
+    click Settings "src/listen_to_me/settings_ui.py"
+    click Recorder "src/listen_to_me/audio.py"
+    click Transcriber "src/listen_to_me/transcriber.py"
+    click TranscriberOV "src/listen_to_me/transcriber_openvino.py"
+    click Assistant "src/listen_to_me/assistant.py"
+    click Injector "src/listen_to_me/injector.py"
+    click Mute "src/listen_to_me/integrations.py"
+    click History "src/listen_to_me/history.py"
+    click Autostart "src/listen_to_me/autostart.py"
+    click Updater "src/listen_to_me/updater.py"
+    click Net "src/listen_to_me/netutil.py"
+
+    classDef frontend fill:#42b883,stroke:#35495e,color:#fff
+    classDef backend fill:#3178c6,stroke:#265a8f,color:#fff
+    classDef database fill:#336791,stroke:#264d73,color:#fff
+    classDef queue fill:#ff6600,stroke:#cc5200,color:#fff
+    classDef external fill:#ff6347,stroke:#cc4f39,color:#fff
+    classDef infra fill:#7b42bc,stroke:#5e338f,color:#fff

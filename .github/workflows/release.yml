@@ -1,0 +1,152 @@
+name: Release
+
+# Manual-only release pipeline: Windows one-file build + GitHub Release.
+# Never triggered by pushes or pull requests, and the guard job refuses
+# any dispatch from a ref other than main.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  guard:
+    name: Refuse builds off main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure the workflow was dispatched from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Release builds run only from main (dispatched from '${GITHUB_REF_NAME}'). Merge first, then dispatch on main."
+          exit 1
+      - name: Confirm ref
+        run: echo "Dispatched from main — proceeding."
+
+  check:
+    name: CI
+    needs: guard
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  build-windows:
+    name: Build Windows executable
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compute version and release metadata
+        id: meta
+        shell: bash
+        run: |
+          # One timestamp for everything so date, time, tag and asset can
+          # never straddle a minute/midnight boundary between `date` calls.
+          NOW="$(date -u +'%Y-%m-%d %H:%M')"
+          DATE="${NOW% *}"
+          TIME="${NOW#* }"
+          TAG="v${DATE//-/.}.${{ github.run_number }}"
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "datetime=$NOW UTC" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          # ':' is not allowed in Windows file names -> HHMM
+          echo "asset=ListenToMe-$DATE-${TIME/:/}-win64.exe" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp version into the package
+        shell: bash
+        run: |
+          VERSION="${TAG#v}"
+          sed -i "s/^__version__ = .*/__version__ = \"$VERSION\"/" src/listen_to_me/__init__.py
+          grep "^__version__" src/listen_to_me/__init__.py
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller "openvino-genai>=2025.2" "huggingface_hub>=0.23"
+
+      - name: Generate application icon
+        run: python scripts/make_icon.py build/icon.ico
+
+      - name: Build executable (PyInstaller)
+        shell: bash
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed \
+            --name ListenToMe \
+            --icon build/icon.ico \
+            --collect-all faster_whisper \
+            --collect-all ctranslate2 \
+            --collect-all onnxruntime \
+            --collect-all av \
+            --collect-all openvino \
+            --collect-all openvino_genai \
+            --collect-all openvino_tokenizers \
+            src/listen_to_me/__main__.py
+
+      - name: Smoke test executable
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist/ListenToMe.exe" -ArgumentList "--selftest" -Wait -PassThru
+          $log = Get-Content "$env:TEMP/listen-to-me-selftest.log" -Raw -ErrorAction SilentlyContinue
+          Write-Output $log
+          if ($null -eq $p.ExitCode -or $p.ExitCode -ne 0) {
+            Write-Error "selftest exited with '$($p.ExitCode)'"
+            exit 1
+          }
+          if ($log -notmatch "RESULT: PASS") {
+            Write-Error "selftest log does not report PASS"
+            exit 1
+          }
+
+      - name: Rename release asset
+        shell: bash
+        run: cp "dist/ListenToMe.exe" "dist/${{ steps.meta.outputs.asset }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ListenToMe-windows
+          path: dist/ListenToMe.exe
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -n "$LAST_TAG" ]; then
+            RANGE="$LAST_TAG..HEAD"
+            echo "Changelog since $LAST_TAG"
+          else
+            RANGE=""
+            echo "No previous tag — full history changelog"
+          fi
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "Portable single-file Windows build — download \`${{ steps.meta.outputs.asset }}\` below and run it."
+            echo "The app lives in the system tray; no installation required."
+            echo ""
+            echo "> Windows SmartScreen may warn because the binary is not code-signed:"
+            echo "> choose *More info → Run anyway*."
+            echo ""
+            echo "## Changes"
+            git log $RANGE --no-merges --pretty=format:"- %s (%h)"
+            echo ""
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "Listen To Me ${{ steps.meta.outputs.datetime }} (build ${{ github.run_number }})"
+          body: ${{ steps.changelog.outputs.body }}
+          target_commitish: ${{ github.sha }}
+          files: dist/${{ steps.meta.outputs.asset }}

@@ -1,0 +1,11 @@
+faster-whisper>=1.1.0
+sounddevice>=0.4.6
+numpy>=1.24,<3
+PySide6>=6.6
+Pillow>=10.0
+pynput>=1.7.7
+pyperclip>=1.8.2
+requests>=2.31
+# Optional Intel GPU/NPU backend — not installed by default; use
+# `pip install openvino-genai` / `pip install -e ".[openvino]"` (or uncomment):
+# openvino-genai>=2025.2
