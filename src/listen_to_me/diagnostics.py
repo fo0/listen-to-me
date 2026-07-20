@@ -38,8 +38,10 @@ def record_clip(device, seconds: float, on_level=None, is_cancelled=None):
     import numpy as np
 
     recorder = Recorder()
-    recorder.start(device=device, max_seconds=max(1, int(round(seconds))))
     try:
+        # start() inside the try: if the stream opens but starting it fails,
+        # the finally still runs stop(), which closes the opened handle.
+        recorder.start(device=device, max_seconds=max(1, int(round(seconds))))
         # round() before int(): 5.0 / 0.1 is 49.99… in floats — plain int()
         # would silently record one tick (0.1 s) short.
         for _ in range(int(round(seconds / _LEVEL_INTERVAL_S))):
