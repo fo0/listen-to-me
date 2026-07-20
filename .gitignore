@@ -29,3 +29,6 @@ secrets.json
 
 # App config may hold the optional assistant API key — never commit a real one
 config.json
+
+# Claude Code personal settings (local permission rules) — never commit
+.claude/settings.local.json
