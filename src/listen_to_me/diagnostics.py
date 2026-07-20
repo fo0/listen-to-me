@@ -40,7 +40,9 @@ def record_clip(device, seconds: float, on_level=None, is_cancelled=None):
     recorder = Recorder()
     recorder.start(device=device, max_seconds=max(1, int(round(seconds))))
     try:
-        for _ in range(int(seconds / _LEVEL_INTERVAL_S)):
+        # round() before int(): 5.0 / 0.1 is 49.99… in floats — plain int()
+        # would silently record one tick (0.1 s) short.
+        for _ in range(int(round(seconds / _LEVEL_INTERVAL_S))):
             if is_cancelled is not None and is_cancelled():
                 break
             time.sleep(_LEVEL_INTERVAL_S)

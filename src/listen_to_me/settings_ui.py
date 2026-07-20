@@ -1249,6 +1249,11 @@ class SettingsWindow(QDialog):
     def _test_hotkey(self) -> None:
         if self._hotkey_test is not None:
             return  # already listening
+        if getattr(self.app, "state", "idle") != "idle":
+            # Stopping the app's listener mid-recording would lose a hold-mode
+            # release, leaving the recording stuck until stopped via the overlay.
+            self.hotkey_test_status.setText("Finish the current recording first, then run the test.")
+            return
         combo = self.hotkey_edit.text().strip()
         if not Hotkeys.validate(combo):
             self.hotkey_test_status.setText("Invalid hotkey — fix the combination first.")
@@ -1303,6 +1308,12 @@ class SettingsWindow(QDialog):
         """Stop any running diagnostic when the dialog closes: unblock the
         recording loops and give the global hotkey back to the app."""
         self._diag_cancel = True
+        # Drop the cached test transcriber so a test model (potentially GBs of
+        # RAM) doesn't stay loaded after the dialog closes — App keeps a
+        # reference to the closed window until Settings is opened again. A
+        # still-running worker holds its own reference and finishes on the old
+        # engine harmlessly; the model is freed when the last reference goes.
+        self._diag = DiagnosticsEngine()
         if self._hotkey_test is not None:
             self._finish_hotkey_test("")
 
