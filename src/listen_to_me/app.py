@@ -433,6 +433,14 @@ class App:
             self.integrations.reset()  # never leave a target app stuck muted
         except Exception:
             log.debug("error resetting mute integrations", exc_info=True)
+        # Close the settings window BEFORE stopping the hotkeys: a running
+        # hotkey test re-registers the global listener on close, which would
+        # otherwise resurrect it after the stop below.
+        if self._settings_window is not None:
+            try:
+                self._settings_window.close()
+            except Exception:
+                pass
         self.hotkeys.stop()
         self.tray.stop()
         if self.overlay is not None:
@@ -440,11 +448,6 @@ class App:
                 self.overlay.destroy()
             except Exception:
                 log.debug("error destroying overlay", exc_info=True)
-        if self._settings_window is not None:
-            try:
-                self._settings_window.close()
-            except Exception:
-                pass
         if self.qapp is not None:
             self.qapp.quit()
 

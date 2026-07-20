@@ -319,6 +319,56 @@ def _openvino_backend_logic():
         assert t2._maybe_force_cpu("CPU", RuntimeError("anything"), None) is False
 
 
+def _diagnostics_engine():
+    """The Settings diagnostics engine builds a transcriber from a plain
+    UI-snapshot dict, caches it while the snapshot is unchanged and rebuilds
+    it when a value (or the backend) changes — without importing any heavy
+    runtime dependency (faster-whisper/openvino stay lazy)."""
+    from listen_to_me.diagnostics import DiagnosticsEngine
+    from listen_to_me.transcriber import Transcriber
+    from listen_to_me.transcriber_openvino import OpenVinoTranscriber
+
+    snapshot = {
+        "backend": "faster-whisper",
+        "model": "small",
+        "device": "cpu",
+        "compute_type": "auto",
+        "model_dir": None,
+        "language": "auto",
+        "initial_prompt": "",
+        "vad_filter": True,
+        "openvino_device": "auto",
+        "openvino_precision": "int8",
+    }
+    engine = DiagnosticsEngine()
+    first = engine._transcriber_for(snapshot)
+    assert isinstance(first, Transcriber)
+    assert engine._transcriber_for(dict(snapshot)) is first  # unchanged → cached
+    second = engine._transcriber_for(dict(snapshot, model="base"))
+    assert second is not first
+    ov = engine._transcriber_for(dict(snapshot, backend="openvino"))
+    assert isinstance(ov, OpenVinoTranscriber)
+
+
+def _clip_stats_verdicts():
+    """clip_stats classifies a recorded clip: silence, a too-quiet signal and
+    normal speech levels get distinct verdicts (drives the microphone test's
+    result message). Needs numpy, so this runs only in the full self-test."""
+    import numpy as np
+
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.diagnostics import clip_stats
+
+    silent = clip_stats(np.zeros(SAMPLE_RATE, dtype="float32"))
+    assert silent["verdict"] == "silent" and silent["peak"] == 0.0
+    t = np.arange(SAMPLE_RATE, dtype="float32") / SAMPLE_RATE
+    quiet = clip_stats((0.02 * np.sin(2 * np.pi * 220.0 * t)).astype("float32"))
+    assert quiet["verdict"] == "quiet"
+    ok = clip_stats((0.3 * np.sin(2 * np.pi * 220.0 * t)).astype("float32"))
+    assert ok["verdict"] == "ok" and 0.0 < ok["rms"] < ok["peak"] <= 1.0
+    assert clip_stats(np.zeros(0, dtype="float32"))["verdict"] == "silent"
+
+
 def _help_content_renders():
     """The Help page renders to HTML with the CUDA content, working download
     links, and a table-of-contents entry plus anchor for every topic."""
@@ -485,6 +535,7 @@ _LIGHT_CHECKS = [
     ("CUDA error detection", _cuda_error_detection),
     ("transcriber CPU fallback", _transcriber_cpu_fallback),
     ("openvino backend logic", _openvino_backend_logic),
+    ("diagnostics engine", _diagnostics_engine),
     ("help content renders", _help_content_renders),
     ("Qt icon conversion", _qt_icons),
     ("voice mic widget", _voice_mic_widget),
@@ -508,6 +559,7 @@ def _insecure_hub_client_builds():
 _FULL_EXTRA = [
     ("default hotkey parses", _hotkey_default_valid),
     ("audio band levels", _band_levels),
+    ("clip stats verdicts", _clip_stats_verdicts),
     ("insecure hub client builds", _insecure_hub_client_builds),
 ]
 
