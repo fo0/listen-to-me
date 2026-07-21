@@ -443,6 +443,48 @@ def _diagnostics_engine():
     assert isinstance(ov, OpenVinoTranscriber)
 
 
+def _hardware_probes():
+    """The status-card probes never raise and degrade to honest "not found"
+    answers on a machine without ctranslate2/openvino (like the light CI
+    runner); the model cache probe recognises a local directory as downloaded
+    and reports the presets without an OpenVINO conversion as an error."""
+    from listen_to_me.diagnostics import (
+        hardware_status,
+        model_cache_status,
+        probe_cuda,
+        probe_openvino,
+    )
+
+    cuda = probe_cuda()
+    assert set(cuda) == {"available", "count", "error"}
+    assert isinstance(cuda["available"], bool) and cuda["count"] >= 0
+
+    ov = probe_openvino()
+    assert set(ov) == {"installed", "devices", "error"}
+    assert isinstance(ov["installed"], bool) and isinstance(ov["devices"], list)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        snap = {
+            "backend": "faster-whisper",
+            "model": tmp,  # a local directory counts as a downloaded model
+            "model_dir": None,
+            "openvino_precision": "int8",
+        }
+        assert model_cache_status(snap) == {"target": tmp, "cached": True, "error": None}
+        missing = model_cache_status(
+            dict(snap, model="no-such-whisper-model-xyz", model_dir=tmp)
+        )
+        assert missing["cached"] is False and missing["error"] is None
+        ov_local = model_cache_status(dict(snap, backend="openvino"))
+        assert ov_local == {"target": tmp, "cached": True, "error": None}
+        no_conversion = model_cache_status(
+            dict(snap, backend="openvino", model="distil-small.en")
+        )
+        assert no_conversion["cached"] is False and no_conversion["error"]
+
+        assert set(hardware_status(snap)) == {"cuda", "openvino", "model"}
+
+
 def _clip_stats_verdicts():
     """clip_stats classifies a recorded clip: silence, a too-quiet signal and
     normal speech levels get distinct verdicts (drives the microphone test's
@@ -560,6 +602,48 @@ def _gui_construction():
         window.nav.setCurrentRow(window._history_index)  # force History render
         window._refresh_history()
 
+        # Status-card formatters: every probe shape renders a clear verdict.
+        fmt_cuda = window._format_cuda_status
+        assert fmt_cuda({"available": True, "count": 1, "error": None}).startswith("✓")
+        assert fmt_cuda({"available": False, "count": 0, "error": None}).startswith("✗")
+        assert fmt_cuda({"available": False, "count": 0, "error": "no ctranslate2"}).startswith("✗")
+        fmt_ov = window._format_openvino_status
+        assert fmt_ov({"installed": False, "devices": [], "error": None}).startswith("✗")
+        ov_ok = fmt_ov(
+            {"installed": True, "devices": [{"device": "GPU", "name": "Intel Arc"}], "error": None}
+        )
+        assert ov_ok.startswith("✓") and "Intel Arc" in ov_ok
+        assert fmt_ov({"installed": True, "devices": [], "error": "boom"}).startswith("⚠")
+        fmt_model = window._format_model_status
+        assert fmt_model({"target": "small", "cached": True, "error": None}).startswith("✓")
+        assert "not downloaded" in fmt_model({"target": "small", "cached": False, "error": None})
+        assert fmt_model({"target": "x", "cached": False, "error": "no conversion"}).startswith("⚠")
+
+        # Applying a probe result fills the card; a stale generation is ignored.
+        window._hw_gen = 2
+        window._hw_busy = True
+        probe = {
+            "cuda": {"available": False, "count": 0, "error": None},
+            "openvino": {"installed": False, "devices": [], "error": None},
+            "model": {"target": "small", "cached": False, "error": None},
+        }
+        window._on_hw_done(1, probe)  # stale → dropped
+        assert window.hw_cuda_label.text() == "Not checked yet."
+        window._on_hw_done(2, probe)
+        assert window.hw_cuda_label.text().startswith("✗") and not window._hw_busy
+
+        # Cancel plumbing: Cancel stops the diagnostic, re-enables the buttons
+        # and makes everything the detached worker still emits stale.
+        gen, cancel = window._begin_diag("mic")
+        assert window._diag_busy and window.mic_cancel_button.isEnabled()
+        assert not window.mic_test_button.isEnabled()
+        window._cancel_diagnostic()
+        assert cancel.is_set() and not window._diag_busy
+        assert window.mic_test_button.isEnabled() and not window.mic_cancel_button.isEnabled()
+        assert "cancelled" in window.mic_status.text()
+        window._on_mic_done(gen, {"peak": 0.5, "rms": 0.1, "seconds": 3.0, "verdict": "ok"})
+        assert "cancelled" in window.mic_status.text()  # stale result ignored
+
         overlay = Overlay(stub)
         for state in ("recording", "processing", "idle"):
             overlay.set_state(state)
@@ -644,6 +728,7 @@ _LIGHT_CHECKS = [
     ("transcriber CPU fallback", _transcriber_cpu_fallback),
     ("openvino backend logic", _openvino_backend_logic),
     ("diagnostics engine", _diagnostics_engine),
+    ("hardware/status probes", _hardware_probes),
     ("help content renders", _help_content_renders),
     ("Qt icon conversion", _qt_icons),
     ("voice mic widget", _voice_mic_widget),

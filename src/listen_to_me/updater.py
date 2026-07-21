@@ -154,9 +154,18 @@ def _require_trusted_url(url: str) -> None:
         raise ValueError(f"refusing to download from an untrusted URL: {url!r}")
 
 
-def download_asset(url: str, dest: Path, progress_cb=None, timeout: float = 30.0) -> Path:
+class DownloadCancelled(Exception):
+    """Raised by download_asset when the caller's is_cancelled turns True —
+    distinct from a real failure so the UI can say "cancelled", not "failed"."""
+
+
+def download_asset(
+    url: str, dest: Path, progress_cb=None, timeout: float = 30.0, is_cancelled=None
+) -> Path:
     """Stream a release asset to `dest`. progress_cb(done, total) is called as it
-    downloads (total is 0 when the server sends no Content-Length)."""
+    downloads (total is 0 when the server sends no Content-Length).
+    ``is_cancelled`` (optional) is polled between chunks; returning True aborts
+    with DownloadCancelled — the caller cleans up the partial file."""
     _require_trusted_url(url)
     import requests
 
@@ -167,6 +176,8 @@ def download_asset(url: str, dest: Path, progress_cb=None, timeout: float = 30.0
         done = 0
         with open(dest, "wb") as fh:
             for chunk in resp.iter_content(chunk_size=_DOWNLOAD_CHUNK):
+                if is_cancelled is not None and is_cancelled():
+                    raise DownloadCancelled()
                 if not chunk:
                     continue
                 fh.write(chunk)
