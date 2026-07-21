@@ -49,6 +49,9 @@ standalone system-tray app that works in *every* application.
   so your dictation isn't transmitted into a voice call, then restored when you
   stop. Works via the app's own **push-to-mute / toggle-mute** keybind — no API
   or account needed.
+- **First-run setup wizard** — the very first launch walks you through the
+  essentials (hotkey, language, model, backend + device, microphone, startup
+  behaviour); everything stays changeable in Settings later.
 - **Autostart with Windows** (configurable; Linux and macOS equivalents included).
 - **Cross-platform code base** — Windows first; Linux and macOS are prepared
   (see [platform notes](#platform-notes)).
@@ -75,6 +78,11 @@ Double-clicking the tray icon toggles recording too.
 
 ## Settings
 
+On the very first launch a short **setup wizard** collects the essentials —
+recording hotkey, spoken language, Whisper model, backend + device, microphone
+and startup behaviour. Everything it sets (and much more) can be changed later
+here:
+
 Right-click the tray icon → **Settings…**
 
 | Tab | Options |
@@ -83,7 +91,7 @@ Right-click the tray icon → **Settings…**
 | **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model precision, VAD silence filter (faster-whisper only), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), initial prompt (domain vocabulary hint) |
 | **Audio** | Microphone selection, **Test microphone** (3-second check with a live level bar and a clear verdict: works / too quiet / no signal), maximum recording length |
 | **Overlay** | Floating always-on-top icon on/off, transcript bubble after each recording, experimental **live transcript preview while recording**, preview display time |
-| **Integrations** | **Mute other apps while recording** (Discord, …): master switch plus a list of apps, each with an enabled toggle, name, **mute keybind** (with the same key picker) and **mode** (*push-to-mute* / *toggle mute*). Add or remove apps freely. |
+| **Integrations** | **Mute other apps while recording** (Discord, …): master switch (off by default) plus a list of apps, each with an enabled toggle, name, **mute keybind** (with the same key picker) and **mode** (*push-to-mute* / *toggle mute*). Add or remove apps freely. |
 | **Assistant** | Enable/disable, API base URL, model, API key, temperature, **system prompt** (editable, with *Reset to default*) |
 | **History** | Recent **transcribed text** kept locally (never the audio), each with a **Copy** button so a lost transcript can be recovered; toggle history on/off, how many entries to keep, and **Clear history** |
 | **Help** | Built-in **troubleshooting** page (GPU/CUDA errors, Intel GPU/NPU setup, hotkey, text insertion, model storage, assistant setup) with clickable links — also on the tray menu |
@@ -181,8 +189,9 @@ Prefer a modifier chord or a function key so the combination stays inert in the
 document you're dictating into, and don't reuse your recording hotkey's keys —
 Listen To Me refuses to save a mute keybind identical to it. Add as many apps as
 you like; the master switch turns the whole feature off without losing your
-entries. The `mute_while_recording` switch is on by default, but the bundled
-**Discord entry ships disabled** — set your keybind, then enable it (as shown):
+entries. Both the `mute_while_recording` master switch and the bundled
+**Discord entry ship disabled by default** — turn the switch on, set your
+keybind, then enable the entry (as shown):
 
 ```jsonc
 "integrations": {

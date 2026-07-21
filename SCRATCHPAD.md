@@ -4,7 +4,7 @@ Temporary working context. **Clean up aggressively — delete when resolved.** R
 
 ## Current Work
 
-- **Updater restart crash fix** — Branch `claude/den-updater-python-error-862o53`: user hit a Python error dialog right after the in-app update restarted the app (manual start of the same exe worked). Cause: PyInstaller ≥ 6.9 bootloader env inherited through the swap chain (see MEMORY.md gotcha). Fix: `updater._swap_env()` on the swapper `Popen`, `start /D` for a sane cwd, plus `verify_download()` (size + sha256 digest from the releases API) before the swap so a truncated download can no longer brick the install. **Note:** the fix lives in the *running* app — updating FROM a pre-fix build will show the error once more; the first update FROM a fixed build restarts cleanly. (2026-07-21)
+- **First-run onboarding wizard** — Branch `claude/onboarding-wizard`: new `onboarding.py` (QWizard: hotkey / language / model / backend + device / microphone / autostart + tray), triggered via new `Config.first_run` (config file absent before load). Shared dropdown lists extracted from `settings_ui.py` into Qt-free `choices.py` (incl. label↔value mapping + `input_device_choices`). `integrations.mute_while_recording` default flipped to `False` (opt-in). Verified: compileall + headless non-Qt smoke checks pass locally; Qt construction covered by CI `gui_smoke` (new wizard-accept assertions in `selftest.py`). (2026-07-21)
 
 ## Open Questions
 

@@ -26,10 +26,12 @@ def _config_roundtrip():
 
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Config(path=Path(tmp) / "config.json")
+        assert cfg.first_run is True  # no config file existed → onboarding
         cfg["language"] = "de"
         cfg.save()
         reloaded = Config(path=cfg.path)
         assert reloaded["language"] == "de"
+        assert reloaded.first_run is False  # file exists → no onboarding
 
 
 def _config_defaults():
@@ -44,6 +46,7 @@ def _config_defaults():
     assert {"update_check_on_start", "include_prereleases"} <= set(DEFAULTS)
     integrations = DEFAULTS["integrations"]
     assert set(integrations) >= {"mute_while_recording", "targets"}
+    assert integrations["mute_while_recording"] is False  # opt-in feature
     assert isinstance(integrations["targets"], list)
     for target in integrations["targets"]:
         assert set(target) >= {"name", "enabled", "mode", "hotkey"}
@@ -478,6 +481,7 @@ class _StubHotkeys:
 
 
 def _gui_construction():
+    from listen_to_me.onboarding import OnboardingWizard
     from listen_to_me.overlay import Overlay
     from listen_to_me.settings_ui import SettingsWindow
     from listen_to_me.theme import apply_theme
@@ -500,9 +504,22 @@ def _gui_construction():
 
         dialog = HotkeyCaptureDialog(None)
 
+        # The first-run wizard: build, exercise the backend-dependent device
+        # rows, then apply — the chosen values must land in the config dict.
+        # _apply() instead of accept(): accept re-validates the current page,
+        # and the hotkey validation imports pynput (absent on the CI runner).
+        wizard = OnboardingWizard(stub.cfg)
+        wizard.restart()
+        wizard.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
+        wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        wizard._apply()
+        assert stub.cfg["backend"] == "faster-whisper"
+        assert stub.cfg["model"] == "small"  # preset label round-trips to the id
+
         app.processEvents()
 
         dialog.deleteLater()
+        wizard.deleteLater()
         overlay.destroy()
         window.deleteLater()
         app.processEvents()
