@@ -67,6 +67,8 @@ class Release:
     prerelease: bool
     asset_url: str | None
     asset_name: str | None
+    asset_size: int | None = None
+    asset_digest: str | None = None  # e.g. "sha256:<hex>" from the releases API
 
     @property
     def version(self) -> tuple[int, ...]:
@@ -81,16 +83,12 @@ class Release:
         return self.name or self.tag
 
 
-def _pick_asset(assets: list[dict]) -> tuple[str | None, str | None]:
+def _pick_asset(assets: list[dict]) -> dict:
     """Prefer the Windows .exe asset; fall back to the first asset."""
     for asset in assets:
-        name = asset.get("name", "")
-        if name.lower().endswith(".exe"):
-            return asset.get("browser_download_url"), name
-    if assets:
-        first = assets[0]
-        return first.get("browser_download_url"), first.get("name")
-    return None, None
+        if (asset.get("name") or "").lower().endswith(".exe"):
+            return asset
+    return assets[0] if assets else {}
 
 
 def fetch_releases(timeout: float = 10.0, include_prerelease: bool = False) -> list[Release]:
@@ -112,7 +110,7 @@ def fetch_releases(timeout: float = 10.0, include_prerelease: bool = False) -> l
             continue
         if item.get("prerelease") and not include_prerelease:
             continue
-        asset_url, asset_name = _pick_asset(item.get("assets") or [])
+        asset = _pick_asset(item.get("assets") or [])
         releases.append(
             Release(
                 tag=item.get("tag_name", "") or "",
@@ -121,8 +119,10 @@ def fetch_releases(timeout: float = 10.0, include_prerelease: bool = False) -> l
                 published_at=item.get("published_at", "") or "",
                 html_url=item.get("html_url", "") or "",
                 prerelease=bool(item.get("prerelease")),
-                asset_url=asset_url,
-                asset_name=asset_name,
+                asset_url=asset.get("browser_download_url"),
+                asset_name=asset.get("name"),
+                asset_size=asset.get("size"),
+                asset_digest=asset.get("digest"),
             )
         )
     releases.sort(key=lambda r: r.version, reverse=True)
@@ -176,6 +176,30 @@ def download_asset(url: str, dest: Path, progress_cb=None, timeout: float = 30.0
     return dest
 
 
+def verify_download(
+    path: Path, expected_size: int | None = None, expected_digest: str | None = None
+) -> None:
+    """Check a finished download against the release asset's metadata; raises
+    ValueError on a mismatch. A truncated or proxy-mangled download would
+    otherwise get swapped in and the app dies on its next start. Size always
+    comes with the API response; the "sha256:<hex>" digest exists on newer
+    assets (absent or unknown formats are skipped, best effort)."""
+    path = Path(path)
+    actual_size = path.stat().st_size
+    if expected_size and actual_size != expected_size:
+        raise ValueError(f"incomplete download: got {actual_size} of {expected_size} bytes")
+    algo, _, want = (expected_digest or "").partition(":")
+    if algo.strip().lower() == "sha256" and want:
+        import hashlib
+
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(_DOWNLOAD_CHUNK), b""):
+                digest.update(chunk)
+        if digest.hexdigest().lower() != want.strip().lower():
+            raise ValueError("download failed the sha256 integrity check")
+
+
 def target_exe() -> Path:
     """Path of the currently running executable (the file to replace)."""
     return Path(sys.executable)
@@ -209,9 +233,28 @@ def _swap_script(new_exe: Path, target: Path) -> str:
         "ping -n 2 127.0.0.1 >NUL\r\n"
         "goto retry\r\n"
         ":done\r\n"
-        f'start "" "{target}"\r\n'
+        # /D: give the new instance the exe's folder as cwd, same as a manual
+        # start from Explorer (the batch itself runs wherever the old app was).
+        f'start "" /D "{target.parent}" "{target}"\r\n'
         'del "%~f0"\r\n'
     )
+
+
+def _swap_env() -> dict[str, str]:
+    """Environment for the swapper chain (cmd -> batch -> relaunched exe).
+
+    Since PyInstaller 6.9 the bootloader treats a spawned copy of the frozen
+    exe as a *worker subprocess* and lets it reuse this process's unpacked
+    _MEI directory — which the dying bootloader deletes on exit. The relaunched
+    updated exe then crashes on startup ('Failed to load Python DLL' / missing
+    modules) even though the very same file starts fine by hand.
+    PYINSTALLER_RESET_ENVIRONMENT=1 is the documented way to force a fresh
+    top-level start; stripping _MEIPASS2/_PYI_* covers bootloader generations
+    that key off those inherited variables directly.
+    """
+    env = {k: v for k, v in os.environ.items() if k != "_MEIPASS2" and not k.startswith("_PYI_")}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
 
 
 def apply_update_windows(new_exe: Path, target: Path | None = None) -> None:
@@ -226,5 +269,7 @@ def apply_update_windows(new_exe: Path, target: Path | None = None) -> None:
     bat.write_bytes(_swap_script(new_exe, target).encode("utf-8"))
     # CREATE_NO_WINDOW: hidden console (no flashing window, console tools work);
     # the child still outlives this process.
-    subprocess.Popen(["cmd", "/c", str(bat)], creationflags=0x08000000, close_fds=True)
+    subprocess.Popen(
+        ["cmd", "/c", str(bat)], creationflags=0x08000000, close_fds=True, env=_swap_env()
+    )
     log.info("update swap scheduled: %s -> %s", new_exe, target)
