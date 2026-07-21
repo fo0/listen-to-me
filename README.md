@@ -16,6 +16,13 @@ standalone system-tray app that works in *every* application.
   app, either as **toggle** (press to start, press to stop) or as true
   **push-to-talk** (record while the keys are held).
 - **Inserts at the cursor** — via clipboard paste (default) or simulated typing.
+- **Live typing (experimental)** — start typing while you are still speaking:
+  parts of the transcript that have become stable are typed at the cursor
+  during the recording, the rest follows right after you stop. Strictly
+  append-only (never deletes or corrects) and plain text only — no Enter/Tab,
+  and typing pauses while Ctrl/Alt/Shift/Win is held so no accidental key
+  combination can ever fire (modifier detection is Windows-only; with a hold
+  hotkey the feature requires a modifier-free key such as F9 on any platform).
 - **Floating status icon** — a small animated always-on-top icon you can drag
   anywhere: a wavy equalizer ring that shimmers gently while idle, pulses with
   your live microphone levels while recording, and shows an orange mic glyph
@@ -87,7 +94,7 @@ Right-click the tray icon → **Settings…**
 
 | Tab | Options |
 | --- | --- |
-| **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), clipboard restore, notifications, beep, **autostart**, **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
+| **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), clipboard restore, notifications, beep, **autostart**, **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
 | **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model precision, VAD silence filter (faster-whisper only), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), initial prompt (domain vocabulary hint) |
 | **Audio** | Microphone selection, **Test microphone** (3-second check with a live level bar and a clear verdict: works / too quiet / no signal), maximum recording length |
 | **Overlay** | Floating always-on-top icon on/off, transcript bubble after each recording, experimental **live transcript preview while recording**, preview display time |

@@ -4,7 +4,7 @@ Temporary working context. **Clean up aggressively — delete when resolved.** R
 
 ## Current Work
 
-- **First-run onboarding wizard** — Branch `claude/onboarding-wizard`: new `onboarding.py` (QWizard: hotkey / language / model / backend + device / microphone / autostart + tray), triggered via new `Config.first_run` (config file absent before load). Shared dropdown lists extracted from `settings_ui.py` into Qt-free `choices.py` (incl. label↔value mapping + `input_device_choices`). `integrations.mute_while_recording` default flipped to `False` (opt-in). Verified: compileall + headless non-Qt smoke checks pass locally; Qt construction covered by CI `gui_smoke` (new wizard-accept assertions in `selftest.py`). (2026-07-21)
+- **Live typing (experimental)** — new `livetype.py`: per-take worker types stable transcript segments at the cursor *while* recording (LocalAgreement-2: two consecutive greedy passes must agree AND the segment must end ≥1 s before the snapshot end). Append-only, `sanitize_typed_text` (printable chars only, no Enter/Tab), `type_plain` pauses word-by-word while Ctrl/Alt/Shift/Win is physically held (Win32 `GetAsyncKeyState`; other platforms rely on the hold-mode gate). Final `_process` pass transcribes only the audio after `committed_frames` and types the remainder (`type_plain_blocking` waits for chord release). Config `live_typing` (default off), checkbox in Settings → General. Gates: faster-whisper only (OpenVINO has no segment timestamps), hold mode only with modifier-free non-typable hotkey (`Hotkeys.combo_flags` — injected chars would fake a hotkey release). Assistant skipped for live takes (typed text can't be rewritten). Not yet committed; needs on-Windows manual test. (2026-07-21)
 
 ## Open Questions
 

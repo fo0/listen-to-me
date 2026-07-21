@@ -26,8 +26,9 @@ from .audio import SAMPLE_RATE, Recorder
 from .config import Config, config_dir
 from .history import TranscriptHistory
 from .hotkeys import Hotkeys
-from .injector import Injector
+from .injector import Injector, sanitize_typed_text
 from .integrations import MuteIntegrations
+from .livetype import LiveTyper
 from .transcriber import _PREVIEW_WINDOW_SECONDS, create_transcriber, is_cuda_library_error
 
 log = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ class App:
         self._settings_window = None
         self._poll_timer = None
         self._recording_id = 0  # invalidates live-preview workers of old takes
+        self._live_typer = None  # per-take live-typing worker (livetype.py)
         self._quitting = False  # set by _quit; guards UI opened after shutdown
 
     def post(self, kind: str, payload=None) -> None:
@@ -211,7 +213,18 @@ class App:
         # recording sees a changed id and exits, even if this take has no worker.
         self._recording_id += 1
         ocfg = self.cfg["overlay"]
-        if ocfg["enabled"] and ocfg["live_preview"]:
+        want_preview = bool(ocfg["enabled"] and ocfg["live_preview"])
+        self._live_typer = None
+        if self.cfg["live_typing"]:
+            reason = self._live_typing_gate()
+            if reason is None:
+                # The live typer runs the decode loop, so it also feeds the
+                # overlay preview — never both loops competing for the model.
+                self._live_typer = LiveTyper(self, self._recording_id, post_preview=want_preview)
+                self._live_typer.start()
+            else:
+                log.info("live typing stays off for this take: %s", reason)
+        if self._live_typer is None and want_preview:
             threading.Thread(
                 target=self._live_preview_loop,
                 args=(self._recording_id,),
@@ -219,47 +232,122 @@ class App:
                 daemon=True,
             ).start()
 
+    def _live_typing_gate(self) -> str | None:
+        """Why live typing must stay off for this take (None = it can run).
+
+        Hold mode is only safe with a hotkey that (a) contains no modifier —
+        off Windows the modifier state can't be polled while the chord is held,
+        and on Windows a held modifier would defer every chunk to the very end
+        anyway — and (b) contains no key our own typing could synthesize (a
+        character key or Space), which the hold listener would misread as the
+        hotkey being released, stopping the recording mid-sentence.
+        """
+        if not hasattr(self.transcriber, "preview_segments"):
+            return "backend provides no live segments"
+        if self.cfg["hotkey_mode"] == "hold":
+            try:
+                has_modifier, has_typable = Hotkeys.combo_flags(self.cfg["hotkey"])
+            except Exception:
+                log.exception("could not analyze the hotkey combo")
+                return "hotkey combo could not be analyzed"
+            if has_modifier:
+                return "hold-mode hotkey contains a modifier key"
+            if has_typable:
+                return "hold-mode hotkey contains a typable key"
+        return None
+
+    def _take_active(self, recording_id: int) -> bool:
+        """Whether the given take is still recording and hasn't been superseded
+        by a newer one. Polled by per-take workers (live typing)."""
+        return self.state == STATE_RECORDING and recording_id == self._recording_id
+
     def _finish_recording(self) -> None:
         audio = self.recorder.stop()
+        live, self._live_typer = self._live_typer, None
         self._beep(520)
         if len(audio) / SAMPLE_RATE < 0.3:
             self._set_state(STATE_IDLE)
             self.notify("Recording too short — nothing inserted.")
             return
         self._set_state(STATE_PROCESSING)
-        threading.Thread(target=self._process, args=(audio,), name="process", daemon=True).start()
+        threading.Thread(
+            target=self._process, args=(audio, live), name="process", daemon=True
+        ).start()
 
     def _cancel_recording(self) -> None:
         if self.state != STATE_RECORDING:
             return
         self.recorder.stop()
+        # Live-typed text stays where it is — append-only typing has no way to
+        # take it back; the worker exits on the state change below.
+        self._live_typer = None
         self._set_state(STATE_IDLE)
         self.notify("Recording cancelled.")
 
-    def _process(self, audio) -> None:
-        """Worker thread: transcribe, optionally refine, insert at the cursor."""
+    def _process(self, audio, live=None) -> None:
+        """Worker thread: transcribe, optionally refine, insert at the cursor.
+
+        With live typing (`live` is this take's LiveTyper), part of the
+        transcript was already typed while recording: only the audio after its
+        committed offset is transcribed here, and only the still-missing text
+        is typed (never pasted). The assistant is skipped in that case — it
+        rewrites the whole text, but the typed part can't be taken back
+        (append-only by design)."""
         try:
-            self.transcriber.ensure_loaded(notify=self.notify)
-            text = self.transcriber.transcribe(audio, notify=self.notify)
-            if not text:
+            prefix = ""
+            if live is not None:
+                # Wait for a decode that was mid-tick to finish; the loop
+                # itself exits promptly once the state left RECORDING.
+                live.join(timeout=60)
+                if live.is_alive():
+                    log.warning("live typing worker still busy — using its last committed state")
+                prefix = live.committed_text
+                audio = audio[live.committed_frames :]
+            text = ""
+            if len(audio) / SAMPLE_RATE >= 0.3:
+                self.transcriber.ensure_loaded(notify=self.notify)
+                text = self.transcriber.transcribe(audio, notify=self.notify)
+            full_text = f"{prefix} {text}" if prefix and text else (prefix or text)
+            if not full_text:
                 self.notify("No speech detected.")
                 return
             acfg = self.cfg["assistant"]
             if acfg["enabled"]:
-                try:
-                    text = assistant.refine(text, acfg)
-                except Exception as exc:
-                    log.exception("assistant post-processing failed")
-                    self.notify(f"Assistant failed ({exc}) — inserting the raw transcript.", force=True)
+                if live is not None:
+                    log.info("assistant post-processing skipped — text was live-typed")
+                else:
+                    try:
+                        text = assistant.refine(text, acfg)
+                        full_text = text
+                    except Exception as exc:
+                        log.exception("assistant post-processing failed")
+                        self.notify(f"Assistant failed ({exc}) — inserting the raw transcript.", force=True)
             # Record before inserting so the transcript is kept even if the
             # insertion into the target window fails.
             if self.cfg["history_enabled"]:
                 try:
-                    self.history.add(text)
+                    self.history.add(full_text)
                 except Exception:
                     log.exception("could not add transcript to history")
-            self.injector.insert(text)
-            self.post("flash_text", text)
+            if live is not None:
+                # Flush what live typing still owes: text committed but not yet
+                # typed (a modifier was held), plus the transcript of the rest.
+                rest = sanitize_typed_text(text)
+                if live.pending:
+                    rest = f"{live.pending} {rest}" if rest else live.pending
+                if rest:
+                    leftover = self.injector.type_plain_blocking(
+                        (" " if live.typed_any else "") + rest
+                    )
+                    if leftover:
+                        self.notify(
+                            "A modifier key was held down — part of the transcript "
+                            "was not typed. Copy it from Settings → History.",
+                            force=True,
+                        )
+            else:
+                self.injector.insert(text)
+            self.post("flash_text", full_text)
         except Exception as exc:
             log.exception("processing failed")
             if is_cuda_library_error(exc):

@@ -27,6 +27,7 @@ flowchart TD
         TranscriberOV("OpenVinoTranscriber — OpenVINO GenAI (Intel GPU/NPU)"):::backend
         Assistant("Assistant — LLM post-process"):::backend
         Injector("Injector — paste/type at cursor"):::backend
+        LiveType("LiveTyper — live typing while recording"):::backend
         Mute("MuteIntegrations — mute other apps"):::backend
         Diag("DiagnosticsEngine — settings self-tests"):::backend
     end
@@ -72,6 +73,10 @@ flowchart TD
     Assistant -->|"cleaned text"| Injector
     Transcriber -->|"text (assistant off)"| Injector
     App -->|"on record start/stop"| Mute
+    App -->|"live typing worker (per take)"| LiveType
+    Recorder -->|"uncommitted audio"| LiveType
+    LiveType -->|"preview_segments"| Transcriber
+    LiveType -->|"type stable text"| Injector
 
     Settings -->|"model download / mic + transcription test"| Diag
     Diag -->|"test clip"| Recorder
@@ -101,6 +106,7 @@ flowchart TD
     click TranscriberOV "src/listen_to_me/transcriber_openvino.py"
     click Assistant "src/listen_to_me/assistant.py"
     click Injector "src/listen_to_me/injector.py"
+    click LiveType "src/listen_to_me/livetype.py"
     click Mute "src/listen_to_me/integrations.py"
     click History "src/listen_to_me/history.py"
     click Autostart "src/listen_to_me/autostart.py"

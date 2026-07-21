@@ -91,26 +91,37 @@ class Recorder:
         self._stream.start()
         log.info("recording started (device=%s, max=%ss)", device, max_seconds)
 
-    def snapshot(self, max_frames: int | None = None):
+    def snapshot(self, max_frames: int | None = None, start_frame: int | None = None):
         """Return the audio captured so far without stopping the recording.
 
-        When ``max_frames`` is given, only the most recent ``max_frames``
-        samples are returned and only the chunks needed for them are
-        concatenated — so a periodic caller stays O(max_frames) per call
-        instead of O(total length). Safe to call from any thread.
+        ``max_frames`` returns only the most recent ``max_frames`` samples;
+        ``start_frame`` returns everything from that absolute frame offset on
+        (live typing uses it to skip already-committed audio). Both bound the
+        concatenation to the requested tail, so a periodic caller stays
+        O(tail) per call instead of O(total length). Safe to call from any
+        thread.
         """
         import numpy as np
 
         if max_frames is not None and max_frames <= 0:
             return np.zeros(0, dtype="float32")
         with self._lock:
-            if max_frames is not None:
+            want = max_frames
+            if start_frame is not None:
+                # Resolved under the lock: the frame counter must match the
+                # chunk list, or audio appended in between would silently
+                # shift where the returned tail starts.
+                tail = self._frames - max(0, int(start_frame))
+                want = tail if want is None else min(want, tail)
+                if want <= 0:
+                    return np.zeros(0, dtype="float32")
+            if want is not None:
                 kept: list = []
                 total = 0
                 for chunk in reversed(self._chunks):
                     kept.append(chunk)
                     total += len(chunk)
-                    if total >= max_frames:
+                    if total >= want:
                         break
                 chunks = list(reversed(kept))
             else:
@@ -118,8 +129,8 @@ class Recorder:
         if not chunks:
             return np.zeros(0, dtype="float32")
         audio = np.concatenate(chunks).flatten()
-        if max_frames is not None and len(audio) > max_frames:
-            audio = audio[-max_frames:]
+        if want is not None and len(audio) > want:
+            audio = audio[-want:]
         return audio
 
     def stop(self):

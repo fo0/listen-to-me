@@ -39,6 +39,8 @@ def _config_defaults():
 
     assert DEFAULTS["hotkey_mode"] in ("toggle", "hold")
     assert DEFAULTS["start_in_tray"] is False
+    assert DEFAULTS["injection_mode"] in ("paste", "type")
+    assert DEFAULTS["live_typing"] is False  # experimental, opt-in
     assert DEFAULTS["backend"] in ("faster-whisper", "openvino")
     assert DEFAULTS["openvino_device"] in ("auto", "cpu", "gpu", "npu")
     assert DEFAULTS["openvino_precision"] in ("int8", "fp16", "int4")
@@ -93,6 +95,67 @@ def _hotkey_default_valid():
     from listen_to_me.hotkeys import Hotkeys
 
     assert Hotkeys.validate(DEFAULTS["hotkey"])
+    # combo_flags drives the live-typing hold-mode gate: the default chord has
+    # modifiers AND a typable key (Space), a bare F-key has neither.
+    assert Hotkeys.combo_flags(DEFAULTS["hotkey"]) == (True, True)
+    assert Hotkeys.combo_flags("<f9>") == (False, False)
+    assert Hotkeys.combo_flags("<ctrl>+m") == (True, True)
+    assert Hotkeys.combo_flags("not a combo") == (True, True)  # unparseable → unsafe
+
+
+def _live_typing_logic():
+    """The live-typing agreement policy commits only segments that two
+    consecutive passes agree on (and that end before the tail guard), text is
+    sanitized so no control character can ever reach the keyboard, and the
+    pending/typed bookkeeping survives a modifier-deferred flush — all without
+    pynput (the keyboard is stubbed)."""
+    from listen_to_me.injector import sanitize_typed_text
+    from listen_to_me.livetype import LiveTyper, stable_prefix
+
+    # Sanitize: whitespace runs (incl. Enter/Tab) collapse to single spaces,
+    # control characters vanish — only printable text can be typed.
+    assert sanitize_typed_text("hello\nworld\tfoo") == "hello world foo"
+    assert sanitize_typed_text("  a \r\n b \x07 c ") == "a b c"
+    assert sanitize_typed_text("\n\t\x00") == ""
+
+    prev = [(2.0, "Hello world."), (4.0, "How are")]
+    cur = [(2.1, "Hello world."), (4.5, "How are you")]
+    assert stable_prefix(prev, cur, max_end=10.0) == (["Hello world."], 2.1)
+    # Tail guard: a segment ending too close to the snapshot end never commits.
+    assert stable_prefix(prev, cur, max_end=1.0) == ([], 0.0)
+    # Flicker between passes commits nothing.
+    assert stable_prefix([(2.0, "Hallo")], [(2.0, "Hello")], max_end=10.0) == ([], 0.0)
+    assert stable_prefix([], cur, max_end=10.0) == ([], 0.0)
+
+    class _StubInjector:
+        def __init__(self):
+            self.typed: list = []
+            self.defer = False
+
+        def type_plain(self, text):
+            if self.defer:
+                return text
+            self.typed.append(text)
+            return ""
+
+    class _StubTypeApp:
+        def __init__(self):
+            self.injector = _StubInjector()
+
+        def _take_active(self, recording_id):
+            return False
+
+    lt = LiveTyper(_StubTypeApp(), 1, post_preview=False)
+    lt.pending = "hello"
+    lt.app.injector.defer = True  # modifier held: nothing may go out
+    lt._flush_pending()
+    assert lt.pending == "hello" and lt.typed_any is False
+    lt.app.injector.defer = False
+    lt._flush_pending()
+    assert lt.app.injector.typed == ["hello"] and lt.typed_any and lt.pending == ""
+    lt.pending = "world"
+    lt._flush_pending()  # later chunks get a separating space
+    assert lt.app.injector.typed == ["hello", " world"] and lt.pending == ""
 
 
 def _key_mapping():
@@ -569,6 +632,7 @@ _LIGHT_CHECKS = [
     ("config roundtrip", _config_roundtrip),
     ("config defaults", _config_defaults),
     ("mute integrations no-op", _integrations_noop),
+    ("live typing logic", _live_typing_logic),
     ("icon render", _icon_render),
     ("key picker key mapping", _key_mapping),
     ("updater version logic", _updater_logic),
