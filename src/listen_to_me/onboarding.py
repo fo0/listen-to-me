@@ -272,7 +272,11 @@ class OnboardingWizard(QWizard):
 
     # -------------------------------------------------------------- accept
 
-    def accept(self) -> None:
+    def _apply(self) -> None:
+        """Write the chosen values into the config dict. Separate from accept()
+        so the headless self-test can exercise the mapping without triggering
+        page validation (Hotkeys.validate imports pynput — absent on the light
+        CI runner)."""
         cfg = self.cfg.data
         cfg["hotkey"] = self.hotkey_edit.text().strip()
         cfg["language"] = language_from_label(self.language_combo.currentText())
@@ -284,4 +288,7 @@ class OnboardingWizard(QWizard):
         cfg["autostart"] = self.chk_autostart.isChecked()
         cfg["start_in_tray"] = self.chk_start_in_tray.isChecked()
         log.info("onboarding completed (backend: %s, model: %s)", cfg["backend"], cfg["model"])
+
+    def accept(self) -> None:
+        self._apply()
         super().accept()

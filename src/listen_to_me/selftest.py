@@ -505,12 +505,14 @@ def _gui_construction():
         dialog = HotkeyCaptureDialog(None)
 
         # The first-run wizard: build, exercise the backend-dependent device
-        # rows, then accept — the chosen values must land in the config dict.
+        # rows, then apply — the chosen values must land in the config dict.
+        # _apply() instead of accept(): accept re-validates the current page,
+        # and the hotkey validation imports pynput (absent on the CI runner).
         wizard = OnboardingWizard(stub.cfg)
         wizard.restart()
         wizard.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
         wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
-        wizard.accept()
+        wizard._apply()
         assert stub.cfg["backend"] == "faster-whisper"
         assert stub.cfg["model"] == "small"  # preset label round-trips to the id
 
