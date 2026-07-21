@@ -637,6 +637,12 @@ def main(argv=None) -> int:
     _setup_logging()
     _ensure_std_streams()
     try:
+        from . import updater
+
+        updater.cleanup_stale_update()
+    except Exception:
+        logging.getLogger(__name__).exception("stale update cleanup failed")
+    try:
         App().run()
     except Exception:
         logging.getLogger(__name__).exception("fatal error")
