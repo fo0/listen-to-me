@@ -17,7 +17,8 @@ flowchart TD
         Tray("Tray — QSystemTrayIcon"):::frontend
         Overlay("Overlay + VoiceMicWidget"):::frontend
         Settings("SettingsWindow"):::frontend
-        Theme["theme / icons / qtutil / keymap / widgets"]:::frontend
+        Onboarding("OnboardingWizard — first-run setup"):::frontend
+        Theme["theme / icons / qtutil / keymap / widgets / choices"]:::frontend
     end
 
     subgraph "Processing (worker threads)"
@@ -57,6 +58,8 @@ flowchart TD
     App --> Tray
     App --> Overlay
     App --> Settings
+    App -->|"first run (no config yet)"| Onboarding
+    Onboarding -->|"essential settings"| Config
     Overlay --- Theme
     Settings --- Theme
 
@@ -92,6 +95,7 @@ flowchart TD
     click Tray "src/listen_to_me/tray.py"
     click Overlay "src/listen_to_me/overlay.py"
     click Settings "src/listen_to_me/settings_ui.py"
+    click Onboarding "src/listen_to_me/onboarding.py"
     click Recorder "src/listen_to_me/audio.py"
     click Transcriber "src/listen_to_me/transcriber.py"
     click TranscriberOV "src/listen_to_me/transcriber_openvino.py"

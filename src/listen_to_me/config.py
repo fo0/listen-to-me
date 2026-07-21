@@ -113,8 +113,10 @@ DEFAULTS: dict = {
     # dictation isn't transmitted into a voice call. Each target sends a global
     # mute keybind — configure the SAME combination here and in that app.
     "integrations": {
-        # Master switch; individual targets are enabled below.
-        "mute_while_recording": True,
+        # Master switch — off by default; turn it on (Settings → Integrations)
+        # when you dictate during voice calls. Individual targets are enabled
+        # below.
+        "mute_while_recording": False,
         # Each target: name, whether it's enabled, the keybind (pynput format)
         # and the mode. "hold" = push-to-mute (key held while recording),
         # "toggle" = toggle-mute (tapped once at start and once at stop).
@@ -197,6 +199,10 @@ def atomic_write_json(path: Path, data) -> None:
 class Config:
     def __init__(self, path: Path | None = None):
         self.path = path if path is not None else config_dir() / "config.json"
+        # Captured before load(), which writes the defaults when the file is
+        # missing. True only on the very first launch — drives the one-time
+        # onboarding wizard.
+        self.first_run = not self.path.exists()
         self.data: dict = copy.deepcopy(DEFAULTS)
         self.load()
 

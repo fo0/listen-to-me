@@ -35,6 +35,23 @@ from PySide6.QtWidgets import (
 )
 
 from . import APP_NAME, REPO_URL, __version__
+from .choices import (
+    BACKENDS,
+    COMPUTE_TYPES,
+    DEVICES,
+    LANGUAGES,
+    MODEL_CHOICES,
+    OPENVINO_DEVICES,
+    OPENVINO_PRECISIONS,
+    backend_from_label,
+    backend_label,
+    input_device_choices,
+    input_device_from_label,
+    language_from_label,
+    language_label,
+    model_from_label,
+    model_label,
+)
 from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
 from .diagnostics import DiagnosticsEngine
 from .hotkeys import Hotkeys
@@ -74,99 +91,13 @@ class _DiagSignals(QObject):
 _HOTKEY_TEST_TIMEOUT_MS = 10_000
 
 
-# (model id, short benefit shown in parentheses in the dropdown)
-MODEL_CHOICES = [
-    ("tiny", "fastest, lowest accuracy, ~75 MB"),
-    ("base", "very fast, basic accuracy, ~140 MB"),
-    ("small", "recommended — good balance of speed and accuracy, ~460 MB"),
-    ("medium", "high accuracy, noticeably slower, ~1.5 GB"),
-    ("large-v3", "best accuracy, slow without a GPU, ~3 GB"),
-    ("large-v3-turbo", "near large-v3 accuracy at much higher speed, ~1.6 GB"),
-    ("distil-large-v3", "distilled large — fast, English only, ~1.5 GB"),
-    ("tiny.en", "English only — more accurate than tiny for English"),
-    ("base.en", "English only — more accurate than base for English"),
-    ("small.en", "English only — more accurate than small for English"),
-    ("medium.en", "English only — more accurate than medium for English"),
-    ("distil-small.en", "distilled English only — very fast"),
-    ("distil-medium.en", "distilled English only — fast with good accuracy"),
-]
-
-LANGUAGES = [
-    ("auto", "Auto-detect"),
-    ("de", "German — Deutsch"),
-    ("en", "English"),
-    ("fr", "French — Français"),
-    ("es", "Spanish — Español"),
-    ("it", "Italian — Italiano"),
-    ("pt", "Portuguese — Português"),
-    ("nl", "Dutch — Nederlands"),
-    ("pl", "Polish — Polski"),
-    ("cs", "Czech — Čeština"),
-    ("sk", "Slovak — Slovenčina"),
-    ("hu", "Hungarian — Magyar"),
-    ("ro", "Romanian — Română"),
-    ("bg", "Bulgarian"),
-    ("el", "Greek"),
-    ("sv", "Swedish — Svenska"),
-    ("da", "Danish — Dansk"),
-    ("no", "Norwegian — Norsk"),
-    ("fi", "Finnish — Suomi"),
-    ("ru", "Russian"),
-    ("uk", "Ukrainian"),
-    ("tr", "Turkish — Türkçe"),
-    ("ar", "Arabic"),
-    ("he", "Hebrew"),
-    ("hi", "Hindi"),
-    ("id", "Indonesian"),
-    ("vi", "Vietnamese"),
-    ("th", "Thai"),
-    ("zh", "Chinese"),
-    ("ja", "Japanese"),
-    ("ko", "Korean"),
-    ("ca", "Catalan"),
-    ("hr", "Croatian"),
-    ("sl", "Slovenian"),
-    ("sr", "Serbian"),
-]
-
-DEVICES = ["auto", "cpu", "cuda"]
-COMPUTE_TYPES = ["auto", "int8", "int8_float16", "float16", "float32"]
-
-# (backend id, label shown in the dropdown)
-BACKENDS = [
-    ("faster-whisper", "faster-whisper — NVIDIA GPU (CUDA) / CPU"),
-    ("openvino", "OpenVINO — Intel GPU / NPU / CPU"),
-]
-OPENVINO_DEVICES = ["auto", "cpu", "gpu", "npu"]
-OPENVINO_PRECISIONS = ["int8", "fp16", "int4"]
-
-_SYSTEM_DEFAULT_DEVICE = "System default"
+# The choice lists (models, languages, backends, …) live in choices.py, shared
+# with the first-run onboarding wizard.
 
 # Cap how many transcript rows the History page renders at once. The store keeps
 # up to `history_max`; rendering every one as widgets would be slow for large
 # histories, so only the most recent are shown (with a note about the rest).
 _HISTORY_RENDER_LIMIT = 300
-
-
-def _language_label(code: str) -> str:
-    for lang_code, name in LANGUAGES:
-        if lang_code == code:
-            return f"{name} [{lang_code}]" if lang_code != "auto" else name
-    return code
-
-
-def _model_label(name: str) -> str:
-    for model, benefit in MODEL_CHOICES:
-        if model == name:
-            return f"{model}  ({benefit})"
-    return name
-
-
-def _backend_label(backend: str) -> str:
-    for backend_id, label in BACKENDS:
-        if backend_id == backend:
-            return label
-    return backend
 
 
 class MuteTargetRow(QGroupBox):
@@ -495,8 +426,8 @@ class SettingsWindow(QDialog):
 
         speech, sform = self._card("Speech recognition")
         self.language_combo = QComboBox()
-        self.language_combo.addItems([_language_label(code) for code, _ in LANGUAGES])
-        self._select_combo(self.language_combo, _language_label(self.cfg["language"]))
+        self.language_combo.addItems([language_label(code) for code, _ in LANGUAGES])
+        self._select_combo(self.language_combo, language_label(self.cfg["language"]))
         self.language_combo.setToolTip(
             "The language you dictate in. Fixing it improves accuracy and speed over auto-detect."
         )
@@ -504,8 +435,8 @@ class SettingsWindow(QDialog):
 
         self.model_combo = QComboBox()
         self.model_combo.setEditable(True)
-        self.model_combo.addItems([_model_label(m) for m, _ in MODEL_CHOICES])
-        self.model_combo.setCurrentText(_model_label(self.cfg["model"]))
+        self.model_combo.addItems([model_label(m) for m, _ in MODEL_CHOICES])
+        self.model_combo.setCurrentText(model_label(self.cfg["model"]))
         self.model_combo.setToolTip(
             "The speech-recognition model. Bigger = more accurate but slower and larger. "
             "You can also type any CTranslate2 model id from Hugging Face."
@@ -568,7 +499,7 @@ class SettingsWindow(QDialog):
         engine, form = self._card("Engine")
         self.backend_combo = QComboBox()
         self.backend_combo.addItems([label for _, label in BACKENDS])
-        self._select_combo(self.backend_combo, _backend_label(self.cfg["backend"]))
+        self._select_combo(self.backend_combo, backend_label(self.cfg["backend"]))
         self.backend_combo.setToolTip(
             "The transcription engine. faster-whisper accelerates on NVIDIA GPUs (CUDA); "
             "OpenVINO accelerates on Intel GPUs and NPUs and needs the optional "
@@ -1057,19 +988,7 @@ class SettingsWindow(QDialog):
         open_path(path)
 
     def _load_devices(self) -> None:
-        values = [_SYSTEM_DEFAULT_DEVICE]
-        current = _SYSTEM_DEFAULT_DEVICE
-        try:
-            from .audio import list_input_devices
-
-            for idx, name in list_input_devices():
-                entry = f"{idx}: {name}"
-                values.append(entry)
-                if self.cfg["input_device"] == idx:
-                    current = entry
-        except Exception as exc:
-            log.exception("could not list audio devices")
-            values.append(f"(error listing devices: {exc})")
+        values, current = input_device_choices(self.cfg["input_device"])
         self.input_combo.clear()
         self.input_combo.addItems(values)
         self.input_combo.setCurrentText(current)
@@ -1641,18 +1560,10 @@ class SettingsWindow(QDialog):
     # --------------------------------------------------- selection readers
 
     def _selected_language(self) -> str:
-        label = self.language_combo.currentText()
-        for code, _ in LANGUAGES:
-            if label == _language_label(code):
-                return code
-        return label.strip() or "auto"
+        return language_from_label(self.language_combo.currentText())
 
     def _selected_backend(self) -> str:
-        label = self.backend_combo.currentText()
-        for backend, backend_label in BACKENDS:
-            if label == backend_label:
-                return backend
-        return "faster-whisper"
+        return backend_from_label(self.backend_combo.currentText())
 
     def _on_backend_changed(self) -> None:
         """Show only the Engine rows that apply to the selected backend."""
@@ -1665,21 +1576,10 @@ class SettingsWindow(QDialog):
         form.setRowVisible(self.ov_precision_combo, openvino)
 
     def _selected_model(self) -> str:
-        label = self.model_combo.currentText().strip()
-        for model, _ in MODEL_CHOICES:
-            if label == _model_label(model):
-                return model
-        # Custom Hugging Face model id typed by the user — keep it verbatim.
-        return label or "small"
+        return model_from_label(self.model_combo.currentText())
 
     def _selected_input_device(self):
-        value = self.input_combo.currentText()
-        if not value or value == _SYSTEM_DEFAULT_DEVICE or ":" not in value:
-            return None
-        try:
-            return int(value.split(":", 1)[0])
-        except ValueError:
-            return None
+        return input_device_from_label(self.input_combo.currentText())
 
     # -------------------------------------------------------------- save
 

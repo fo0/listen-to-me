@@ -70,6 +70,7 @@ class App:
         self._settings_window = None
         self._poll_timer = None
         self._recording_id = 0  # invalidates live-preview workers of old takes
+        self._quitting = False  # set by _quit; guards UI opened after shutdown
 
     def post(self, kind: str, payload=None) -> None:
         """Thread-safe: queue an event for the main loop."""
@@ -104,7 +105,11 @@ class App:
             self.overlay.set_visible(bool(self.cfg["overlay"]["enabled"]))
         except Exception:
             log.exception("could not create the floating overlay icon")
-        if not self.cfg["start_in_tray"]:
+        if self.cfg.first_run:
+            # Very first launch (no config file existed): walk the user through
+            # the essential choices instead of dropping them into full Settings.
+            QTimer.singleShot(300, self._run_onboarding)
+        elif not self.cfg["start_in_tray"]:
             # Make the freshly started app visible instead of hiding in the
             # tray right away (configurable in Settings → General).
             QTimer.singleShot(300, self._open_settings)
@@ -367,6 +372,29 @@ class App:
         if self.overlay is not None:
             self.overlay.set_visible(bool(self.cfg["overlay"]["enabled"]))
 
+    def _run_onboarding(self) -> None:
+        """First launch: modal setup wizard for the essential settings. A
+        completed wizard saves and applies its choices; a skipped (or crashed)
+        one falls back to opening Settings so the app is visibly running."""
+        from .onboarding import OnboardingWizard
+
+        try:
+            wizard = OnboardingWizard(self.cfg)
+            accepted = bool(wizard.exec())
+        except Exception:
+            log.exception("onboarding wizard failed — opening Settings instead")
+            self._open_settings()
+            return
+        if self._quitting:
+            # Quit was chosen while the wizard was open: its nested event loop
+            # was broken out of — don't resurrect any UI mid-shutdown.
+            return
+        if accepted:
+            self.cfg.save()
+            self.apply_settings()
+        else:
+            self._open_settings()
+
     def _open_settings(self) -> None:
         from .settings_ui import SettingsWindow
 
@@ -422,6 +450,7 @@ class App:
 
     def _quit(self) -> None:
         log.info("shutting down")
+        self._quitting = True
         if self._poll_timer is not None:
             self._poll_timer.stop()
         try:
