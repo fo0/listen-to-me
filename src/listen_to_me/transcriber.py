@@ -208,8 +208,9 @@ class Transcriber:
             )
         return True
 
-    def _decode(self, audio, *, beam_size: int, condition_on_previous_text: bool = True):
-        """Run the model on `audio` and return (text, info). Caller holds _use_lock."""
+    def _decode_segments(self, audio, *, beam_size: int, condition_on_previous_text: bool = True):
+        """Run the model on `audio` and return ([(end_seconds, text), …], info).
+        Caller holds _use_lock."""
         # Snapshot the model: a concurrent CPU fallback (which holds only _lock,
         # not _use_lock) may null self._model between preview()'s loaded-check and
         # here. Bind it once so we never dereference None mid-decode.
@@ -225,7 +226,14 @@ class Transcriber:
             beam_size=beam_size,
             condition_on_previous_text=condition_on_previous_text,
         )
-        text = " ".join(part for part in (s.text.strip() for s in segments) if part).strip()
+        return [(float(s.end), s.text.strip()) for s in segments], info
+
+    def _decode(self, audio, *, beam_size: int, condition_on_previous_text: bool = True):
+        """Run the model on `audio` and return (text, info). Caller holds _use_lock."""
+        segments, info = self._decode_segments(
+            audio, beam_size=beam_size, condition_on_previous_text=condition_on_previous_text
+        )
+        text = " ".join(part for _end, part in segments if part).strip()
         return text, info
 
     def transcribe(self, audio, notify=None) -> str:
@@ -275,5 +283,25 @@ class Transcriber:
             audio = audio[-_PREVIEW_WINDOW_SECONDS * SAMPLE_RATE :]
             text, _info = self._decode(audio, beam_size=1, condition_on_previous_text=False)
             return text
+        finally:
+            self._use_lock.release()
+
+    def preview_segments(self, audio) -> list[tuple[float, str]] | None:
+        """Like preview(), but per segment: [(end_seconds, text), …] with the
+        end timestamps relative to the start of `audio`. Drives the live-typing
+        agreement policy (livetype.py), which needs to know *where* a stable
+        segment ends so it can advance its committed-audio offset. The audio is
+        deliberately not windowed here — the caller controls the window, and a
+        hidden cut would shift every timestamp. Same None contract as preview().
+        """
+        if not self.loaded:
+            return None
+        if not self._use_lock.acquire(blocking=False):
+            return None
+        try:
+            segments, _info = self._decode_segments(
+                audio, beam_size=1, condition_on_previous_text=False
+            )
+            return [(end, text) for end, text in segments if text]
         finally:
             self._use_lock.release()

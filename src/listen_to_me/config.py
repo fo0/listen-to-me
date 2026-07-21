@@ -61,6 +61,15 @@ DEFAULTS: dict = {
     "max_seconds": 300,
     # How to insert text at the cursor: "paste" (clipboard + Ctrl+V) or "type".
     "injection_mode": "paste",
+    # Experimental: type already-stable parts of the transcript at the cursor
+    # WHILE recording instead of waiting for the end. Append-only (never
+    # deletes or corrects), always simulated typing (never paste) and plain
+    # text only: control characters are stripped and typing pauses while
+    # Ctrl/Alt/Shift/Win is physically held, so no accidental key combination
+    # can fire. Skips the assistant post-processing (it rewrites the whole
+    # text, but typed text can't be taken back). faster-whisper backend only;
+    # in hold mode only for hotkeys without modifiers (e.g. <f9>).
+    "live_typing": False,
     "restore_clipboard": True,
     "notifications": True,
     "beep": True,

@@ -131,6 +131,40 @@ class Hotkeys:
             return False
 
     @staticmethod
+    def combo_flags(combo: str) -> tuple[bool, bool]:
+        """(has_modifier, has_typable) for a hotkey string.
+
+        has_modifier: the combo contains Ctrl/Alt/Shift/Cmd — while such a key
+        is physically held, injected characters could form chords.
+        has_typable: the combo contains a key that simulated typing itself can
+        produce (a plain character key or Space) — in hold mode the listener
+        would mistake our injected text for a hotkey release.
+        Both drive app._live_typing_gate(); an unparseable combo reports the
+        unsafe case so live typing stays off rather than guessing.
+        """
+        from pynput import keyboard
+
+        try:
+            keys = keyboard.HotKey.parse(combo)
+        except (ValueError, KeyError):
+            return True, True
+        modifier_keys = {
+            key
+            for name in (
+                "ctrl", "ctrl_l", "ctrl_r",
+                "alt", "alt_l", "alt_r", "alt_gr",
+                "shift", "shift_l", "shift_r",
+                "cmd", "cmd_l", "cmd_r",
+            )
+            if (key := getattr(keyboard.Key, name, None)) is not None
+        }
+        has_modifier = any(key in modifier_keys for key in keys)
+        has_typable = any(
+            isinstance(key, keyboard.KeyCode) or key == keyboard.Key.space for key in keys
+        )
+        return has_modifier, has_typable
+
+    @staticmethod
     def equal(combo_a: str, combo_b: str) -> bool:
         """Whether two hotkey strings denote the same combination, ignoring token
         order (so "<alt>+<ctrl>+m" == "<ctrl>+<alt>+m"). Falls back to a

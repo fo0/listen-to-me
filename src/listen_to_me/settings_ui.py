@@ -421,6 +421,18 @@ class SettingsWindow(QDialog):
         (self.rb_type if self.cfg["injection_mode"] == "type" else self.rb_paste).setChecked(True)
         iv.addWidget(self.rb_paste)
         iv.addWidget(self.rb_type)
+        self.chk_live_typing = self._checkbox(
+            "Type while you speak (live, experimental)",
+            self.cfg["live_typing"],
+            "Start typing stable parts of the transcript at the cursor while the recording "
+            "is still running, instead of inserting everything at the end. Types plain text "
+            "only — never Enter/Tab and never a Ctrl/Alt/Win combination (typing pauses while "
+            "such a key is held). Already-typed words are final: they are never corrected, and "
+            "the assistant post-processing is skipped. Words typed live use the faster preview "
+            "decoding, so their accuracy can be slightly lower. faster-whisper backend only; "
+            "with a hold (push-to-talk) hotkey it needs a modifier-free key such as F9.",
+        )
+        iv.addWidget(self.chk_live_typing)
         form.addRow("Insert text by:", insert)
         layout.addWidget(rec)
 
@@ -1626,6 +1638,7 @@ class SettingsWindow(QDialog):
         cfg["model"] = self._selected_model()
         cfg["model_dir"] = self.model_dir_edit.text().strip() or None
         cfg["injection_mode"] = "type" if self.rb_type.isChecked() else "paste"
+        cfg["live_typing"] = self.chk_live_typing.isChecked()
         cfg["restore_clipboard"] = self.chk_restore.isChecked()
         cfg["notifications"] = self.chk_notifications.isChecked()
         cfg["beep"] = self.chk_beep.isChecked()
