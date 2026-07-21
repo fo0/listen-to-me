@@ -1493,8 +1493,15 @@ class SettingsWindow(QDialog):
                 updater.download_asset(
                     url, dest, progress_cb=lambda done, total: self._usig.progress.emit(done, total)
                 )
+                # Still on the worker thread: hashing a ~200 MB exe must not
+                # block the UI, and a bad file must never reach the swap.
+                updater.verify_download(dest, release.asset_size, release.asset_digest)
                 self._usig.downloaded.emit(str(dest))
             except Exception as exc:  # surfaced in the UI
+                try:  # never leave a broken half-download next to the exe
+                    dest.unlink(missing_ok=True)
+                except OSError:
+                    log.warning("could not remove failed update download %s", dest)
                 self._usig.download_failed.emit(str(exc))
 
         threading.Thread(target=work, name="update-download", daemon=True).start()

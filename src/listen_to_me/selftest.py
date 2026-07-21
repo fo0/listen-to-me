@@ -124,6 +124,33 @@ def _updater_logic():
     assert [r.tag for r in newer] == ["v2026.07.19.11", "v2026.07.19.7"]
     assert updater.download_path_for(Path("/x/ListenToMe.exe")).name == "ListenToMe.update.exe"
 
+    # The relaunch chain must not inherit PyInstaller's bootloader variables,
+    # or the updated exe reuses (and misses) the dying process's unpack dir.
+    os.environ["_PYI_ARCHIVE_FILE"] = "x"
+    os.environ["_MEIPASS2"] = "y"
+    try:
+        env = updater._swap_env()
+        assert "_PYI_ARCHIVE_FILE" not in env and "_MEIPASS2" not in env
+        assert env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+    finally:
+        del os.environ["_PYI_ARCHIVE_FILE"], os.environ["_MEIPASS2"]
+
+    # A truncated or corrupted download must be rejected before the swap.
+    import hashlib
+
+    with tempfile.TemporaryDirectory() as tmp:
+        blob = Path(tmp) / "asset.bin"
+        blob.write_bytes(b"listen-to-me")
+        good = "sha256:" + hashlib.sha256(b"listen-to-me").hexdigest()
+        updater.verify_download(blob, expected_size=len(b"listen-to-me"), expected_digest=good)
+        updater.verify_download(blob)  # metadata absent -> best effort, no error
+        for bad in ({"expected_size": 11}, {"expected_digest": "sha256:" + "0" * 64}):
+            try:
+                updater.verify_download(blob, **bad)
+                raise AssertionError(f"verify_download accepted {bad}")
+            except ValueError:
+                pass
+
 
 def _insecure_ssl_switch():
     """The insecure-SSL switch flips the requests verify flag both ways and
