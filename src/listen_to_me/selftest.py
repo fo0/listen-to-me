@@ -202,6 +202,21 @@ def _updater_logic():
     finally:
         del os.environ["_PYI_ARCHIVE_FILE"], os.environ["_MEIPASS2"]
 
+    # Startup cleanup: stale downloads and old swap scripts go, fresh ones stay.
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "ListenToMe.exe"
+        stale_exe = updater.download_path_for(target)
+        stale_exe.write_bytes(b"x")
+        old_bat = Path(tmp) / "listen-to-me-update-11111.bat"
+        old_bat.write_bytes(b"@echo off")
+        os.utime(old_bat, times=(0, 0))
+        fresh_bat = Path(tmp) / "listen-to-me-update-22222.bat"
+        fresh_bat.write_bytes(b"@echo off")
+        updater.cleanup_stale_update(target, temp_dir=Path(tmp))
+        assert not stale_exe.exists() and not old_bat.exists()
+        assert fresh_bat.exists()
+        updater.cleanup_stale_update(target, temp_dir=Path(tmp))  # idempotent, no error
+
     # A truncated or corrupted download must be rejected before the swap.
     import hashlib
 

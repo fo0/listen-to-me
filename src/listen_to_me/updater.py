@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -221,6 +222,40 @@ def download_path_for(target: Path | None = None) -> Path:
     move) with a distinct name."""
     target = target or target_exe()
     return target.with_name(target.stem + ".update.exe")
+
+
+_STALE_SCRIPT_MAX_AGE = 24 * 3600  # seconds
+
+
+def cleanup_stale_update(target: Path | None = None, temp_dir: Path | None = None) -> None:
+    """Best-effort removal of leftovers from an earlier update attempt.
+
+    A cancelled/crashed download, or a swap whose retrying move never won,
+    leaves ``<exe>.update.exe`` next to the target; a killed swapper cmd can
+    leave its batch in the temp dir. Called once at startup — a successful
+    swap has moved the download away by then, so whatever remains is garbage.
+    Recent batches are kept: the one that just relaunched us may still be
+    executing its final self-delete line.
+    """
+    try:
+        leftover = download_path_for(target)
+        if leftover.exists():
+            leftover.unlink()
+            log.info("removed stale update download: %s", leftover)
+    except OSError:
+        log.warning("could not remove stale update download", exc_info=True)
+    base = Path(temp_dir) if temp_dir is not None else Path(tempfile.gettempdir())
+    cutoff = time.time() - _STALE_SCRIPT_MAX_AGE
+    try:
+        for bat in base.glob("listen-to-me-update-*.bat"):
+            try:
+                if bat.stat().st_mtime < cutoff:
+                    bat.unlink()
+                    log.info("removed stale update script: %s", bat)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def _swap_script(new_exe: Path, target: Path) -> str:
