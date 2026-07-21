@@ -159,9 +159,31 @@ class Hotkeys:
             if (key := getattr(keyboard.Key, name, None)) is not None
         }
         has_modifier = any(key in modifier_keys for key in keys)
-        has_typable = any(
-            isinstance(key, keyboard.KeyCode) or key == keyboard.Key.space for key in keys
-        )
+        # pynput >= 1.8 parses non-modifier special keys ("<f9>", "<space>") to
+        # KeyCode.from_vk(...) instead of Key members, so "is a KeyCode" no
+        # longer implies "plain character key". A char-less KeyCode is typable
+        # only if its vk is Space's; other vks belonging to Key members
+        # (F-keys, arrows, ...) are not. Unknown raw vks ("<66>") stay unsafe —
+        # they may denote character keys.
+        special_vks = {
+            key.value.vk
+            for key in keyboard.Key
+            if getattr(key.value, "vk", None) is not None
+        }
+        space_vk = getattr(keyboard.Key.space.value, "vk", None)
+
+        def typable(key) -> bool:
+            if key == keyboard.Key.space:  # pynput < 1.8 parses "<space>" to Key.space
+                return True
+            if not isinstance(key, keyboard.KeyCode):
+                return False
+            if key.char is not None:
+                return True
+            if key.vk is None or key.vk == space_vk:
+                return True
+            return key.vk not in special_vks
+
+        has_typable = any(typable(key) for key in keys)
         return has_modifier, has_typable
 
     @staticmethod

@@ -99,6 +99,7 @@ def _hotkey_default_valid():
     # modifiers AND a typable key (Space), a bare F-key has neither.
     assert Hotkeys.combo_flags(DEFAULTS["hotkey"]) == (True, True)
     assert Hotkeys.combo_flags("<f9>") == (False, False)
+    assert Hotkeys.combo_flags("<ctrl>+<f9>") == (True, False)
     assert Hotkeys.combo_flags("<ctrl>+m") == (True, True)
     assert Hotkeys.combo_flags("not a combo") == (True, True)  # unparseable → unsafe
 
