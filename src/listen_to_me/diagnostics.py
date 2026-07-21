@@ -1,5 +1,6 @@
 """Self-diagnosis actions for the Settings window: model download, microphone
-test and end-to-end transcription test.
+test, end-to-end transcription test and the hardware/model status probes
+behind the Whisper page's status card.
 
 Qt-free on purpose: everything here runs on a worker thread and reports back
 through plain callables, which the Settings window marshals onto the Qt main
@@ -26,6 +27,95 @@ _QUIET_PEAK = 0.05
 # How often the level callback fires / the cancel flag is polled while a test
 # records.
 _LEVEL_INTERVAL_S = 0.1
+
+
+def probe_cuda() -> dict:
+    """Whether an NVIDIA CUDA GPU is usable by the faster-whisper backend.
+
+    Returns ``{"available": bool, "count": int, "error": str | None}``. Asks
+    CTranslate2 (the engine that would actually run the model) instead of any
+    other CUDA binding, so the answer matches what transcription will do. Never
+    raises — a missing ctranslate2 or a broken driver is reported as an error
+    string so the status card can show *why* nothing was found.
+    """
+    try:
+        import ctranslate2
+
+        count = int(ctranslate2.get_cuda_device_count())
+        return {"available": count > 0, "count": count, "error": None}
+    except Exception as exc:
+        log.debug("CUDA probe failed", exc_info=True)
+        return {"available": False, "count": 0, "error": str(exc)}
+
+
+def probe_openvino() -> dict:
+    """Whether the optional OpenVINO backend is installed and which Intel
+    devices it sees.
+
+    Returns ``{"installed": bool, "devices": list, "error": str | None}`` where
+    each device is ``{"device": "GPU", "name": "Intel(R) Arc(TM) …"}``. The
+    install check imports openvino_genai (what the backend actually needs, not
+    just openvino); the device list comes from the OpenVINO core so the user
+    can see whether their GPU/NPU driver is picked up. Never raises.
+    """
+    try:
+        import openvino_genai  # noqa: F401 — presence check only
+    except ImportError:
+        return {"installed": False, "devices": [], "error": None}
+    except Exception as exc:
+        log.debug("openvino_genai probe failed", exc_info=True)
+        return {"installed": False, "devices": [], "error": str(exc)}
+    devices: list[dict] = []
+    error: str | None = None
+    try:
+        import openvino
+
+        core = openvino.Core()
+        for dev in core.available_devices:
+            try:
+                name = str(core.get_property(dev, "FULL_DEVICE_NAME")).strip()
+            except Exception:
+                name = ""
+            devices.append({"device": str(dev), "name": name})
+    except Exception as exc:
+        log.debug("OpenVINO device probe failed", exc_info=True)
+        error = str(exc)
+    return {"installed": True, "devices": devices, "error": error}
+
+
+def model_cache_status(snapshot: dict) -> dict:
+    """Whether the model the snapshot describes is already on disk (so loading
+    it won't download). Disk-only, never touches the network, never raises.
+
+    Returns ``{"target": str, "cached": bool, "error": str | None}`` — target
+    is what would be fetched (the OpenVINO Hugging Face repo id for that
+    backend, the model id otherwise); error carries the "this preset has no
+    OpenVINO conversion" message so the status card can warn before a download
+    is even attempted.
+    """
+    model = str(snapshot.get("model") or "")
+    model_dir = snapshot.get("model_dir")
+    try:
+        if snapshot.get("backend") == "openvino":
+            from .transcriber_openvino import _model_is_cached, openvino_model_repo
+
+            repo = openvino_model_repo(model, snapshot.get("openvino_precision") or "int8")
+            return {"target": repo, "cached": _model_is_cached(repo, model_dir), "error": None}
+        from .transcriber import _model_is_cached
+
+        return {"target": model, "cached": _model_is_cached(model, model_dir), "error": None}
+    except Exception as exc:  # e.g. a preset without an OpenVINO conversion
+        return {"target": model, "cached": False, "error": str(exc)}
+
+
+def hardware_status(snapshot: dict) -> dict:
+    """Everything the Settings status card shows, in one worker-thread call:
+    CUDA availability, OpenVINO install/devices and the model cache state."""
+    return {
+        "cuda": probe_cuda(),
+        "openvino": probe_openvino(),
+        "model": model_cache_status(snapshot),
+    }
 
 
 def record_clip(device, seconds: float, on_level=None, is_cancelled=None):

@@ -37,10 +37,13 @@ standalone system-tray app that works in *every* application.
 - **Settings window** — language, model, hotkey (with a press-the-keys
   **shortcut picker**), microphone, insert mode, notifications, autostart,
   model download folder and more — with explanatory tooltips on every option.
-- **Built-in self-tests** — test the hotkey, the microphone (with a live level
-  bar), download the model ahead of time and run a 5-second end-to-end
-  transcription test, all from the settings window before the first real
-  dictation.
+- **Built-in self-tests & status** — test the hotkey, the microphone (with a
+  live level bar), download the model ahead of time and run a 5-second
+  end-to-end transcription test, all from the settings window before the first
+  real dictation. Every running test or download has a **Cancel** button, and
+  a **status card** shows what was actually detected: NVIDIA GPU (CUDA) found?
+  OpenVINO installed and which Intel devices (GPU/NPU/CPU)? Selected model
+  already downloaded?
 - **Choose your spoken language** for better accuracy, or let Whisper
   auto-detect it. Swap the model (tiny → large-v3, distil, turbo, or any
   CTranslate2 model from Hugging Face).
@@ -95,12 +98,13 @@ Right-click the tray icon → **Settings…**
 | Tab | Options |
 | --- | --- |
 | **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), clipboard restore, notifications, beep, **autostart**, **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
-| **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model precision, VAD silence filter (faster-whisper only), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), initial prompt (domain vocabulary hint) |
-| **Audio** | Microphone selection, **Test microphone** (3-second check with a live level bar and a clear verdict: works / too quiet / no signal), maximum recording length |
+| **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model precision, VAD silence filter (faster-whisper only), **Detected hardware & model status** card (NVIDIA GPU/CUDA found? OpenVINO installed and which Intel devices? Is the selected model already downloaded? — with a **Refresh status** button, updates automatically when you change model/backend), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), both cancellable with a **Cancel** button, initial prompt (domain vocabulary hint) |
+| **Audio** | Microphone selection, **Test microphone** (3-second check with a live level bar, a clear verdict — works / too quiet / no signal — and a **Cancel** button), maximum recording length |
 | **Overlay** | Floating always-on-top icon on/off, transcript bubble after each recording, experimental **live transcript preview while recording**, preview display time |
 | **Integrations** | **Mute other apps while recording** (Discord, …): master switch (off by default) plus a list of apps, each with an enabled toggle, name, **mute keybind** (with the same key picker) and **mode** (*push-to-mute* / *toggle mute*). Add or remove apps freely. |
 | **Assistant** | Enable/disable, API base URL, model, API key, temperature, **system prompt** (editable, with *Reset to default*) |
 | **History** | Recent **transcribed text** kept locally (never the audio), each with a **Copy** button so a lost transcript can be recovered; toggle history on/off, how many entries to keep, and **Clear history** |
+| **Updates** | Installed version, **check on startup** toggle, include pre-releases, **Check now**, changelog per release and **Download & install** (frozen Windows build) with progress and a **Cancel download** button |
 | **Help** | Built-in **troubleshooting** page (GPU/CUDA errors, Intel GPU/NPU setup, hotkey, text insertion, model storage, assistant setup) with clickable links — also on the tray menu |
 
 Every option has a hover tooltip explaining what it does.

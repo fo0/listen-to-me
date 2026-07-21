@@ -68,23 +68,28 @@ class _UpdateSignals(QObject):
     progress = Signal(int, int)  # bytes done, total (0 = unknown)
     downloaded = Signal(str)  # path to the downloaded exe
     download_failed = Signal(str)
+    download_cancelled = Signal()
 
 
 class _DiagSignals(QObject):
     """Marshals diagnostics results (model download, microphone/transcription
-    test, hotkey test) from worker threads back to the Qt main thread."""
+    test, hotkey test, hardware probe) from worker threads back to the Qt main
+    thread. The leading int is the diagnostic generation the worker was started
+    with — a handler ignores the payload when it no longer matches, so a worker
+    detached by Cancel (or superseded by a newer run) can't touch the UI."""
 
-    model_status = Signal(str)
-    model_done = Signal(str)
-    model_failed = Signal(str)
-    mic_level = Signal(float)  # recent peak 0.0-1.0 while the mic test records
-    mic_done = Signal(object)  # diagnostics.clip_stats() dict
-    mic_failed = Signal(str)
-    tx_status = Signal(str)
-    tx_level = Signal(float)
-    tx_done = Signal(str)  # recognized text ("" = nothing understood/cancelled)
-    tx_failed = Signal(str)
+    model_status = Signal(int, str)
+    model_done = Signal(int, str)
+    model_failed = Signal(int, str)
+    mic_level = Signal(int, float)  # recent peak 0.0-1.0 while the mic test records
+    mic_done = Signal(int, object)  # diagnostics.clip_stats() dict
+    mic_failed = Signal(int, str)
+    tx_status = Signal(int, str)
+    tx_level = Signal(int, float)
+    tx_done = Signal(int, str)  # recognized text ("" = nothing understood)
+    tx_failed = Signal(int, str)
     hotkey_detected = Signal()
+    hw_done = Signal(int, object)  # diagnostics.hardware_status() dict
 
 
 # How long the hotkey test waits for the combination before giving up.
@@ -219,6 +224,7 @@ class SettingsWindow(QDialog):
         self._usig.progress.connect(self._on_update_progress)
         self._usig.downloaded.connect(self._on_update_downloaded)
         self._usig.download_failed.connect(self._on_update_download_failed)
+        self._usig.download_cancelled.connect(self._on_update_download_cancelled)
         self._releases_newer: list = []
         self._update_busy = False
         self._updates_auto_checked = False
@@ -239,8 +245,18 @@ class SettingsWindow(QDialog):
         self._dsig.tx_done.connect(self._on_tx_done)
         self._dsig.tx_failed.connect(self._on_tx_failed)
         self._dsig.hotkey_detected.connect(self._on_hotkey_detected)
+        self._dsig.hw_done.connect(self._on_hw_done)
         self._diag_busy = False
-        self._diag_cancel = False
+        self._diag_kind: str | None = None  # "model" | "tx" | "mic" while busy
+        # Bumped when a diagnostic starts AND when one is cancelled, so signals
+        # from a detached worker are recognized as stale and ignored.
+        self._diag_gen = 0
+        self._diag_cancel_event: threading.Event | None = None
+        # Hardware/model status probe (Whisper page status card).
+        self._hw_gen = 0
+        self._hw_busy = False
+        self._status_probed = False  # first probe runs when the page is opened
+        self._update_cancel_event: threading.Event | None = None
         self._hotkey_test: Hotkeys | None = None
         # Bumped on every test start so a stale timeout timer from an earlier
         # (already finished) test can't cancel a later one.
@@ -265,10 +281,26 @@ class SettingsWindow(QDialog):
             self._page_index[title] = index
 
         self._history_index = self._page_index["History"]
+        self._whisper_index = self._page_index["Whisper"]
         self._updates_index = self._page_index["Updates"]
         self._help_index = self._page_index["Help"]
         self.nav.currentRowChanged.connect(self._on_page_changed)
         self.nav.setCurrentRow(0)
+
+        # Re-check the "Selected model" status line when an input it depends on
+        # changes — debounced so typing a custom model id probes once, not per
+        # keystroke. Connected after every page is built (the model combo lives
+        # on General, the rest on Whisper).
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.setInterval(600)
+        self._status_timer.timeout.connect(self._maybe_refresh_status)
+        # currentTextChanged covers both picking an item and typing into the
+        # editable combo — no separate editTextChanged hookup needed.
+        self.model_combo.currentTextChanged.connect(self._on_status_inputs_changed)
+        self.backend_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
+        self.ov_precision_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
+        self.model_dir_edit.textChanged.connect(self._on_status_inputs_changed)
 
         # Footer with the version and the action buttons.
         footer = QHBoxLayout()
@@ -329,6 +361,16 @@ class SettingsWindow(QDialog):
         label = QLabel(text)
         label.setProperty("role", "hint")
         label.setWordWrap(True)
+        return label
+
+    @staticmethod
+    def _status_value(text: str) -> QLabel:
+        """A wrapping, selectable value label for the status card — device
+        names and error messages can be long, and selectable text lets the
+        user copy an error into a search."""
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         return label
 
     @staticmethod
@@ -574,6 +616,28 @@ class SettingsWindow(QDialog):
             "models are fetched pre-converted from Hugging Face (OpenVINO/whisper-…-ov)."
         ))
 
+        status, sform = self._card("Detected hardware && model status")
+        self.hw_cuda_label = self._status_value("Not checked yet.")
+        sform.addRow("NVIDIA GPU (CUDA):", self.hw_cuda_label)
+        self.hw_ov_label = self._status_value("Not checked yet.")
+        sform.addRow("Intel (OpenVINO):", self.hw_ov_label)
+        self.hw_model_label = self._status_value("Not checked yet.")
+        sform.addRow("Selected model:", self.hw_model_label)
+        status_row = QWidget()
+        sh = QHBoxLayout(status_row)
+        sh.setContentsMargins(0, 0, 0, 0)
+        self.hw_refresh_button = QPushButton("Refresh status")
+        self.hw_refresh_button.setAutoDefault(False)
+        self.hw_refresh_button.setToolTip(
+            "Probe again — e.g. after installing a GPU driver, openvino-genai "
+            "or downloading a model."
+        )
+        self.hw_refresh_button.clicked.connect(self._refresh_hw_status)
+        sh.addWidget(self.hw_refresh_button)
+        sh.addStretch(1)
+        sform.addRow("", status_row)
+        layout.addWidget(status)
+
         folder = QGroupBox("Model download folder")
         fv = QVBoxLayout(folder)
         fv.setSpacing(8)
@@ -628,6 +692,14 @@ class SettingsWindow(QDialog):
         )
         self.tx_test_button.clicked.connect(self._test_transcription)
         tools_row.addWidget(self.tx_test_button)
+        self.diag_cancel_button = QPushButton("Cancel")
+        self.diag_cancel_button.setAutoDefault(False)
+        self.diag_cancel_button.setEnabled(False)
+        self.diag_cancel_button.setToolTip(
+            "Stop the running model download / transcription test."
+        )
+        self.diag_cancel_button.clicked.connect(self._cancel_diagnostic)
+        tools_row.addWidget(self.diag_cancel_button)
         tools_row.addStretch(1)
         tv.addLayout(tools_row)
         self.diag_progress = QProgressBar()
@@ -698,6 +770,12 @@ class SettingsWindow(QDialog):
         )
         self.mic_test_button.clicked.connect(self._test_microphone)
         mh.addWidget(self.mic_test_button)
+        self.mic_cancel_button = QPushButton("Cancel")
+        self.mic_cancel_button.setAutoDefault(False)
+        self.mic_cancel_button.setEnabled(False)
+        self.mic_cancel_button.setToolTip("Stop the running microphone test.")
+        self.mic_cancel_button.clicked.connect(self._cancel_diagnostic)
+        mh.addWidget(self.mic_cancel_button)
         mh.addStretch(1)
         form.addRow("", mic_test)
         self.mic_level_bar = QProgressBar()
@@ -963,6 +1041,11 @@ class SettingsWindow(QDialog):
         # Build the transcript rows only when the History page is first shown.
         if index == self._history_index and not self._history_rendered:
             self._refresh_history()
+        # Probe the hardware/model status the first time the Whisper page is
+        # opened (not at construction: the probe imports heavy libraries).
+        if index == self._whisper_index and not self._status_probed:
+            self._status_probed = True
+            self._refresh_hw_status()
         # Check for updates the first time the Updates page is opened.
         if index == self._updates_index and not self._updates_auto_checked:
             self._updates_auto_checked = True
@@ -1026,21 +1109,67 @@ class SettingsWindow(QDialog):
             "openvino_precision": self.ov_precision_combo.currentText(),
         }
 
-    def _set_diag_busy(self, busy: bool) -> None:
+    def _set_diag_busy(self, busy: bool, kind: str | None = None) -> None:
         # One diagnostic at a time: they share the recorder/model, and two
         # concurrent tests would interleave their status output anyway.
         self._diag_busy = busy
+        self._diag_kind = kind if busy else None
         for button in (self.model_download_button, self.tx_test_button, self.mic_test_button):
             button.setEnabled(not busy)
+        # Only the Cancel button next to the running diagnostic is active.
+        self.diag_cancel_button.setEnabled(busy and kind in ("model", "tx"))
+        self.mic_cancel_button.setEnabled(busy and kind == "mic")
 
-    def _on_diag_status(self, message: str) -> None:
+    def _begin_diag(self, kind: str) -> tuple[int, threading.Event]:
+        """Mark a diagnostic as started; returns its (generation, cancel event).
+        The worker captures both: results are delivered with the generation (so
+        stale ones are dropped) and the event is its cooperative stop flag."""
+        self._diag_gen += 1
+        cancel = threading.Event()
+        self._diag_cancel_event = cancel
+        self._set_diag_busy(True, kind)
+        return self._diag_gen, cancel
+
+    def _cancel_diagnostic(self) -> None:
+        """Stop the running diagnostic (Cancel buttons + the dialog-close path).
+
+        Recording loops poll the cancel event and stop within ~100 ms. A model
+        download can't be interrupted mid-request, so its worker is detached
+        instead: the generation bump makes every signal it still emits stale,
+        and the engine is replaced so the next diagnostic never shares a
+        transcriber with it (the old worker finishes on the old engine
+        harmlessly — see the done() comment)."""
+        if not self._diag_busy:
+            return
+        kind = self._diag_kind
+        self._diag_gen += 1
+        if self._diag_cancel_event is not None:
+            self._diag_cancel_event.set()
+        self._diag = DiagnosticsEngine()
+        self._set_diag_busy(False)
+        if kind == "mic":
+            self.mic_level_bar.setValue(0)
+            self.mic_status.setText("Microphone test cancelled.")
+            return
+        self.diag_progress.setVisible(False)
+        if kind == "model":
+            self.diag_status.setText(
+                "Cancelled. A download that already started may finish in the "
+                "background — anything already fetched is reused next time."
+            )
+        else:
+            self.diag_status.setText("Transcription test cancelled.")
+
+    def _on_diag_status(self, gen: int, message: str) -> None:
+        if gen != self._diag_gen:
+            return
         self.diag_status.setText(message)
 
     def _download_model(self) -> None:
         if self._diag_busy:
             return
         snapshot = self._diag_snapshot()
-        self._set_diag_busy(True)
+        gen, _cancel = self._begin_diag("model")
         self.diag_progress.setRange(0, 0)  # indeterminate — no byte progress
         self.diag_progress.setVisible(True)
         self.diag_status.setText(f"Preparing model '{snapshot['model']}'…")
@@ -1049,21 +1178,28 @@ class SettingsWindow(QDialog):
             try:
                 message = self._diag.prepare_model(
                     snapshot,
-                    notify=lambda text, force=False: self._dsig.model_status.emit(str(text)),
+                    notify=lambda text, force=False: self._dsig.model_status.emit(gen, str(text)),
                 )
-                self._dsig.model_done.emit(message)
+                self._dsig.model_done.emit(gen, message)
             except Exception as exc:  # surfaced in the UI
                 log.exception("model download/load failed")
-                self._dsig.model_failed.emit(str(exc))
+                self._dsig.model_failed.emit(gen, str(exc))
 
         threading.Thread(target=work, name="diag-model", daemon=True).start()
 
-    def _on_model_done(self, message: str) -> None:
+    def _on_model_done(self, gen: int, message: str) -> None:
+        if gen != self._diag_gen:
+            return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
         self.diag_status.setText(message)
+        # The model just landed on disk — flip the status card's model line.
+        if self._status_probed:
+            self._status_timer.start()
 
-    def _on_model_failed(self, message: str) -> None:
+    def _on_model_failed(self, gen: int, message: str) -> None:
+        if gen != self._diag_gen:
+            return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
         self.diag_status.setText(f"Model download/load failed: {message}")
@@ -1076,8 +1212,7 @@ class SettingsWindow(QDialog):
             return
         snapshot = self._diag_snapshot()
         device = self._selected_input_device()
-        self._set_diag_busy(True)
-        self._diag_cancel = False
+        gen, cancel = self._begin_diag("tx")
         self.diag_progress.setRange(0, 0)  # indeterminate while the model loads
         self.diag_progress.setVisible(True)
         self.diag_status.setText("Preparing model…")
@@ -1088,29 +1223,31 @@ class SettingsWindow(QDialog):
                     snapshot,
                     device,
                     seconds=5.0,
-                    on_status=lambda message: self._dsig.tx_status.emit(str(message)),
-                    on_level=lambda level: self._dsig.tx_level.emit(float(level)),
-                    is_cancelled=lambda: self._diag_cancel,
+                    on_status=lambda message: self._dsig.tx_status.emit(gen, str(message)),
+                    on_level=lambda level: self._dsig.tx_level.emit(gen, float(level)),
+                    is_cancelled=cancel.is_set,
                 )
-                self._dsig.tx_done.emit(text)
+                self._dsig.tx_done.emit(gen, text)
             except Exception as exc:  # surfaced in the UI
                 log.exception("transcription test failed")
-                self._dsig.tx_failed.emit(str(exc))
+                self._dsig.tx_failed.emit(gen, str(exc))
 
         threading.Thread(target=work, name="diag-transcribe", daemon=True).start()
 
-    def _on_tx_level(self, level: float) -> None:
+    def _on_tx_level(self, gen: int, level: float) -> None:
+        if gen != self._diag_gen:
+            return
         # First level tick = recording started: switch the bar from the
         # indeterminate "loading model" state to a live input level meter.
         if self.diag_progress.maximum() == 0:
             self.diag_progress.setRange(0, 100)
         self.diag_progress.setValue(int(level * 100))
 
-    def _on_tx_done(self, text: str) -> None:
+    def _on_tx_done(self, gen: int, text: str) -> None:
+        if gen != self._diag_gen:
+            return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
-        if self._diag_cancel:
-            return
         if text:
             self.diag_status.setText(f"Transcription works ✓ — result: “{text}”")
         else:
@@ -1119,7 +1256,9 @@ class SettingsWindow(QDialog):
                 "test on the Audio page."
             )
 
-    def _on_tx_failed(self, message: str) -> None:
+    def _on_tx_failed(self, gen: int, message: str) -> None:
+        if gen != self._diag_gen:
+            return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
         self.diag_status.setText(f"Transcription test failed: {message}")
@@ -1131,8 +1270,7 @@ class SettingsWindow(QDialog):
             self.mic_status.setText("Finish the current recording first, then run the test.")
             return
         device = self._selected_input_device()
-        self._set_diag_busy(True)
-        self._diag_cancel = False
+        gen, cancel = self._begin_diag("mic")
         self.mic_level_bar.setValue(0)
         self.mic_status.setText("Recording 3 s — speak now…")
 
@@ -1141,23 +1279,25 @@ class SettingsWindow(QDialog):
                 result = self._diag.mic_test(
                     device,
                     seconds=3.0,
-                    on_level=lambda level: self._dsig.mic_level.emit(float(level)),
-                    is_cancelled=lambda: self._diag_cancel,
+                    on_level=lambda level: self._dsig.mic_level.emit(gen, float(level)),
+                    is_cancelled=cancel.is_set,
                 )
-                self._dsig.mic_done.emit(result)
+                self._dsig.mic_done.emit(gen, result)
             except Exception as exc:  # surfaced in the UI
                 log.exception("microphone test failed")
-                self._dsig.mic_failed.emit(str(exc))
+                self._dsig.mic_failed.emit(gen, str(exc))
 
         threading.Thread(target=work, name="diag-mic", daemon=True).start()
 
-    def _on_mic_level(self, level: float) -> None:
+    def _on_mic_level(self, gen: int, level: float) -> None:
+        if gen != self._diag_gen:
+            return
         self.mic_level_bar.setValue(int(level * 100))
 
-    def _on_mic_done(self, result: dict) -> None:
-        self._set_diag_busy(False)
-        if self._diag_cancel:
+    def _on_mic_done(self, gen: int, result: dict) -> None:
+        if gen != self._diag_gen:
             return
+        self._set_diag_busy(False)
         peak = int(result["peak"] * 100)
         verdict = result["verdict"]
         if verdict == "silent":
@@ -1173,7 +1313,9 @@ class SettingsWindow(QDialog):
         else:
             self.mic_status.setText(f"Microphone works ✓ — peak level {peak} %.")
 
-    def _on_mic_failed(self, message: str) -> None:
+    def _on_mic_failed(self, gen: int, message: str) -> None:
+        if gen != self._diag_gen:
+            return
         self._set_diag_busy(False)
         self.mic_status.setText(f"Microphone test failed: {message}")
 
@@ -1238,7 +1380,11 @@ class SettingsWindow(QDialog):
     def _cancel_diagnostics(self) -> None:
         """Stop any running diagnostic when the dialog closes: unblock the
         recording loops and give the global hotkey back to the app."""
-        self._diag_cancel = True
+        self._cancel_diagnostic()
+        # Closing the window also aborts a running update download — silently
+        # swapping the exe after the user dismissed the dialog would surprise.
+        if self._update_cancel_event is not None:
+            self._update_cancel_event.set()
         # Drop the cached test transcriber so a test model (potentially GBs of
         # RAM) doesn't stay loaded after the dialog closes — App keeps a
         # reference to the closed window until Settings is opened again. A
@@ -1247,6 +1393,92 @@ class SettingsWindow(QDialog):
         self._diag = DiagnosticsEngine()
         if self._hotkey_test is not None:
             self._finish_hotkey_test("")
+
+    # ------------------------------------------------ hardware/model status
+
+    def _refresh_hw_status(self) -> None:
+        """Probe CUDA/OpenVINO/model-cache on a worker thread and fill the
+        Whisper page's status card. Guarded like the other diagnostics: one
+        probe at a time, stale results dropped via the generation."""
+        if self._hw_busy:
+            return
+        self._hw_busy = True
+        self._hw_gen += 1
+        gen = self._hw_gen
+        self.hw_refresh_button.setEnabled(False)
+        for label in (self.hw_cuda_label, self.hw_ov_label, self.hw_model_label):
+            label.setText("Checking…")
+        snapshot = self._diag_snapshot()
+
+        def work():
+            from . import diagnostics
+
+            # hardware_status never raises — each probe reports its own error.
+            self._dsig.hw_done.emit(gen, diagnostics.hardware_status(snapshot))
+
+        threading.Thread(target=work, name="diag-hw", daemon=True).start()
+
+    def _on_status_inputs_changed(self, *_args) -> None:
+        # Debounced: typing a custom model id triggers one probe, not one per
+        # keystroke. Nothing happens until the card was first shown/probed.
+        if self._status_probed:
+            self._status_timer.start()
+
+    def _maybe_refresh_status(self) -> None:
+        if self._hw_busy:
+            self._status_timer.start()  # retry once the running probe returns
+        else:
+            self._refresh_hw_status()
+
+    def _on_hw_done(self, gen: int, result: dict) -> None:
+        if gen != self._hw_gen:
+            return
+        self._hw_busy = False
+        self.hw_refresh_button.setEnabled(True)
+        self.hw_cuda_label.setText(self._format_cuda_status(result["cuda"]))
+        self.hw_ov_label.setText(self._format_openvino_status(result["openvino"]))
+        self.hw_model_label.setText(self._format_model_status(result["model"]))
+
+    @staticmethod
+    def _format_cuda_status(info: dict) -> str:
+        if info["available"]:
+            count = info["count"]
+            gpus = f"{count} CUDA GPU{'s' if count != 1 else ''}"
+            return f"✓ {gpus} found — the faster-whisper backend can use it."
+        if info["error"]:
+            return f"✗ could not check: {info['error']}"
+        return (
+            "✗ no NVIDIA GPU / CUDA runtime found — the faster-whisper "
+            "backend runs on the CPU (see Help to enable the GPU)."
+        )
+
+    @staticmethod
+    def _format_openvino_status(info: dict) -> str:
+        if not info["installed"]:
+            detail = f": {info['error']}" if info["error"] else (
+                " — pip install openvino-genai (the portable Windows build includes it)."
+            )
+            return f"✗ openvino-genai is not installed{detail}"
+        if info["devices"]:
+            parts = [
+                f"{d['device']} ({d['name']})" if d["name"] else d["device"]
+                for d in info["devices"]
+            ]
+            return f"✓ installed — devices: {', '.join(parts)}"
+        if info["error"]:
+            return f"⚠ installed, but the device probe failed: {info['error']}"
+        return "⚠ installed, but no devices were reported — check the Intel driver."
+
+    @staticmethod
+    def _format_model_status(info: dict) -> str:
+        if info["error"]:
+            return f"⚠ {info['error']}"
+        if info["cached"]:
+            return f"✓ '{info['target']}' is downloaded — it loads straight from disk."
+        return (
+            f"'{info['target']}' is not downloaded yet — use “Download / load "
+            "model” below, or it is fetched automatically on first use."
+        )
 
     def done(self, result: int) -> None:
         # Covers every way the dialog closes: Save, Cancel, Esc and the
@@ -1302,6 +1534,15 @@ class SettingsWindow(QDialog):
 
         actions = QHBoxLayout()
         actions.addStretch(1)
+        self.update_cancel_button = QPushButton("Cancel download")
+        self.update_cancel_button.setAutoDefault(False)
+        self.update_cancel_button.setVisible(False)
+        self.update_cancel_button.setToolTip(
+            "Stop the running download — nothing is installed, the partial "
+            "file is deleted."
+        )
+        self.update_cancel_button.clicked.connect(self._cancel_update_download)
+        actions.addWidget(self.update_cancel_button)
         self.update_button = QPushButton("Install selected")
         self.update_button.setProperty("accent", True)
         self.update_button.setEnabled(False)
@@ -1408,8 +1649,12 @@ class SettingsWindow(QDialog):
         if self._update_busy:
             return
         self._update_busy = True
+        cancel = threading.Event()
+        self._update_cancel_event = cancel
         self.update_button.setEnabled(False)
         self.update_check_button.setEnabled(False)
+        self.update_cancel_button.setVisible(True)
+        self.update_cancel_button.setEnabled(True)
         self.update_progress.setRange(0, 100)
         self.update_progress.setValue(0)
         self.update_progress.setVisible(True)
@@ -1422,12 +1667,24 @@ class SettingsWindow(QDialog):
         def work():
             try:
                 updater.download_asset(
-                    url, dest, progress_cb=lambda done, total: self._usig.progress.emit(done, total)
+                    url,
+                    dest,
+                    progress_cb=lambda done, total: self._usig.progress.emit(done, total),
+                    is_cancelled=cancel.is_set,
                 )
+                if cancel.is_set():
+                    # Cancel raced the last chunk — still counts as cancelled.
+                    raise updater.DownloadCancelled()
                 # Still on the worker thread: hashing a ~200 MB exe must not
                 # block the UI, and a bad file must never reach the swap.
                 updater.verify_download(dest, release.asset_size, release.asset_digest)
                 self._usig.downloaded.emit(str(dest))
+            except updater.DownloadCancelled:
+                try:  # never leave a partial download next to the exe
+                    dest.unlink(missing_ok=True)
+                except OSError:
+                    log.warning("could not remove cancelled update download %s", dest)
+                self._usig.download_cancelled.emit()
             except Exception as exc:  # surfaced in the UI
                 try:  # never leave a broken half-download next to the exe
                     dest.unlink(missing_ok=True)
@@ -1437,6 +1694,13 @@ class SettingsWindow(QDialog):
 
         threading.Thread(target=work, name="update-download", daemon=True).start()
 
+    def _cancel_update_download(self) -> None:
+        if self._update_cancel_event is not None:
+            self._update_cancel_event.set()
+        # Feedback right away; the worker confirms via download_cancelled.
+        self.update_cancel_button.setEnabled(False)
+        self.update_status.setText("Cancelling download…")
+
     def _on_update_progress(self, done: int, total: int) -> None:
         if total > 0:
             self.update_progress.setRange(0, 100)
@@ -1445,12 +1709,23 @@ class SettingsWindow(QDialog):
             self.update_progress.setRange(0, 0)  # indeterminate
 
     def _on_update_downloaded(self, path: str) -> None:
-        self._update_busy = False
-        self.update_progress.setRange(0, 100)
-        self.update_progress.setValue(100)
         from pathlib import Path
 
         from . import updater
+
+        if self._update_cancel_event is not None and self._update_cancel_event.is_set():
+            # Cancel arrived between the worker's last check and this handler:
+            # never swap the exe after the user said no.
+            try:
+                Path(path).unlink(missing_ok=True)
+            except OSError:
+                log.warning("could not remove cancelled update download %s", path)
+            self._on_update_download_cancelled()
+            return
+        self._update_busy = False
+        self.update_cancel_button.setVisible(False)
+        self.update_progress.setRange(0, 100)
+        self.update_progress.setValue(100)
 
         try:
             updater.apply_update_windows(Path(path))
@@ -1466,10 +1741,19 @@ class SettingsWindow(QDialog):
 
     def _on_update_download_failed(self, message: str) -> None:
         self._update_busy = False
+        self.update_cancel_button.setVisible(False)
         self.update_progress.setVisible(False)
         self.update_check_button.setEnabled(True)
         self.update_button.setEnabled(True)
         self.update_status.setText(f"Download failed: {message}")
+
+    def _on_update_download_cancelled(self) -> None:
+        self._update_busy = False
+        self.update_cancel_button.setVisible(False)
+        self.update_progress.setVisible(False)
+        self.update_check_button.setEnabled(True)
+        self.update_button.setEnabled(True)
+        self.update_status.setText("Download cancelled — nothing was installed.")
 
     # ---------------------------------------------------------- history UI
 
