@@ -263,13 +263,17 @@ class SettingsWindow(QDialog):
         # (already finished) test can't cancel a later one.
         self._hotkey_test_gen = 0
 
+        # Set by force_close(): skip the unsaved-changes prompt when the app
+        # itself closes the window (shutdown, updater restart).
+        self._force_close = False
+
         # The sidebar groups the pages into sections: the settings proper, and
         # the "around the app" pages (History/Updates/Help). Section headers are
         # non-selectable rows, so a sidebar row is NOT a stack index — every nav
         # item carries its stack index in UserRole instead.
         self._page_index: dict[str, int] = {}  # page title -> stack index
         self._nav_row: dict[str, int] = {}  # page title -> sidebar row
-        sections: list[tuple[str, list[tuple[str, object]]]] = [
+        sections = [
             ("Settings", [
                 ("General", self._build_general),
                 ("Whisper", self._build_whisper),
@@ -352,6 +356,13 @@ class SettingsWindow(QDialog):
         save.clicked.connect(self._save)
         footer.addWidget(save)
         outer.addLayout(footer)
+
+        # Fades the "Settings applied ✓" footer note; restarted per Apply so a
+        # quick second Apply isn't wiped early by the first one's timeout.
+        self._footer_status_timer = QTimer(self)
+        self._footer_status_timer.setSingleShot(True)
+        self._footer_status_timer.setInterval(2500)
+        self._footer_status_timer.timeout.connect(lambda: self.footer_status.setText(""))
 
         # Baseline for the unsaved-changes guard — taken after every page is
         # built, so "dirty" means the user actually changed something.
@@ -2065,18 +2076,20 @@ class SettingsWindow(QDialog):
     def _apply(self) -> None:
         if self._apply_values():
             self.footer_status.setText("Settings applied ✓")
-            QTimer.singleShot(2500, self._clear_footer_status)
+            self._footer_status_timer.start()
 
-    def _clear_footer_status(self) -> None:
-        try:
-            self.footer_status.setText("")
-        except RuntimeError:
-            pass  # the dialog was closed before the timer fired
+    def force_close(self) -> None:
+        """Close without the unsaved-changes prompt. Used when the app itself
+        closes the window (shutdown via tray Exit, updater restart) — a modal
+        question there would stall the quit, and in the update flow the exe
+        swap waiting for the process to exit, until someone answers it."""
+        self._force_close = True
+        self.close()
 
     def reject(self) -> None:
         """Cancel / Esc / the window's close button: confirm before silently
         discarding edits — Save validates and closes, Discard drops them."""
-        if self._collect() != self._saved_snapshot:
+        if not self._force_close and self._collect() != self._saved_snapshot:
             box = QMessageBox(self)
             box.setWindowTitle(APP_NAME)
             box.setIcon(QMessageBox.Icon.Warning)

@@ -693,6 +693,12 @@ def _gui_construction():
 
         app.processEvents()
 
+        # force_close bypasses the unsaved-changes prompt even when dirty —
+        # App._quit relies on that; a modal box here would hang this run.
+        window.chk_beep.setChecked(not window.chk_beep.isChecked())
+        window._force_close = True
+        window.reject()
+
         dialog.deleteLater()
         wizard.deleteLater()
         overlay.destroy()
