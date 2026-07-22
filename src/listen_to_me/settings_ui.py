@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -262,30 +263,49 @@ class SettingsWindow(QDialog):
         # (already finished) test can't cancel a later one.
         self._hotkey_test_gen = 0
 
-        self._page_index: dict[str, int] = {}
-        for index, (title, builder) in enumerate(
-            [
+        # The sidebar groups the pages into sections: the settings proper, and
+        # the "around the app" pages (History/Updates/Help). Section headers are
+        # non-selectable rows, so a sidebar row is NOT a stack index — every nav
+        # item carries its stack index in UserRole instead.
+        self._page_index: dict[str, int] = {}  # page title -> stack index
+        self._nav_row: dict[str, int] = {}  # page title -> sidebar row
+        sections: list[tuple[str, list[tuple[str, object]]]] = [
+            ("Settings", [
                 ("General", self._build_general),
                 ("Whisper", self._build_whisper),
                 ("Audio", self._build_audio),
                 ("Overlay", self._build_overlay),
                 ("Integrations", self._build_integrations),
                 ("Assistant", self._build_assistant),
+            ]),
+            ("More", [
                 ("History", self._build_history),
                 ("Updates", self._build_updates),
                 ("Help", self._build_help),
-            ]
-        ):
-            self.nav.addItem(title)
-            self.stack.addWidget(builder(title))
-            self._page_index[title] = index
+            ]),
+        ]
+        for section, pages in sections:
+            header = QListWidgetItem(section.upper())
+            header.setFlags(Qt.ItemFlag.NoItemFlags)  # not selectable/enabled
+            font = header.font()
+            font.setPointSizeF(max(font.pointSizeF() - 1.5, 6.0))
+            font.setBold(True)
+            header.setFont(font)
+            self.nav.addItem(header)
+            for title, builder in pages:
+                index = self.stack.addWidget(builder(title))
+                item = QListWidgetItem(title)
+                item.setData(Qt.ItemDataRole.UserRole, index)
+                self.nav.addItem(item)
+                self._page_index[title] = index
+                self._nav_row[title] = self.nav.count() - 1
 
         self._history_index = self._page_index["History"]
         self._whisper_index = self._page_index["Whisper"]
         self._updates_index = self._page_index["Updates"]
         self._help_index = self._page_index["Help"]
         self.nav.currentRowChanged.connect(self._on_page_changed)
-        self.nav.setCurrentRow(0)
+        self.nav.setCurrentRow(self._nav_row["General"])
 
         # Re-check the "Selected model" status line when an input it depends on
         # changes — debounced so typing a custom model id probes once, not per
@@ -305,22 +325,37 @@ class SettingsWindow(QDialog):
         # Footer with the version and the action buttons.
         footer = QHBoxLayout()
         footer.setContentsMargins(14, 10, 14, 12)
-        footer.addWidget(QLabel(f"{APP_NAME} {__version__}"))
+        version_label = QLabel(f"{APP_NAME} {__version__}")
+        version_label.setProperty("role", "hint")
+        footer.addWidget(version_label)
+        footer.addSpacing(10)
+        self.footer_status = QLabel("")
+        self.footer_status.setProperty("role", "hint")
+        footer.addWidget(self.footer_status)
         footer.addStretch(1)
         cancel = QPushButton("Cancel")
-        cancel.setToolTip("Close without saving. All changes on every page are discarded.")
+        cancel.setToolTip("Close without saving. Unsaved changes ask for confirmation first.")
         cancel.setAutoDefault(False)
         cancel.clicked.connect(self.reject)
         footer.addWidget(cancel)
+        apply_btn = QPushButton("Apply")
+        apply_btn.setToolTip("Save and apply all settings now — the window stays open.")
+        apply_btn.setAutoDefault(False)
+        apply_btn.clicked.connect(self._apply)
+        footer.addWidget(apply_btn)
         save = QPushButton("Save")
         save.setProperty("accent", True)
-        save.setToolTip("Save all settings and apply them immediately — no restart needed.")
+        save.setToolTip("Save all settings, apply them immediately and close — no restart needed.")
         # Make Enter (e.g. from a text field) trigger Save, not the first
         # auto-default button (Cancel), which would silently discard changes.
         save.setDefault(True)
         save.clicked.connect(self._save)
         footer.addWidget(save)
         outer.addLayout(footer)
+
+        # Baseline for the unsaved-changes guard — taken after every page is
+        # built, so "dirty" means the user actually changed something.
+        self._saved_snapshot = self._collect()
 
     # ------------------------------------------------------ page helpers
 
@@ -502,9 +537,9 @@ class SettingsWindow(QDialog):
         ))
         layout.addWidget(speech)
 
-        options = QGroupBox("Options")
-        ov = QVBoxLayout(options)
-        ov.setSpacing(4)
+        behavior = QGroupBox("Behavior")
+        bv = QVBoxLayout(behavior)
+        bv.setSpacing(4)
         self.chk_restore = self._checkbox(
             "Restore previous clipboard content after pasting",
             self.cfg["restore_clipboard"],
@@ -520,6 +555,13 @@ class SettingsWindow(QDialog):
             self.cfg["beep"],
             "Short beep when a recording starts (high tone) and stops (low tone). Windows only.",
         )
+        for chk in (self.chk_restore, self.chk_notifications, self.chk_beep):
+            bv.addWidget(chk)
+        layout.addWidget(behavior)
+
+        startup = QGroupBox("Startup")
+        sv = QVBoxLayout(startup)
+        sv.setSpacing(4)
         self.chk_autostart = self._checkbox(
             "Start with the system (run in background)",
             self.cfg["autostart"],
@@ -531,6 +573,13 @@ class SettingsWindow(QDialog):
             "When enabled the app starts silently into the tray with no window. "
             "When disabled (default) this settings window opens on launch.",
         )
+        for chk in (self.chk_autostart, self.chk_start_in_tray):
+            sv.addWidget(chk)
+        layout.addWidget(startup)
+
+        network = QGroupBox("Network")
+        nv = QVBoxLayout(network)
+        nv.setSpacing(4)
         self.chk_insecure_ssl = self._checkbox(
             "Ignore SSL certificate errors (corporate proxy) — insecure",
             self.cfg["insecure_ssl"],
@@ -539,10 +588,12 @@ class SettingsWindow(QDialog):
             "with its own (self-signed) certificate — connections are then encrypted but "
             "no longer authenticated.",
         )
-        for chk in (self.chk_restore, self.chk_notifications, self.chk_beep,
-                    self.chk_autostart, self.chk_start_in_tray, self.chk_insecure_ssl):
-            ov.addWidget(chk)
-        layout.addWidget(options)
+        nv.addWidget(self.chk_insecure_ssl)
+        nv.addWidget(self._hint(
+            "⚠ Only for corporate proxies that intercept HTTPS with their own certificate. "
+            "Connections stay encrypted but are no longer authenticated."
+        ))
+        layout.addWidget(network)
 
         layout.addStretch(1)
         return page
@@ -1026,7 +1077,7 @@ class SettingsWindow(QDialog):
 
     def show_help_page(self) -> None:
         """Open the Help / Troubleshooting page (used by the tray menu)."""
-        self.nav.setCurrentRow(self._help_index)
+        self._show_page("Help")
 
     # ------------------------------------------------------ small helpers
 
@@ -1036,7 +1087,11 @@ class SettingsWindow(QDialog):
         chk.setToolTip(tip)
         return chk
 
-    def _on_page_changed(self, index: int) -> None:
+    def _on_page_changed(self, row: int) -> None:
+        item = self.nav.item(row)
+        index = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        if index is None:
+            return  # a section header, not a page
         self.stack.setCurrentIndex(index)
         # Build the transcript rows only when the History page is first shown.
         if index == self._history_index and not self._history_rendered:
@@ -1050,6 +1105,10 @@ class SettingsWindow(QDialog):
         if index == self._updates_index and not self._updates_auto_checked:
             self._updates_auto_checked = True
             self._check_updates()
+
+    def _show_page(self, title: str) -> None:
+        """Switch the sidebar (and with it the stack) to the page `title`."""
+        self.nav.setCurrentRow(self._nav_row[title])
 
     def _capture_hotkey(self) -> str | None:
         """Open the key picker with the live global hotkey paused, otherwise
@@ -1553,7 +1612,7 @@ class SettingsWindow(QDialog):
 
     def show_updates_page(self) -> None:
         """Open the Updates page and start a fresh check (used by the tray)."""
-        self.nav.setCurrentRow(self._updates_index)
+        self._show_page("Updates")
         self._updates_auto_checked = True
         self._check_updates()
 
@@ -1870,6 +1929,10 @@ class SettingsWindow(QDialog):
         form.setRowVisible(self.chk_vad, not openvino)  # VAD is faster-whisper only
         form.setRowVisible(self.ov_device_combo, openvino)
         form.setRowVisible(self.ov_precision_combo, openvino)
+        # Live typing (General page) needs faster-whisper's segment timestamps,
+        # so the option is greyed out while OpenVINO is selected — its tooltip
+        # explains the requirement. The stored value is kept either way.
+        self.chk_live_typing.setEnabled(not openvino)
 
     def _selected_model(self) -> str:
         return model_from_label(self.model_combo.currentText())
@@ -1877,26 +1940,85 @@ class SettingsWindow(QDialog):
     def _selected_input_device(self):
         return input_device_from_label(self.input_combo.currentText())
 
-    # -------------------------------------------------------------- save
+    # -------------------------------------------------------- save / apply
 
-    def _save(self) -> None:
-        hotkey = self.hotkey_edit.text().strip()
+    def _collect(self) -> dict:
+        """Every value the dialog edits, as one plain dict.
+
+        Single source for Save/Apply (what gets written to the config) and for
+        the unsaved-changes guard (compared against the snapshot taken at
+        construction / after the last apply)."""
+        return {
+            "hotkey": self.hotkey_edit.text().strip(),
+            "hotkey_mode": "hold" if self.rb_hold.isChecked() else "toggle",
+            "language": self._selected_language(),
+            "model": self._selected_model(),
+            "model_dir": self.model_dir_edit.text().strip() or None,
+            "injection_mode": "type" if self.rb_type.isChecked() else "paste",
+            "live_typing": self.chk_live_typing.isChecked(),
+            "restore_clipboard": self.chk_restore.isChecked(),
+            "notifications": self.chk_notifications.isChecked(),
+            "beep": self.chk_beep.isChecked(),
+            "autostart": self.chk_autostart.isChecked(),
+            "start_in_tray": self.chk_start_in_tray.isChecked(),
+            "backend": self._selected_backend(),
+            "device": self.device_combo.currentText(),
+            "compute_type": self.compute_combo.currentText(),
+            "openvino_device": self.ov_device_combo.currentText(),
+            "openvino_precision": self.ov_precision_combo.currentText(),
+            "vad_filter": self.chk_vad.isChecked(),
+            "history_enabled": self.chk_history_enabled.isChecked(),
+            "history_max": int(self.history_max_spin.value()),
+            "update_check_on_start": self.chk_update_on_start.isChecked(),
+            "include_prereleases": self.chk_prereleases.isChecked(),
+            "insecure_ssl": self.chk_insecure_ssl.isChecked(),
+            "initial_prompt": self.initial_prompt_edit.toPlainText().strip(),
+            "input_device": self._selected_input_device(),
+            "max_seconds": int(self.max_seconds_spin.value()),
+            "overlay": {
+                "enabled": self.chk_o_enabled.isChecked(),
+                "show_preview": self.chk_o_preview.isChecked(),
+                "live_preview": self.chk_o_live.isChecked(),
+                "preview_seconds": int(self.preview_seconds_spin.value()),
+            },
+            "assistant": {
+                "enabled": self.chk_a_enabled.isChecked(),
+                "base_url": self.a_url_edit.text().strip(),
+                "model": self.a_model_edit.text().strip(),
+                "api_key": self.a_key_edit.text().strip(),
+                "temperature": float(self.a_temp_spin.value()),
+                "system_prompt": (
+                    self.a_prompt_edit.toPlainText().strip() or DEFAULT_ASSISTANT_PROMPT
+                ),
+            },
+            "integrations": {
+                "mute_while_recording": self.chk_mute_enabled.isChecked(),
+                "targets": [row.values() for row in self._target_rows],
+            },
+        }
+
+    def _validate(self, values: dict) -> bool:
+        """Check the collected values; on a problem, jump to the offending page
+        and field so the error message points at what is on screen."""
+        hotkey = values["hotkey"]
         if not Hotkeys.validate(hotkey):
+            self._show_page("General")
             QMessageBox.critical(
                 self,
                 APP_NAME,
                 f"Invalid hotkey: {hotkey}\n\nUse the pynput format, e.g. <ctrl>+<alt>+<space> — "
                 "or click “Change…” and press the keys.",
             )
-            return
+            self.hotkey_edit.setFocus()
+            return False
 
         # Only enabled mute targets need a valid keybind; a disabled row may be
         # left half-configured without blocking Save.
-        target_values = [row.values() for row in self._target_rows]
-        for target in target_values:
+        for target in values["integrations"]["targets"]:
             if not target["enabled"]:
                 continue
             if not Hotkeys.validate(target["hotkey"]):
+                self._show_page("Integrations")
                 QMessageBox.critical(
                     self,
                     APP_NAME,
@@ -1904,8 +2026,9 @@ class SettingsWindow(QDialog):
                     f"“{target['hotkey']}” is not a valid combination.\n\n"
                     "Click “Change…” to set it, or turn that app off.",
                 )
-                return
+                return False
             if Hotkeys.equal(target["hotkey"], hotkey):
+                self._show_page("Integrations")
                 QMessageBox.critical(
                     self,
                     APP_NAME,
@@ -1913,54 +2036,62 @@ class SettingsWindow(QDialog):
                     f"hotkey ({hotkey}).\n\nGive the app a different combination — "
                     "otherwise muting it would also start/stop your recording.",
                 )
-                return
+                return False
+        return True
 
+    def _apply_values(self) -> bool:
+        """Validate, write the dialog values to the config and apply them.
+        Returns False (dialog stays open, nothing saved) on invalid input."""
+        values = self._collect()
+        if not self._validate(values):
+            return False
         cfg = self.cfg.data
-        cfg["hotkey"] = hotkey
-        cfg["hotkey_mode"] = "hold" if self.rb_hold.isChecked() else "toggle"
-        cfg["language"] = self._selected_language()
-        cfg["model"] = self._selected_model()
-        cfg["model_dir"] = self.model_dir_edit.text().strip() or None
-        cfg["injection_mode"] = "type" if self.rb_type.isChecked() else "paste"
-        cfg["live_typing"] = self.chk_live_typing.isChecked()
-        cfg["restore_clipboard"] = self.chk_restore.isChecked()
-        cfg["notifications"] = self.chk_notifications.isChecked()
-        cfg["beep"] = self.chk_beep.isChecked()
-        cfg["autostart"] = self.chk_autostart.isChecked()
-        cfg["start_in_tray"] = self.chk_start_in_tray.isChecked()
-        cfg["backend"] = self._selected_backend()
-        cfg["device"] = self.device_combo.currentText()
-        cfg["compute_type"] = self.compute_combo.currentText()
-        cfg["openvino_device"] = self.ov_device_combo.currentText()
-        cfg["openvino_precision"] = self.ov_precision_combo.currentText()
-        cfg["vad_filter"] = self.chk_vad.isChecked()
-        cfg["history_enabled"] = self.chk_history_enabled.isChecked()
-        cfg["history_max"] = int(self.history_max_spin.value())
-        cfg["update_check_on_start"] = self.chk_update_on_start.isChecked()
-        cfg["include_prereleases"] = self.chk_prereleases.isChecked()
-        cfg["insecure_ssl"] = self.chk_insecure_ssl.isChecked()
-        cfg["initial_prompt"] = self.initial_prompt_edit.toPlainText().strip()
-        cfg["input_device"] = self._selected_input_device()
-        cfg["max_seconds"] = int(self.max_seconds_spin.value())
-
-        ocfg = cfg["overlay"]
-        ocfg["enabled"] = self.chk_o_enabled.isChecked()
-        ocfg["show_preview"] = self.chk_o_preview.isChecked()
-        ocfg["live_preview"] = self.chk_o_live.isChecked()
-        ocfg["preview_seconds"] = int(self.preview_seconds_spin.value())
-
-        acfg = cfg["assistant"]
-        acfg["enabled"] = self.chk_a_enabled.isChecked()
-        acfg["base_url"] = self.a_url_edit.text().strip()
-        acfg["model"] = self.a_model_edit.text().strip()
-        acfg["api_key"] = self.a_key_edit.text().strip()
-        acfg["temperature"] = float(self.a_temp_spin.value())
-        acfg["system_prompt"] = self.a_prompt_edit.toPlainText().strip() or DEFAULT_ASSISTANT_PROMPT
-
-        icfg = cfg.setdefault("integrations", {})
-        icfg["mute_while_recording"] = self.chk_mute_enabled.isChecked()
-        icfg["targets"] = target_values
-
+        for key, value in values.items():
+            if key in ("overlay", "assistant", "integrations"):
+                continue
+            cfg[key] = value
+        cfg["overlay"].update(values["overlay"])
+        cfg["assistant"].update(values["assistant"])
+        cfg.setdefault("integrations", {}).update(values["integrations"])
         self.cfg.save()
         self.app.apply_settings()
-        self.accept()
+        self._saved_snapshot = self._collect()
+        return True
+
+    def _save(self) -> None:
+        if self._apply_values():
+            self.accept()
+
+    def _apply(self) -> None:
+        if self._apply_values():
+            self.footer_status.setText("Settings applied ✓")
+            QTimer.singleShot(2500, self._clear_footer_status)
+
+    def _clear_footer_status(self) -> None:
+        try:
+            self.footer_status.setText("")
+        except RuntimeError:
+            pass  # the dialog was closed before the timer fired
+
+    def reject(self) -> None:
+        """Cancel / Esc / the window's close button: confirm before silently
+        discarding edits — Save validates and closes, Discard drops them."""
+        if self._collect() != self._saved_snapshot:
+            box = QMessageBox(self)
+            box.setWindowTitle(APP_NAME)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setText("You have unsaved changes.")
+            box.setInformativeText("Save them before closing, or discard them?")
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel
+            )
+            box.setDefaultButton(QMessageBox.StandardButton.Save)
+            choice = box.exec()
+            if choice == QMessageBox.StandardButton.Save:
+                self._save()  # on invalid input this warns and keeps the dialog open
+                return
+            if choice != QMessageBox.StandardButton.Discard:
+                return  # Cancel / Esc on the prompt: keep editing
+        super().reject()

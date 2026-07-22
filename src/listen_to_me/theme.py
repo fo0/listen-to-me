@@ -230,7 +230,13 @@ def _qss(t: dict) -> str:
         color: {t["muted"]};
     }}
     QListWidget#nav::item:selected {{ background: {ACCENT}; color: {t["on_accent"]}; }}
-    QListWidget#nav::item:hover:!selected {{ background: {t["hover"]}; color: {t["text"]}; }}
+    QListWidget#nav::item:hover:!selected:!disabled {{ background: {t["hover"]}; color: {t["text"]}; }}
+    /* Section headers are non-selectable (disabled) rows: muted, extra space above. */
+    QListWidget#nav::item:disabled {{
+        background: transparent;
+        color: {t["muted"]};
+        padding: 12px 12px 2px 12px;
+    }}
 
     QStackedWidget > QWidget {{ background: {t["window"]}; }}
 

@@ -107,7 +107,10 @@ Right-click the tray icon → **Settings…**
 | **Updates** | Installed version, **check on startup** toggle, include pre-releases, **Check now**, changelog per release and **Download & install** (frozen Windows build) with progress and a **Cancel download** button |
 | **Help** | Built-in **troubleshooting** page (GPU/CUDA errors, Intel GPU/NPU setup, hotkey, text insertion, model storage, assistant setup) with clickable links — also on the tray menu |
 
-Every option has a hover tooltip explaining what it does.
+Every option has a hover tooltip explaining what it does. The sidebar groups
+the pages into **Settings** and **More** (History/Updates/Help). **Save**
+applies everything immediately and closes, **Apply** applies without closing,
+and closing with unsaved changes asks whether to save or discard them.
 
 ### Push-to-talk (hold) mode notes
 
