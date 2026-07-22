@@ -615,8 +615,20 @@ def _gui_construction():
         stub = _StubApp(Path(tmp))
 
         window = SettingsWindow(stub)
-        window.nav.setCurrentRow(window._history_index)  # force History render
+        # Sidebar has non-selectable section headers, so nav rows and stack
+        # indexes differ; General is preselected and _show_page maps by title.
+        assert window.nav.currentRow() == window._nav_row["General"]
+        window._show_page("History")  # force History render (lazy on first view)
+        assert window.stack.currentIndex() == window._history_index
         window._refresh_history()
+
+        # Unsaved-changes tracking: untouched dialog is clean, a toggled
+        # checkbox makes it dirty, toggling back makes it clean again.
+        assert window._collect() == window._saved_snapshot
+        window.chk_beep.setChecked(not window.chk_beep.isChecked())
+        assert window._collect() != window._saved_snapshot
+        window.chk_beep.setChecked(not window.chk_beep.isChecked())
+        assert window._collect() == window._saved_snapshot
 
         # Status-card formatters: every probe shape renders a clear verdict.
         fmt_cuda = window._format_cuda_status
@@ -680,6 +692,12 @@ def _gui_construction():
         assert stub.cfg["model"] == "small"  # preset label round-trips to the id
 
         app.processEvents()
+
+        # force_close bypasses the unsaved-changes prompt even when dirty —
+        # App._quit relies on that; a modal box here would hang this run.
+        window.chk_beep.setChecked(not window.chk_beep.isChecked())
+        window._force_close = True
+        window.reject()
 
         dialog.deleteLater()
         wizard.deleteLater()

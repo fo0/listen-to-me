@@ -552,10 +552,12 @@ class App:
             log.debug("error resetting mute integrations", exc_info=True)
         # Close the settings window BEFORE stopping the hotkeys: a running
         # hotkey test re-registers the global listener on close, which would
-        # otherwise resurrect it after the stop below.
+        # otherwise resurrect it after the stop below. force_close skips the
+        # unsaved-changes prompt — a modal question would stall the shutdown
+        # (and an updater restart) until answered.
         if self._settings_window is not None:
             try:
-                self._settings_window.close()
+                self._settings_window.force_close()
             except Exception:
                 pass
         self.hotkeys.stop()
