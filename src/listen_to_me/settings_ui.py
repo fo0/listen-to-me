@@ -2056,6 +2056,13 @@ class SettingsWindow(QDialog):
         values = self._collect()
         if not self._validate(values):
             return False
+        # Finish a running hotkey test first: apply_settings() re-registers the
+        # real global listener, and with the test listener still alive a test
+        # press would also start a real recording behind the window. (Save had
+        # the same overlap only for microseconds before closing; Apply keeps
+        # the window open, so end the test explicitly.)
+        if self._hotkey_test is not None:
+            self._finish_hotkey_test("")
         cfg = self.cfg.data
         for key, value in values.items():
             if key in ("overlay", "assistant", "integrations"):
