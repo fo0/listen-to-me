@@ -4,7 +4,7 @@ Temporary working context. **Clean up aggressively — delete when resolved.** R
 
 ## Current Work
 
-- **Wheel-guard fix + settings facelift** (branch `claude/whisper-dropdown-scroll-fix-lxf9kd`, issue #12) — `qtutil.guard_wheel()`: event filter ignores wheel on unfocused combos/spin boxes (event propagates → page scrolls) + StrongFocus; swept over SettingsWindow/OnboardingWizard via `findChildren`, `MuteTargetRow` guards its own combo (created after the sweep). Theme polish: themed QToolTip, horizontal scrollbar styling, disabled-input background, dropdown item padding, red `destructive` button property (Clear history / Remove). gui_smoke verifies focus policy + that a synthetic QWheelEvent leaves values unchanged. Predecessor UX-polish PR #11 is merged. (2026-07-23)
+- **Single-instance guard + overlay watchdog** (branch `claude/app-instances-overlay-icon-nnv62z`) — user saw multiple ListenToMe processes and the floating icon vanishing after idle. New `singleinstance.py`: named mutex (Windows) / flock file (POSIX) as the guard, port 52697 demoted to an activation channel — a second launch pings the running instance, which notifies + re-asserts the overlay + opens Settings. `overlay.py`: 30 s watchdog (`_reassert`) with hard hide/show after suspend (timer-gap) or screen changes. Selftest: `_single_instance_guard` + watchdog asserts in `_gui_construction`. Note: one-file PyInstaller always shows 2 processes per instance (bootloader parent + app child) in Task Manager — expected, not a bug. (2026-07-23)
 
 ## Open Questions
 

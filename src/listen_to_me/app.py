@@ -15,13 +15,12 @@ import logging
 import logging.handlers
 import os
 import queue
-import socket
 import sys
 import threading
 import time
 
 from . import APP_NAME, __version__
-from . import assistant, autostart, netutil
+from . import assistant, autostart, netutil, singleinstance
 from .audio import SAMPLE_RATE, Recorder
 from .config import Config, config_dir
 from .history import TranscriptHistory
@@ -37,8 +36,7 @@ STATE_IDLE = "idle"
 STATE_RECORDING = "recording"
 STATE_PROCESSING = "processing"
 
-_SINGLE_INSTANCE_PORT = 52697
-_instance_lock = None  # keeps the socket alive for the process lifetime
+_instance_lock = None  # keeps the single-instance claim alive for the process lifetime
 
 _LIVE_PREVIEW_INTERVAL = 2.5  # seconds between partial transcriptions
 
@@ -100,6 +98,10 @@ class App:
         apply_theme(self.qapp)
 
         self.tray.start()
+        if _instance_lock is not None:
+            # A second launch of the app pings us instead of starting again;
+            # surface this instance then (thread-safe via the event queue).
+            _instance_lock.start_server(lambda: self.post("activate"))
         self._register_hotkey()
         autostart.sync(bool(self.cfg["autostart"]))
         try:
@@ -183,6 +185,8 @@ class App:
         elif kind == "notify":
             message, force = payload if isinstance(payload, tuple) else (payload, False)
             self.tray.notify(str(message), force=bool(force))
+        elif kind == "activate":
+            self._activate_from_second_launch()
         elif kind == "settings":
             self._open_settings()
         elif kind == "updates":
@@ -483,6 +487,20 @@ class App:
         else:
             self._open_settings()
 
+    def _activate_from_second_launch(self) -> None:
+        """A second launch of the app pinged this instance: give the user
+        visible feedback instead of the silent nothing a swallowed duplicate
+        start would produce — re-assert the overlay (the OS may have dropped
+        it, which is usually *why* the user started the app again) and bring
+        the settings window up."""
+        if self._quitting:
+            return
+        log.info("second launch detected — showing this instance")
+        self.notify(f"{APP_NAME} is already running.", force=True)
+        if self.overlay is not None and self.cfg["overlay"]["enabled"]:
+            self.overlay.set_visible(True)
+        self._open_settings()
+
     def _open_settings(self) -> None:
         from .settings_ui import SettingsWindow
 
@@ -574,17 +592,6 @@ class App:
 # ----------------------------------------------------------------- startup
 
 
-def _acquire_single_instance():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind(("127.0.0.1", _SINGLE_INSTANCE_PORT))
-        sock.listen(1)
-        return sock
-    except OSError:
-        sock.close()
-        return None
-
-
 def _ensure_std_streams() -> None:
     """Give the process usable std streams when it has none.
 
@@ -630,14 +637,19 @@ def main(argv=None) -> int:
 
         return run_selftest()
 
+    _setup_logging()
+    _ensure_std_streams()
+
+    # OS-level single-instance guard (named mutex / flock — see
+    # singleinstance.py for why a TCP port bind was not reliable on Windows).
+    # A refused start pings the running instance so it shows itself.
     global _instance_lock
-    _instance_lock = _acquire_single_instance()
+    _instance_lock = singleinstance.acquire()
     if _instance_lock is None:
+        log.info("another instance is already running — pinged it to show itself")
         print(f"{APP_NAME} is already running.", file=sys.stderr or sys.stdout)
         return 0
 
-    _setup_logging()
-    _ensure_std_streams()
     try:
         from . import updater
 
