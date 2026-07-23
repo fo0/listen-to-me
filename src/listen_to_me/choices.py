@@ -37,6 +37,13 @@ MODEL_CHOICES = [
     ("distil-medium.en", "distilled English only — fast with good accuracy"),
 ]
 
+# Sentinel entry at the bottom of the read-only model dropdown: activating it
+# opens an explicit input dialog for an arbitrary CTranslate2 model id (the
+# combo itself takes no free text — accidental typing was once saved verbatim
+# as the model id). Never a config value: settings_ui resolves it before
+# collecting and falls back to the saved model if it is ever left selected.
+CUSTOM_MODEL_LABEL = "Custom model id (Hugging Face)…"
+
 LANGUAGES = [
     ("auto", "Auto-detect"),
     ("de", "German — Deutsch"),

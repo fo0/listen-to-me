@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -40,7 +41,9 @@ from . import APP_NAME, REPO_URL, __version__
 from .choices import (
     BACKENDS,
     COMPUTE_TYPES,
+    CUSTOM_MODEL_LABEL,
     DEVICES,
+    GERMAN_TURBO_CT2,
     LANGUAGES,
     MODEL_CHOICES,
     OPENVINO_DEVICES,
@@ -317,15 +320,15 @@ class SettingsWindow(QDialog):
         self.nav.setCurrentRow(self._nav_row["General"])
 
         # Re-check the "Selected model" status line when an input it depends on
-        # changes — debounced so typing a custom model id probes once, not per
-        # keystroke. Connected after every page is built (the model combo lives
-        # on General, the rest on Whisper).
+        # changes — debounced so typing in the model-folder field probes once,
+        # not per keystroke. Connected after every page is built (the model
+        # combo lives on General, the rest on Whisper).
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
         self._status_timer.setInterval(600)
         self._status_timer.timeout.connect(self._maybe_refresh_status)
-        # currentTextChanged covers both picking an item and typing into the
-        # editable combo — no separate editTextChanged hookup needed.
+        # currentTextChanged (not currentIndexChanged): the custom-model dialog
+        # can rename the selected custom item in place without an index change.
         self.model_combo.currentTextChanged.connect(self._on_status_inputs_changed)
         self.backend_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
         self.ov_precision_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
@@ -543,13 +546,23 @@ class SettingsWindow(QDialog):
         )
         sform.addRow("Spoken language:", self.language_combo)
 
+        # Read-only on purpose: when this combo was editable (for custom model
+        # ids), accidental typing was saved verbatim as the model id and only
+        # failed at model load. Custom CTranslate2 ids now go through the
+        # explicit "Custom model id…" sentinel entry (_on_model_activated).
         self.model_combo = QComboBox()
-        self.model_combo.setEditable(True)
         self.model_combo.addItems([model_label(m) for m, _ in MODEL_CHOICES])
+        if self.model_combo.findText(model_label(self.cfg["model"])) < 0:
+            # Unlisted id from the config (custom dialog / hand-edited file):
+            # keep it selectable verbatim instead of resetting to item 0.
+            self.model_combo.addItem(self.cfg["model"])
+        self.model_combo.addItem(CUSTOM_MODEL_LABEL)
         self.model_combo.setCurrentText(model_label(self.cfg["model"]))
+        self._model_index = self.model_combo.currentIndex()
+        self.model_combo.activated.connect(self._on_model_activated)
         self.model_combo.setToolTip(
             "The speech-recognition model. Bigger = more accurate but slower and larger. "
-            "You can also type any CTranslate2 model id from Hugging Face."
+            "“Custom model id…” accepts any CTranslate2 model id from Hugging Face."
         )
         # Long preset labels / custom model ids must not dictate the page's
         # minimum width — that clips every card at the right edge (see qtutil).
@@ -557,7 +570,8 @@ class SettingsWindow(QDialog):
         sform.addRow("Whisper model:", self.model_combo)
         sform.addRow(self._hint(
             "Downloaded automatically on first use (folder on the Whisper page). "
-            "Pick a preset or type any CTranslate2 model id from Hugging Face."
+            "Pick a preset, or choose “Custom model id…” to use any CTranslate2 "
+            "model from Hugging Face."
         ))
         layout.addWidget(speech)
 
@@ -1533,8 +1547,8 @@ class SettingsWindow(QDialog):
         threading.Thread(target=work, name="diag-hw", daemon=True).start()
 
     def _on_status_inputs_changed(self, *_args) -> None:
-        # Debounced: typing a custom model id triggers one probe, not one per
-        # keystroke. Nothing happens until the card was first shown/probed.
+        # Debounced: typing in the model-folder field triggers one probe, not
+        # one per keystroke. Nothing happens until the card was first probed.
         if self._status_probed:
             self._status_timer.start()
 
@@ -2001,7 +2015,49 @@ class SettingsWindow(QDialog):
         self.chk_live_typing.setEnabled(fw)
 
     def _selected_model(self) -> str:
-        return model_from_label(self.model_combo.currentText())
+        label = self.model_combo.currentText()
+        if label == CUSTOM_MODEL_LABEL:
+            # The sentinel never survives _on_model_activated; if it is ever
+            # current anyway (programmatic selection), fall back to the saved
+            # model instead of storing the sentinel text as a model id.
+            return self.cfg["model"]
+        return model_from_label(label)
+
+    def _on_model_activated(self, index: int) -> None:
+        """Resolve the "Custom model id…" sentinel via an input dialog.
+
+        The combo itself is read-only — free text used to become the model id
+        verbatim — so arbitrary CTranslate2 ids are entered here deliberately.
+        Cancel restores the previous selection; the sentinel is never left
+        selected."""
+        if self.model_combo.itemText(index) != CUSTOM_MODEL_LABEL:
+            self._model_index = index
+            return
+        previous = model_from_label(self.model_combo.itemText(self._model_index))
+        is_preset = any(previous == model for model, _ in MODEL_CHOICES)
+        text, ok = QInputDialog.getText(
+            self,
+            "Custom Whisper model",
+            "CTranslate2 model id on Hugging Face,\n"
+            f"e.g. {GERMAN_TURBO_CT2}:",
+            text="" if is_preset else previous,
+        )
+        model = text.strip() if ok else ""
+        if not model or model == CUSTOM_MODEL_LABEL:
+            self.model_combo.setCurrentIndex(self._model_index)
+            return
+        row = self.model_combo.findText(model_label(model))
+        if row < 0:
+            # Keep a single custom entry, directly above the sentinel.
+            sentinel = self.model_combo.count() - 1
+            if sentinel == len(MODEL_CHOICES):
+                self.model_combo.insertItem(sentinel, model)
+                row = sentinel
+            else:
+                row = sentinel - 1
+                self.model_combo.setItemText(row, model)
+        self.model_combo.setCurrentIndex(row)
+        self._model_index = row
 
     def _selected_input_device(self):
         return input_device_from_label(self.input_combo.currentText())
