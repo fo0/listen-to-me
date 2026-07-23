@@ -221,9 +221,15 @@ def _acquire_lock_file(lock_dir: Path | None):
         return 0
     try:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    except BlockingIOError:
         handle.close()
-        return None
+        return None  # genuinely held by another process
+    except OSError:
+        # flock itself unsupported here (e.g. an NFS home without lockd):
+        # never mistake that for "already running" — start unguarded instead.
+        handle.close()
+        log.warning("flock on %s unavailable — running without the single-instance guard", path)
+        return 0
     try:  # a pid note for humans debugging a stuck lock; irrelevant to the lock
         handle.seek(0)
         handle.truncate()
