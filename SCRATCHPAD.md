@@ -4,7 +4,7 @@ Temporary working context. **Clean up aggressively — delete when resolved.** R
 
 ## Current Work
 
-- **Single-instance guard + overlay watchdog** (branch `claude/app-instances-overlay-icon-nnv62z`) — user saw multiple ListenToMe processes and the floating icon vanishing after idle. New `singleinstance.py`: named mutex (Windows) / flock file (POSIX) as the guard, port 52697 demoted to an activation channel — a second launch pings the running instance, which notifies + re-asserts the overlay + opens Settings. `overlay.py`: 30 s watchdog (`_reassert`) with hard hide/show after suspend (timer-gap) or screen changes. Selftest: `_single_instance_guard` + watchdog asserts in `_gui_construction`. Note: one-file PyInstaller always shows 2 processes per instance (bootloader parent + app child) in Task Manager — expected, not a bug. (2026-07-23)
+- **Faster/better model upgrades** (branch `claude/faster-translation-models-y5nn6p`, PR #15) — implemented from the research report: German turbo preset (`jimmymeister/whisper-large-v3-turbo-german-ct2`), `distil-large-v3.5` preset, faster-whisper bump to >=1.2.1, `beam_size` config key + Settings spin box, and a third backend `parakeet` (`transcriber_parakeet.py`, onnx-asr, `[parakeet]` extra, bundled in the exe). Translation was explicitly dropped by the user — transcription improvements only. Verified: compileall + gui_smoke PASS locally (22 checks). Untested on real hardware: actual Parakeet download/decode (no model download in CI). (2026-07-23)
 
 ## Open Questions
 
@@ -12,6 +12,7 @@ _(none)_
 
 ## Research Notes
 
+- **Faster STT models + near-realtime translation** (2026-07-23): full report in `docs/research/2026-07-faster-stt-and-translation.md` (branch `claude/faster-translation-models-y5nn6p`). Headlines: `primeline/whisper-large-v3-turbo-german` = −28 % German WER at identical speed (string-only preset add); official `distil-whisper/distil-large-v3.5-ct2` upgrades the EN distil preset; Parakeet-TDT-0.6b-v3 via `onnx-asr` ≈ 20× faster with German ≥ turbo (candidate 3rd backend); the app has NO translation feature yet — cheapest real one is Whisper `task="translate"` (→EN only; **broken on turbo/distil** — silently returns source language) then Opus-MT de↔en on the already-shipped CTranslate2 (<150 ms CPU). License traps: CrisperWhisper/NLLB/SeamlessM4T/Tower+ are CC-BY-NC — never ship. No Whisper large-v4 exists.
 - **Hardware acceleration beyond CUDA** (2026-07-20): CTranslate2/faster-whisper supports NVIDIA CUDA + CPU only — no Intel GPU, no NPU, no ROCm planned. Best path for Intel iGPU/Arc/NPU: **OpenVINO GenAI `WhisperPipeline`** (`pip install openvino-genai`, device `"CPU"|"GPU"|"NPU"`, pre-converted models on HF under `OpenVINO/whisper-*-ov`, NPU works out of the box since 2025.1). Alternative for vendor-neutral GPU (incl. AMD): whisper.cpp via `pywhispercpp` with Vulkan — but PyPI wheels are CPU-only, would need own CI wheel build; no NPU. ONNX Runtime DirectML is in maintenance mode (successor: Windows ML) — not worth adopting. AMD Ryzen AI NPU needs its own heavyweight SW stack; Qualcomm NPU needs an ARM64 build — both out of scope. Integration idea: `backend` config key (`faster-whisper` | `openvino`) + optional dependency, lazy import, separate model cache (OpenVINO IR format ≠ CT2 format).
 
 ## Temporary Notes

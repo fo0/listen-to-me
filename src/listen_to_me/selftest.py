@@ -41,9 +41,11 @@ def _config_defaults():
     assert DEFAULTS["start_in_tray"] is False
     assert DEFAULTS["injection_mode"] in ("paste", "type")
     assert DEFAULTS["live_typing"] is False  # experimental, opt-in
-    assert DEFAULTS["backend"] in ("faster-whisper", "openvino")
+    assert DEFAULTS["backend"] in ("faster-whisper", "openvino", "parakeet")
     assert DEFAULTS["openvino_device"] in ("auto", "cpu", "gpu", "npu")
     assert DEFAULTS["openvino_precision"] in ("int8", "fp16", "int4")
+    assert DEFAULTS["parakeet_quantization"] in ("int8", "fp32")
+    assert isinstance(DEFAULTS["beam_size"], int) and DEFAULTS["beam_size"] >= 1
     assert set(DEFAULTS["overlay"]) >= {"enabled", "show_preview", "live_preview", "preview_seconds"}
     assert {"update_check_on_start", "include_prereleases"} <= set(DEFAULTS)
     integrations = DEFAULTS["integrations"]
@@ -439,6 +441,19 @@ def _openvino_backend_logic():
         raise AssertionError("expected ValueError for a preset without an OpenVINO conversion")
     except ValueError:
         pass
+    try:
+        openvino_model_repo("distil-large-v3.5", "int8")
+        raise AssertionError("expected ValueError for a preset without an OpenVINO conversion")
+    except ValueError:
+        pass
+    from listen_to_me.choices import GERMAN_TURBO_CT2
+
+    try:
+        # The German CT2 preset must not fall into the verbatim repo-id branch.
+        openvino_model_repo(GERMAN_TURBO_CT2, "int8")
+        raise AssertionError("expected ValueError for the CT2-only German preset")
+    except ValueError:
+        pass
 
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Config(path=Path(tmp) / "config.json")
@@ -465,6 +480,42 @@ def _openvino_backend_logic():
         # Already on the CPU there is nothing to fall back to.
         t2 = create_transcriber(cfg)
         assert t2._maybe_force_cpu("CPU", RuntimeError("anything"), None) is False
+
+
+def _parakeet_backend_logic():
+    """The Parakeet backend is picked by the factory, resolves ONNX Runtime
+    execution providers with a guaranteed CPU fallback, maps the quantization
+    config value and re-keys on quantization/device/model_dir changes — all
+    without importing onnx_asr (it stays lazy)."""
+    from listen_to_me.config import Config
+    from listen_to_me.transcriber import create_transcriber
+    from listen_to_me.transcriber_parakeet import (
+        ParakeetTranscriber,
+        _quantization,
+        _resolve_providers,
+    )
+
+    assert _quantization("int8") == "int8"
+    assert _quantization("fp32") is None  # onnx-asr spelling for "unquantized"
+    assert _quantization("") == "int8"
+
+    assert _resolve_providers("cpu") == ["CPUExecutionProvider"]
+    for device in ("auto", "cuda", "cpu"):
+        # Whatever the device and installed onnxruntime build, the CPU provider
+        # is always the last resort — a missing GPU degrades, never errors.
+        assert _resolve_providers(device)[-1] == "CPUExecutionProvider"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        cfg["backend"] = "parakeet"
+        t = create_transcriber(cfg)
+        assert isinstance(t, ParakeetTranscriber) and t.backend == "parakeet"
+        assert t.loaded is False
+        # No segment previews → live typing stays gated off for this backend.
+        assert not hasattr(t, "preview_segments")
+        key = t._current_key()
+        cfg["parakeet_quantization"] = "fp32"
+        assert t._current_key() != key  # quantization change → reload
 
 
 def _diagnostics_engine():
@@ -536,6 +587,14 @@ def _hardware_probes():
             dict(snap, backend="openvino", model="distil-small.en")
         )
         assert no_conversion["cached"] is False and no_conversion["error"]
+        from listen_to_me.transcriber_parakeet import MODEL_REPO
+
+        # A custom model dir without the Parakeet subfolder is decisively
+        # "not downloaded" (the HF-cache probe depends on the machine).
+        pk = model_cache_status(
+            dict(snap, backend="parakeet", parakeet_quantization="int8", model_dir=tmp)
+        )
+        assert pk == {"target": MODEL_REPO, "cached": False, "error": None}
 
         assert set(hardware_status(snap)) == {"cuda", "openvino", "model"}
 
@@ -854,6 +913,7 @@ _LIGHT_CHECKS = [
     ("CUDA error detection", _cuda_error_detection),
     ("transcriber CPU fallback", _transcriber_cpu_fallback),
     ("openvino backend logic", _openvino_backend_logic),
+    ("parakeet backend logic", _parakeet_backend_logic),
     ("diagnostics engine", _diagnostics_engine),
     ("hardware/status probes", _hardware_probes),
     ("help content renders", _help_content_renders),
@@ -891,7 +951,8 @@ _BUNDLED_IMPORTS = [
     "onnxruntime",
     "av",
     "openvino_genai",  # optional [openvino] extra, but bundled in the Windows exe
-    "huggingface_hub",  # model downloads for both backends (transitive via faster-whisper)
+    "onnx_asr",  # optional [parakeet] extra, but bundled in the Windows exe
+    "huggingface_hub",  # model downloads for all backends (transitive via faster-whisper)
     "pynput.keyboard",
     "PIL.Image",
     "pyperclip",

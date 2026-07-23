@@ -25,6 +25,7 @@ flowchart TD
         Recorder("Recorder — sounddevice"):::backend
         Transcriber("Transcriber — faster-whisper"):::backend
         TranscriberOV("OpenVinoTranscriber — OpenVINO GenAI (Intel GPU/NPU)"):::backend
+        TranscriberPK("ParakeetTranscriber — NVIDIA Parakeet TDT via onnx-asr"):::backend
         Assistant("Assistant — LLM post-process"):::backend
         Injector("Injector — paste/type at cursor"):::backend
         LiveType("LiveTyper — live typing while recording"):::backend
@@ -68,8 +69,10 @@ flowchart TD
     App -->|"start/stop"| Recorder
     App -->|"_process worker"| Transcriber
     App -->|"backend = openvino (factory)"| TranscriberOV
+    App -->|"backend = parakeet (factory)"| TranscriberPK
     Recorder -->|"audio frames"| Transcriber
     Recorder -->|"audio frames"| TranscriberOV
+    Recorder -->|"audio frames"| TranscriberPK
     Transcriber -->|"text"| Assistant
     Assistant -->|"cleaned text"| Injector
     Transcriber -->|"text (assistant off)"| Injector
@@ -83,11 +86,13 @@ flowchart TD
     Diag -->|"test clip"| Recorder
     Diag -->|"snapshot transcriber"| Transcriber
     Diag -->|"snapshot transcriber"| TranscriberOV
+    Diag -->|"snapshot transcriber"| TranscriberPK
 
     Injector -->|"insert at cursor"| OS
     Mute -->|"synthesize mute keybind"| OS
     Transcriber -->|"first-use download"| HF
     TranscriberOV -->|"first-use download (OpenVINO IR)"| HF
+    TranscriberPK -->|"first-use download (ONNX)"| HF
     Assistant -->|"chat/completions"| LLM
     Updater -->|"check/download"| GH
     App --> Updater
@@ -106,6 +111,7 @@ flowchart TD
     click Recorder "src/listen_to_me/audio.py"
     click Transcriber "src/listen_to_me/transcriber.py"
     click TranscriberOV "src/listen_to_me/transcriber_openvino.py"
+    click TranscriberPK "src/listen_to_me/transcriber_parakeet.py"
     click Assistant "src/listen_to_me/assistant.py"
     click Injector "src/listen_to_me/injector.py"
     click LiveType "src/listen_to_me/livetype.py"

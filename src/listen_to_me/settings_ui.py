@@ -45,6 +45,7 @@ from .choices import (
     MODEL_CHOICES,
     OPENVINO_DEVICES,
     OPENVINO_PRECISIONS,
+    PARAKEET_QUANTIZATIONS,
     backend_from_label,
     backend_label,
     input_device_choices,
@@ -628,8 +629,11 @@ class SettingsWindow(QDialog):
         self.backend_combo.setToolTip(
             "The transcription engine. faster-whisper accelerates on NVIDIA GPUs (CUDA); "
             "OpenVINO accelerates on Intel GPUs and NPUs and needs the optional "
-            "openvino-genai package (pip install openvino-genai; the portable "
-            "Windows build ships it already)."
+            "openvino-genai package (pip install openvino-genai); Parakeet is a "
+            "non-Whisper engine (NVIDIA Parakeet TDT, 25 languages) that transcribes "
+            "many times faster and needs the optional onnx-asr package "
+            '(pip install "onnx-asr[cpu,hub]"). The portable Windows build ships '
+            "both optional packages already."
         )
         form.addRow("Backend:", self.backend_combo)
 
@@ -648,6 +652,16 @@ class SettingsWindow(QDialog):
             "Numeric precision. int8 is fastest on CPU; float16 needs a GPU; float32 is the slow reference."
         )
         form.addRow("Compute type:", self.compute_combo)
+
+        self.beam_spin = QSpinBox()
+        self.beam_spin.setRange(1, 10)
+        self.beam_spin.setValue(max(1, int(self.cfg["beam_size"] or 5)))
+        self.beam_spin.setToolTip(
+            "How many decoding hypotheses faster-whisper explores. 5 (default) is "
+            "the accuracy sweet spot; 1 (greedy) is roughly 1.5–2× faster with "
+            "slightly lower accuracy."
+        )
+        form.addRow("Beam size:", self.beam_spin)
 
         self.ov_device_combo = QComboBox()
         self.ov_device_combo.addItems(OPENVINO_DEVICES)
@@ -668,6 +682,16 @@ class SettingsWindow(QDialog):
         )
         form.addRow("Model precision:", self.ov_precision_combo)
 
+        self.pk_quant_combo = QComboBox()
+        self.pk_quant_combo.addItems(PARAKEET_QUANTIZATIONS)
+        self._select_combo(self.pk_quant_combo, self.cfg["parakeet_quantization"])
+        self.pk_quant_combo.setToolTip(
+            "Which ONNX variant of the Parakeet model to download: int8 is small and "
+            "fast on the CPU (recommended), fp32 the most accurate — best with a GPU. "
+            "Changing this downloads the model again."
+        )
+        form.addRow("Parakeet precision:", self.pk_quant_combo)
+
         self.chk_vad = self._checkbox(
             "Filter silence with VAD (recommended)",
             self.cfg["vad_filter"],
@@ -684,7 +708,10 @@ class SettingsWindow(QDialog):
             "(cuBLAS + cuDNN). If they're missing, transcription switches to the "
             "CPU automatically — see the Help page for how to enable the GPU. "
             "The OpenVINO backend accelerates on Intel GPUs and NPUs instead; "
-            "models are fetched pre-converted from Hugging Face (OpenVINO/whisper-…-ov)."
+            "models are fetched pre-converted from Hugging Face (OpenVINO/whisper-…-ov). "
+            "The Parakeet backend runs NVIDIA's Parakeet TDT model (not Whisper): "
+            "many times faster, 25 languages with automatic detection — the model "
+            "preset, language, initial prompt and VAD options don't apply to it."
         ))
 
         status, sform = self._card("Detected hardware && model status")
@@ -1181,12 +1208,14 @@ class SettingsWindow(QDialog):
             "model": self._selected_model(),
             "device": self.device_combo.currentText(),
             "compute_type": self.compute_combo.currentText(),
+            "beam_size": int(self.beam_spin.value()),
             "model_dir": self.model_dir_edit.text().strip() or None,
             "language": self._selected_language(),
             "initial_prompt": self.initial_prompt_edit.toPlainText().strip(),
             "vad_filter": self.chk_vad.isChecked(),
             "openvino_device": self.ov_device_combo.currentText(),
             "openvino_precision": self.ov_precision_combo.currentText(),
+            "parakeet_quantization": self.pk_quant_combo.currentText(),
         }
 
     def _set_diag_busy(self, busy: bool, kind: str | None = None) -> None:
@@ -1943,17 +1972,28 @@ class SettingsWindow(QDialog):
 
     def _on_backend_changed(self) -> None:
         """Show only the Engine rows that apply to the selected backend."""
-        openvino = self._selected_backend() == "openvino"
+        backend = self._selected_backend()
+        fw = backend == "faster-whisper"
+        openvino = backend == "openvino"
+        parakeet = backend == "parakeet"
         form = self._engine_form
-        form.setRowVisible(self.device_combo, not openvino)
-        form.setRowVisible(self.compute_combo, not openvino)
-        form.setRowVisible(self.chk_vad, not openvino)  # VAD is faster-whisper only
+        # Parakeet shares the CUDA/CPU device choice with faster-whisper; the
+        # remaining Whisper decode options apply to faster-whisper only.
+        form.setRowVisible(self.device_combo, fw or parakeet)
+        form.setRowVisible(self.compute_combo, fw)
+        form.setRowVisible(self.beam_spin, fw)
+        form.setRowVisible(self.chk_vad, fw)  # VAD is faster-whisper only
         form.setRowVisible(self.ov_device_combo, openvino)
         form.setRowVisible(self.ov_precision_combo, openvino)
+        form.setRowVisible(self.pk_quant_combo, parakeet)
+        # Parakeet is a single fixed model — the Whisper model preset (and the
+        # language / initial prompt, which stay editable but are simply not
+        # sent) does not apply. Grey the preset out so that's visible.
+        self.model_combo.setEnabled(not parakeet)
         # Live typing (General page) needs faster-whisper's segment timestamps,
-        # so the option is greyed out while OpenVINO is selected — its tooltip
+        # so the option is greyed out for the other backends — its tooltip
         # explains the requirement. The stored value is kept either way.
-        self.chk_live_typing.setEnabled(not openvino)
+        self.chk_live_typing.setEnabled(fw)
 
     def _selected_model(self) -> str:
         return model_from_label(self.model_combo.currentText())
@@ -1985,8 +2025,10 @@ class SettingsWindow(QDialog):
             "backend": self._selected_backend(),
             "device": self.device_combo.currentText(),
             "compute_type": self.compute_combo.currentText(),
+            "beam_size": int(self.beam_spin.value()),
             "openvino_device": self.ov_device_combo.currentText(),
             "openvino_precision": self.ov_precision_combo.currentText(),
+            "parakeet_quantization": self.pk_quant_combo.currentText(),
             "vad_filter": self.chk_vad.isChecked(),
             "history_enabled": self.chk_history_enabled.isChecked(),
             "history_max": int(self.history_max_spin.value()),

@@ -49,11 +49,13 @@ standalone system-tray app that works in *every* application.
   OpenVINO installed and which Intel devices (GPU/NPU/CPU)? Selected model
   already downloaded?
 - **Choose your spoken language** for better accuracy, or let Whisper
-  auto-detect it. Swap the model (tiny → large-v3, distil, turbo, or any
-  CTranslate2 model from Hugging Face).
+  auto-detect it. Swap the model (tiny → large-v3, distil, turbo, a
+  **German fine-tuned turbo**, or any CTranslate2 model from Hugging Face).
 - **Hardware acceleration** — NVIDIA GPUs via CUDA (default backend), **Intel
   GPUs and NPUs** ("AI Boost" in Core Ultra) via the **OpenVINO** backend —
-  with automatic CPU fallback whenever a device is unavailable.
+  with automatic CPU fallback whenever a device is unavailable. For maximum
+  speed there is a third engine: **Parakeet** (NVIDIA Parakeet TDT via ONNX),
+  which transcribes many times faster than Whisper in 25 languages.
 - **Optional assistant post-processing** — pipe the transcript through any
   OpenAI-compatible API (local **Ollama**, LM Studio, llama.cpp, OpenWebUI, or a
   hosted service) with a **freely editable system prompt** (a sensible default
@@ -102,7 +104,7 @@ Right-click the tray icon → **Settings…**
 | Tab | Options |
 | --- | --- |
 | **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), clipboard restore, notifications, beep, **autostart**, **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
-| **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model precision, VAD silence filter (faster-whisper only), **Detected hardware & model status** card (NVIDIA GPU/CUDA found? OpenVINO installed and which Intel devices? Is the selected model already downloaded? — with a **Refresh status** button, updates automatically when you change model/backend), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), both cancellable with a **Cancel** button, initial prompt (domain vocabulary hint) |
+| **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU, **Parakeet** = fastest engine, NVIDIA CUDA / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model/Parakeet precision, **beam size** (faster-whisper: 5 = best accuracy, 1 = greedy ≈ 1.5–2× faster), VAD silence filter (faster-whisper only), **Detected hardware & model status** card (NVIDIA GPU/CUDA found? OpenVINO installed and which Intel devices? Is the selected model already downloaded? — with a **Refresh status** button, updates automatically when you change model/backend), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), both cancellable with a **Cancel** button, initial prompt (domain vocabulary hint) |
 | **Audio** | Microphone selection, **Test microphone** (3-second check with a live level bar, a clear verdict — works / too quiet / no signal — and a **Cancel** button), maximum recording length |
 | **Overlay** | Floating always-on-top icon on/off, transcript bubble after each recording, experimental **live transcript preview while recording**, preview display time |
 | **Integrations** | **Mute other apps while recording** (Discord, …): master switch (off by default) plus a list of apps, each with an enabled toggle, name, **mute keybind** (with the same key picker) and **mode** (*push-to-mute* / *toggle mute*). Add or remove apps freely. |
@@ -147,7 +149,9 @@ Configuration is a plain JSON file (tray → *Open config folder*):
 | `small` *(default)* | ~460 MB | good balance for dictation |
 | `medium` | ~1.5 GB | noticeably better, slower on CPU |
 | `large-v3` / `large-v3-turbo` | ~3 GB / ~1.6 GB | best quality; turbo is much faster |
+| `jimmymeister/whisper-large-v3-turbo-german-ct2` | ~1.6 GB | **German only** — turbo fine-tuned on German speech: noticeably better German accuracy at the same speed |
 | `distil-large-v3` | ~1.5 GB | near large quality, faster (English-focused) |
+| `distil-large-v3.5` | ~1.5 GB | English only — newer distil, faster than turbo |
 
 `.en` variants are English-only and slightly more accurate for English. You can
 also type any CTranslate2 model id from Hugging Face into the model field.
@@ -262,8 +266,25 @@ GPU, then the NPU, then the CPU.
   on failure the app falls back to the CPU for the session and tells you so.
 - The portable Windows build ships the backend; from source install the extra:
   `pip install -e ".[openvino]"`.
-- Not available on this backend: the `distil-….en` model presets and the VAD
-  silence filter.
+- Not available on this backend: the `distil-….en` / `distil-large-v3.5` /
+  German turbo model presets and the VAD silence filter.
+
+### Maximum speed (Parakeet backend)
+
+Set **Settings → Whisper → Backend = Parakeet** to swap Whisper for NVIDIA's
+**Parakeet TDT 0.6B v3** ([CC-BY-4.0](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3))
+— a 25-language model (German included) that transcribes many times faster
+than even `large-v3-turbo`, with punctuation and capitalization built in. The
+long "processing" pause after a recording all but disappears, even on a CPU.
+
+- The spoken language is **detected automatically** — the Whisper model
+  preset, language choice, initial prompt, beam size and VAD options don't
+  apply to this engine (live typing needs faster-whisper and stays off too).
+- Runs via [ONNX Runtime](https://onnxruntime.ai/): NVIDIA GPUs (CUDA) or any
+  CPU; **Device = auto** prefers the GPU. Model precision **int8** (~640 MB
+  download, recommended) or fp32 (~2.4 GB, best with a GPU).
+- The portable Windows build ships the backend; from source install the extra:
+  `pip install -e ".[parakeet]"` (or `pip install "onnx-asr[cpu,hub]"`).
 
 ### SSL certificate errors behind a corporate proxy
 
@@ -296,7 +317,7 @@ python -m listen_to_me   # add src/ to PYTHONPATH or `pip install -e .` first
 Or properly installed:
 
 ```bash
-pip install -e .                 # add the Intel GPU/NPU backend: pip install -e ".[openvino]"
+pip install -e .                 # optional backends: pip install -e ".[openvino]" / ".[parakeet]"
 listen-to-me
 ```
 

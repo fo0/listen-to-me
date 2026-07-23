@@ -74,13 +74,18 @@ def create_transcriber(cfg):
     """Build the transcription backend selected by cfg["backend"].
 
     "faster-whisper" (the default) covers NVIDIA CUDA and the CPU; "openvino"
-    covers Intel CPUs/GPUs/NPUs via OpenVINO GenAI. Both classes expose the
-    same surface (ensure_loaded / transcribe / preview / loaded / backend), so
-    App never needs to know which one it holds."""
+    covers Intel CPUs/GPUs/NPUs via OpenVINO GenAI; "parakeet" runs NVIDIA's
+    Parakeet TDT model via onnx-asr (fastest, not a Whisper model). All classes
+    expose the same surface (ensure_loaded / transcribe / preview / loaded /
+    backend), so App never needs to know which one it holds."""
     if cfg["backend"] == "openvino":
         from .transcriber_openvino import OpenVinoTranscriber
 
         return OpenVinoTranscriber(cfg)
+    if cfg["backend"] == "parakeet":
+        from .transcriber_parakeet import ParakeetTranscriber
+
+        return ParakeetTranscriber(cfg)
     return Transcriber(cfg)
 
 
@@ -238,9 +243,12 @@ class Transcriber:
 
     def transcribe(self, audio, notify=None) -> str:
         self.ensure_loaded(notify=notify)
+        # Clamp instead of trusting the config file: beam_size 0/negative would
+        # crash faster-whisper mid-recording.
+        beam_size = max(1, int(self.cfg["beam_size"] or 5))
         try:
             with self._use_lock:
-                text, info = self._decode(audio, beam_size=5)
+                text, info = self._decode(audio, beam_size=beam_size)
         except Exception as exc:
             # The CUDA libraries are often only touched at inference time, so the
             # cuBLAS/cuDNN failure can surface here rather than at load. Fall back
@@ -248,7 +256,7 @@ class Transcriber:
             if not self._recover_on_cpu(exc, notify):
                 raise
             with self._use_lock:
-                text, info = self._decode(audio, beam_size=5)
+                text, info = self._decode(audio, beam_size=beam_size)
         log.info(
             "transcribed %.1fs -> %d chars (language=%s)",
             len(audio) / SAMPLE_RATE,
