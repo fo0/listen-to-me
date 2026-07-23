@@ -42,7 +42,7 @@ from .choices import (
     model_label,
 )
 from .hotkeys import Hotkeys
-from .qtutil import guard_wheel
+from .qtutil import elastic_combo, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -145,6 +145,8 @@ class OnboardingWizard(QWizard):
             "Bigger = more accurate but slower and larger. small is a good start; "
             "you can also type any CTranslate2 model id from Hugging Face."
         )
+        # Long preset labels must not force the fixed-size wizard wider (see qtutil).
+        elastic_combo(self.model_combo)
         form.addRow("Whisper model:", self.model_combo)
         form.addRow(_hint(
             "The model is downloaded automatically on first use — nothing to install now."
@@ -207,6 +209,8 @@ class OnboardingWizard(QWizard):
         self.input_combo.setToolTip(
             "“System default” follows the OS sound settings — usually the right choice."
         )
+        # Device names come from the OS and can be arbitrarily long.
+        elastic_combo(self.input_combo)
         rh.addWidget(self.input_combo, 1)
         refresh = QPushButton("Refresh")
         refresh.setToolTip("Re-scan the audio devices, e.g. after plugging in a headset.")
