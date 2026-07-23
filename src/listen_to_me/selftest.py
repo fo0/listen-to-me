@@ -71,6 +71,45 @@ def _integrations_noop():
         mute.reset()
 
 
+def _single_instance_guard():
+    """The OS-level guard (mutex on Windows, flock elsewhere) admits exactly
+    one holder; a refused second acquire pings the winner's activation
+    callback, while foreign garbage on the activation port never does. Lock
+    dir, mutex name and port are scoped to this test so a really-running app
+    is never disturbed (port=0 → OS-assigned)."""
+    import socket
+    import threading
+
+    from listen_to_me import singleinstance
+
+    with tempfile.TemporaryDirectory() as tmp:
+        name = f"ListenToMe.SelfTest.{os.getpid()}"
+        first = singleinstance.acquire(port=0, lock_dir=Path(tmp), mutex_name=name)
+        assert first is not None
+        try:
+            hits: list = []
+            fired = threading.Event()
+
+            def on_activate():
+                hits.append(1)
+                fired.set()
+
+            port = first.start_server(on_activate)
+            assert port, "activation server must bind an OS-assigned port"
+
+            # Garbage first: the server handles connections sequentially, so
+            # this is fully processed before the real ping below is accepted.
+            with socket.create_connection(("127.0.0.1", port), timeout=2) as conn:
+                conn.sendall(b"GET / HTTP/1.0\r\n\r\n")
+
+            second = singleinstance.acquire(port=port, lock_dir=Path(tmp), mutex_name=name)
+            assert second is None  # guard held → refused
+            assert fired.wait(5.0), "activation ping never reached the holder"
+            assert hits == [1]  # the garbage connection must not have fired it
+        finally:
+            first.release()  # unlock so the temp dir can be removed on Windows
+
+
 def _icon_render():
     from listen_to_me.icons import mic_image
 
@@ -713,6 +752,22 @@ def _gui_construction():
             overlay.set_state(state)
         overlay.reposition_bubble()
 
+        # Overlay watchdog: enabling arms it; a re-assert after the OS dropped
+        # the window (simulated by hiding it natively) shows it again — the
+        # hard path (post-resume / monitor change) too; disabling stops it.
+        overlay.set_visible(True)
+        assert overlay._watchdog.isActive()
+        overlay.win.hide()
+        overlay._reassert()
+        assert overlay.win.isVisible()
+        overlay.win.hide()
+        overlay._reassert(hard=True)
+        assert overlay.win.isVisible()
+        overlay.set_visible(False)
+        assert not overlay._watchdog.isActive()
+        overlay._reassert()  # disabled → must stay hidden
+        assert not overlay.win.isVisible()
+
         dialog = HotkeyCaptureDialog(None)
 
         # The first-run wizard: build, exercise the backend-dependent device
@@ -787,6 +842,7 @@ _LIGHT_CHECKS = [
     ("config roundtrip", _config_roundtrip),
     ("config defaults", _config_defaults),
     ("mute integrations no-op", _integrations_noop),
+    ("single-instance guard", _single_instance_guard),
     ("live typing logic", _live_typing_logic),
     ("icon render", _icon_render),
     ("key picker key mapping", _key_mapping),

@@ -28,9 +28,13 @@ standalone system-tray app that works in *every* application.
   your live microphone levels while recording, and shows an orange mic glyph
   while transcribing. Click it to start/stop, right-click for a menu.
   Optionally shows the transcript in a bubble — after each recording and/or
-  as an experimental **live preview while you speak**.
+  as an experimental **live preview while you speak**. A built-in watchdog
+  brings the icon back automatically if Windows drops it (display sleep,
+  monitor changes, explorer restarts).
 - **System tray app** — runs quietly in the background; icon shows
-  idle / recording / transcribing state.
+  idle / recording / transcribing state. Only one instance runs at a time:
+  starting the app again simply brings the running instance's settings
+  window to the front.
 - **Transcript history** — the transcribed text of each recording is kept
   locally (never the audio) so you can copy it again from **Settings → History**
   if a paste is lost. Bounded in size, and easy to switch off or clear.

@@ -19,6 +19,7 @@ transcript is meant to be typed into. All methods run on the Qt main thread.
 from __future__ import annotations
 
 import logging
+import time
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
@@ -37,6 +38,7 @@ _LIVE_TAIL_CHARS = 240  # live preview shows only the most recent text
 _BUBBLE_MAX_W = 320
 _LEVEL_POLL_MS = 50  # feed mic band levels to the widget ~20x/s while recording
 _LEVEL_WINDOW_FRAMES = SAMPLE_RATE // 10  # analyze the most recent 100 ms
+_WATCHDOG_MS = 30_000  # re-assert the icon every 30 s while it should be visible
 
 _STATE_LABELS = {
     "idle": "Idle — click or press the hotkey to record",
@@ -144,6 +146,20 @@ class Overlay:
         self._flash_timer.setSingleShot(True)
         self._flash_timer.timeout.connect(self._hide_bubble)
 
+        # Watchdog: Windows drops the icon in ways Qt never notices (see
+        # _reassert), so as long as the icon should be visible it is checked
+        # and re-asserted periodically, and hard-reshown after events that are
+        # known to eat it (resume from sleep, monitor changes).
+        self._visible_wanted = False
+        self._last_tick = time.monotonic()
+        self._watchdog = QTimer(self.win)
+        self._watchdog.timeout.connect(self._watchdog_tick)
+        gui_app = QGuiApplication.instance()
+        if gui_app is not None:
+            gui_app.screenAdded.connect(self._on_screens_changed)
+            gui_app.screenRemoved.connect(self._on_screens_changed)
+            gui_app.primaryScreenChanged.connect(self._on_screens_changed)
+
         self._menu = QMenu()
         self._menu.addAction("Start / stop recording", lambda: app.post("toggle"))
         self._menu.addAction("Cancel recording", lambda: app.post("cancel"))
@@ -174,12 +190,57 @@ class Overlay:
         self.win.move(int(x), int(y))
 
     def set_visible(self, visible: bool) -> None:
+        self._visible_wanted = bool(visible)
         if visible:
             self.win.show()
             self.win.raise_()
+            self._last_tick = time.monotonic()
+            self._watchdog.start(_WATCHDOG_MS)
         else:
+            self._watchdog.stop()
             self._hide_bubble()
             self.win.hide()
+
+    def _watchdog_tick(self) -> None:
+        now = time.monotonic()
+        gap, self._last_tick = now - self._last_tick, now
+        # A tick arriving far too late means the machine was suspended —
+        # display sleep is exactly when Windows drops layered windows.
+        self._reassert(hard=gap > 2 * (_WATCHDOG_MS / 1000.0))
+
+    def _on_screens_changed(self, *_args) -> None:
+        # Monitor plugged/unplugged or primary changed: give the window
+        # system a moment to settle the new geometry, then re-assert.
+        QTimer.singleShot(1000, lambda: self._reassert(hard=True))
+
+    def _reassert(self, hard: bool = False) -> None:
+        """Keep the icon truly on screen.
+
+        Windows can drop it without Qt noticing: display sleep / DWM restarts
+        hide layered (translucent) windows, explorer restarts and fullscreen
+        apps eat the always-on-top status, and unplugging a monitor can strand
+        the position outside every screen. Qt may still report isVisible() ==
+        True in those cases, making a plain show() a no-op — so the hard path
+        cycles hide()/show() to rebuild the native window state, and raise_()
+        restores the z-order either way (never steals focus:
+        WindowDoesNotAcceptFocus + WA_ShowWithoutActivating)."""
+        if not self._visible_wanted:
+            return
+        try:
+            if hard:
+                if not self._on_any_screen():
+                    self._place_initial()
+                self.win.hide()
+                self.win.show()
+            elif not self.win.isVisible():
+                self.win.show()
+            self.win.raise_()
+        except Exception:
+            log.debug("overlay re-assert failed", exc_info=True)
+
+    def _on_any_screen(self) -> bool:
+        center = self.win.frameGeometry().center()
+        return any(s.geometry().contains(center) for s in QGuiApplication.screens())
 
     # -------------------------------------------------------------- state
 
@@ -288,6 +349,16 @@ class Overlay:
     def destroy(self) -> None:
         self._level_timer.stop()
         self._flash_timer.stop()
+        self._watchdog.stop()
+        self._visible_wanted = False
+        gui_app = QGuiApplication.instance()
+        if gui_app is not None:
+            try:
+                gui_app.screenAdded.disconnect(self._on_screens_changed)
+                gui_app.screenRemoved.disconnect(self._on_screens_changed)
+                gui_app.primaryScreenChanged.disconnect(self._on_screens_changed)
+            except Exception:
+                log.debug("error disconnecting screen signals", exc_info=True)
         try:
             self.bubble.close()
             self.win.close()

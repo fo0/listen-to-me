@@ -1,7 +1,7 @@
 flowchart TD
     subgraph "Entry"
         Main["__main__ / app.main()"]:::infra
-        Single(["single-instance lock (localhost:52697)"]):::infra
+        Single(["single-instance guard — mutex/flock + activate ping (localhost:52697)"]):::infra
     end
 
     subgraph "Core"
@@ -46,6 +46,7 @@ flowchart TD
     end
 
     Main -->|"acquire"| Single
+    Single -->|"post activate (second launch)"| Events
     Main -->|"run"| App
     App --> Config
     App -->|"apply insecure_ssl (verify= + HF backend)"| Net
@@ -94,6 +95,7 @@ flowchart TD
     App --> Autostart
 
     click Main "src/listen_to_me/app.py"
+    click Single "src/listen_to_me/singleinstance.py"
     click App "src/listen_to_me/app.py"
     click Config "src/listen_to_me/config.py"
     click Hotkeys "src/listen_to_me/hotkeys.py"
