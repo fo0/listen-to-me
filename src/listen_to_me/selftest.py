@@ -630,6 +630,42 @@ def _gui_construction():
         window.chk_beep.setChecked(not window.chk_beep.isChecked())
         assert window._collect() == window._saved_snapshot
 
+        # Wheel guard: a wheel tick over an unfocused combo/spin box must not
+        # change its value (it would scroll the page instead), and the wheel
+        # alone can never give the widget focus (StrongFocus, not WheelFocus).
+        from PySide6.QtCore import QPoint, QPointF, Qt
+        from PySide6.QtGui import QWheelEvent
+
+        assert window.language_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus
+        assert window.model_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus
+        assert window.max_seconds_spin.focusPolicy() == Qt.FocusPolicy.StrongFocus
+        # Mute-target rows are created after the window's guard sweep, so they
+        # must guard their own combo on construction.
+        window._add_target_row({"name": "", "enabled": False, "mode": "hold", "hotkey": ""})
+        row = window._target_rows[-1]
+        assert row.mode_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus
+        window._remove_target_row(row)
+
+        def wheel_tick(widget):
+            event = QWheelEvent(
+                QPointF(5, 5),
+                QPointF(widget.mapToGlobal(QPoint(5, 5))),
+                QPoint(0, -120),
+                QPoint(0, -120),
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+                Qt.ScrollPhase.NoScrollPhase,
+                False,
+            )
+            app.sendEvent(widget, event)
+
+        window.language_combo.setCurrentIndex(1)
+        wheel_tick(window.language_combo)
+        assert window.language_combo.currentIndex() == 1  # unfocused → unchanged
+        seconds_before = window.max_seconds_spin.value()
+        wheel_tick(window.max_seconds_spin)
+        assert window.max_seconds_spin.value() == seconds_before
+
         # Status-card formatters: every probe shape renders a clear verdict.
         fmt_cuda = window._format_cuda_status
         assert fmt_cuda({"available": True, "count": 1, "error": None}).startswith("✓")
@@ -685,6 +721,7 @@ def _gui_construction():
         # and the hotkey validation imports pynput (absent on the CI runner).
         wizard = OnboardingWizard(stub.cfg)
         wizard.restart()
+        assert wizard.language_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus  # wheel guard
         wizard.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
         wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
         wizard._apply()

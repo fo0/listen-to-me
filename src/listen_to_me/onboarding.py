@@ -42,6 +42,7 @@ from .choices import (
     model_label,
 )
 from .hotkeys import Hotkeys
+from .qtutil import guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -85,6 +86,10 @@ class OnboardingWizard(QWizard):
         self.addPage(self._build_engine_page())
         self.addPage(self._build_audio_page())
         self.addPage(self._build_startup_page())
+
+        # A stray wheel tick must not silently change a choice (same guard as
+        # the settings window): combos react to the wheel only once focused.
+        guard_wheel(*self.findChildren(QComboBox))
 
     # -------------------------------------------------------------- pages
 
