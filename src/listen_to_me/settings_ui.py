@@ -58,7 +58,7 @@ from .choices import (
 from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
 from .diagnostics import DiagnosticsEngine
 from .hotkeys import Hotkeys
-from .qtutil import guard_wheel
+from .qtutil import elastic_combo, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -551,6 +551,9 @@ class SettingsWindow(QDialog):
             "The speech-recognition model. Bigger = more accurate but slower and larger. "
             "You can also type any CTranslate2 model id from Hugging Face."
         )
+        # Long preset labels / custom model ids must not dictate the page's
+        # minimum width — that clips every card at the right edge (see qtutil).
+        elastic_combo(self.model_combo)
         sform.addRow("Whisper model:", self.model_combo)
         sform.addRow(self._hint(
             "Downloaded automatically on first use (folder on the Whisper page). "
@@ -840,6 +843,8 @@ class SettingsWindow(QDialog):
         self.input_combo.setToolTip(
             "The microphone used for recording. “System default” follows the OS sound settings."
         )
+        # Device names come from the OS and can be arbitrarily long.
+        elastic_combo(self.input_combo)
         dh.addWidget(self.input_combo, 1)
         refresh = QPushButton("Refresh")
         refresh.setToolTip("Re-scan the audio devices, e.g. after plugging in a headset.")

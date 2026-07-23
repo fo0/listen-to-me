@@ -4,7 +4,7 @@ Temporary working context. **Clean up aggressively — delete when resolved.** R
 
 ## Current Work
 
-- **Faster/better model upgrades** (branch `claude/faster-translation-models-y5nn6p`, PR #15) — implemented from the research report: German turbo preset (`jimmymeister/whisper-large-v3-turbo-german-ct2`), `distil-large-v3.5` preset, faster-whisper bump to >=1.2.1, `beam_size` config key + Settings spin box, and a third backend `parakeet` (`transcriber_parakeet.py`, onnx-asr, `[parakeet]` extra, bundled in the exe). Translation was explicitly dropped by the user — transcription improvements only. Verified: compileall + gui_smoke PASS locally (22 checks). Untested on real hardware: actual Parakeet download/decode (no model download in CI). (2026-07-23)
+- **Settings General page clipped at the right** (branch `claude/settings-general-menu-layout-hnovv2`) — the German-turbo preset label from PR #15 (~110 chars) made the model combo demand 877 px, forcing the General page to 1090 px in a 729 px viewport → cards clipped at the right edge (horizontal scroll bar is off). Fixed via `qtutil.elastic_combo` on the model/device combos in settings_ui + onboarding; gui_smoke now asserts every page fits its viewport. PR #15 itself is merged. (2026-07-23)
 
 ## Open Questions
 

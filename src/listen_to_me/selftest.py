@@ -764,6 +764,33 @@ def _gui_construction():
         wheel_tick(window.max_seconds_spin)
         assert window.max_seconds_spin.value() == seconds_before
 
+        # Layout regression guard: the horizontal scroll bar is always off, so
+        # a page whose minimum width exceeds the viewport is silently clipped
+        # at the right edge (one over-long combo item once did this to
+        # General). Visit every page at the default window size and check the
+        # scroll content ends up no wider than its viewport. First-visit side
+        # effects stay suppressed: the Whisper hardware probe would race the
+        # stale-generation asserts below, the Updates check would hit the
+        # network.
+        from PySide6.QtWidgets import QScrollArea
+
+        window._status_probed = True
+        window._updates_auto_checked = True
+        window.show()
+        app.processEvents()
+        for title in window._page_index:
+            window._show_page(title)
+            app.processEvents()
+            page = window.stack.widget(window._page_index[title])
+            for scroll in page.findChildren(QScrollArea):
+                inner_w = scroll.widget().width()
+                viewport_w = scroll.viewport().width()
+                assert inner_w <= viewport_w, (
+                    f"{title} page clipped: content {inner_w}px > viewport {viewport_w}px"
+                )
+        window._show_page("General")
+        window.hide()
+
         # Status-card formatters: every probe shape renders a clear verdict.
         fmt_cuda = window._format_cuda_status
         assert fmt_cuda({"available": True, "count": 1, "error": None}).startswith("✓")
