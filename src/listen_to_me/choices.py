@@ -12,6 +12,12 @@ import logging
 
 log = logging.getLogger(__name__)
 
+# German fine-tune of large-v3-turbo (CTranslate2 conversion of
+# primeline/whisper-large-v3-turbo-german, Apache-2.0): same architecture and
+# speed as the large-v3-turbo preset, ~28% lower German WER — but German only.
+# Referenced by name in transcriber_openvino (no OpenVINO conversion exists).
+GERMAN_TURBO_CT2 = "jimmymeister/whisper-large-v3-turbo-german-ct2"
+
 # (model id, short benefit shown in parentheses in the dropdown)
 MODEL_CHOICES = [
     ("tiny", "fastest, lowest accuracy, ~75 MB"),
@@ -20,7 +26,9 @@ MODEL_CHOICES = [
     ("medium", "high accuracy, noticeably slower, ~1.5 GB"),
     ("large-v3", "best accuracy, slow without a GPU, ~3 GB"),
     ("large-v3-turbo", "near large-v3 accuracy at much higher speed, ~1.6 GB"),
+    (GERMAN_TURBO_CT2, "German fine-tuned turbo — best German accuracy at turbo speed, ~1.6 GB"),
     ("distil-large-v3", "distilled large — fast, English only, ~1.5 GB"),
+    ("distil-large-v3.5", "distilled large v3.5 — English only, faster than turbo, ~1.5 GB"),
     ("tiny.en", "English only — more accurate than tiny for English"),
     ("base.en", "English only — more accurate than base for English"),
     ("small.en", "English only — more accurate than small for English"),
@@ -74,9 +82,11 @@ COMPUTE_TYPES = ["auto", "int8", "int8_float16", "float16", "float32"]
 BACKENDS = [
     ("faster-whisper", "faster-whisper — NVIDIA GPU (CUDA) / CPU"),
     ("openvino", "OpenVINO — Intel GPU / NPU / CPU"),
+    ("parakeet", "Parakeet — fastest engine, NVIDIA GPU (CUDA) / CPU"),
 ]
 OPENVINO_DEVICES = ["auto", "cpu", "gpu", "npu"]
 OPENVINO_PRECISIONS = ["int8", "fp16", "int4"]
+PARAKEET_QUANTIZATIONS = ["int8", "fp32"]
 
 SYSTEM_DEFAULT_DEVICE = "System default"
 

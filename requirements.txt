@@ -1,4 +1,4 @@
-faster-whisper>=1.1.0
+faster-whisper>=1.2.1
 sounddevice>=0.4.6
 numpy>=1.24,<3
 PySide6>=6.6
@@ -9,3 +9,6 @@ requests>=2.31
 # Optional Intel GPU/NPU backend — not installed by default; use
 # `pip install openvino-genai` / `pip install -e ".[openvino]"` (or uncomment):
 # openvino-genai>=2025.2
+# Optional NVIDIA Parakeet backend (fast multilingual ONNX engine) — use
+# `pip install "onnx-asr[cpu,hub]"` / `pip install -e ".[parakeet]"` (or uncomment):
+# onnx-asr[cpu,hub]>=0.12

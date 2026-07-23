@@ -162,7 +162,9 @@ class OnboardingWizard(QWizard):
         self.backend_combo.setCurrentText(backend_label(self.cfg["backend"]))
         self.backend_combo.setToolTip(
             "faster-whisper accelerates on NVIDIA GPUs (CUDA); OpenVINO on Intel "
-            "GPUs and NPUs. Unsure? Keep faster-whisper — it also runs on any CPU."
+            "GPUs and NPUs; Parakeet is a non-Whisper engine that transcribes many "
+            "times faster (the Whisper model choice doesn't apply to it). Unsure? "
+            "Keep faster-whisper — it also runs on any CPU."
         )
         form.addRow("Backend:", self.backend_combo)
 

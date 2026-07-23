@@ -4,7 +4,7 @@ Temporary working context. **Clean up aggressively — delete when resolved.** R
 
 ## Current Work
 
-_(none)_
+- **Faster/better model upgrades** (branch `claude/faster-translation-models-y5nn6p`, PR #15) — implemented from the research report: German turbo preset (`jimmymeister/whisper-large-v3-turbo-german-ct2`), `distil-large-v3.5` preset, faster-whisper bump to >=1.2.1, `beam_size` config key + Settings spin box, and a third backend `parakeet` (`transcriber_parakeet.py`, onnx-asr, `[parakeet]` extra, bundled in the exe). Translation was explicitly dropped by the user — transcription improvements only. Verified: compileall + gui_smoke PASS locally (22 checks). Untested on real hardware: actual Parakeet download/decode (no model download in CI). (2026-07-23)
 
 ## Open Questions
 

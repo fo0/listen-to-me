@@ -55,6 +55,9 @@ DEFAULTS: dict = {
     # Precision of the pre-converted OpenVINO model to download: int8 (small +
     # fast, recommended), fp16 (most accurate) or int4 (smallest).
     "openvino_precision": "int8",
+    # Which ONNX variant of the Parakeet model to download (parakeet backend):
+    # int8 (small + fast on CPU, recommended) or fp32 (most accurate, GPU).
+    "parakeet_quantization": "int8",
     # sounddevice input device index, null = system default.
     "input_device": None,
     # Hard cap for a single recording.
@@ -94,6 +97,9 @@ DEFAULTS: dict = {
     # Optional Whisper initial prompt (domain vocabulary hint, not an instruction).
     "initial_prompt": "",
     "vad_filter": True,
+    # Decoding beam size (faster-whisper backend only): 5 = best accuracy
+    # (default), 1 = greedy — roughly 1.5-2x faster at slightly lower accuracy.
+    "beam_size": 5,
     # Keep a local history of transcribed text (never the audio) so a lost
     # transcript can be recovered from Settings → History. Stored in
     # history.json next to this config file.

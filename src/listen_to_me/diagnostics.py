@@ -101,6 +101,15 @@ def model_cache_status(snapshot: dict) -> dict:
 
             repo = openvino_model_repo(model, snapshot.get("openvino_precision") or "int8")
             return {"target": repo, "cached": _model_is_cached(repo, model_dir), "error": None}
+        if snapshot.get("backend") == "parakeet":
+            from .transcriber_parakeet import MODEL_REPO, _model_is_cached, _quantization
+
+            quantization = _quantization(str(snapshot.get("parakeet_quantization") or "int8"))
+            return {
+                "target": MODEL_REPO,
+                "cached": _model_is_cached(quantization, model_dir),
+                "error": None,
+            }
         from .transcriber import _model_is_cached
 
         return {"target": model, "cached": _model_is_cached(model, model_dir), "error": None}
@@ -200,10 +209,15 @@ class DiagnosticsEngine:
         Returns a short human-readable success message."""
         transcriber = self._transcriber_for(snapshot)
         transcriber.ensure_loaded(notify=notify)
-        return (
-            f"Model '{snapshot['model']}' is downloaded and ready "
-            f"({transcriber.backend} backend)."
-        )
+        if transcriber.backend == "parakeet":
+            # The Parakeet backend runs one fixed model — the Whisper preset
+            # in the snapshot is not what was just downloaded.
+            from .transcriber_parakeet import MODEL_NAME
+
+            name = MODEL_NAME
+        else:
+            name = snapshot["model"]
+        return f"Model '{name}' is downloaded and ready ({transcriber.backend} backend)."
 
     def mic_test(self, device, seconds: float = 3.0, on_level=None, is_cancelled=None) -> dict:
         """Record a short clip from ``device`` and return its clip_stats()."""
