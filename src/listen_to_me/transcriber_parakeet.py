@@ -227,7 +227,13 @@ class ParakeetTranscriber:
         if not self._use_lock.acquire(blocking=False):
             return None
         try:
+            # Snapshot the model like the other backends: a concurrent reload
+            # may swap self._model between the loaded-check and here — decoding
+            # on the previous instance is fine, dereferencing None would not be.
+            model = self._model
+            if model is None:
+                return None
             audio = audio[-_PREVIEW_WINDOW_SECONDS * SAMPLE_RATE :]
-            return str(self._model.recognize(audio, sample_rate=SAMPLE_RATE)).strip()
+            return str(model.recognize(audio, sample_rate=SAMPLE_RATE)).strip()
         finally:
             self._use_lock.release()
