@@ -9,6 +9,7 @@ import webbrowser
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -56,6 +57,7 @@ from .choices import (
 from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
 from .diagnostics import DiagnosticsEngine
 from .hotkeys import Hotkeys
+from .qtutil import guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -134,6 +136,7 @@ class MuteTargetRow(QGroupBox):
         self.name_edit.setToolTip("A label for this app — shown here only.")
         header.addWidget(self.name_edit, 1)
         remove = QPushButton("Remove")
+        remove.setProperty("destructive", True)
         remove.setToolTip("Delete this app from the list.")
         remove.setAutoDefault(False)
         remove.clicked.connect(lambda: self._on_remove(self))
@@ -156,6 +159,7 @@ class MuteTargetRow(QGroupBox):
             "• Toggle mute: the key is tapped to mute at start and again to "
             "unmute at stop."
         )
+        guard_wheel(self.mode_combo)  # rows are created after the window's sweep
         form.addRow("Mode:", self.mode_combo)
 
         key_row = QWidget()
@@ -363,6 +367,11 @@ class SettingsWindow(QDialog):
         self._footer_status_timer.setSingleShot(True)
         self._footer_status_timer.setInterval(2500)
         self._footer_status_timer.timeout.connect(lambda: self.footer_status.setText(""))
+
+        # Wheel-scrolling a page must never edit a value it happens to pass
+        # over: every combo/spin box only reacts to the wheel once focused.
+        # Rows added later (MuteTargetRow) guard their own widgets.
+        guard_wheel(*self.findChildren(QComboBox), *self.findChildren(QAbstractSpinBox))
 
         # Baseline for the unsaved-changes guard — taken after every page is
         # built, so "dirty" means the user actually changed something.
@@ -1054,6 +1063,7 @@ class SettingsWindow(QDialog):
         bottom.addWidget(refresh)
         bottom.addStretch(1)
         clear = QPushButton("Clear history")
+        clear.setProperty("destructive", True)
         clear.setToolTip("Permanently delete every stored transcript.")
         clear.clicked.connect(self._clear_history)
         bottom.addWidget(clear)

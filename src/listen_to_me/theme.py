@@ -34,6 +34,8 @@ _LIGHT = {
     "sidebar": "#e9ebef",
     "on_accent": "#ffffff",
     "disabled": "#a0a4aa",
+    "danger": "#b3261e",
+    "danger_hover": "#f7e7e5",
 }
 _DARK = {
     "window": "#202124",
@@ -46,6 +48,8 @@ _DARK = {
     "sidebar": "#1a1b1d",
     "on_accent": "#ffffff",
     "disabled": "#5f6368",
+    "danger": "#f2b8b5",
+    "danger_hover": "#3b2a29",
 }
 
 
@@ -269,6 +273,12 @@ def _qss(t: dict) -> str:
     }}
     QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus,
     QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{ border: 1px solid {ACCENT}; }}
+    /* A disabled input should read as inactive, not just grey its text. */
+    QLineEdit:disabled, QPlainTextEdit:disabled, QTextEdit:disabled,
+    QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{
+        background: {t["alt"]};
+        color: {t["disabled"]};
+    }}
     QComboBox QAbstractItemView {{
         background: {t["base"]};
         border: 1px solid {t["border"]};
@@ -276,6 +286,9 @@ def _qss(t: dict) -> str:
         selection-color: {t["on_accent"]};
         outline: 0;
     }}
+    /* Breathing room in the dropdown list — the dense native rows make long
+       lists (languages, models) hard to scan and easy to mis-click. */
+    QComboBox QAbstractItemView::item {{ padding: 5px 8px; min-height: 22px; }}
 
     QPushButton {{
         background: {t["base"]};
@@ -292,6 +305,13 @@ def _qss(t: dict) -> str:
     }}
     QPushButton[accent="true"]:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
     QPushButton[accent="true"]:pressed {{ background: {ACCENT_DOWN}; border-color: {ACCENT_DOWN}; }}
+    /* Destructive actions (Clear history, Remove) are flagged in red so they
+       can't be mistaken for a neutral action at a glance. */
+    QPushButton[destructive="true"] {{ color: {t["danger"]}; }}
+    QPushButton[destructive="true"]:hover {{
+        background: {t["danger_hover"]};
+        border-color: {t["danger"]};
+    }}
 
     QCheckBox, QRadioButton {{ spacing: 8px; padding: 2px 0; }}
     QCheckBox::indicator, QRadioButton::indicator {{ width: 17px; height: 17px; }}
@@ -302,6 +322,23 @@ def _qss(t: dict) -> str:
     QScrollBar::handle:vertical:hover {{ background: {t["muted"]}; }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+    /* Match the horizontal bars (Help browser, changelog) to the vertical ones
+       instead of leaving them native. */
+    QScrollBar:horizontal {{ background: transparent; height: 11px; margin: 0; }}
+    QScrollBar::handle:horizontal {{ background: {t["border"]}; border-radius: 5px; min-width: 28px; }}
+    QScrollBar::handle:horizontal:hover {{ background: {t["muted"]}; }}
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
+
+    /* Tooltips carry most of the in-app documentation — style them to match
+       the theme instead of the OS default. (No border-radius: QToolTip windows
+       aren't translucent, rounded corners would show opaque black.) */
+    QToolTip {{
+        background: {t["base"]};
+        color: {t["text"]};
+        border: 1px solid {t["border"]};
+        padding: 5px 7px;
+    }}
     """ + _arrow_qss(t, _arrows(t))
 
 
