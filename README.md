@@ -153,8 +153,10 @@ Configuration is a plain JSON file (tray → *Open config folder*):
 | `distil-large-v3` | ~1.5 GB | near large quality, faster (English-focused) |
 | `distil-large-v3.5` | ~1.5 GB | English only — newer distil, faster than turbo |
 
-`.en` variants are English-only and slightly more accurate for English. You can
-also type any CTranslate2 model id from Hugging Face into the model field.
+`.en` variants are English-only and slightly more accurate for English. The
+model dropdown itself is read-only; to use any other CTranslate2 model id from
+Hugging Face, pick **Custom model id (Hugging Face)…** at the bottom of the
+list and enter the id in the dialog.
 Setting your **spoken language** explicitly (instead of auto-detect) improves
 both accuracy and speed.
 

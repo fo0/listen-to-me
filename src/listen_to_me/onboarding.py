@@ -137,13 +137,17 @@ class OnboardingWizard(QWizard):
         )
         form.addRow("Spoken language:", self.language_combo)
 
+        # Read-only presets only — free text typed here was once saved verbatim
+        # as the model id. Custom CTranslate2 ids live behind the explicit
+        # "Custom model id…" dialog in Settings, not in the first-run wizard.
         self.model_combo = QComboBox()
-        self.model_combo.setEditable(True)
         self.model_combo.addItems([model_label(m) for m, _ in MODEL_CHOICES])
+        if self.model_combo.findText(model_label(self.cfg["model"])) < 0:
+            self.model_combo.addItem(self.cfg["model"])  # unlisted id, verbatim
         self.model_combo.setCurrentText(model_label(self.cfg["model"]))
         self.model_combo.setToolTip(
             "Bigger = more accurate but slower and larger. small is a good start; "
-            "you can also type any CTranslate2 model id from Hugging Face."
+            "custom Hugging Face model ids can be set later in Settings."
         )
         # Long preset labels must not force the fixed-size wizard wider (see qtutil).
         elastic_combo(self.model_combo)

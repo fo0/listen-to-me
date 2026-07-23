@@ -728,6 +728,23 @@ def _gui_construction():
         window.chk_beep.setChecked(not window.chk_beep.isChecked())
         assert window._collect() == window._saved_snapshot
 
+        # Read-only dropdowns: free text typed into the (formerly editable)
+        # model combo was saved verbatim as the model id and failed only at
+        # model load. Custom ids go through the "Custom model id…" sentinel,
+        # whose dialog opens on user activation only — selected
+        # programmatically it must resolve to the saved model, never to the
+        # sentinel text.
+        from listen_to_me.choices import CUSTOM_MODEL_LABEL, model_label
+
+        assert not window.model_combo.isEditable()
+        sentinel = window.model_combo.count() - 1
+        assert window.model_combo.itemText(sentinel) == CUSTOM_MODEL_LABEL
+        saved_model = window._selected_model()
+        window.model_combo.setCurrentIndex(sentinel)
+        assert window._selected_model() == saved_model
+        window.model_combo.setCurrentText(model_label(saved_model))
+        assert window._collect() == window._saved_snapshot
+
         # Wheel guard: a wheel tick over an unfocused combo/spin box must not
         # change its value (it would scroll the page instead), and the wheel
         # alone can never give the widget focus (StrongFocus, not WheelFocus).
@@ -863,6 +880,7 @@ def _gui_construction():
         wizard = OnboardingWizard(stub.cfg)
         wizard.restart()
         assert wizard.language_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus  # wheel guard
+        assert not wizard.model_combo.isEditable()  # read-only — presets only
         wizard.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
         wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
         wizard._apply()

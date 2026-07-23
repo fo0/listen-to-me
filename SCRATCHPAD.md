@@ -4,7 +4,7 @@ Temporary working context. **Clean up aggressively — delete when resolved.** R
 
 ## Current Work
 
-- **Settings General page clipped at the right** (branch `claude/settings-general-menu-layout-hnovv2`) — the German-turbo preset label from PR #15 (~110 chars) made the model combo demand 877 px, forcing the General page to 1090 px in a 729 px viewport → cards clipped at the right edge (horizontal scroll bar is off). Fixed via `qtutil.elastic_combo` on the model/device combos in settings_ui + onboarding; gui_smoke now asserts every page fits its viewport. PR #15 itself is merged. (2026-07-23)
+- **Read-only settings dropdowns** (branch `claude/settings-fields-read-only-qmrf9z`) — the editable Whisper-model combo (Settings + onboarding wizard) saved any typed text verbatim as the model id; the user hit this (typo → nonexistent model, failure only at load). Both combos are now non-editable; custom CTranslate2 ids go through a new "Custom model id (Hugging Face)…" sentinel entry that opens a QInputDialog (`settings_ui._on_model_activated`); gui_smoke asserts non-editability + that the sentinel never resolves to a value. (2026-07-23)
 
 ## Open Questions
 
