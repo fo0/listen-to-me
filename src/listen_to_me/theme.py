@@ -464,6 +464,6 @@ def apply_theme(app: QApplication) -> None:
 
 
 def _refresh(app: QApplication) -> None:
-    tokens = _DARK if is_dark(app) else _LIGHT
-    app.setPalette(_palette(tokens))
-    app.setStyleSheet(_qss(tokens))
+    t = tokens()  # not a local dict lookup: keep the single source in tokens()
+    app.setPalette(_palette(t))
+    app.setStyleSheet(_qss(t))

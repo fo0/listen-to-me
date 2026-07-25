@@ -692,6 +692,11 @@ class _StubApp:
         self.cfg = Config(path=tmp / "config.json")
         self.history = TranscriptHistory(tmp / "history.json")
         self.history.add("A stored transcript for the self-test.")
+        # Out-of-range timestamp (OverflowError in time.localtime): rendering
+        # it must lose only the stamp — the Home page builds the recent list
+        # during SettingsWindow construction, so a corrupt history.json must
+        # never make the main window unconstructable.
+        self.history.add("An entry with a corrupt timestamp.", timestamp=1e300)
         self.hotkeys = _StubHotkeys()
 
     def post(self, *args, **kwargs):
@@ -737,6 +742,8 @@ def _gui_construction():
 
         assert pretty_keys("<ctrl>+<alt>+<space>") == ["Ctrl", "Alt", "Space"]
         assert pretty_keys("<f9>") == ["F9"]
+        assert pretty_keys("<ctrl>++") == ["Ctrl", "+"]  # literal plus key kept
+        assert pretty_keys("") == []
         assert window.home._chips_row.count() >= 1
         recent_text = " ".join(
             label.text() for label in window.home._recent_frame.findChildren(QLabel)

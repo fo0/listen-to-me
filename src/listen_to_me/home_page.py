@@ -57,6 +57,7 @@ _PRETTY_KEYS = {
     "esc": "Esc",
     "backspace": "Backspace",
     "caps_lock": "Caps",
+    "plus": "+",
 }
 
 _BACKEND_SHORT = {
@@ -69,8 +70,14 @@ _BACKEND_SHORT = {
 def pretty_keys(combo: str) -> list[str]:
     """Human key-cap labels for a pynput combo ("<ctrl>+<alt>+<space>" →
     ["Ctrl", "Alt", "Space"]). Unknown tokens pass through readably."""
+    combo = str(combo)
+    if not combo.strip():
+        return []
     caps: list[str] = []
-    for part in str(combo).split("+"):
+    # A literal plus key is spelled "+" in pynput combos ("<ctrl>++" =
+    # Ctrl+Plus) — mask it before splitting on the "+" separator, or it would
+    # vanish from the key caps. A combo that is just "+" hits the fallback.
+    for part in combo.replace("++", "+<plus>").split("+"):
         token = part.strip()
         if token.startswith("<") and token.endswith(">"):
             token = token[1:-1].strip()
@@ -120,6 +127,10 @@ class HomePage(QWidget):
         self._app = window.app
         self.cfg = window.cfg
         self._state = "idle"
+        # (input_device config value, label) — device enumeration goes through
+        # PortAudio and can stall for hundreds of ms on flaky drivers, so it
+        # runs once per device value, not on every Home visit / Apply.
+        self._mic_cache: tuple[object, str] | None = None
 
         from .theme import ACCENT, tokens
 
@@ -307,11 +318,16 @@ class HomePage(QWidget):
         self.card_language.detail.setText(
             "fixed for better accuracy" if self.cfg["language"] != "auto" else "detected per recording"
         )
-        try:
-            _values, current = input_device_choices(self.cfg["input_device"])
-        except Exception:
-            log.exception("could not resolve the input device label")
-            current = "System default"
+        device = self.cfg["input_device"]
+        if self._mic_cache is not None and self._mic_cache[0] == device:
+            current = self._mic_cache[1]
+        else:
+            try:
+                _values, current = input_device_choices(device)
+            except Exception:
+                log.exception("could not resolve the input device label")
+                current = "System default"
+            self._mic_cache = (device, current)
         # Drop the "<index>: " prefix — the number means nothing here.
         self.card_mic.value.setText(current.split(": ", 1)[-1])
         try:  # a hand-edited config value must not break the Home page
@@ -351,9 +367,13 @@ class HomePage(QWidget):
         stamp = ""
         when = entry.get("time")
         if when:
+            # Broad tuple on purpose: float() raises TypeError on a non-numeric
+            # value and localtime() OverflowError on an out-of-range one — a
+            # corrupt history.json must never prevent this window from opening
+            # (this runs during SettingsWindow construction).
             try:
                 stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(when)))
-            except (ValueError, OSError):
+            except (TypeError, ValueError, OverflowError, OSError):
                 stamp = ""
         stamp_label = QLabel(stamp)
         stamp_label.setProperty("role", "hint")
@@ -436,8 +456,11 @@ class HomePage(QWidget):
             self.record_button.setText("Start recording")
             self.record_button.setEnabled(True)
             self.cancel_button.setVisible(False)
-            if previous in ("recording", "processing"):
+            if previous in ("recording", "processing") and self.isVisible():
                 # A finished recording may have added a transcript. Only on a
                 # real transition — refresh() already rebuilt the list, and
-                # entries() re-reads the history file each call.
+                # entries() re-reads the history file each call. Only while
+                # actually on screen: a closed window keeps receiving state
+                # (App replaces it on the next open) and a background page is
+                # refreshed by _on_page_changed when it is shown again.
                 self._refresh_recent()

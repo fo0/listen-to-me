@@ -2007,9 +2007,11 @@ class SettingsWindow(QDialog):
         stamp = ""
         when = entry.get("time")
         if when:
+            # TypeError/OverflowError included: a corrupt history timestamp
+            # must only lose the stamp, never the page (see home_page.py).
             try:
                 stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(when)))
-            except (ValueError, OSError):
+            except (TypeError, ValueError, OverflowError, OSError):
                 stamp = ""
         stamp_label = QLabel(stamp)
         stamp_label.setProperty("role", "hint")
