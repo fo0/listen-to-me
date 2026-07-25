@@ -864,6 +864,20 @@ def _gui_construction():
                 assert inner_w <= viewport_w, (
                     f"{title} page clipped: content {inner_w}px > viewport {viewport_w}px"
                 )
+        # Stat-card click routing, with the window still shown: a click lands
+        # on the card's child QLabel in practice — the label ignores the press
+        # and Qt must propagate it to the card's mouseReleaseEvent handler.
+        from PySide6.QtCore import QPoint as _QPoint
+        from PySide6.QtTest import QTest
+
+        window._show_page("Home")
+        app.processEvents()
+        QTest.mouseClick(
+            window.home.card_model.value, Qt.MouseButton.LeftButton, pos=_QPoint(2, 2)
+        )
+        app.processEvents()
+        assert window.stack.currentIndex() == window._whisper_index
+
         window._show_page("General")
         window.hide()
 

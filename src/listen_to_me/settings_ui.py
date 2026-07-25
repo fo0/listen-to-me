@@ -463,10 +463,14 @@ class SettingsWindow(QDialog):
         try:
             self.home.set_state(state)
             if state == "idle":
-                # A finished dictation may have added a transcript — mark the
-                # lazily rendered History page stale so its next visit
-                # re-renders instead of showing the pre-dictation list.
-                self._history_rendered = False
+                # A finished dictation may have added a transcript. If the
+                # History page is on screen right now, re-render it live;
+                # otherwise just mark it stale so its next visit re-renders
+                # instead of showing the pre-dictation list.
+                if self.isVisible() and self.stack.currentIndex() == self._history_index:
+                    self._refresh_history()
+                else:
+                    self._history_rendered = False
         except Exception:
             log.debug("could not update the Home state", exc_info=True)
 
