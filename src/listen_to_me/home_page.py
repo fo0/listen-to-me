@@ -314,7 +314,11 @@ class HomePage(QWidget):
             current = "System default"
         # Drop the "<index>: " prefix — the number means nothing here.
         self.card_mic.value.setText(current.split(": ", 1)[-1])
-        self.card_mic.detail.setText(f"max. {int(self.cfg['max_seconds'] or 0)} s per recording")
+        try:  # a hand-edited config value must not break the Home page
+            max_seconds = int(float(self.cfg["max_seconds"]))
+        except (TypeError, ValueError):
+            max_seconds = 300
+        self.card_mic.detail.setText(f"max. {max_seconds} s per recording")
 
     def _refresh_recent(self) -> None:
         self._clear_layout(self._recent_layout)
@@ -401,7 +405,7 @@ class HomePage(QWidget):
     def set_state(self, state: str) -> None:
         """Mirror the app state into the hero card. Called via
         SettingsWindow.set_app_state on every state transition."""
-        self._state = state
+        previous, self._state = self._state, state
         if self._hero.property("state") != state:
             # Re-polish so the QSS picks up the state-dependent gradient.
             self._hero.setProperty("state", state)
@@ -432,4 +436,8 @@ class HomePage(QWidget):
             self.record_button.setText("Start recording")
             self.record_button.setEnabled(True)
             self.cancel_button.setVisible(False)
-            self._refresh_recent()  # a finished recording may have added one
+            if previous in ("recording", "processing"):
+                # A finished recording may have added a transcript. Only on a
+                # real transition — refresh() already rebuilt the list, and
+                # entries() re-reads the history file each call.
+                self._refresh_recent()
