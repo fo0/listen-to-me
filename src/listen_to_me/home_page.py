@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .choices import input_device_choices, language_label
+from .choices import SYSTEM_DEFAULT_DEVICE, input_device_choices, language_label
 from .glyphs import glyph_icon
 
 log = logging.getLogger(__name__)
@@ -131,6 +131,9 @@ class HomePage(QWidget):
         # PortAudio and can stall for hundreds of ms on flaky drivers, so it
         # runs once per device value, not on every Home visit / Apply.
         self._mic_cache: tuple[object, str] | None = None
+        # Debounces the hero record button (monotonic seconds of the last
+        # accepted click) — see _toggle.
+        self._last_toggle = 0.0
 
         from .theme import ACCENT, tokens
 
@@ -187,7 +190,7 @@ class HomePage(QWidget):
             "Start a recording now — same as pressing the global hotkey. "
             "The text is inserted at the cursor of the focused field."
         )
-        self.record_button.clicked.connect(lambda: self._app.post("toggle"))
+        self.record_button.clicked.connect(self._toggle)
         buttons.addWidget(self.record_button)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.setObjectName("heroCancel")
@@ -274,6 +277,16 @@ class HomePage(QWidget):
         except Exception:
             log.exception("could not open page %r", page)
 
+    def _toggle(self) -> None:
+        """Post the start/stop toggle, debounced: a double-click emits two
+        clicked signals before the 100 ms event poll runs, which would queue
+        start + stop back to back and end in "Recording too short"."""
+        now = time.monotonic()
+        if now - self._last_toggle < 0.4:
+            return
+        self._last_toggle = now
+        self._app.post("toggle")
+
     # ---------------------------------------------------------------- refresh
 
     def refresh(self) -> None:
@@ -314,10 +327,17 @@ class HomePage(QWidget):
             model = str(self.cfg["model"])
             self.card_model.value.setText(model.rsplit("/", 1)[-1])
             self.card_model.detail.setText(_BACKEND_SHORT.get(backend, backend))
-        self.card_language.value.setText(language_label(self.cfg["language"]))
-        self.card_language.detail.setText(
-            "fixed for better accuracy" if self.cfg["language"] != "auto" else "detected per recording"
-        )
+        if backend == "parakeet":
+            # The language setting does not apply to Parakeet — it always
+            # auto-detects; showing the configured Whisper language here
+            # would be wrong.
+            self.card_language.value.setText("Auto-detect")
+            self.card_language.detail.setText("Parakeet detects the language itself")
+        else:
+            self.card_language.value.setText(language_label(self.cfg["language"]))
+            self.card_language.detail.setText(
+                "fixed for better accuracy" if self.cfg["language"] != "auto" else "detected per recording"
+            )
         device = self.cfg["input_device"]
         if self._mic_cache is not None and self._mic_cache[0] == device:
             current = self._mic_cache[1]
@@ -326,8 +346,13 @@ class HomePage(QWidget):
                 _values, current = input_device_choices(device)
             except Exception:
                 log.exception("could not resolve the input device label")
-                current = "System default"
-            self._mic_cache = (device, current)
+                current = SYSTEM_DEFAULT_DEVICE
+            # Cache only a meaningful resolution. A configured index that
+            # falls back to "System default" (mic unplugged, driver hiccup)
+            # must be retried on the next refresh, or the wrong label would
+            # stick for the whole session after the device comes back.
+            if device is None or current != SYSTEM_DEFAULT_DEVICE:
+                self._mic_cache = (device, current)
         # Drop the "<index>: " prefix — the number means nothing here.
         self.card_mic.value.setText(current.split(": ", 1)[-1])
         try:  # a hand-edited config value must not break the Home page
@@ -378,8 +403,11 @@ class HomePage(QWidget):
         stamp_label = QLabel(stamp)
         stamp_label.setProperty("role", "hint")
         body.addWidget(stamp_label)
-        text = str(entry.get("text", "")).replace("\n", " ")
-        shown = text if len(text) <= _RECENT_CHARS else text[:_RECENT_CHARS].rstrip() + "…"
+        raw = str(entry.get("text", ""))
+        # Flattened/truncated for the label only — Copy hands back the raw
+        # transcript with its line breaks, exactly like the History page.
+        flat = raw.replace("\n", " ")
+        shown = flat if len(flat) <= _RECENT_CHARS else flat[:_RECENT_CHARS].rstrip() + "…"
         text_label = QLabel(shown)
         text_label.setWordWrap(True)
         text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -388,7 +416,7 @@ class HomePage(QWidget):
         copy_btn = QPushButton("Copy")
         copy_btn.setAutoDefault(False)
         copy_btn.setToolTip("Put the full transcript back on the clipboard.")
-        copy_btn.clicked.connect(lambda _checked=False, t=text, b=copy_btn: self._copy(t, b))
+        copy_btn.clicked.connect(lambda _checked=False, t=raw, b=copy_btn: self._copy(t, b))
         rh.addWidget(copy_btn, 0, Qt.AlignmentFlag.AlignTop)
         return row
 

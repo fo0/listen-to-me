@@ -698,9 +698,10 @@ class _StubApp:
         # never make the main window unconstructable.
         self.history.add("An entry with a corrupt timestamp.", timestamp=1e300)
         self.hotkeys = _StubHotkeys()
+        self.posts: list = []  # events the UI posted (asserted by the tests)
 
     def post(self, *args, **kwargs):
-        pass
+        self.posts.append(args)
 
     def _register_hotkey(self):
         pass
@@ -757,6 +758,22 @@ def _gui_construction():
         window.set_app_state("idle")
         assert window.home.record_button.isEnabled()
         assert window.home.cancel_button.isHidden()
+
+        # Record-button debounce: a double-click emits two clicked signals
+        # before the event poll runs — only ONE toggle may be posted, or the
+        # recording would start and instantly stop ("too short").
+        posts_before = len(stub.posts)
+        window.home._toggle()
+        window.home._toggle()  # the double-click's second click
+        assert stub.posts[posts_before:] == [("toggle",)]
+
+        # The language card must not show the (ignored) Whisper language for
+        # the Parakeet backend — Parakeet always auto-detects.
+        stub.cfg.data["backend"] = "parakeet"
+        window.home.refresh()
+        assert window.home.card_language.value.text() == "Auto-detect"
+        stub.cfg.data["backend"] = "faster-whisper"
+        window.home.refresh()
 
         window._show_page("History")  # force History render (lazy on first view)
         assert window.stack.currentIndex() == window._history_index

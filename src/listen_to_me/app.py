@@ -422,8 +422,10 @@ class App:
             except Exception:
                 log.debug("overlay state update failed", exc_info=True)
         if self._settings_window is not None:
-            # Keep the Home hero in sync (safe on a closed window: the widgets
-            # exist until the window object is replaced).
+            # Keep the Home hero in sync. Safe on a closed window: the window
+            # object (and its widgets) outlives the close — signal-connection
+            # bookkeeping keeps replaced windows alive (see BACKLOG #14), and
+            # set_app_state additionally guards itself.
             self._settings_window.set_app_state(state)
 
     def _beep(self, frequency: int) -> None:
