@@ -652,6 +652,16 @@ def _qt_icons():
         assert not tray_icon(state).isNull()
 
 
+def _glyph_icons():
+    """Every painted sidebar/Home glyph renders to a non-empty pixmap."""
+    _ensure_qapp()
+    from listen_to_me.glyphs import GLYPH_NAMES, glyph_icon, glyph_pixmap
+
+    for name in GLYPH_NAMES:
+        assert not glyph_pixmap(name, "#888888").isNull(), name
+    assert not glyph_icon("home", "#888888", "#4f6ef7").isNull()
+
+
 def _voice_mic_widget():
     """Render the animated overlay icon through a few ticks in every state."""
     _ensure_qapp()
@@ -682,10 +692,16 @@ class _StubApp:
         self.cfg = Config(path=tmp / "config.json")
         self.history = TranscriptHistory(tmp / "history.json")
         self.history.add("A stored transcript for the self-test.")
+        # Out-of-range timestamp (OverflowError in time.localtime): rendering
+        # it must lose only the stamp — the Home page builds the recent list
+        # during SettingsWindow construction, so a corrupt history.json must
+        # never make the main window unconstructable.
+        self.history.add("An entry with a corrupt timestamp.", timestamp=1e300)
         self.hotkeys = _StubHotkeys()
+        self.posts: list = []  # events the UI posted (asserted by the tests)
 
     def post(self, *args, **kwargs):
-        pass
+        self.posts.append(args)
 
     def _register_hotkey(self):
         pass
@@ -714,8 +730,51 @@ def _gui_construction():
 
         window = SettingsWindow(stub)
         # Sidebar has non-selectable section headers, so nav rows and stack
-        # indexes differ; General is preselected and _show_page maps by title.
-        assert window.nav.currentRow() == window._nav_row["General"]
+        # indexes differ; the Home hub is preselected and _show_page maps by title.
+        assert window.nav.currentRow() == window._nav_row["Home"]
+        assert window.stack.currentIndex() == window._home_index
+
+        # Home hub: the hotkey renders as key caps, the stored transcript is
+        # listed, and the hero mirrors every app state (posted by App via
+        # set_app_state). isHidden() not isVisible(): the window isn't shown.
+        from PySide6.QtWidgets import QLabel
+
+        from listen_to_me.home_page import pretty_keys
+
+        assert pretty_keys("<ctrl>+<alt>+<space>") == ["Ctrl", "Alt", "Space"]
+        assert pretty_keys("<f9>") == ["F9"]
+        assert pretty_keys("<ctrl>++") == ["Ctrl", "+"]  # literal plus key kept
+        assert pretty_keys("") == []
+        assert window.home._chips_row.count() >= 1
+        recent_text = " ".join(
+            label.text() for label in window.home._recent_frame.findChildren(QLabel)
+        )
+        assert "A stored transcript" in recent_text
+        window.set_app_state("recording")
+        assert "Stop" in window.home.record_button.text()
+        assert not window.home.cancel_button.isHidden()
+        window.set_app_state("processing")
+        assert not window.home.record_button.isEnabled()
+        window.set_app_state("idle")
+        assert window.home.record_button.isEnabled()
+        assert window.home.cancel_button.isHidden()
+
+        # Record-button debounce: a double-click emits two clicked signals
+        # before the event poll runs — only ONE toggle may be posted, or the
+        # recording would start and instantly stop ("too short").
+        posts_before = len(stub.posts)
+        window.home._toggle()
+        window.home._toggle()  # the double-click's second click
+        assert stub.posts[posts_before:] == [("toggle",)]
+
+        # The language card must not show the (ignored) Whisper language for
+        # the Parakeet backend — Parakeet always auto-detects.
+        stub.cfg.data["backend"] = "parakeet"
+        window.home.refresh()
+        assert window.home.card_language.value.text() == "Auto-detect"
+        stub.cfg.data["backend"] = "faster-whisper"
+        window.home.refresh()
+
         window._show_page("History")  # force History render (lazy on first view)
         assert window.stack.currentIndex() == window._history_index
         window._refresh_history()
@@ -805,6 +864,20 @@ def _gui_construction():
                 assert inner_w <= viewport_w, (
                     f"{title} page clipped: content {inner_w}px > viewport {viewport_w}px"
                 )
+        # Stat-card click routing, with the window still shown: a click lands
+        # on the card's child QLabel in practice — the label ignores the press
+        # and Qt must propagate it to the card's mouseReleaseEvent handler.
+        from PySide6.QtCore import QPoint as _QPoint
+        from PySide6.QtTest import QTest
+
+        window._show_page("Home")
+        app.processEvents()
+        QTest.mouseClick(
+            window.home.card_model.value, Qt.MouseButton.LeftButton, pos=_QPoint(2, 2)
+        )
+        app.processEvents()
+        assert window.stack.currentIndex() == window._whisper_index
+
         window._show_page("General")
         window.hide()
 
@@ -963,6 +1036,7 @@ _LIGHT_CHECKS = [
     ("hardware/status probes", _hardware_probes),
     ("help content renders", _help_content_renders),
     ("Qt icon conversion", _qt_icons),
+    ("glyph icons render", _glyph_icons),
     ("voice mic widget", _voice_mic_widget),
     ("Qt UI construction", _gui_construction),
 ]

@@ -38,6 +38,11 @@ standalone system-tray app that works in *every* application.
 - **Transcript history** — the transcribed text of each recording is kept
   locally (never the audio) so you can copy it again from **Settings → History**
   if a paste is lost. Bounded in size, and easy to switch off or clear.
+- **Home hub** — the main window opens on a **Home page**: the live recording
+  state with a big **Start/Stop** button (red while recording), your hotkey
+  shown as key caps, at-a-glance cards for the active engine/model, language
+  and microphone, quick actions into the right settings page, and your most
+  recent transcripts with one-click copy.
 - **Settings window** — language, model, hotkey (with a press-the-keys
   **shortcut picker**), microphone, insert mode, notifications, autostart,
   model download folder and more — with explanatory tooltips on every option.
@@ -103,6 +108,7 @@ Right-click the tray icon → **Settings…**
 
 | Tab | Options |
 | --- | --- |
+| **Home** | The entry hub: live recording state with **Start recording / Stop & insert** (and **Cancel**) buttons, the hotkey rendered as key caps, **at-a-glance cards** (engine & model, language, microphone — click one to jump to its settings page), **quick actions** (change hotkey, model & engine, test microphone, overlay, updates, help) and the **most recent transcripts** with a Copy button each |
 | **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), clipboard restore, notifications, beep, **autostart**, **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
 | **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU, **Parakeet** = fastest engine, NVIDIA CUDA / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model/Parakeet precision, **beam size** (faster-whisper: 5 = best accuracy, 1 = greedy ≈ 1.5–2× faster), VAD silence filter (faster-whisper only), **Detected hardware & model status** card (NVIDIA GPU/CUDA found? OpenVINO installed and which Intel devices? Is the selected model already downloaded? — with a **Refresh status** button, updates automatically when you change model/backend), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), both cancellable with a **Cancel** button, initial prompt (domain vocabulary hint) |
 | **Audio** | Microphone selection, **Test microphone** (3-second check with a live level bar, a clear verdict — works / too quiet / no signal — and a **Cancel** button), maximum recording length |
@@ -114,7 +120,8 @@ Right-click the tray icon → **Settings…**
 | **Help** | Built-in **troubleshooting** page (GPU/CUDA errors, Intel GPU/NPU setup, hotkey, text insertion, model storage, assistant setup) with clickable links — also on the tray menu |
 
 Every option has a hover tooltip explaining what it does. The sidebar groups
-the pages into **Settings** and **More** (History/Updates/Help). **Save**
+the pages into **Home**, **Settings** and **More** (History/Updates/Help).
+**Save**
 applies everything immediately and closes, **Apply** applies without closing,
 and closing with unsaved changes asks whether to save or discard them.
 

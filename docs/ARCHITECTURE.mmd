@@ -16,9 +16,10 @@ flowchart TD
         Hotkeys("Hotkeys — global hotkey, pynput"):::frontend
         Tray("Tray — QSystemTrayIcon"):::frontend
         Overlay("Overlay + VoiceMicWidget"):::frontend
-        Settings("SettingsWindow"):::frontend
+        Settings("SettingsWindow — main window: Home hub + settings pages"):::frontend
+        Home("HomePage — live state, quick actions, recent transcripts"):::frontend
         Onboarding("OnboardingWizard — first-run setup"):::frontend
-        Theme["theme / icons / qtutil / keymap / widgets / choices"]:::frontend
+        Theme["theme / icons / glyphs / qtutil / keymap / widgets / choices"]:::frontend
     end
 
     subgraph "Processing (worker threads)"
@@ -63,6 +64,8 @@ flowchart TD
     App --> Settings
     App -->|"first run (no config yet)"| Onboarding
     Onboarding -->|"essential settings"| Config
+    Settings -->|"first page; set_app_state mirrors state"| Home
+    Home -->|"post toggle/cancel"| Events
     Overlay --- Theme
     Settings --- Theme
 
@@ -107,6 +110,7 @@ flowchart TD
     click Tray "src/listen_to_me/tray.py"
     click Overlay "src/listen_to_me/overlay.py"
     click Settings "src/listen_to_me/settings_ui.py"
+    click Home "src/listen_to_me/home_page.py"
     click Onboarding "src/listen_to_me/onboarding.py"
     click Recorder "src/listen_to_me/audio.py"
     click Transcriber "src/listen_to_me/transcriber.py"
