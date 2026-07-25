@@ -4,7 +4,7 @@ Temporary working context. **Clean up aggressively — delete when resolved.** R
 
 ## Current Work
 
-- **Read-only settings dropdowns** (branch `claude/settings-fields-read-only-qmrf9z`) — the editable Whisper-model combo (Settings + onboarding wizard) saved any typed text verbatim as the model id; the user hit this (typo → nonexistent model, failure only at load). Both combos are now non-editable; custom CTranslate2 ids go through a new "Custom model id (Hugging Face)…" sentinel entry that opens a QInputDialog (`settings_ui._on_model_activated`); gui_smoke asserts non-editability + that the sentinel never resolves to a value. (2026-07-23)
+- **UI revamp + Home hub** (branch `claude/ui-design-revamp-hnvrw2`) — user asked for a full UI refresh plus a "home / entry area with all important functions". New `home_page.py` (hero card with live state + start/stop/cancel, hotkey key caps, at-a-glance cards, quick actions, recent transcripts), new `glyphs.py` (QPainter line icons), branded sidebar, refreshed theme (indigo accent `#4f6ef7`, tinted nav selection, per-state hero gradient — red while recording). SettingsWindow is now the app's main window (title = app name, Home preselected); `App._set_state` mirrors state via `set_app_state`. gui_smoke extended (Home assertions, glyph render check). (2026-07-25)
 
 ## Open Questions
 

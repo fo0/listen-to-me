@@ -421,6 +421,10 @@ class App:
                 self.overlay.set_state(state)
             except Exception:
                 log.debug("overlay state update failed", exc_info=True)
+        if self._settings_window is not None:
+            # Keep the Home hero in sync (safe on a closed window: the widgets
+            # exist until the window object is replaced).
+            self._settings_window.set_app_state(state)
 
     def _beep(self, frequency: int) -> None:
         if not self.cfg["beep"] or sys.platform != "win32":

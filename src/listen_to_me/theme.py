@@ -17,40 +17,51 @@ from PySide6.QtWidgets import QApplication
 
 log = logging.getLogger(__name__)
 
-ACCENT = "#3d8bfd"
-ACCENT_HOVER = "#5a9dfe"
-ACCENT_DOWN = "#2f74d0"
+ACCENT = "#4f6ef7"
+ACCENT_HOVER = "#6a84f8"
+ACCENT_DOWN = "#3c56cf"
+# Second stop of the hero gradient on the Home page (indigo → violet).
+ACCENT_ALT = "#7b5bf5"
 
 # Palette tokens per scheme. Kept together so the QSS below and the QPalette
-# stay in sync.
+# stay in sync. "accent_soft" is the tinted selection/hover surface modern
+# sidebars use instead of a solid accent block.
 _LIGHT = {
-    "window": "#f4f5f7",
+    "window": "#f5f6fa",
     "base": "#ffffff",
-    "alt": "#eceef1",
-    "text": "#1f2023",
-    "muted": "#5f6368",
-    "border": "#cdd0d5",
-    "hover": "#e6e8ec",
-    "sidebar": "#e9ebef",
+    "alt": "#eceef4",
+    "text": "#1b1d26",
+    "muted": "#5c6270",
+    "border": "#d8dbe4",
+    "hover": "#e8eaf1",
+    "sidebar": "#eceff5",
+    "accent_soft": "#e2e8fd",
     "on_accent": "#ffffff",
-    "disabled": "#a0a4aa",
+    "disabled": "#a2a7b3",
     "danger": "#b3261e",
     "danger_hover": "#f7e7e5",
 }
 _DARK = {
-    "window": "#202124",
-    "base": "#2a2b2e",
-    "alt": "#26272a",
-    "text": "#e8eaed",
-    "muted": "#9aa0a6",
-    "border": "#3c4043",
-    "hover": "#343639",
-    "sidebar": "#1a1b1d",
+    "window": "#17181c",
+    "base": "#1f2127",
+    "alt": "#24262d",
+    "text": "#e7e9ee",
+    "muted": "#9aa1ad",
+    "border": "#33363f",
+    "hover": "#2a2d35",
+    "sidebar": "#101114",
+    "accent_soft": "#28304f",
     "on_accent": "#ffffff",
-    "disabled": "#5f6368",
+    "disabled": "#5b6069",
     "danger": "#f2b8b5",
     "danger_hover": "#3b2a29",
 }
+
+
+def tokens() -> dict:
+    """The palette tokens for the current OS scheme — for widgets that paint
+    or build icons in code (nav glyphs, Home page) and must match the QSS."""
+    return _DARK if is_dark() else _LIGHT
 
 
 def is_dark(app: QApplication | None = None) -> bool:
@@ -194,11 +205,11 @@ def _arrow_qss(t: dict, arrows: dict | None) -> str:
     QSpinBox, QDoubleSpinBox {{ padding-right: 22px; }}
     QSpinBox::up-button, QDoubleSpinBox::up-button {{
         subcontrol-origin: border; subcontrol-position: top right;
-        width: 20px; border: none; border-top-right-radius: 7px;
+        width: 20px; border: none; border-top-right-radius: 8px;
     }}
     QSpinBox::down-button, QDoubleSpinBox::down-button {{
         subcontrol-origin: border; subcontrol-position: bottom right;
-        width: 20px; border: none; border-bottom-right-radius: 7px;
+        width: 20px; border: none; border-bottom-right-radius: 8px;
     }}
     QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
     QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{ background: {t["hover"]}; }}
@@ -218,22 +229,27 @@ def _qss(t: dict) -> str:
     QWidget {{ color: {t["text"]}; }}
     QDialog, QMainWindow {{ background: {t["window"]}; }}
 
-    /* Sidebar navigation (settings) */
+    /* Sidebar: branding header + navigation. The selected row uses a tinted
+       accent surface with accent text (not a solid accent block) — the modern
+       "pill" look, and the icon recolours via its Selected pixmap. */
+    QWidget#sidebar {{ background: {t["sidebar"]}; }}
+    QLabel#brandName {{ font-size: 12.5pt; font-weight: 700; }}
+    QLabel#brandTag {{ color: {t["muted"]}; font-size: 8.5pt; }}
     QListWidget#nav {{
-        background: {t["sidebar"]};
+        background: transparent;
         border: none;
         outline: 0;
-        padding: 8px 6px;
-        min-width: 148px;
-        max-width: 188px;
+        padding: 4px 8px;
+        min-width: 172px;
+        max-width: 210px;
     }}
     QListWidget#nav::item {{
         padding: 9px 12px;
-        border-radius: 7px;
+        border-radius: 8px;
         margin: 2px 2px;
         color: {t["muted"]};
     }}
-    QListWidget#nav::item:selected {{ background: {ACCENT}; color: {t["on_accent"]}; }}
+    QListWidget#nav::item:selected {{ background: {t["accent_soft"]}; color: {ACCENT}; }}
     QListWidget#nav::item:hover:!selected:!disabled {{ background: {t["hover"]}; color: {t["text"]}; }}
     /* Section headers are non-selectable (disabled) rows: muted, extra space above. */
     QListWidget#nav::item:disabled {{
@@ -247,9 +263,87 @@ def _qss(t: dict) -> str:
     QLabel[role="hint"] {{ color: {t["muted"]}; }}
     QLabel[role="title"] {{ font-size: 15pt; font-weight: 600; }}
 
-    QGroupBox {{
+    /* Home page ------------------------------------------------------- */
+    /* Hero card: accent gradient with white content; its children must not
+       inherit an opaque background. */
+    QFrame#hero {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+            stop:0 {ACCENT}, stop:1 {ACCENT_ALT});
+        border: none;
+        border-radius: 14px;
+    }}
+    /* While recording the hero flips to a warm "live" gradient. */
+    QFrame#hero[state="recording"] {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+            stop:0 #e5484d, stop:1 #f0653c);
+    }}
+    QFrame#hero QLabel {{ background: transparent; color: #ffffff; }}
+    QLabel#heroState {{ font-size: 16pt; font-weight: 700; }}
+    QLabel#heroHint {{ color: #dfe4ff; }}
+    QLabel#keycap {{
+        background: #30ffffff;
+        border: 1px solid #55ffffff;
+        border-radius: 6px;
+        padding: 3px 10px;
+        font-weight: 600;
+    }}
+    QPushButton#recordBtn {{
+        background: #ffffff;
+        color: {ACCENT};
+        border: none;
+        border-radius: 10px;
+        padding: 11px 24px;
+        font-weight: 700;
+    }}
+    QPushButton#recordBtn:hover {{ background: #eef1ff; }}
+    QPushButton#recordBtn:pressed {{ background: #dbe2fe; }}
+    QFrame#hero[state="recording"] QPushButton#recordBtn {{ color: #d93a3f; }}
+    QPushButton#recordBtn:disabled {{ background: #66ffffff; color: {ACCENT_DOWN}; }}
+    QPushButton#heroCancel {{
+        background: transparent;
+        color: #ffffff;
+        border: 1px solid #66ffffff;
+        border-radius: 10px;
+        padding: 11px 18px;
+    }}
+    QPushButton#heroCancel:hover {{ background: #22ffffff; }}
+
+    /* Clickable at-a-glance stat cards + quick-action tiles. */
+    QFrame[card="stat"] {{
+        background: {t["base"]};
+        border: 1px solid {t["border"]};
+        border-radius: 12px;
+    }}
+    QFrame[card="stat"]:hover {{ border: 1px solid {ACCENT}; }}
+    QFrame[card="stat"] QLabel {{ background: transparent; }}
+    QLabel[role="cardTitle"] {{
+        color: {t["muted"]};
+        font-size: 8.5pt;
+        font-weight: 600;
+        letter-spacing: 1px;
+    }}
+    QLabel[role="cardValue"] {{ font-weight: 600; }}
+    QFrame[role="divider"] {{ background: {t["border"]}; border: none; }}
+    QPushButton[quick="true"] {{
+        background: {t["base"]};
         border: 1px solid {t["border"]};
         border-radius: 10px;
+        padding: 10px 14px;
+        text-align: left;
+    }}
+    QPushButton[quick="true"]:hover {{ background: {t["hover"]}; border-color: {ACCENT}; }}
+    QPushButton[quick="true"]:pressed {{ background: {t["alt"]}; }}
+    /* Section headings between the Home card groups. */
+    QLabel[role="section"] {{
+        color: {t["muted"]};
+        font-size: 9pt;
+        font-weight: 700;
+        letter-spacing: 1px;
+    }}
+
+    QGroupBox {{
+        border: 1px solid {t["border"]};
+        border-radius: 12px;
         margin-top: 14px;
         padding: 12px 12px 6px 12px;
         background: {t["base"]};
@@ -266,7 +360,7 @@ def _qss(t: dict) -> str:
     QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
         background: {t["base"]};
         border: 1px solid {t["border"]};
-        border-radius: 7px;
+        border-radius: 8px;
         padding: 6px 9px;
         selection-background-color: {ACCENT};
         selection-color: {t["on_accent"]};
@@ -293,7 +387,7 @@ def _qss(t: dict) -> str:
     QPushButton {{
         background: {t["base"]};
         border: 1px solid {t["border"]};
-        border-radius: 7px;
+        border-radius: 8px;
         padding: 7px 16px;
         min-height: 18px;
     }}

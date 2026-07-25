@@ -1,4 +1,5 @@
-"""Settings window (PySide6/Qt): a sidebar of pages with grouped cards."""
+"""Main window (PySide6/Qt): a branded sidebar with a Home entry hub and the
+settings pages as grouped cards."""
 
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ import threading
 import time
 import webbrowser
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QButtonGroup,
@@ -60,11 +61,27 @@ from .choices import (
 )
 from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
 from .diagnostics import DiagnosticsEngine
+from .glyphs import glyph_icon
+from .home_page import HomePage
 from .hotkeys import Hotkeys
 from .qtutil import elastic_combo, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
+
+# Sidebar glyph per page title (glyphs.py).
+_NAV_GLYPHS = {
+    "Home": "home",
+    "General": "sliders",
+    "Whisper": "wave",
+    "Audio": "mic",
+    "Overlay": "layers",
+    "Integrations": "link",
+    "Assistant": "spark",
+    "History": "clock",
+    "Updates": "download",
+    "Help": "help",
+}
 
 
 class _UpdateSignals(QObject):
@@ -203,9 +220,11 @@ class SettingsWindow(QDialog):
         super().__init__(None)
         self.app = app
         self.cfg = app.cfg
-        self.setWindowTitle(f"{APP_NAME} — Settings")
-        self.resize(940, 700)
-        self.setMinimumSize(820, 580)
+        # No " — Settings" suffix: with the Home hub this is the app's main
+        # window, not just a preferences dialog.
+        self.setWindowTitle(APP_NAME)
+        self.resize(980, 720)
+        self.setMinimumSize(840, 600)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -216,9 +235,7 @@ class SettingsWindow(QDialog):
         body.setSpacing(0)
         outer.addLayout(body, 1)
 
-        self.nav = QListWidget()
-        self.nav.setObjectName("nav")
-        body.addWidget(self.nav)
+        body.addWidget(self._build_sidebar())
 
         self.stack = QStackedWidget()
         # Keep the detail pane comfortably wide so fields aren't cramped and the
@@ -275,13 +292,20 @@ class SettingsWindow(QDialog):
         # itself closes the window (shutdown, updater restart).
         self._force_close = False
 
-        # The sidebar groups the pages into sections: the settings proper, and
-        # the "around the app" pages (History/Updates/Help). Section headers are
-        # non-selectable rows, so a sidebar row is NOT a stack index — every nav
-        # item carries its stack index in UserRole instead.
+        # The sidebar groups the pages into sections: the Home hub (no header),
+        # the settings proper, and the "around the app" pages
+        # (History/Updates/Help). Section headers are non-selectable rows, so a
+        # sidebar row is NOT a stack index — every nav item carries its stack
+        # index in UserRole instead.
+        from .theme import ACCENT, tokens
+
+        colors = tokens()
         self._page_index: dict[str, int] = {}  # page title -> stack index
         self._nav_row: dict[str, int] = {}  # page title -> sidebar row
         sections = [
+            ("", [
+                ("Home", self._build_home),
+            ]),
             ("Settings", [
                 ("General", self._build_general),
                 ("Whisper", self._build_whisper),
@@ -296,28 +320,36 @@ class SettingsWindow(QDialog):
                 ("Help", self._build_help),
             ]),
         ]
+        self.nav.setIconSize(QSize(18, 18))
         for section, pages in sections:
-            header = QListWidgetItem(section.upper())
-            header.setFlags(Qt.ItemFlag.NoItemFlags)  # not selectable/enabled
-            font = header.font()
-            font.setPointSizeF(max(font.pointSizeF() - 1.5, 6.0))
-            font.setBold(True)
-            header.setFont(font)
-            self.nav.addItem(header)
+            if section:
+                header = QListWidgetItem(section.upper())
+                header.setFlags(Qt.ItemFlag.NoItemFlags)  # not selectable/enabled
+                font = header.font()
+                font.setPointSizeF(max(font.pointSizeF() - 1.5, 6.0))
+                font.setBold(True)
+                header.setFont(font)
+                self.nav.addItem(header)
             for title, builder in pages:
                 index = self.stack.addWidget(builder(title))
                 item = QListWidgetItem(title)
                 item.setData(Qt.ItemDataRole.UserRole, index)
+                glyph = _NAV_GLYPHS.get(title)
+                if glyph:
+                    # Selected rows recolour their glyph to the accent (the
+                    # tinted row keeps the muted glyph unreadable otherwise).
+                    item.setIcon(glyph_icon(glyph, colors["muted"], ACCENT, size=18))
                 self.nav.addItem(item)
                 self._page_index[title] = index
                 self._nav_row[title] = self.nav.count() - 1
 
+        self._home_index = self._page_index["Home"]
         self._history_index = self._page_index["History"]
         self._whisper_index = self._page_index["Whisper"]
         self._updates_index = self._page_index["Updates"]
         self._help_index = self._page_index["Help"]
         self.nav.currentRowChanged.connect(self._on_page_changed)
-        self.nav.setCurrentRow(self._nav_row["General"])
+        self.nav.setCurrentRow(self._nav_row["Home"])
 
         # Re-check the "Selected model" status line when an input it depends on
         # changes — debounced so typing in the model-folder field probes once,
@@ -382,6 +414,56 @@ class SettingsWindow(QDialog):
         self._saved_snapshot = self._collect()
 
     # ------------------------------------------------------ page helpers
+
+    def _build_sidebar(self) -> QWidget:
+        """The branded sidebar: app logo + name on top, the nav list below.
+        Creates self.nav; the caller fills it with sections and pages."""
+        from .icons import mic_image
+        from .qtutil import pil_to_pixmap
+
+        sidebar = QWidget()
+        sidebar.setObjectName("sidebar")
+        sv = QVBoxLayout(sidebar)
+        sv.setContentsMargins(0, 0, 0, 0)
+        sv.setSpacing(0)
+
+        brand = QWidget()
+        bh = QHBoxLayout(brand)
+        bh.setContentsMargins(16, 16, 12, 10)
+        bh.setSpacing(10)
+        logo = QLabel()
+        pixmap = pil_to_pixmap(mic_image("idle", 64))
+        pixmap.setDevicePixelRatio(2)  # 32 logical px, crisp on hidpi
+        logo.setPixmap(pixmap)
+        bh.addWidget(logo)
+        names = QVBoxLayout()
+        names.setSpacing(0)
+        brand_name = QLabel(APP_NAME)
+        brand_name.setObjectName("brandName")
+        names.addWidget(brand_name)
+        brand_tag = QLabel("Local voice typing")
+        brand_tag.setObjectName("brandTag")
+        names.addWidget(brand_tag)
+        bh.addLayout(names)
+        bh.addStretch(1)
+        sv.addWidget(brand)
+
+        self.nav = QListWidget()
+        self.nav.setObjectName("nav")
+        sv.addWidget(self.nav, 1)
+        return sidebar
+
+    def _build_home(self, title: str) -> QWidget:
+        self.home = HomePage(self)
+        return self.home
+
+    def set_app_state(self, state: str) -> None:
+        """Mirror the app state into the Home hero (called by App._set_state
+        on the Qt main thread)."""
+        try:
+            self.home.set_state(state)
+        except Exception:
+            log.debug("could not update the Home state", exc_info=True)
 
     @staticmethod
     def _page(title: str) -> tuple[QWidget, QVBoxLayout]:
@@ -1160,6 +1242,10 @@ class SettingsWindow(QDialog):
         if index is None:
             return  # a section header, not a page
         self.stack.setCurrentIndex(index)
+        # Home always re-reads config + history — cheap, and it may have gone
+        # stale while the user edited other pages or dictated.
+        if index == self._home_index:
+            self.home.refresh()
         # Build the transcript rows only when the History page is first shown.
         if index == self._history_index and not self._history_rendered:
             self._refresh_history()
@@ -2187,6 +2273,7 @@ class SettingsWindow(QDialog):
         self.cfg.save()
         self.app.apply_settings()
         self._saved_snapshot = self._collect()
+        self.home.refresh()  # hotkey chips / stat cards may show old values
         return True
 
     def _save(self) -> None:
