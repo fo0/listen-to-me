@@ -57,6 +57,175 @@ def _config_defaults():
         assert target["mode"] in ("hold", "toggle")
 
 
+def _config_survives_corrupt_sections():
+    """A stored value where the defaults have a nested section must not replace
+    that section. `"overlay": null` used to survive the merge, and the very
+    first access (Tray.start → cfg["overlay"]["enabled"]) then raised before any
+    UI existed to report it — the app just didn't start."""
+    import json
+
+    from listen_to_me.config import DEFAULTS, Config
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "overlay": None,  # whole section nulled
+                    "assistant": "nonsense",  # wrong type
+                    "integrations": [1, 2],  # wrong type
+                    "language": "de",  # a valid sibling must still apply
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = Config(path=path)
+        assert cfg["language"] == "de"
+        for section in ("overlay", "assistant", "integrations"):
+            assert isinstance(cfg[section], dict), section
+        assert cfg["overlay"]["enabled"] == DEFAULTS["overlay"]["enabled"]
+        assert cfg["assistant"]["base_url"] == DEFAULTS["assistant"]["base_url"]
+        # A nested dict that IS a dict still merges key by key.
+        path.write_text(json.dumps({"overlay": {"preview_seconds": 9}}), encoding="utf-8")
+        cfg = Config(path=path)
+        assert cfg["overlay"]["preview_seconds"] == 9
+        assert cfg["overlay"]["enabled"] == DEFAULTS["overlay"]["enabled"]
+
+
+def _history_normalizes_entries():
+    """The history file is untrusted input and its text goes straight into a
+    QLabel. Entries whose "text" is not a non-empty string are dropped, so no
+    renderer can be handed an int/list/None."""
+    import json
+
+    from listen_to_me.history import TranscriptHistory
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "history.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {"time": 1.0, "text": "kept"},
+                    {"time": 2.0, "text": 42},  # non-string
+                    {"time": 3.0, "text": ["a"]},  # non-string
+                    {"time": 4.0, "text": ""},  # empty
+                    {"time": 5.0},  # missing
+                    "not an entry",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        store = TranscriptHistory(path)
+        entries = store.entries()
+        assert [e["text"] for e in entries] == ["kept"]
+        # Appending still works on top of a filtered file.
+        store.add("second")
+        assert [e["text"] for e in store.entries()] == ["second", "kept"]
+        store.add("second")  # exact consecutive duplicate → ignored
+        assert len(store.entries()) == 2
+
+
+def _recorder_start_failure_resets():
+    """A stream that opens but fails to start must leave the recorder idle.
+    self._stream used to be assigned before start(), so `active` stayed True
+    forever and every later recording raised "recording already active" — the
+    hotkey was dead until the app restarted."""
+    import sys as _sys
+    import types
+
+    from listen_to_me.audio import Recorder
+
+    class _Stream:
+        def __init__(self, **_kwargs):
+            self.closed = False
+
+        def start(self):
+            raise OSError("device disappeared")
+
+        def close(self):
+            self.closed = True
+
+    opened: list = []
+
+    def _input_stream(**kwargs):
+        stream = _Stream(**kwargs)
+        opened.append(stream)
+        return stream
+
+    fake = types.ModuleType("sounddevice")
+    fake.InputStream = _input_stream
+    fake.CallbackStop = RuntimeError
+    previous = _sys.modules.get("sounddevice")
+    _sys.modules["sounddevice"] = fake
+    try:
+        recorder = Recorder()
+        for _ in range(2):
+            try:
+                recorder.start()
+            except OSError:
+                pass
+            else:
+                raise AssertionError("expected the failing start() to raise")
+            assert not recorder.active, "a failed start must not leave the recorder active"
+        assert len(opened) == 2 and all(s.closed for s in opened)
+    finally:
+        if previous is None:
+            del _sys.modules["sounddevice"]
+        else:
+            _sys.modules["sounddevice"] = previous
+
+
+def _injector_paste_falls_back_to_typing():
+    """A clipboard failure must not lose an already-transcribed text: paste mode
+    falls back to simulated typing instead of propagating (which surfaced as a
+    misleading "Transcription failed" notification)."""
+    from listen_to_me.injector import Injector
+
+    typed: list[str] = []
+
+    class _Injector(Injector):
+        def _paste(self, text):
+            raise RuntimeError("clipboard is unavailable")
+
+        def _type(self, text):
+            typed.append(text)
+
+    injector = _Injector({"injection_mode": "paste", "restore_clipboard": True})
+    injector.insert("recovered text")
+    assert typed == ["recovered text"]
+    injector.insert("")  # empty stays a no-op
+    assert typed == ["recovered text"]
+
+
+def _theme_scrollbar_contrast():
+    """The scroll-bar handle must be visible against the page it sits on.
+
+    Several settings pages scroll and the horizontal bar is switched off, so the
+    vertical handle is the *only* hint that a page continues below the fold — at
+    the border colour it used to have (~1.3:1) it was effectively invisible.
+    Pure arithmetic on the palette tokens, no rendering: 3:1 is the WCAG minimum
+    for non-text UI components.
+    """
+    from listen_to_me.theme import _DARK, _LIGHT
+
+    def _relative_luminance(hex_color: str) -> float:
+        raw = hex_color.lstrip("#")
+        channels = [int(raw[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+        linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    def _contrast(a: str, b: str) -> float:
+        la, lb = _relative_luminance(a), _relative_luminance(b)
+        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+    for name, palette in (("light", _LIGHT), ("dark", _DARK)):
+        for surface in ("window", "base"):
+            ratio = _contrast(palette["scroll"], palette[surface])
+            assert ratio >= 3.0, f"{name} scroll handle on {surface}: {ratio:.2f}:1"
+        # The hover state must be a visible change, not a same-tone swap.
+        assert _contrast(palette["scroll"], palette["muted"]) >= 1.3, name
+
+
 def _integrations_noop():
     """With no enabled mute target (the default), the recording hooks must be a
     complete no-op and must not import pynput — so they stay safe on the
@@ -779,6 +948,61 @@ def _gui_construction():
         assert window.stack.currentIndex() == window._history_index
         window._refresh_history()
 
+        # Replaced transcript rows must be DETACHED, not just taken out of the
+        # layout: deleteLater only frees them once the event loop runs, and a
+        # still-parented row keeps painting as a ghost behind the rebuilt list
+        # (a finished dictation re-renders this page live).
+        rows = [
+            window._history_layout.itemAt(i).widget()
+            for i in range(window._history_layout.count())
+            if window._history_layout.itemAt(i).widget() is not None
+        ]
+        assert rows, "expected at least one rendered transcript row"
+        window._refresh_history()
+
+        def _detached(widget) -> bool:
+            try:
+                return widget.parent() is None
+            except RuntimeError:
+                return True  # already deleted — it cannot paint either
+
+        assert all(_detached(row) for row in rows)
+
+        # The Parakeet backend ignores the Whisper preset, the spoken language
+        # and the initial prompt — those inputs must read as inactive instead of
+        # silently doing nothing. (Values are kept, so the dialog stays clean.)
+        window.backend_combo.setCurrentIndex(2)  # Parakeet
+        assert not window.model_combo.isEnabled()
+        assert not window.language_combo.isEnabled()
+        assert not window.initial_prompt_edit.isEnabled()
+        assert not window.chk_live_typing.isEnabled()
+        # …and the card says WHY, or the greyed-out fields just look broken.
+        assert "Parakeet" in window._speech_hint.text()
+        window.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert window.language_combo.isEnabled() and window.initial_prompt_edit.isEnabled()
+        assert window.model_combo.isEnabled() and window.chk_live_typing.isEnabled()
+        assert "Parakeet" not in window._speech_hint.text()
+
+        # A live OS light/dark switch repaints the code-drawn icons (the palette
+        # and QSS are theme.py's job): they used to keep the colours they were
+        # built with until the window was reopened.
+        quick_button, _quick_glyph = window.home._glyph_buttons[0]
+        themed = quick_button.icon().pixmap(20, 20).toImage()
+        window.home.restyle_icons("#ff0000", "#00ff00")
+        assert quick_button.icon().pixmap(20, 20).toImage() != themed
+        window._on_color_scheme_changed()
+        assert not quick_button.icon().isNull()
+        assert not window.nav.item(window._nav_row["Whisper"]).icon().isNull()
+        assert window._help_browser.toPlainText().strip()
+
+        # This is the app's main window, not a preferences dialog: a plain
+        # QDialog offers only a close button, so it could neither be minimized
+        # to the taskbar nor maximized.
+        from PySide6.QtCore import Qt as _Qt
+
+        assert window.windowFlags() & _Qt.WindowType.WindowMinimizeButtonHint
+        assert window.windowFlags() & _Qt.WindowType.WindowMaximizeButtonHint
+
         # Unsaved-changes tracking: untouched dialog is clean, a toggled
         # checkbox makes it dirty, toggling back makes it clean again.
         assert window._collect() == window._saved_snapshot
@@ -1018,6 +1242,11 @@ def _run_checks(checks, imports=()) -> int:
 _LIGHT_CHECKS = [
     ("config roundtrip", _config_roundtrip),
     ("config defaults", _config_defaults),
+    ("config survives corrupt sections", _config_survives_corrupt_sections),
+    ("history normalizes entries", _history_normalizes_entries),
+    ("recorder start failure resets", _recorder_start_failure_resets),
+    ("injector paste fallback", _injector_paste_falls_back_to_typing),
+    ("theme scrollbar contrast", _theme_scrollbar_contrast),
     ("mute integrations no-op", _integrations_noop),
     ("single-instance guard", _single_instance_guard),
     ("live typing logic", _live_typing_logic),

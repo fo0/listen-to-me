@@ -51,13 +51,27 @@ class Injector:
         self.cfg = cfg
 
     def insert(self, text: str) -> None:
+        """Insert `text` at the cursor of whatever window has focus.
+
+        Paste mode falls back to simulated typing when the clipboard can't be
+        used (no clipboard backend on this platform, or another application
+        holding it open): the transcript already exists at that point, so
+        dropping it because a clipboard write failed would be the worst
+        possible outcome. Only a failure of both paths propagates.
+        """
         if not text:
             return
-        if self.cfg["injection_mode"] == "type":
+        mode = self.cfg["injection_mode"]
+        if mode == "type":
             self._type(text)
         else:
-            self._paste(text)
-        log.info("inserted %d chars via %s", len(text), self.cfg["injection_mode"])
+            try:
+                self._paste(text)
+            except Exception:
+                log.exception("clipboard paste failed — falling back to typing")
+                self._type(text)
+                mode = "type (clipboard unavailable)"
+        log.info("inserted %d chars via %s", len(text), mode)
 
     def _type(self, text: str) -> None:
         from pynput.keyboard import Controller

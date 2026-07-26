@@ -15,7 +15,9 @@ standalone system-tray app that works in *every* application.
 - **Global hotkey** (default `Ctrl+Alt+Space`) — start/stop recording from any
   app, either as **toggle** (press to start, press to stop) or as true
   **push-to-talk** (record while the keys are held).
-- **Inserts at the cursor** — via clipboard paste (default) or simulated typing.
+- **Inserts at the cursor** — via clipboard paste (default) or simulated
+  typing; if the clipboard is unavailable, paste mode falls back to typing
+  instead of losing the transcript.
 - **Live typing (experimental)** — start typing while you are still speaking:
   parts of the transcript that have become stable are typed at the cursor
   during the recording, the rest follows right after you stop. Strictly
@@ -123,7 +125,9 @@ Every option has a hover tooltip explaining what it does. The sidebar groups
 the pages into **Home**, **Settings** and **More** (History/Updates/Help).
 **Save**
 applies everything immediately and closes, **Apply** applies without closing,
-and closing with unsaved changes asks whether to save or discard them.
+**Close** leaves the window (the app keeps running in the tray), and closing
+with unsaved changes asks whether to save or discard them. The window can be
+minimized and maximized like any main window.
 
 ### Push-to-talk (hold) mode notes
 
@@ -289,6 +293,8 @@ long "processing" pause after a recording all but disappears, even on a CPU.
 - The spoken language is **detected automatically** — the Whisper model
   preset, language choice, initial prompt, beam size and VAD options don't
   apply to this engine (live typing needs faster-whisper and stays off too).
+  The settings that don't apply are greyed out while this backend is selected,
+  so it stays visible which ones are ignored; your values are kept.
 - Runs via [ONNX Runtime](https://onnxruntime.ai/): NVIDIA GPUs (CUDA) or any
   CPU; **Device = auto** prefers the GPU. Model precision **int8** (~640 MB
   download, recommended) or fp32 (~2.4 GB, best with a GPU).
@@ -369,7 +375,7 @@ test) — no Windows build and no release.
 | Platform | Status |
 | --- | --- |
 | **Windows** | Primary target; exe built by CI. Autostart via registry `Run` key. |
-| **Linux** | Runs from source. Needs `xclip`/`xsel` for clipboard paste mode and an X11 session for global hotkeys (Wayland restricts global key grabbing). Autostart via `~/.config/autostart`. |
+| **Linux** | Runs from source. Wants `xclip`/`xsel` for clipboard paste mode (without them paste falls back to simulated typing) and an X11 session for global hotkeys (Wayland restricts global key grabbing). Autostart via `~/.config/autostart`. |
 | **macOS** | Runs from source; grant Accessibility + Microphone permissions. Tray/hotkey main-thread quirks may need polish — contributions welcome. Autostart via LaunchAgent. |
 
 ## Contributing

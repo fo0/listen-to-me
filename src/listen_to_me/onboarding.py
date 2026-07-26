@@ -71,11 +71,16 @@ def _hint(text: str) -> QLabel:
 class OnboardingWizard(QWizard):
     """Modal first-run setup. On accept the chosen values are written into
     ``cfg.data`` — saving and applying is the caller's job (App), so the wizard
-    stays constructible with a bare Config in the headless self-test."""
+    stays constructible with a bare Config in the headless self-test.
 
-    def __init__(self, cfg, parent=None):
+    ``app`` is optional and used only to pause the live global hotkey while the
+    key picker is open (see _capture_hotkey); without it the wizard works
+    exactly as before, just unable to pause anything."""
+
+    def __init__(self, cfg, parent=None, app=None):
         super().__init__(parent)
         self.cfg = cfg
+        self._app = app
         self.setWindowTitle(f"Welcome to {APP_NAME}")
         self.setWizardStyle(QWizard.WizardStyle.ClassicStyle)
         self.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
@@ -257,8 +262,28 @@ class OnboardingWizard(QWizard):
 
     # ------------------------------------------------------------ handlers
 
+    def _capture_hotkey(self) -> str | None:
+        """Open the key picker with the app's live global hotkey paused.
+
+        App registers the hotkey before it shows this wizard, so pressing the
+        currently active combination while picking would start a real recording
+        behind the modal wizard — on the user's very first launch. Nothing is
+        applied until Finish, so the old hotkey is simply restored afterwards
+        (same pattern as settings_ui._capture_hotkey)."""
+        app = self._app
+        if app is None:  # bare-Config construction (headless self-test)
+            return HotkeyCaptureDialog.ask(self)
+        try:
+            app.hotkeys.stop()
+        except Exception:
+            log.debug("could not pause the global hotkey for the key picker", exc_info=True)
+        try:
+            return HotkeyCaptureDialog.ask(self)
+        finally:
+            app._register_hotkey()
+
     def _pick_hotkey(self) -> None:
-        combo = HotkeyCaptureDialog.ask(self)
+        combo = self._capture_hotkey()
         if combo:
             self.hotkey_edit.setText(combo)
             self._hotkey_error.setText("")

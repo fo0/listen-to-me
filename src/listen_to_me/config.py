@@ -190,9 +190,24 @@ def config_dir() -> Path:
 
 
 def _merge(base: dict, override: dict) -> dict:
+    """Deep-merge `override` into `base` (the defaults), so new keys appear on
+    upgrade without touching what the user configured.
+
+    A stored value that is NOT a dict where the default is one is dropped: it
+    would replace a whole nested section (overlay/assistant/integrations) with
+    a scalar, and code like ``cfg["overlay"]["enabled"]`` then raises during
+    startup — before any UI exists to report it. A hand-edited or truncated
+    config.json must cost at most the affected section, never the app.
+    """
     for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _merge(base[key], value)
+        if isinstance(base.get(key), dict):
+            if isinstance(value, dict):
+                _merge(base[key], value)
+            else:
+                log.warning(
+                    "config key %r is %s, expected an object — keeping the defaults",
+                    key, type(value).__name__,
+                )
         else:
             base[key] = value
     return base

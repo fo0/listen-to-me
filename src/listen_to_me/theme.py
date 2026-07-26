@@ -35,6 +35,11 @@ _LIGHT = {
     "border": "#d8dbe4",
     "hover": "#e8eaf1",
     "sidebar": "#eceff5",
+    # Scroll-bar handle. Deliberately NOT "border": at ~1.3:1 against the page
+    # the handle was invisible, and with the horizontal bar switched off it is
+    # the only hint that a settings page continues below the fold. These clear
+    # the 3:1 WCAG minimum for non-text UI components (asserted by gui_smoke).
+    "scroll": "#868c9c",
     "accent_soft": "#e2e8fd",
     "on_accent": "#ffffff",
     "disabled": "#a2a7b3",
@@ -50,6 +55,7 @@ _DARK = {
     "border": "#33363f",
     "hover": "#2a2d35",
     "sidebar": "#101114",
+    "scroll": "#6e7381",  # see the light palette's note
     "accent_soft": "#28304f",
     "on_accent": "#ffffff",
     "disabled": "#5b6069",
@@ -272,14 +278,21 @@ def _qss(t: dict) -> str:
         border: none;
         border-radius: 14px;
     }}
-    /* While recording the hero flips to a warm "live" gradient. */
+    /* While recording the hero flips to a warm "live" gradient. Deliberately a
+       shade deeper than the tray/icon red: the white hero text sits on the
+       upper-left stop, and the brighter red it started from left the secondary
+       hint line barely legible. */
     QFrame#hero[state="recording"] {{
         background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-            stop:0 #e5484d, stop:1 #f0653c);
+            stop:0 #cf3a34, stop:1 #e2582f);
     }}
     QFrame#hero QLabel {{ background: transparent; color: #ffffff; }}
     QLabel#heroState {{ font-size: 16pt; font-weight: 700; }}
-    QLabel#heroHint {{ color: #dfe4ff; }}
+    /* Secondary line: dimmed enough to keep the hierarchy, bright enough to
+       read on the gradient — and warm-tinted on the red one, where a cool
+       tint washes out. */
+    QLabel#heroHint {{ color: #eef1ff; }}
+    QFrame#hero[state="recording"] QLabel#heroHint {{ color: #fff0ed; }}
     QLabel#keycap {{
         background: #30ffffff;
         border: 1px solid #55ffffff;
@@ -412,14 +425,14 @@ def _qss(t: dict) -> str:
 
     QScrollArea {{ border: none; background: transparent; }}
     QScrollBar:vertical {{ background: transparent; width: 11px; margin: 0; }}
-    QScrollBar::handle:vertical {{ background: {t["border"]}; border-radius: 5px; min-height: 28px; }}
+    QScrollBar::handle:vertical {{ background: {t["scroll"]}; border-radius: 5px; min-height: 28px; }}
     QScrollBar::handle:vertical:hover {{ background: {t["muted"]}; }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
     /* Match the horizontal bars (Help browser, changelog) to the vertical ones
        instead of leaving them native. */
     QScrollBar:horizontal {{ background: transparent; height: 11px; margin: 0; }}
-    QScrollBar::handle:horizontal {{ background: {t["border"]}; border-radius: 5px; min-width: 28px; }}
+    QScrollBar::handle:horizontal {{ background: {t["scroll"]}; border-radius: 5px; min-width: 28px; }}
     QScrollBar::handle:horizontal:hover {{ background: {t["muted"]}; }}
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
     QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
