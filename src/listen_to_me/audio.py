@@ -80,7 +80,11 @@ class Recorder:
             if self._frames >= self._max_frames and self._on_limit is not None:
                 self._on_limit()
 
-        self._stream = sd.InputStream(
+        # Published to self._stream only once it actually runs: a stream that
+        # opens but fails to start (device pulled between open and start) would
+        # otherwise leave `active` True forever, so every later start() raised
+        # "recording already active" and the hotkey was dead until restart.
+        stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=1,
             dtype="float32",
@@ -88,7 +92,16 @@ class Recorder:
             callback=callback,
             finished_callback=finished,
         )
-        self._stream.start()
+        try:
+            stream.start()
+        except Exception:
+            self._on_limit = None
+            try:
+                stream.close()
+            except Exception:
+                log.debug("could not close the unstarted audio stream", exc_info=True)
+            raise
+        self._stream = stream
         log.info("recording started (device=%s, max=%ss)", device, max_seconds)
 
     def snapshot(self, max_frames: int | None = None, start_frame: int | None = None):

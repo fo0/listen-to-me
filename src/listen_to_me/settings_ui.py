@@ -223,6 +223,12 @@ class SettingsWindow(QDialog):
         # No " — Settings" suffix: with the Home hub this is the app's main
         # window, not just a preferences dialog.
         self.setWindowTitle(APP_NAME)
+        # …and a main window must be minimizable/maximizable. A QDialog gets
+        # only a close button by default, so the app's primary window couldn't
+        # be sent to the taskbar or enlarged (its pages scroll, so extra height
+        # is genuinely useful).
+        self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.resize(980, 720)
         self.setMinimumSize(840, 600)
 
@@ -377,11 +383,17 @@ class SettingsWindow(QDialog):
         self.footer_status.setProperty("role", "hint")
         footer.addWidget(self.footer_status)
         footer.addStretch(1)
-        cancel = QPushButton("Cancel")
-        cancel.setToolTip("Close without saving. Unsaved changes ask for confirmation first.")
-        cancel.setAutoDefault(False)
-        cancel.clicked.connect(self.reject)
-        footer.addWidget(cancel)
+        # "Close", not "Cancel": this is the app's main window, and the app
+        # keeps running in the tray afterwards — "Cancel" reads like undoing
+        # something. Unsaved edits are still confirmed (see reject()).
+        close = QPushButton("Close")
+        close.setToolTip(
+            "Close this window — the app keeps running in the tray. "
+            "Unsaved changes ask for confirmation first."
+        )
+        close.setAutoDefault(False)
+        close.clicked.connect(self.reject)
+        footer.addWidget(close)
         apply_btn = QPushButton("Apply")
         apply_btn.setToolTip("Save and apply all settings now — the window stays open.")
         apply_btn.setAutoDefault(False)
@@ -408,6 +420,20 @@ class SettingsWindow(QDialog):
         # over: every combo/spin box only reacts to the wheel once focused.
         # Rows added later (MuteTargetRow) guard their own widgets.
         guard_wheel(*self.findChildren(QComboBox), *self.findChildren(QAbstractSpinBox))
+
+        # A live OS light/dark switch re-applies the palette and the QSS
+        # (theme.py), but every pixmap painted in code keeps the colours it was
+        # built with — repaint those instead of leaving them wrong until the
+        # window is reopened. Qt drops the connection when this window is
+        # destroyed, so it can't outlive it.
+        try:
+            from PySide6.QtWidgets import QApplication
+
+            QApplication.instance().styleHints().colorSchemeChanged.connect(
+                self._on_color_scheme_changed
+            )
+        except Exception:
+            log.debug("colorSchemeChanged signal unavailable", exc_info=True)
 
         # Baseline for the unsaved-changes guard — taken after every page is
         # built, so "dirty" means the user actually changed something.
@@ -659,11 +685,10 @@ class SettingsWindow(QDialog):
         # minimum width — that clips every card at the right edge (see qtutil).
         elastic_combo(self.model_combo)
         sform.addRow("Whisper model:", self.model_combo)
-        sform.addRow(self._hint(
-            "Downloaded automatically on first use (folder on the Whisper page). "
-            "Pick a preset, or choose “Custom model id…” to use any CTranslate2 "
-            "model from Hugging Face."
-        ))
+        # Text swapped by _on_backend_changed: greying these fields out without
+        # saying why would just look broken.
+        self._speech_hint = self._hint("")
+        sform.addRow(self._speech_hint)
         layout.addWidget(speech)
 
         behavior = QGroupBox("Behavior")
@@ -808,8 +833,6 @@ class SettingsWindow(QDialog):
         )
         form.addRow("", self.chk_vad)
         self._engine_form = form
-        self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
-        self._on_backend_changed()
         layout.addWidget(engine)
         layout.addWidget(self._hint(
             "Running on the GPU (CUDA) needs the NVIDIA CUDA 12 libraries "
@@ -862,10 +885,21 @@ class SettingsWindow(QDialog):
         )
         dh.addWidget(self.model_dir_edit, 1)
         browse = QPushButton("Browse…")
+        browse.setToolTip("Pick the folder models are downloaded to and loaded from.")
+        browse.setAutoDefault(False)
         browse.clicked.connect(self._browse_model_dir)
         default_btn = QPushButton("Use default")
+        default_btn.setToolTip(
+            "Clear the field and go back to the Hugging Face cache shown below."
+        )
+        default_btn.setAutoDefault(False)
         default_btn.clicked.connect(lambda: self.model_dir_edit.setText(""))
         open_btn = QPushButton("Open folder")
+        open_btn.setToolTip(
+            "Open this folder in the file manager — e.g. to check its size or "
+            "delete a model you no longer need. It is created if missing."
+        )
+        open_btn.setAutoDefault(False)
         open_btn.clicked.connect(self._open_model_dir)
         for b in (browse, default_btn, open_btn):
             dh.addWidget(b)
@@ -933,6 +967,12 @@ class SettingsWindow(QDialog):
             "Use the Assistant page for rewriting/cleanup."
         ))
         layout.addWidget(prompt)
+
+        # Wired last: _on_backend_changed also greys out the Whisper-only
+        # fields on the General page and the initial prompt above, so every
+        # widget it touches must already exist when it first runs.
+        self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        self._on_backend_changed()
 
         layout.addStretch(1)
         return page
@@ -1210,15 +1250,40 @@ class SettingsWindow(QDialog):
 
     def _build_help(self, title: str) -> QWidget:
         page, layout = self._page(title)
-        from . import help_content
 
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)  # http(s) links → default browser
-        browser.document().setDefaultStyleSheet(self._help_stylesheet())
-        browser.setHtml(help_content.help_html())
         browser.setToolTip("Common problems and fixes. Links open in your web browser.")
+        self._help_browser = browser
+        self._render_help()
         layout.addWidget(browser, 1)
         return page
+
+    def _render_help(self) -> None:
+        """(Re-)render the Help page. The document's default style sheet is
+        baked into the rendered HTML, so a theme change needs both set again."""
+        from . import help_content
+
+        self._help_browser.document().setDefaultStyleSheet(self._help_stylesheet())
+        self._help_browser.setHtml(help_content.help_html())
+
+    def _on_color_scheme_changed(self, *_args) -> None:
+        """The OS switched between light and dark: repaint everything this
+        window drew in code with the old palette. theme.py has already swapped
+        the application palette and style sheet by the time this runs."""
+        from .theme import ACCENT, tokens
+
+        colors = tokens()
+        try:
+            for title, row in self._nav_row.items():
+                glyph = _NAV_GLYPHS.get(title)
+                item = self.nav.item(row)
+                if glyph and item is not None:
+                    item.setIcon(glyph_icon(glyph, colors["muted"], ACCENT, size=18))
+            self.home.restyle_icons(colors["muted"], ACCENT)
+            self._render_help()
+        except Exception:
+            log.debug("could not restyle the theme-dependent visuals", exc_info=True)
 
     @staticmethod
     def _help_stylesheet() -> str:
@@ -1981,11 +2046,18 @@ class SettingsWindow(QDialog):
     # ---------------------------------------------------------- history UI
 
     def _clear_history_rows(self) -> None:
-        # Remove every row widget but keep the trailing stretch.
+        # Remove every row widget but keep the trailing stretch. Detach + hide
+        # before deleteLater: the deletion only happens once the event loop
+        # runs, and a still-parented row keeps painting until then — visible as
+        # ghost rows behind the freshly inserted ones when the list is rebuilt
+        # twice in one pass (page change + a finished dictation). Same fix as
+        # HomePage._clear_layout.
         while self._history_layout.count() > 1:
             item = self._history_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
+                widget.setParent(None)
                 widget.deleteLater()
 
     def _refresh_history(self) -> None:
@@ -2006,7 +2078,9 @@ class SettingsWindow(QDialog):
             insert_at += 1
 
     def _history_row(self, entry: dict) -> QWidget:
-        text = entry.get("text", "")
+        # str(): the store normalizes this, but the value is untrusted input and
+        # a non-string would raise inside QLabel — mirrors HomePage._recent_row.
+        text = str(entry.get("text", ""))
         row = QGroupBox()
         rv = QVBoxLayout(row)
         rv.setContentsMargins(10, 6, 10, 8)
@@ -2102,10 +2176,23 @@ class SettingsWindow(QDialog):
         form.setRowVisible(self.ov_device_combo, openvino)
         form.setRowVisible(self.ov_precision_combo, openvino)
         form.setRowVisible(self.pk_quant_combo, parakeet)
-        # Parakeet is a single fixed model — the Whisper model preset (and the
-        # language / initial prompt, which stay editable but are simply not
-        # sent) does not apply. Grey the preset out so that's visible.
+        # Parakeet is a single fixed model that always auto-detects the language
+        # and takes no prompt — none of these are sent to it. Grey them out
+        # instead of leaving fields that silently do nothing (the Home page
+        # already reports "Auto-detect" for this backend). Values are kept.
         self.model_combo.setEnabled(not parakeet)
+        self.language_combo.setEnabled(not parakeet)
+        self.initial_prompt_edit.setEnabled(not parakeet)
+        self._speech_hint.setText(
+            "The Parakeet backend ignores both: it runs one fixed model and "
+            "always detects the spoken language itself. Choose a different "
+            "backend on the Whisper page to use them again — your selections "
+            "are kept."
+            if parakeet
+            else "Downloaded automatically on first use (folder on the Whisper page). "
+            "Pick a preset, or choose “Custom model id…” to use any CTranslate2 "
+            "model from Hugging Face."
+        )
         # Live typing (General page) needs faster-whisper's segment timestamps,
         # so the option is greyed out for the other backends — its tooltip
         # explains the requirement. The stored value is kept either way.

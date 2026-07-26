@@ -227,6 +227,11 @@ class HomePage(QWidget):
             ("download", "Check for updates", "Updates", "See and install newer releases."),
             ("help", "Help && tips", "Help", "Troubleshooting and how-tos."),
         ]
+        # (button, glyph name) of every code-painted icon, so a live OS
+        # light/dark switch can repaint them in the new palette (the QSS is
+        # re-applied by theme.py, but a pixmap keeps the colours it was built
+        # with) — see restyle_icons.
+        self._glyph_buttons: list[tuple[QPushButton, str]] = []
         for i, (glyph, label, page, tip) in enumerate(quick):
             button = QPushButton(f"  {label}")
             button.setProperty("quick", True)
@@ -235,6 +240,7 @@ class HomePage(QWidget):
             button.setIcon(glyph_icon(glyph, colors["muted"], ACCENT))
             button.setToolTip(tip)
             button.clicked.connect(lambda _checked=False, p=page: self._go(p))
+            self._glyph_buttons.append((button, glyph))
             actions.addWidget(button, i // 3, i % 3)
         for col in range(3):
             actions.setColumnStretch(col, 1)
@@ -250,6 +256,7 @@ class HomePage(QWidget):
         open_history.setCursor(Qt.CursorShape.PointingHandCursor)
         open_history.setIcon(glyph_icon("clock", colors["muted"], ACCENT))
         open_history.clicked.connect(lambda: self._go("History"))
+        self._glyph_buttons.append((open_history, "clock"))
         recent_head.addWidget(open_history)
         layout.addLayout(recent_head)
 
@@ -270,6 +277,13 @@ class HomePage(QWidget):
         label = QLabel(text.upper())
         label.setProperty("role", "section")
         return label
+
+    def restyle_icons(self, color: str, selected_color: str) -> None:
+        """Repaint the quick-action icons in the given colours. Called by
+        SettingsWindow when the OS light/dark scheme changed — the stylesheet
+        follows automatically, code-painted pixmaps do not."""
+        for button, glyph in self._glyph_buttons:
+            button.setIcon(glyph_icon(glyph, color, selected_color))
 
     def _go(self, page: str) -> None:
         try:

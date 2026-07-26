@@ -350,7 +350,18 @@ class App:
                             force=True,
                         )
             else:
-                self.injector.insert(text)
+                try:
+                    self.injector.insert(text)
+                except Exception as exc:
+                    # The transcript itself worked — say so instead of letting
+                    # this surface as "Transcription failed", and point at the
+                    # history the text was just written to.
+                    log.exception("could not insert the transcript")
+                    self.notify(
+                        f"Could not insert the text ({exc}) — copy it from "
+                        "Settings → History.",
+                        force=True,
+                    )
             self.post("flash_text", full_text)
         except Exception as exc:
             log.exception("processing failed")
@@ -422,11 +433,14 @@ class App:
             except Exception:
                 log.debug("overlay state update failed", exc_info=True)
         if self._settings_window is not None:
-            # Keep the Home hero in sync. Safe on a closed window: the window
-            # object (and its widgets) outlives the close — signal-connection
-            # bookkeeping keeps replaced windows alive (see BACKLOG #14), and
-            # set_app_state additionally guards itself.
-            self._settings_window.set_app_state(state)
+            # Keep the Home hero in sync. A closed-but-still-referenced window
+            # is fine (its widgets outlive the close), and one already deleted
+            # by _open_settings raises RuntimeError on attribute access — which
+            # must never abort a state transition.
+            try:
+                self._settings_window.set_app_state(state)
+            except RuntimeError:
+                self._settings_window = None
 
     def _beep(self, frequency: int) -> None:
         if not self.cfg["beep"] or sys.platform != "win32":
@@ -477,7 +491,10 @@ class App:
         from .onboarding import OnboardingWizard
 
         try:
-            wizard = OnboardingWizard(self.cfg)
+            # app=self: the wizard's key picker pauses our live global hotkey,
+            # or pressing the (already registered) combination while picking
+            # would start a real recording behind the modal wizard.
+            wizard = OnboardingWizard(self.cfg, app=self)
             accepted = bool(wizard.exec())
         except Exception:
             log.exception("onboarding wizard failed — opening Settings instead")
@@ -510,10 +527,25 @@ class App:
     def _open_settings(self) -> None:
         from .settings_ui import SettingsWindow
 
-        if self._settings_window is not None and self._settings_window.isVisible():
-            self._settings_window.raise_()
-            self._settings_window.activateWindow()
-            return
+        window, self._settings_window = self._settings_window, None
+        if window is not None:
+            try:
+                if window.isVisible():
+                    self._settings_window = window
+                    window.raise_()
+                    window.activateWindow()
+                    return
+            except RuntimeError:
+                window = None  # C++ side already gone — build a fresh window
+            if window is not None:
+                # A closed window must be destroyed, not just dropped: PySide's
+                # signal-connection bookkeeping keeps the wrapper (and every
+                # pixmap it built) alive, so each open/close cycle would retain
+                # a whole window. _set_state tolerates the deleted wrapper.
+                try:
+                    window.deleteLater()
+                except RuntimeError:
+                    pass
         self._settings_window = SettingsWindow(self)
         self._settings_window.show()
         self._settings_window.raise_()
