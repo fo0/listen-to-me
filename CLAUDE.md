@@ -178,6 +178,7 @@ Significant decisions are recorded as ADRs under `docs/adr/`. Triggers + format:
 - **Commit Messages:** imperative, capitalized subject (~50–72 chars), e.g. `Add in-app Help page and auto CPU fallback`. An optional lowercase `area:` prefix is used occasionally (`ci: run the check job`). **Not** strict Conventional Commits — do not force `feat:`/`fix:` prefixes. Reference issues/PRs with `#N`. A short body explaining *why* is welcome for non-trivial changes.
 - **Merge Strategy:** GitHub **merge commits** (`Merge pull request #N from …`), not squash.
 - **CI/CD:** `.github/workflows/ci.yml` — the fast `check` job (compileall + offscreen Qt smoke) runs on every PR. `.github/workflows/release.yml` — Windows PyInstaller build + GitHub Release, manual `workflow_dispatch` only, and a guard job fails any dispatch from a ref other than `main`.
+- **Actions are pinned by commit SHA**, never by tag (#22) — a tag can be moved to point at different code, and `release.yml` runs with `contents: write` and publishes the exe the in-app updater hands to users. Format: `uses: owner/repo@<40-hex-sha> # vX.Y.Z`. To bump one, resolve the new SHA first (`git ls-remote --tags https://github.com/<owner>/<repo>`; for an annotated tag take the `^{}` line — that's the commit) and update the trailing comment with it. There is no Dependabot here, so bumps are manual and deliberate.
 
 ## Dependency Management
 
