@@ -35,11 +35,15 @@ jobs:
     needs: check
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      # Third-party actions are pinned by commit SHA, not by tag: this job runs
+      # with contents: write and publishes the exe the in-app updater offers, so
+      # a moved tag on any step here would reach end-user machines. Update
+      # deliberately, keeping the trailing comment in sync with the SHA.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
 
@@ -112,7 +116,7 @@ jobs:
         run: cp "dist/ListenToMe.exe" "dist/${{ steps.meta.outputs.asset }}"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ListenToMe-windows
           path: dist/ListenToMe.exe
@@ -144,7 +148,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Create release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: "Listen To Me ${{ steps.meta.outputs.datetime }} (build ${{ github.run_number }})"

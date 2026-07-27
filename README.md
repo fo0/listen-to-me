@@ -185,7 +185,7 @@ settings window writes the same keys.
 | `beam_size` | `5` | Decoding beam size; `1` = greedy, ≈1.5–2× faster (faster-whisper only) |
 | `history_enabled` / `history_max` | `true` / `200` | Keep a local transcript history (never audio), and how many entries |
 | `update_check_on_start` / `include_prereleases` | `true` / `false` | Check GitHub Releases on launch, and whether pre-releases count |
-| `insecure_ssl` | `false` | Skip TLS verification for **all** outbound HTTPS — corporate proxies only |
+| `insecure_ssl` | `false` | Skip TLS verification for model downloads and the assistant — corporate proxies only (updates always verify) |
 | `overlay.enabled` | `true` | The floating always-on-top status icon |
 | `overlay.show_preview` | `true` | Show the transcript in a bubble after a recording |
 | `overlay.live_preview` | `false` | Experimental rolling preview while you speak (costs CPU) |
@@ -356,12 +356,20 @@ certificate. Python does not trust it, so the model download, the update check
 and the assistant fail with errors like `CERTIFICATE_VERIFY_FAILED` or
 `SSLError`. If that hits you, enable **Settings → General → Ignore SSL
 certificate errors (corporate proxy)** — it disables TLS certificate
-verification for all of the app's connections (model downloads from Hugging
-Face, the GitHub update check, the assistant API).
+verification for the model downloads from Hugging Face and the assistant API.
 
-**Security note:** with the option enabled, connections are still encrypted
-but no longer authenticated — a man-in-the-middle would not be detected. Only
-enable it inside a network you trust, and leave it off otherwise.
+**Security note:** with the option enabled, those connections are still
+encrypted but no longer authenticated — a man-in-the-middle would not be
+detected. Only enable it inside a network you trust, and leave it off otherwise.
+
+**Updates are excluded from the option** and always verify the certificate: an
+update replaces the app's own program file, so accepting an unauthenticated
+download would let whoever intercepts the connection run code on your machine.
+The asset's SHA256 digest does not close that gap either — it arrives in the
+same API response as the download URL. Behind an intercepting proxy the updater
+therefore reports that it could not verify GitHub's certificate; download the
+release manually from the [releases page](https://github.com/fo0/listen-to-me/releases)
+instead.
 
 The in-app Help page also covers the hotkey not firing, text not being inserted,
 where models are stored, and assistant/Ollama setup.

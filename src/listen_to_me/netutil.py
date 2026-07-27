@@ -7,8 +7,13 @@ GitHub and the optional assistant API alike. ``cfg["insecure_ssl"]`` turns
 certificate verification off app-wide as an explicit, off-by-default opt-in
 for exactly that environment. While it is on, connections are still encrypted
 but no longer authenticated (a man-in-the-middle would not be detected) —
-that trade-off is the user's informed choice, including for the updater's exe
-download, which additionally stays pinned to HTTPS GitHub URLs.
+that trade-off is the user's informed choice.
+
+**The updater is carved out of the switch.** ``updater.py`` forces
+``verify=True`` for the releases API call and the exe download regardless of
+this setting: that download replaces the running program, so accepting an
+unauthenticated one would turn an intercepting proxy into code execution. The
+escape hatch covers the model downloads and the assistant only.
 
 Qt-free, and ``urllib3``/``huggingface_hub``/``httpx`` are only imported once
 the switch is actually enabled, so ``--version`` and the headless smoke test
@@ -26,7 +31,10 @@ _insecure = False
 
 def verify() -> bool:
     """Value for the ``verify=`` parameter of the app's ``requests`` calls
-    (updater, assistant): False while the insecure-SSL switch is on."""
+    (the assistant): False while the insecure-SSL switch is on.
+
+    The updater does not call this — it always verifies (see the module
+    docstring) and only reads the flag to explain itself to the user."""
     return not _insecure
 
 
@@ -35,11 +43,12 @@ def apply_insecure_ssl(enabled: bool) -> None:
     (or back on) for every outbound HTTPS connection the app makes.
 
     Called at startup and after every settings save, so toggling works without
-    a restart. Covers the ``requests`` call sites (updater, assistant) via
-    :func:`verify` and the Hugging Face model downloads of both transcription
-    backends via ``huggingface_hub.configure_http_backend``. urllib3's
-    per-request InsecureRequestWarning is silenced while enabled — the switch
-    itself is logged once instead.
+    a restart. Covers the assistant's ``requests`` calls via :func:`verify` and
+    the Hugging Face model downloads of both transcription backends via
+    ``huggingface_hub.configure_http_backend``. The updater is deliberately not
+    covered (see the module docstring). urllib3's per-request
+    InsecureRequestWarning is silenced while enabled — the switch itself is
+    logged once instead.
     """
     global _insecure
     enabled = bool(enabled)
@@ -49,7 +58,7 @@ def apply_insecure_ssl(enabled: bool) -> None:
     if enabled:
         log.warning(
             "insecure_ssl enabled — TLS certificates are NOT verified "
-            "(model downloads, update check, assistant)"
+            "(model downloads, assistant; the updater keeps verifying)"
         )
         try:
             import urllib3

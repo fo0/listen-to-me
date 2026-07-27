@@ -737,15 +737,18 @@ class SettingsWindow(QDialog):
         self.chk_insecure_ssl = self._checkbox(
             "Ignore SSL certificate errors (corporate proxy) — insecure",
             self.cfg["insecure_ssl"],
-            "Skip TLS certificate verification for model downloads, the update check and "
-            "the assistant. Only enable behind a corporate proxy that intercepts HTTPS "
-            "with its own (self-signed) certificate — connections are then encrypted but "
-            "no longer authenticated.",
+            "Skip TLS certificate verification for model downloads and the assistant. "
+            "Only enable behind a corporate proxy that intercepts HTTPS with its own "
+            "(self-signed) certificate — connections are then encrypted but no longer "
+            "authenticated. Updates are excluded: they always verify the certificate, "
+            "because an update replaces the program file.",
         )
         nv.addWidget(self.chk_insecure_ssl)
         nv.addWidget(self._hint(
             "⚠ Only for corporate proxies that intercept HTTPS with their own certificate. "
-            "Connections stay encrypted but are no longer authenticated."
+            "Connections stay encrypted but are no longer authenticated. Updates are "
+            "excluded and keep verifying — behind such a proxy, download them manually "
+            "from the release page."
         ))
         layout.addWidget(network)
 
