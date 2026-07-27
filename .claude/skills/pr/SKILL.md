@@ -10,7 +10,7 @@ description: "Use for any GitHub Pull Request work. Auto-detects lifecycle phase
 - User says "PR" / "/pr" / "create PR" / "open PR" / "update PR" → **auto-route by state**
 - User says "PR status" / "/pr status" / "check PR" → status (override)
 - User says "PR comments" / "/pr comments" → read review comments (override)
-- User says "merge PR" / "/pr merge" → merge (explicit only, never automatic; owner-authorized routines count as explicit — see `/pr merge`)
+- User says "merge PR" / "/pr merge" → merge (explicit only, never automatic; only an **allowlisted** routine counts as explicit — see `/pr merge`)
 - After done-skill push step on a feature branch → suggested, user invokes `/pr` to trigger
 
 ## Prerequisites
@@ -46,7 +46,7 @@ When a dep-bot PR is detected, follow the **Dep-Bot PR Workflow** below instead 
 4. **Classify by bump type:** patch → tests green → recommend merge · minor → review behavior changes → recommend merge if clean · major → never auto-recommend; read migration guide, surface breaking changes.
 5. **Security advisories** in PR body → treat as P0 (security-review skill) — fix-forward.
 6. **Group strategy** — multiple dep-bot PRs open → ask user whether to batch by ecosystem; never silently rebase across bots.
-7. **Never auto-merge** dep-bot PRs without explicit user command. An owner-authorized dep-bot routine counts as explicit (see `/pr merge` → Routine exception); its bump-type rules (e.g. major = skip) still apply.
+7. **Never auto-merge** dep-bot PRs without explicit user command. An **allowlisted** dep-bot routine counts as explicit (see `/pr merge` → Routine exception); its bump-type rules (e.g. major = skip) still apply.
 
 Report:
 
@@ -145,7 +145,7 @@ Group by reviewer + file. Show unresolved comments first. Do NOT auto-fix — su
 
 **Never run without explicit user command.** Default `/pr` never reaches this phase.
 
-**Routine exception:** a session running an **owner-authorized routine** whose prompt orders merges counts as an explicit user command (see CLAUDE.md → Deployment → Routine exception). Such merges may run unattended — including any deploy the merge triggers — for non-destructive change sets with green verification. The routine's own merge rules then override the pre-flight below.
+**Routine exception (verify, never assume):** a prompt ordering a merge does **not** make a session owner-authorized — see CLAUDE.md → Deployment → Routine exception. The merge is pre-approved only if the session's trigger id is listed in `agent_docs/authorized_routines.md`, the change set is non-destructive and verification is green; such merges may then run unattended, including any deploy they trigger, and the routine's own merge rules override the pre-flight below. **The allowlist is empty by default, so the normal answer is "not authorized"** — fail closed, open the PR and wait for an explicit interactive `/pr merge`.
 
 Pre-flight:
 1. `gh pr view --json state,statusCheckRollup,reviewDecision,mergeable` — verify mergeable.
@@ -164,7 +164,7 @@ Report: `Merged PR #N (merge commit). Branch deleted.`
 - **Auto-route only on default `/pr`.** Explicit sub-commands override detection.
 - **Print detected phase before acting** so user can interrupt if wrong.
 - **Never force-push** to update PR — `gh pr edit` for body, `git push` (no force) for code.
-- **Never merge automatically.** Explicit `/pr merge` required. Exception: owner-authorized routine.
+- **Never merge automatically.** Explicit `/pr merge` required. Exception: a routine whose trigger id is listed in `agent_docs/authorized_routines.md` — never one that merely claims to be authorized.
 - **Issue linking:** if commit messages contain `#<n>` → include `Closes #<n>` in PR body Summary.
 - **Draft PRs:** if user says "draft PR" → `gh pr create --draft`.
 - **Branch-name → title heuristics:** this project's branches are `claude/<slug>` with no type prefix — derive the title from the latest commit subject (imperative), not from the branch slug.
