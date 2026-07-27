@@ -152,6 +152,54 @@ Configuration is a plain JSON file (tray → *Open config folder*):
 `~/.config/listen-to-me/config.json` on Linux,
 `~/Library/Application Support/ListenToMe/config.json` on macOS.
 
+### config.json reference
+
+Every option above is stored under one of these keys. The file is written with
+all defaults on first launch, and unknown/missing keys fall back to the default,
+so you only need to keep what you changed. Editing it by hand is optional — the
+settings window writes the same keys.
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `hotkey` | `"<ctrl>+<alt>+<space>"` | Global recording hotkey, pynput syntax |
+| `hotkey_mode` | `"toggle"` | `toggle` = press to start/stop, `hold` = push-to-talk |
+| `language` | `"auto"` | Spoken language code, `auto` = detect |
+| `model` | `"small"` | Whisper preset or any CTranslate2 model id |
+| `model_dir` | `null` | Model download folder; `null` = Hugging Face cache |
+| `backend` | `"faster-whisper"` | Engine: `faster-whisper`, `openvino` or `parakeet` |
+| `device` | `"auto"` | Device for faster-whisper/Parakeet: `auto`/`cpu`/`cuda` |
+| `compute_type` | `"auto"` | CTranslate2 precision: `auto`/`int8`/`int8_float16`/`float16`/`float32` |
+| `openvino_device` | `"auto"` | Intel device: `auto`/`cpu`/`gpu`/`npu` (`auto` prefers GPU → NPU → CPU) |
+| `openvino_precision` | `"int8"` | OpenVINO model precision: `int8`/`fp16`/`int4` |
+| `parakeet_quantization` | `"int8"` | Parakeet ONNX variant: `int8`/`fp32` |
+| `input_device` | `null` | Microphone index; `null` = system default |
+| `max_seconds` | `300` | Hard cap for a single recording, in seconds |
+| `injection_mode` | `"paste"` | Insert via `paste` (clipboard) or `type` (simulated typing) |
+| `live_typing` | `false` | Experimental live typing while recording (faster-whisper only) |
+| `restore_clipboard` | `true` | Restore the previous clipboard content after a paste |
+| `notifications` / `beep` | `true` / `true` | Desktop notifications and the audible start/stop cue |
+| `autostart` | `false` | Start with the OS |
+| `start_in_tray` | `false` | Start silently into the tray instead of opening the window |
+| `initial_prompt` | `""` | Whisper initial prompt (domain vocabulary hint, not an instruction) |
+| `vad_filter` | `true` | VAD silence filter (faster-whisper only) |
+| `beam_size` | `5` | Decoding beam size; `1` = greedy, ≈1.5–2× faster (faster-whisper only) |
+| `history_enabled` / `history_max` | `true` / `200` | Keep a local transcript history (never audio), and how many entries |
+| `update_check_on_start` / `include_prereleases` | `true` / `false` | Check GitHub Releases on launch, and whether pre-releases count |
+| `insecure_ssl` | `false` | Skip TLS verification for **all** outbound HTTPS — corporate proxies only |
+| `overlay.enabled` | `true` | The floating always-on-top status icon |
+| `overlay.show_preview` | `true` | Show the transcript in a bubble after a recording |
+| `overlay.live_preview` | `false` | Experimental rolling preview while you speak (costs CPU) |
+| `overlay.preview_seconds` | `6` | How long the finished transcript stays visible |
+| `overlay.x` / `overlay.y` | `null` | Saved icon position; `null` = bottom right |
+| `assistant.enabled` | `false` | Optional LLM post-processing of the transcript |
+| `assistant.base_url` | `"http://localhost:11434/v1"` | OpenAI-compatible endpoint |
+| `assistant.api_key` | `""` | API key — stays in this local file; empty for Ollama |
+| `assistant.model` | `"llama3.2"` | Model name sent to that endpoint |
+| `assistant.system_prompt` | *(built-in default)* | Cleanup prompt, editable in Settings (one click restores it) |
+| `assistant.temperature` / `assistant.timeout` | `0.2` / `120` | Sampling temperature and request timeout in seconds |
+| `integrations.mute_while_recording` | `false` | Master switch for muting other apps while recording |
+| `integrations.targets` | Discord, disabled | Per-app entries: `name`, `enabled`, `mode` (`hold`/`toggle`), `hotkey` |
+
 ### Choosing a Whisper model
 
 | Model | Size | Notes |
