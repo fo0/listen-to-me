@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -23,8 +25,12 @@ def _launch_args() -> list[str]:
     return [str(python), "-m", "listen_to_me"]
 
 
+def _quote_join(args: list[str]) -> str:
+    return " ".join(f'"{arg}"' if " " in arg else arg for arg in args)
+
+
 def _launch_command() -> str:
-    return " ".join(f'"{arg}"' if " " in arg else arg for arg in _launch_args())
+    return _quote_join(_launch_args())
 
 
 def enable() -> None:
@@ -78,34 +84,135 @@ def disable() -> None:
 
 
 def is_enabled() -> bool:
+    return stored_command() is not None
+
+
+def stored_command() -> str | None:
+    """The launch command the OS currently has on file for us.
+
+    ``None`` means there is no autostart entry at all. An empty string means an
+    entry exists but its command could not be read (corrupt or hand-edited
+    file) — present but broken, which :func:`sync` repairs like a stale path.
+    """
     if sys.platform == "win32":
         import winreg
 
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _WIN_RUN_KEY) as key:
-                winreg.QueryValueEx(key, RUN_NAME)
-            return True
+                value, _kind = winreg.QueryValueEx(key, RUN_NAME)
         except FileNotFoundError:
-            return False
+            return None
+        return str(value or "")
     if sys.platform == "darwin":
-        return _macos_plist_path().exists()
-    return _linux_desktop_path().exists()
+        path = _macos_plist_path()
+        if not path.exists():
+            return None
+        import plistlib
+
+        try:
+            with open(path, "rb") as fh:
+                data = plistlib.load(fh)
+            return _quote_join([str(arg) for arg in data.get("ProgramArguments") or []])
+        except Exception:
+            log.warning("could not read the autostart plist %s", path, exc_info=True)
+            return ""
+    path = _linux_desktop_path()
+    if not path.exists():
+        return None
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("Exec="):
+                return line[len("Exec="):].strip()
+    except OSError:
+        log.warning("could not read the autostart entry %s", path, exc_info=True)
+    return ""
+
+
+def needs_refresh() -> bool:
+    """True when an autostart entry exists but would start the wrong program."""
+    stored = stored_command()
+    return stored is not None and _refresh_reason(stored) is not None
 
 
 def sync(desired: bool) -> None:
-    """Best-effort: make the OS autostart state match the config value."""
+    """Best-effort: make the OS autostart state match the config value.
+
+    Runs at startup and after every settings save, so it doubles as the repair
+    pass for an entry that outlived a program-file move (see
+    :func:`_refresh_reason`); :func:`enable` overwrites on all three platforms.
+    """
     try:
-        if desired and not is_enabled():
+        stored = stored_command()
+        if not desired:
+            if stored is not None:
+                disable()
+        elif stored is None:
             enable()
-        elif not desired and is_enabled():
-            disable()
+        else:
+            reason = _refresh_reason(stored)
+            if reason:
+                log.info("refreshing autostart entry — %s", reason)
+                enable()
     except Exception:
         log.exception("could not update autostart state")
 
 
-def _linux_desktop_path() -> Path:
-    import os
+def _split_command(text: str) -> list[str]:
+    """Split a stored command line back into its arguments.
 
+    ``posix=False`` on Windows keeps backslashes intact (a posix split would eat
+    them as escapes) at the price of leaving quotes on the tokens, hence the
+    strip. A hand-edited entry with unbalanced quotes falls back to a plain
+    whitespace split instead of raising.
+    """
+    try:
+        parts = shlex.split(text or "", posix=sys.platform != "win32")
+    except ValueError:
+        parts = (text or "").split()
+    return [stripped for part in parts if (stripped := part.strip('"'))]
+
+
+def _normalized(parts: list[str]) -> list[str]:
+    """Compare-friendly form: separators normalized, case folded on Windows."""
+    return [os.path.normcase(os.path.normpath(part)) for part in parts]
+
+
+def _refresh_reason(stored: str) -> str | None:
+    """Why a *present* autostart entry must be rewritten — None when it may stay.
+
+    Two situations are repaired automatically, both of them the aftermath of an
+    update that changed where the program file lives:
+
+    * the registered target no longer exists (exe renamed, moved or deleted) —
+      the OS would start nothing at all, while Settings still shows the option
+      as enabled, because the entry itself is still there;
+    * registered target and ours are both frozen builds but different files (a
+      manually downloaded ``ListenToMe-<date>-<time>-win64.exe`` dropped next to
+      the old one) — the OS would keep starting the previous version.
+
+    A *different kind* of launch whose target still exists is deliberately left
+    alone: running from a source checkout must not hijack an installed build's
+    entry, or vice versa. The in-app updater needs none of this — it moves the
+    download onto the running exe's own path, so the registered command stays
+    correct across a self-update.
+    """
+    stored_parts = _split_command(stored)
+    current = _launch_args()
+    if _normalized(stored_parts) == _normalized(current):
+        return None
+    if not stored_parts:
+        return "the registered command is empty"
+    target = Path(stored_parts[0])
+    if not target.exists():
+        return f"the registered program {target} no longer exists"
+    if len(stored_parts) == 1 and len(current) == 1:
+        # A single argument is our frozen-build form; a source launch always
+        # carries "-m listen_to_me" on top of the interpreter path.
+        return f"another build is registered ({target})"
+    return None
+
+
+def _linux_desktop_path() -> Path:
     base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
     return base / "autostart" / "listen-to-me.desktop"
 

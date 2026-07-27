@@ -75,7 +75,11 @@ standalone system-tray app that works in *every* application.
 - **First-run setup wizard** — the very first launch walks you through the
   essentials (hotkey, language, model, backend + device, microphone, startup
   behaviour); everything stays changeable in Settings later.
-- **Autostart with Windows** (configurable; Linux and macOS equivalents included).
+- **Autostart with Windows** (configurable; Linux and macOS equivalents
+  included). The entry survives updates: the in-app updater keeps the
+  executable's path, and if you replace the exe by hand — a manually downloaded
+  build, a rename, a move — the next start repairs the registered path instead
+  of silently booting the old version.
 - **Cross-platform code base** — Windows first; Linux and macOS are prepared
   (see [platform notes](#platform-notes)).
 
@@ -118,7 +122,7 @@ Right-click the tray icon → **Settings…**
 | **Integrations** | **Mute other apps while recording** (Discord, …): master switch (off by default) plus a list of apps, each with an enabled toggle, name, **mute keybind** (with the same key picker) and **mode** (*push-to-mute* / *toggle mute*). Add or remove apps freely. |
 | **Assistant** | Enable/disable, API base URL, model, API key, temperature, **system prompt** (editable, with *Reset to default*) |
 | **History** | Recent **transcribed text** kept locally (never the audio), each with a **Copy** button so a lost transcript can be recovered; toggle history on/off, how many entries to keep, and **Clear history** |
-| **Updates** | Installed version, **check on startup** toggle, include pre-releases, **Check now**, changelog per release and **Download & install** (frozen Windows build) with progress and a **Cancel download** button |
+| **Updates** | Installed version, **check on startup** toggle, include pre-releases, **Check now**, changelog per release and **Download & install** (frozen Windows build) with progress and a **Cancel download** button. The new build is written over the running executable — same folder, same file name — so shortcuts, pinned taskbar entries and the autostart entry keep working; the dated `ListenToMe-…-win64.exe` name is only how the download is published |
 | **Help** | Built-in **troubleshooting** page (GPU/CUDA errors, Intel GPU/NPU setup, hotkey, text insertion, model storage, assistant setup) with clickable links — also on the tray menu |
 
 Every option has a hover tooltip explaining what it does. The sidebar groups

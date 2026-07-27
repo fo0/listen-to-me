@@ -383,6 +383,37 @@ def _key_mapping():
     assert allowed_standalone("<f9>") and not allowed_standalone("a")
 
 
+def _autostart_refresh():
+    """An autostart entry that outlived a program-file move is detected (and
+    rewritten by sync()), while a still-valid one — including the in-app
+    updater's same-path swap and a source checkout next to an installed build —
+    is left alone."""
+    from listen_to_me import autostart
+
+    original = autostart._launch_args
+    with tempfile.TemporaryDirectory() as tmp:
+        old = Path(tmp) / "ListenToMe old.exe"  # the space exercises the quoting
+        new = Path(tmp) / "ListenToMe-2026-07-27-1200-win64.exe"
+        old.write_bytes(b"x")
+        new.write_bytes(b"x")
+        try:
+            autostart._launch_args = lambda: [str(new)]
+            # Same path as the running build: the self-update case, nothing to do.
+            assert autostart._refresh_reason(autostart._launch_command()) is None
+            # A manually downloaded build placed next to the old one.
+            assert autostart._refresh_reason(f'"{old}"') is not None
+            # ... and the old exe renamed/moved away entirely.
+            old.unlink()
+            assert autostart._refresh_reason(f'"{old}"') is not None
+            assert autostart._refresh_reason("") is not None
+            # Running from source must not hijack an installed build's entry.
+            autostart._launch_args = lambda: [sys.executable, "-m", "listen_to_me"]
+            assert autostart._refresh_reason(f'"{new}"') is None
+            assert autostart._refresh_reason(autostart._launch_command()) is None
+        finally:
+            autostart._launch_args = original
+
+
 def _updater_logic():
     from listen_to_me import updater
 
@@ -1329,6 +1360,7 @@ _LIGHT_CHECKS = [
     ("live typing logic", _live_typing_logic),
     ("icon render", _icon_render),
     ("key picker key mapping", _key_mapping),
+    ("autostart entry refresh", _autostart_refresh),
     ("updater version logic", _updater_logic),
     ("updater forces TLS verification", _updater_forces_tls_verification),
     ("insecure SSL switch", _insecure_ssl_switch),
