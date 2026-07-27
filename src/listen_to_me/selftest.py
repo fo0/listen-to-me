@@ -444,6 +444,83 @@ def _updater_logic():
                 pass
 
 
+def _updater_forces_tls_verification():
+    """The update path never honours the insecure-SSL switch: the releases API
+    call and the asset download must both pass verify=True even while it is on,
+    and a certificate failure must surface as an explaining UpdateTrustError
+    instead of a bare SSLError. requests is faked at the module boundary — it is
+    absent in the light CI env, and silently inheriting netutil.verify() here is
+    exactly the regression this guards against."""
+    import types
+
+    from listen_to_me import netutil, updater
+
+    asset_url = "https://github.com/fo0/listen-to-me/releases/download/v1/ListenToMe.exe"
+    calls: list[dict] = []
+    failing: list[bool] = []
+
+    class _SSLError(Exception):
+        pass
+
+    class _Response:
+        headers: dict = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return []
+
+        def iter_content(self, chunk_size=0):
+            return iter((b"payload",))
+
+    def _get(url, **kwargs):
+        calls.append(dict(kwargs, url=url))
+        if failing:
+            raise _SSLError("certificate verify failed")
+        return _Response()
+
+    fake = types.ModuleType("requests")
+    fake.get = _get
+    fake.exceptions = types.SimpleNamespace(SSLError=_SSLError)
+    saved = sys.modules.get("requests")
+    sys.modules["requests"] = fake
+    try:
+        netutil.apply_insecure_ssl(True)
+        assert netutil.verify() is False  # the switch really is on for everyone else
+        with tempfile.TemporaryDirectory() as tmp:
+            updater.fetch_releases()
+            updater.download_asset(asset_url, Path(tmp) / "asset.exe")
+            assert len(calls) == 2
+            assert all(call["verify"] is True for call in calls)
+
+            failing.append(True)
+            for attempt in (
+                lambda: updater.fetch_releases(),
+                lambda: updater.download_asset(asset_url, Path(tmp) / "asset.exe"),
+            ):
+                try:
+                    attempt()
+                    raise AssertionError("a certificate failure was not surfaced")
+                except updater.UpdateTrustError as exc:
+                    # Explains itself instead of failing silently, and says so
+                    # while the switch that would "have covered this" is on.
+                    assert "does not cover updates" in str(exc)
+                    assert "release page" in str(exc)
+    finally:
+        netutil.apply_insecure_ssl(False)
+        if saved is None:
+            sys.modules.pop("requests", None)
+        else:
+            sys.modules["requests"] = saved
+
+
 def _insecure_ssl_switch():
     """The insecure-SSL switch flips the requests verify flag both ways and
     never raises — even when urllib3/huggingface_hub are unavailable (their
@@ -1253,6 +1330,7 @@ _LIGHT_CHECKS = [
     ("icon render", _icon_render),
     ("key picker key mapping", _key_mapping),
     ("updater version logic", _updater_logic),
+    ("updater forces TLS verification", _updater_forces_tls_verification),
     ("insecure SSL switch", _insecure_ssl_switch),
     ("insecure SSL huggingface httpx API", _insecure_ssl_hub_httpx),
     ("std stream stub (windowed build)", _std_stream_stub),

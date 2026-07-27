@@ -6,6 +6,9 @@ frozen Windows build — downloads the new executable and swaps it in on restart
 
 No Qt here: the settings page drives this from a worker thread and marshals the
 results back to the UI.
+
+Every request in this module forces TLS certificate verification on, even while
+``cfg["insecure_ssl"]`` is enabled — see :class:`UpdateTrustError`.
 """
 
 from __future__ import annotations
@@ -92,17 +95,62 @@ def _pick_asset(assets: list[dict]) -> dict:
     return assets[0] if assets else {}
 
 
-def fetch_releases(timeout: float = 10.0, include_prerelease: bool = False) -> list[Release]:
-    """All published releases, newest first. Raises on network/HTTP errors."""
+class UpdateTrustError(Exception):
+    """A request on the update path could not be authenticated.
+
+    Unlike the model downloads and the assistant, the updater never honours
+    ``cfg["insecure_ssl"]``: what it fetches replaces the running program, so an
+    unauthenticated response would let whoever intercepts the connection execute
+    code on this machine — and the asset digest is no defence, because it comes
+    from the very same API response. The corporate-proxy escape hatch therefore
+    stops here, and this error carries a ready-to-show explanation so the UI can
+    say why instead of failing silently.
+    """
+
+
+def _trust_error() -> UpdateTrustError:
+    """The message shown when the update path's certificate check fails.
+
+    Names the insecure-SSL switch only while it is actually on — that is the
+    case where the user would otherwise expect it to have covered this too.
+    """
+    hint = ""
+    if not netutil.verify():
+        hint = (
+            ' "Ignore SSL certificate errors" deliberately does not cover updates:'
+            " an update replaces the program file, so it has to come from a"
+            " connection that is authenticated, not just encrypted."
+        )
+    return UpdateTrustError(
+        f"could not verify GitHub's TLS certificate.{hint}"
+        " Download the release manually from the release page instead."
+    )
+
+
+def _verified_get(url: str, **kwargs):
+    """``requests.get`` with certificate verification forced on.
+
+    Every network call in this module goes through here, so the update path
+    stays authenticated regardless of the app-wide insecure-SSL switch.
+    """
     import requests
 
+    try:
+        return requests.get(url, verify=True, **kwargs)
+    except requests.exceptions.SSLError as exc:
+        log.warning("update aborted — GitHub's TLS certificate could not be verified")
+        raise _trust_error() from exc
+
+
+def fetch_releases(timeout: float = 10.0, include_prerelease: bool = False) -> list[Release]:
+    """All published releases, newest first. Raises on network/HTTP errors, and
+    ``UpdateTrustError`` when the certificate could not be verified."""
     url = _API_URL.format(owner_repo=_owner_repo())
-    resp = requests.get(
+    resp = _verified_get(
         url,
         timeout=timeout,
         headers={"Accept": "application/vnd.github+json"},
         params={"per_page": 100},
-        verify=netutil.verify(),
     )
     resp.raise_for_status()
     releases: list[Release] = []
@@ -166,12 +214,12 @@ def download_asset(
     """Stream a release asset to `dest`. progress_cb(done, total) is called as it
     downloads (total is 0 when the server sends no Content-Length).
     ``is_cancelled`` (optional) is polled between chunks; returning True aborts
-    with DownloadCancelled — the caller cleans up the partial file."""
+    with DownloadCancelled — the caller cleans up the partial file. Raises
+    ``UpdateTrustError`` when the certificate could not be verified."""
     _require_trusted_url(url)
-    import requests
 
     dest = Path(dest)
-    with requests.get(url, stream=True, timeout=timeout, verify=netutil.verify()) as resp:
+    with _verified_get(url, stream=True, timeout=timeout) as resp:
         resp.raise_for_status()
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
@@ -195,7 +243,12 @@ def verify_download(
     ValueError on a mismatch. A truncated or proxy-mangled download would
     otherwise get swapped in and the app dies on its next start. Size always
     comes with the API response; the "sha256:<hex>" digest exists on newer
-    assets (absent or unknown formats are skipped, best effort)."""
+    assets (absent or unknown formats are skipped, best effort).
+
+    This proves integrity, not authenticity: the expected digest arrives in the
+    same API response as the download URL, so both move together if that
+    response is forged. Authenticity comes from :func:`_verified_get` keeping
+    the certificate check on for both requests."""
     path = Path(path)
     actual_size = path.stat().st_size
     if expected_size and actual_size != expected_size:

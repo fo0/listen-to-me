@@ -8,6 +8,7 @@ Structured decisions live in `docs/adr/`. Grep there before contradicting one. T
 
 - **PySide6/Qt over Tkinter/pystray** — the UI was migrated to PySide6 for a modern look, tray, and the animated overlay. (See git history "Revamp UI".) A proper ADR can be back-filled if the choice is revisited.
 - **Fully local transcription** — faster-whisper (CTranslate2), no cloud, no account; only the optional assistant + updater touch the network.
+- **The updater is carved out of `insecure_ssl`** — `updater.py` forces `verify=True` for the releases API call and the exe download even while the switch is on; the switch covers model downloads and the assistant only. An update replaces the running program file, and the asset's SHA256 digest can't authenticate it because it ships in the same API response as the URL. Failures raise `UpdateTrustError` with a user-facing explanation (never a silent no-op). Locked in by the `updater forces TLS verification` gui_smoke check. (#20, 2026-07-27)
 
 ## Gotchas & Pitfalls
 
