@@ -133,8 +133,13 @@ jobs:
             RANGE=""
             echo "No previous tag — full history changelog"
           fi
+          # Random heredoc delimiter: the body embeds commit subjects, and a
+          # subject that happens to be the delimiter would close the block early
+          # and let the rest of the log be parsed as further workflow outputs.
+          # $RANDOM is a bash builtin, so this needs nothing extra on the runner.
+          DELIM="CHANGELOG_EOF_${RANDOM}${RANDOM}${RANDOM}_$(date +%s)"
           {
-            echo "body<<CHANGELOG_EOF"
+            echo "body<<$DELIM"
             echo "Portable single-file Windows build — download \`${{ steps.meta.outputs.asset }}\` below and run it."
             echo "The app lives in the system tray; no installation required."
             echo ""
@@ -144,7 +149,7 @@ jobs:
             echo "## Changes"
             git log $RANGE --no-merges --pretty=format:"- %s (%h)"
             echo ""
-            echo "CHANGELOG_EOF"
+            echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create release

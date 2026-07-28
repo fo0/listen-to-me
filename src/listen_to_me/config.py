@@ -216,13 +216,21 @@ def _merge(base: dict, override: dict) -> dict:
 def atomic_write_json(path: Path, data) -> None:
     """Write `data` as pretty JSON to `path` atomically: a sibling temp file is
     written and then `os.replace`d over the target, so a crash mid-write never
-    leaves a truncated file. The parent directory is created if needed."""
+    leaves a truncated file. The parent directory is created if needed.
+
+    The temp file is fsync'd before the replace. Closing it only hands the
+    bytes to the OS cache; without the flush a power loss or OS crash can land
+    the rename ahead of the data and leave a zero-length config.json /
+    history.json — the very outcome this helper exists to prevent.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, path)
 
 
