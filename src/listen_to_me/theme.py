@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import tempfile
 from functools import lru_cache
 from pathlib import Path
@@ -166,13 +167,25 @@ def _asset_dir() -> Path:
 def _chevron_asset(direction: str, color: str) -> str | None:
     """Write a themed chevron SVG (idempotently) and return its path with forward
     slashes, ready to drop into a QSS ``url("…")``. Returns None if the file
-    can't be written so the caller can fall back to Qt's native arrow."""
+    can't be written so the caller can fall back to Qt's native arrow.
+
+    Written via a temp sibling + ``os.replace`` like config.atomic_write_json:
+    the existence check never re-validates the content, so a write cut short
+    (crash, full disk) would otherwise leave a truncated SVG that every later
+    run happily reuses — arrows silently broken for good.
+    """
     try:
         svg = _chevron_svg(direction, color)
         digest = hashlib.md5(svg.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
         path = _asset_dir() / f"{direction}-{digest}.svg"
         if not path.exists():
-            path.write_text(svg, encoding="utf-8")
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            try:
+                tmp.write_text(svg, encoding="utf-8")
+                os.replace(tmp, path)
+            except Exception:
+                tmp.unlink(missing_ok=True)
+                raise
         return path.as_posix()
     except Exception:
         log.debug("could not generate combo/spin arrow asset", exc_info=True)
