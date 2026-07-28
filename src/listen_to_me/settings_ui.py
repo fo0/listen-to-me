@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, REPO_URL, __version__
+from . import APP_NAME, __version__
 from .choices import (
     BACKENDS,
     COMPUTE_TYPES,
@@ -1921,7 +1921,9 @@ class SettingsWindow(QDialog):
         from . import updater
 
         if not (updater.can_self_update() and release.asset_url):
-            webbrowser.open(release.html_url or REPO_URL)
+            # Via updater, not release.html_url directly: the URL comes from the
+            # API response and webbrowser.open() would hand any scheme to the OS.
+            webbrowser.open(updater.release_page_url(release))
             return
         confirm = QMessageBox.question(
             self,

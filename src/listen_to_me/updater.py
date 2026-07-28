@@ -203,6 +203,24 @@ def _require_trusted_url(url: str) -> None:
         raise ValueError(f"refusing to download from an untrusted URL: {url!r}")
 
 
+def release_page_url(release) -> str:
+    """The release's own page, or the project page when that URL isn't one we
+    trust.
+
+    ``html_url`` is whatever the GitHub API response carried, and the UI hands
+    it to ``webbrowser.open`` — which passes anything with a scheme on to the
+    OS URL handler, so a non-HTTPS or non-GitHub value there would be a launch
+    vector rather than a broken link. Same host check the download path uses.
+    """
+    url = getattr(release, "html_url", "") or ""
+    try:
+        _require_trusted_url(url)
+    except ValueError:
+        log.warning("ignoring an untrusted release page URL %r — opening %s", url, REPO_URL)
+        return REPO_URL
+    return url
+
+
 class DownloadCancelled(Exception):
     """Raised by download_asset when the caller's is_cancelled turns True —
     distinct from a real failure so the UI can say "cancelled", not "failed"."""
