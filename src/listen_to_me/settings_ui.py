@@ -948,6 +948,10 @@ class SettingsWindow(QDialog):
         self.diag_progress = QProgressBar()
         self.diag_progress.setTextVisible(False)
         self.diag_progress.setVisible(False)
+        # Standalone bars have no form-row label to borrow a name from, so a
+        # screen reader would announce a bare "progress bar" with no idea what
+        # is running. (The Audio page's level bar sits in a labelled row.)
+        self.diag_progress.setAccessibleName("Model download and transcription test progress")
         tv.addWidget(self.diag_progress)
         self.diag_status = self._hint(
             "Both buttons use the values currently entered — no Save needed."
@@ -1807,6 +1811,7 @@ class SettingsWindow(QDialog):
         layout.addWidget(self.update_status)
 
         self.update_list = QListWidget()
+        self.update_list.setAccessibleName("Available releases")
         self.update_list.setMaximumHeight(140)
         self.update_list.currentRowChanged.connect(self._on_release_selected)
         self.update_list.setToolTip(
@@ -1816,10 +1821,12 @@ class SettingsWindow(QDialog):
         layout.addWidget(self.update_list)
 
         self.update_changelog = QTextBrowser()
+        self.update_changelog.setAccessibleName("Changelog of the selected release")
         self.update_changelog.setOpenExternalLinks(True)
         layout.addWidget(self.update_changelog, 1)
 
         self.update_progress = QProgressBar()
+        self.update_progress.setAccessibleName("Update download progress")
         self.update_progress.setVisible(False)
         layout.addWidget(self.update_progress)
 
