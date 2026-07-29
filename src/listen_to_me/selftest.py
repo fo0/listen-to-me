@@ -962,6 +962,70 @@ def _glyph_icons():
     assert not glyph_icon("home", "#888888", "#4f6ef7").isNull()
 
 
+def _theme_focus_visible():
+    """Keyboard focus must be visible on every control the user can tab to.
+
+    The stylesheet gives buttons a custom border, which switches Qt to
+    stylesheet rendering and drops the native focus rect — before the :focus
+    rules in theme.py, tabbing through the window changed not a single pixel.
+    Rendered, not read off the style sheet, because only the render proves the
+    rule actually applies. The size hint must stay put as well: a ring that
+    widens the border would make the layout jump as focus moves.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import (
+        QCheckBox,
+        QLineEdit,
+        QPushButton,
+        QRadioButton,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    app = _ensure_qapp()
+    from listen_to_me.theme import apply_theme
+
+    apply_theme(app)
+
+    def _focus_changes(widget, name: str) -> None:
+        host = QWidget()
+        # Set as real Tab navigation does — some styles only paint the focus
+        # ring after a keyboard-driven focus change.
+        host.setAttribute(Qt.WidgetAttribute.WA_KeyboardFocusChange, True)
+        layout = QVBoxLayout(host)
+        elsewhere = QLineEdit()
+        layout.addWidget(widget)
+        layout.addWidget(elsewhere)
+        host.show()
+        elsewhere.setFocus(Qt.FocusReason.TabFocusReason)
+        app.processEvents()
+        hint, before = widget.sizeHint(), widget.grab().toImage()
+        widget.setFocus(Qt.FocusReason.TabFocusReason)
+        app.processEvents()
+        after = widget.grab().toImage()
+        assert before != after, f"{name} looks identical focused and unfocused"
+        assert widget.sizeHint() == hint, f"{name} changes size when focused"
+        host.deleteLater()
+
+    def _button(text: str, prop: str | None = None, name: str | None = None):
+        button = QPushButton(text)
+        if prop:
+            button.setProperty(prop, True)
+        if name:
+            button.setObjectName(name)
+        return button
+
+    _focus_changes(_button("Apply"), "QPushButton")
+    _focus_changes(_button("Save", prop="accent"), "accent QPushButton")
+    _focus_changes(_button("Clear history", prop="destructive"), "destructive QPushButton")
+    _focus_changes(_button("  Change hotkey", prop="quick"), "quick QPushButton")
+    _focus_changes(_button("Start recording", name="recordBtn"), "hero record button")
+    _focus_changes(_button("Cancel", name="heroCancel"), "hero cancel button")
+    _focus_changes(QCheckBox("Beep on start/stop"), "QCheckBox")
+    _focus_changes(QRadioButton("Toggle"), "QRadioButton")
+    _focus_changes(QLineEdit("text"), "QLineEdit")
+
+
 def _voice_mic_widget():
     """Render the animated overlay icon through a few ticks in every state."""
     _ensure_qapp()
@@ -1077,6 +1141,22 @@ def _gui_construction():
         window.home._toggle()
         window.home._toggle()  # the double-click's second click
         assert stub.posts[posts_before:] == [("toggle",)]
+
+        # The at-a-glance cards are controls, not decoration: they must take
+        # keyboard focus and open their settings page on Space/Enter. Enter
+        # especially — an unaccepted Return would fall through to the dialog's
+        # default button (Save) and close the window instead.
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        for key in (Qt.Key.Key_Return, Qt.Key.Key_Space):
+            window._show_page("Home")
+            card = window.home.card_mic
+            assert card.focusPolicy() != Qt.FocusPolicy.NoFocus, "stat card is not focusable"
+            assert card.accessibleName(), "stat card has no accessible name"
+            card.setFocus(Qt.FocusReason.TabFocusReason)
+            card.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier))
+            assert window.nav.currentRow() == window._nav_row["Audio"], key
 
         # The language card must not show the (ignored) Whisper language for
         # the Parakeet backend — Parakeet always auto-detects.
@@ -1428,6 +1508,7 @@ _LIGHT_CHECKS = [
     ("help content renders", _help_content_renders),
     ("Qt icon conversion", _qt_icons),
     ("glyph icons render", _glyph_icons),
+    ("keyboard focus stays visible", _theme_focus_visible),
     ("voice mic widget", _voice_mic_widget),
     ("Qt UI construction", _gui_construction),
 ]

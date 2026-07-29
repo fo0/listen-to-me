@@ -119,6 +119,12 @@ class _DiagSignals(QObject):
 # How long the hotkey test waits for the combination before giving up.
 _HOTKEY_TEST_TIMEOUT_MS = 10_000
 
+# Status line under the Whisper page's model/transcription test buttons while
+# nothing runs — restored whenever a "please wait" note is cleared.
+_DIAG_STATUS_IDLE = "Both buttons use the values currently entered — no Save needed."
+# Shown on the page that is NOT running the diagnostic: its test buttons are
+# disabled meanwhile, and a greyed-out button with no reason reads as broken.
+_DIAG_BUSY_NOTE = "Another test is still running — it has to finish first."
 # How long the diagnostic start buttons stay disabled after a Cancel, so a
 # restart can't race the worker that was just detached (see _cancel_diagnostic).
 _DIAG_COOLDOWN_MS = 400
@@ -959,10 +965,12 @@ class SettingsWindow(QDialog):
         self.diag_progress = QProgressBar()
         self.diag_progress.setTextVisible(False)
         self.diag_progress.setVisible(False)
+        # Standalone bars have no form-row label to borrow a name from, so a
+        # screen reader would announce a bare "progress bar" with no idea what
+        # is running. (The Audio page's level bar sits in a labelled row.)
+        self.diag_progress.setAccessibleName("Model download and transcription test progress")
         tv.addWidget(self.diag_progress)
-        self.diag_status = self._hint(
-            "Both buttons use the values currently entered — no Save needed."
-        )
+        self.diag_status = self._hint(_DIAG_STATUS_IDLE)
         self.diag_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         tv.addWidget(self.diag_status)
         layout.addWidget(tools)
@@ -1464,6 +1472,22 @@ class SettingsWindow(QDialog):
         # Only the tests that record own the microphone; a model download can
         # run for minutes and must not take dictation away for that long.
         self._set_hotkey_paused(busy and kind in ("tx", "mic"))
+        # The diagnostics share the recorder and the model, so starting one
+        # disables the buttons on the *other* page too. Switching there and
+        # finding them greyed out with an empty status line reads as broken —
+        # say what is going on. The caller writes the running test's own status
+        # after this, so only the idle page keeps the note.
+        self._note_diag_wait(self.mic_status, busy and kind != "mic", "")
+        self._note_diag_wait(self.diag_status, busy and kind == "mic", _DIAG_STATUS_IDLE)
+
+    @staticmethod
+    def _note_diag_wait(label: QLabel, waiting: bool, idle_text: str) -> None:
+        """Show/clear the "another test is running" note without clobbering a
+        result message: only the note itself is ever replaced."""
+        if waiting:
+            label.setText(_DIAG_BUSY_NOTE)
+        elif label.text() == _DIAG_BUSY_NOTE:
+            label.setText(idle_text)
 
     def _begin_diag(self, kind: str) -> tuple[int, threading.Event]:
         """Mark a diagnostic as started; returns its (generation, cancel event).
@@ -1884,6 +1908,7 @@ class SettingsWindow(QDialog):
         layout.addWidget(self.update_status)
 
         self.update_list = QListWidget()
+        self.update_list.setAccessibleName("Available releases")
         self.update_list.setMaximumHeight(140)
         self.update_list.currentRowChanged.connect(self._on_release_selected)
         self.update_list.setToolTip(
@@ -1893,10 +1918,12 @@ class SettingsWindow(QDialog):
         layout.addWidget(self.update_list)
 
         self.update_changelog = QTextBrowser()
+        self.update_changelog.setAccessibleName("Changelog of the selected release")
         self.update_changelog.setOpenExternalLinks(True)
         layout.addWidget(self.update_changelog, 1)
 
         self.update_progress = QProgressBar()
+        self.update_progress.setAccessibleName("Update download progress")
         self.update_progress.setVisible(False)
         layout.addWidget(self.update_progress)
 
@@ -2147,7 +2174,15 @@ class SettingsWindow(QDialog):
         self._clear_history_rows()
         entries = self.app.history.entries()
         if not entries:
-            self._history_layout.insertWidget(0, self._hint("No transcripts yet."))
+            # "No transcripts yet" promises the list will fill up — which is a
+            # lie once history is switched off. Say which of the two empty
+            # states this is, and where to change it.
+            self._history_layout.insertWidget(0, self._hint(
+                "No transcripts yet — the text of your next dictation shows up here."
+                if self.cfg["history_enabled"]
+                else "History is off — new transcripts are not stored. Turn on "
+                "“Keep a history of transcribed text” above to collect them."
+            ))
             return
         shown = entries[:_HISTORY_RENDER_LIMIT]
         insert_at = 0
@@ -2454,6 +2489,14 @@ class SettingsWindow(QDialog):
         self.app.apply_settings()
         self._saved_snapshot = self._collect()
         self.home.refresh()  # hotkey chips / stat cards may show old values
+        if self._history_rendered:
+            # The empty-list note names the applied on/off state, so it goes
+            # stale the moment the history switch is applied. Re-render it now
+            # when it's on screen; otherwise let the next visit rebuild it.
+            if self.stack.currentIndex() == self._history_index:
+                self._refresh_history()
+            else:
+                self._history_rendered = False
         return True
 
     def _save(self) -> None:
