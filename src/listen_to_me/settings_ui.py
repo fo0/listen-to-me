@@ -2077,7 +2077,15 @@ class SettingsWindow(QDialog):
         self._clear_history_rows()
         entries = self.app.history.entries()
         if not entries:
-            self._history_layout.insertWidget(0, self._hint("No transcripts yet."))
+            # "No transcripts yet" promises the list will fill up — which is a
+            # lie once history is switched off. Say which of the two empty
+            # states this is, and where to change it.
+            self._history_layout.insertWidget(0, self._hint(
+                "No transcripts yet — the text of your next dictation shows up here."
+                if self.cfg["history_enabled"]
+                else "History is off — new transcripts are not stored. Turn on "
+                "“Keep a history of transcribed text” above to collect them."
+            ))
             return
         shown = entries[:_HISTORY_RENDER_LIMIT]
         insert_at = 0
@@ -2384,6 +2392,14 @@ class SettingsWindow(QDialog):
         self.app.apply_settings()
         self._saved_snapshot = self._collect()
         self.home.refresh()  # hotkey chips / stat cards may show old values
+        if self._history_rendered:
+            # The empty-list note names the applied on/off state, so it goes
+            # stale the moment the history switch is applied. Re-render it now
+            # when it's on screen; otherwise let the next visit rebuild it.
+            if self.stack.currentIndex() == self._history_index:
+                self._refresh_history()
+            else:
+                self._history_rendered = False
         return True
 
     def _save(self) -> None:
