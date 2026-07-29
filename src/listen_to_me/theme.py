@@ -432,8 +432,29 @@ def _qss(t: dict) -> str:
         background: {t["danger_hover"]};
         border-color: {t["danger"]};
     }}
+    /* Keyboard focus must stay visible. Giving a button a border above switches
+       Qt to stylesheet rendering, which drops the native focus rect — without a
+       :focus rule of their own, tabbing through the window highlights nothing at
+       all (the inputs already carry one). Every ring keeps the border WIDTH of
+       the unfocused state, so gaining focus never nudges the layout. Placed
+       after the variant rules: equal specificity, so the later rule wins. */
+    QPushButton:focus {{ border: 1px solid {ACCENT}; }}
+    QPushButton[accent="true"]:focus {{ border: 1px solid {t["on_accent"]}; }}
+    QPushButton[destructive="true"]:focus {{ border: 1px solid {t["danger"]}; }}
+    /* Hero buttons sit on the accent gradient, where the accent ring would
+       disappear — ring them in the button's own foreground colour instead. */
+    QPushButton#recordBtn:focus {{ border: 2px solid {ACCENT_DOWN}; padding: 9px 22px; }}
+    QPushButton#heroCancel:focus {{ border: 1px solid #ffffff; }}
 
-    QCheckBox, QRadioButton {{ spacing: 8px; padding: 2px 0; }}
+    /* The transparent border reserves the ring's space, so :focus only
+       recolours it and the label never shifts. */
+    QCheckBox, QRadioButton {{
+        spacing: 8px;
+        padding: 2px 0;
+        border: 1px solid transparent;
+        border-radius: 6px;
+    }}
+    QCheckBox:focus, QRadioButton:focus {{ border-color: {ACCENT}; }}
     QCheckBox::indicator, QRadioButton::indicator {{ width: 17px; height: 17px; }}
 
     QScrollArea {{ border: none; background: transparent; }}
