@@ -119,6 +119,10 @@ class _DiagSignals(QObject):
 # How long the hotkey test waits for the combination before giving up.
 _HOTKEY_TEST_TIMEOUT_MS = 10_000
 
+# How long the diagnostic start buttons stay disabled after a Cancel, so a
+# restart can't race the worker that was just detached (see _cancel_diagnostic).
+_DIAG_COOLDOWN_MS = 400
+
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
 # with the first-run onboarding wizard.
@@ -284,6 +288,7 @@ class SettingsWindow(QDialog):
         # from a detached worker are recognized as stale and ignored.
         self._diag_gen = 0
         self._diag_cancel_event: threading.Event | None = None
+        self._hotkey_paused = False  # app listener paused for a mic-owning test
         # Hardware/model status probe (Whisper page status card).
         self._hw_gen = 0
         self._hw_busy = False
@@ -365,6 +370,12 @@ class SettingsWindow(QDialog):
         self._status_timer.setSingleShot(True)
         self._status_timer.setInterval(600)
         self._status_timer.timeout.connect(self._maybe_refresh_status)
+        # Cool-down after a Cancel (see _cancel_diagnostic). A child QTimer, so
+        # it dies with the window instead of firing into a deleted one.
+        self._diag_cooldown_timer = QTimer(self)
+        self._diag_cooldown_timer.setSingleShot(True)
+        self._diag_cooldown_timer.setInterval(_DIAG_COOLDOWN_MS)
+        self._diag_cooldown_timer.timeout.connect(self._end_diag_cooldown)
         # currentTextChanged (not currentIndexChanged): the custom-model dialog
         # can rename the selected custom item in place without an index change.
         self.model_combo.currentTextChanged.connect(self._on_status_inputs_changed)
@@ -1382,6 +1393,25 @@ class SettingsWindow(QDialog):
 
     # --------------------------------------------------------- diagnostics
 
+    def _app_busy(self) -> bool:
+        """Whether the app is recording or transcribing right now — the guard
+        every test that borrows the microphone or the hotkey listener runs.
+
+        A hotkey press posted by the listener thread can sit in App's event
+        queue for up to one poll tick (100 ms), so App.state alone is stale:
+        hold the combo and start a test within that window and the guard would
+        pass, the test takes over, and the queued press then starts a recording
+        whose release is never delivered. Draining the queue first applies the
+        press before the state is read.
+        """
+        poll = getattr(self.app, "_poll", None)
+        if callable(poll):
+            try:
+                poll()
+            except Exception:
+                log.debug("could not drain the app event queue", exc_info=True)
+        return getattr(self.app, "state", "idle") != "idle"
+
     def _diag_snapshot(self) -> dict:
         """The UI values the transcribers read, as a plain dict — so the
         diagnostics test exactly what is entered right now, saved or not."""
@@ -1400,6 +1430,27 @@ class SettingsWindow(QDialog):
             "parakeet_quantization": self.pk_quant_combo.currentText(),
         }
 
+    def _set_hotkey_paused(self, paused: bool) -> None:
+        """Pause/resume the app's global hotkey listener around a diagnostic
+        that records. Pressing the hotkey mid-test would open a second
+        PortAudio input stream on the same device (both keep working in shared
+        mode, but the statuses interleave) — the hotkey test pauses it for the
+        same reason."""
+        if paused == self._hotkey_paused:
+            return
+        self._hotkey_paused = paused
+        if self._hotkey_test is not None:
+            # The hotkey test already borrowed the listener and re-registers it
+            # itself when it ends — handing out a second one would double it.
+            return
+        try:
+            if paused:
+                self.app.hotkeys.stop()
+            else:
+                self.app._register_hotkey()
+        except Exception:
+            log.debug("could not toggle the global hotkey for a diagnostic", exc_info=True)
+
     def _set_diag_busy(self, busy: bool, kind: str | None = None) -> None:
         # One diagnostic at a time: they share the recorder/model, and two
         # concurrent tests would interleave their status output anyway.
@@ -1410,6 +1461,9 @@ class SettingsWindow(QDialog):
         # Only the Cancel button next to the running diagnostic is active.
         self.diag_cancel_button.setEnabled(busy and kind in ("model", "tx"))
         self.mic_cancel_button.setEnabled(busy and kind == "mic")
+        # Only the tests that record own the microphone; a model download can
+        # run for minutes and must not take dictation away for that long.
+        self._set_hotkey_paused(busy and kind in ("tx", "mic"))
 
     def _begin_diag(self, kind: str) -> tuple[int, threading.Event]:
         """Mark a diagnostic as started; returns its (generation, cancel event).
@@ -1438,6 +1492,7 @@ class SettingsWindow(QDialog):
             self._diag_cancel_event.set()
         self._diag = DiagnosticsEngine()
         self._set_diag_busy(False)
+        self._begin_diag_cooldown()
         if kind == "mic":
             self.mic_level_bar.setValue(0)
             self.mic_status.setText("Microphone test cancelled.")
@@ -1450,6 +1505,24 @@ class SettingsWindow(QDialog):
             )
         else:
             self.diag_status.setText("Transcription test cancelled.")
+
+    def _begin_diag_cooldown(self) -> None:
+        """Keep the start buttons disabled for a moment after a Cancel.
+
+        The cancelled worker is detached, not stopped: a recording loop needs
+        up to a poll tick to release its input stream (restarting instantly
+        would briefly open a second one on the same device), and a model
+        download keeps running, so an immediate retry would start a second
+        snapshot_download of the same repo in parallel."""
+        for button in (self.model_download_button, self.tx_test_button, self.mic_test_button):
+            button.setEnabled(False)
+        self._diag_cooldown_timer.start()
+
+    def _end_diag_cooldown(self) -> None:
+        if self._diag_busy:
+            return  # a new diagnostic owns the buttons now
+        for button in (self.model_download_button, self.tx_test_button, self.mic_test_button):
+            button.setEnabled(True)
 
     def _on_diag_status(self, gen: int, message: str) -> None:
         if gen != self._diag_gen:
@@ -1498,7 +1571,7 @@ class SettingsWindow(QDialog):
     def _test_transcription(self) -> None:
         if self._diag_busy:
             return
-        if getattr(self.app, "state", "idle") != "idle":
+        if self._app_busy():
             self.diag_status.setText("Finish the current recording first, then run the test.")
             return
         snapshot = self._diag_snapshot()
@@ -1557,7 +1630,7 @@ class SettingsWindow(QDialog):
     def _test_microphone(self) -> None:
         if self._diag_busy:
             return
-        if getattr(self.app, "state", "idle") != "idle":
+        if self._app_busy():
             self.mic_status.setText("Finish the current recording first, then run the test.")
             return
         device = self._selected_input_device()
@@ -1613,9 +1686,10 @@ class SettingsWindow(QDialog):
     def _test_hotkey(self) -> None:
         if self._hotkey_test is not None:
             return  # already listening
-        if getattr(self.app, "state", "idle") != "idle":
+        if self._app_busy():
             # Stopping the app's listener mid-recording would lose a hold-mode
-            # release, leaving the recording stuck until stopped via the overlay.
+            # release, leaving the recording stuck until stopped via the overlay
+            # — including a press still sitting in the queue (see _app_busy).
             self.hotkey_test_status.setText("Finish the current recording first, then run the test.")
             return
         combo = self.hotkey_edit.text().strip()
@@ -1664,7 +1738,10 @@ class SettingsWindow(QDialog):
                 test.stop()
             except Exception:
                 log.debug("error stopping the test hotkey listener", exc_info=True)
-        self.app._register_hotkey()
+        if not self._hotkey_paused:
+            # Still paused = a recording diagnostic is running and owns the
+            # listener; it re-registers when it ends.
+            self.app._register_hotkey()
         self.hotkey_test_button.setEnabled(True)
         self.hotkey_test_status.setText(message)
 

@@ -63,6 +63,34 @@ def openvino_model_repo(model: str, precision: str) -> str:
     return f"OpenVINO/{base}-{precision}-ov"
 
 
+def _looks_like_openvino_model(repo: str) -> bool | None:
+    """Whether `repo` ships OpenVINO IR files (``openvino_*.xml``).
+
+    Custom model ids are passed through verbatim, so a CTranslate2 id entered
+    while this backend is selected downloads a model the pipeline cannot load
+    and only fails at load time with a cryptic error. Listing the files first
+    turns that into an actionable message before the download starts.
+
+    Returns None when it cannot be determined — offline, a private repo, any
+    hub error — so the caller stays permissive rather than blocking a model
+    that may well work.
+    """
+    try:
+        if os.path.isdir(repo):
+            names = os.listdir(repo)
+        else:
+            from huggingface_hub import list_repo_files
+
+            names = list_repo_files(repo)
+    except Exception:
+        log.debug("could not list the files of %r for the format check", repo, exc_info=True)
+        return None
+    return any(
+        name.startswith("openvino_") and name.endswith(".xml")
+        for name in (os.path.basename(str(entry)) for entry in names)
+    )
+
+
 def _model_is_cached(repo: str, model_dir) -> bool:
     """Whether the OpenVINO model is already on disk (local dir or a complete
     Hugging Face snapshot), so loading it won't download. Any uncertainty counts
@@ -174,6 +202,18 @@ class OpenVinoTranscriber:
             raise RuntimeError(_INSTALL_HINT) from exc
 
         cached = _model_is_cached(repo, model_dir)
+        # Only custom ids can carry the wrong format — the mapped presets are
+        # known OpenVINO repos — and only the first (downloading) load pays for
+        # the check; a cached model is already known to have loaded once.
+        custom = "/" in model_name or os.sep in model_name
+        if custom and not cached and _looks_like_openvino_model(repo) is False:
+            raise ValueError(
+                f"'{repo}' does not look like an OpenVINO model — it has no "
+                "openvino_*.xml files (a CTranslate2 or Transformers model "
+                "cannot be loaded by this backend). Pick an OpenVINO IR repo "
+                "such as OpenVINO/whisper-small-int8-ov, or switch Backend to "
+                "faster-whisper in Settings → Whisper."
+            )
         if notify is not None:
             if cached:
                 notify(f"Loading Whisper model '{repo}'…")
