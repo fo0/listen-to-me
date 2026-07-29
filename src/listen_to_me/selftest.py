@@ -368,6 +368,14 @@ def _live_typing_logic():
     lt._flush_pending()  # later chunks get a separating space
     assert lt.app.injector.typed == ["hello", " world"] and lt.pending == ""
 
+    # Hand-over: app._process takes the untyped remainder and its typed_any
+    # bookkeeping; a worker resuming after the join timeout must not type that
+    # text a second time (duplicate words).
+    lt.pending = "again"
+    assert lt.hand_over() == ("again", True)
+    lt._flush_pending()
+    assert lt.app.injector.typed == ["hello", " world"] and lt.pending == "again"
+
 
 def _key_mapping():
     from PySide6.QtCore import Qt

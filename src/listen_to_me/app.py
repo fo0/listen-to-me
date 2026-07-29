@@ -299,12 +299,17 @@ class App:
         (append-only by design)."""
         try:
             prefix = ""
+            pending, typed_any = "", False
             if live is not None:
                 # Wait for a decode that was mid-tick to finish; the loop
                 # itself exits promptly once the state left RECORDING.
                 live.join(timeout=60)
                 if live.is_alive():
                     log.warning("live typing worker still busy — using its last committed state")
+                # Take the untyped remainder over even when the worker outlived
+                # the join: a hung decode/injection that resumes later must not
+                # type its `pending` a second time (duplicate words).
+                pending, typed_any = live.hand_over()
                 prefix = live.committed_text
                 audio = audio[live.committed_frames :]
             text = ""
@@ -337,11 +342,11 @@ class App:
                 # Flush what live typing still owes: text committed but not yet
                 # typed (a modifier was held), plus the transcript of the rest.
                 rest = sanitize_typed_text(text)
-                if live.pending:
-                    rest = f"{live.pending} {rest}" if rest else live.pending
+                if pending:
+                    rest = f"{pending} {rest}" if rest else pending
                 if rest:
                     leftover = self.injector.type_plain_blocking(
-                        (" " if live.typed_any else "") + rest
+                        (" " if typed_any else "") + rest
                     )
                     if leftover:
                         self.notify(

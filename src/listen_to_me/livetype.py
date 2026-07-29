@@ -82,8 +82,8 @@ def _join(a: str, b: str) -> str:
 class LiveTyper:
     """Background worker for a single take. Created (and started) by
     app._start_recording when live typing is enabled; app._process joins it
-    after the recording stops and continues from `committed_frames` /
-    `committed_text` / `pending` / `typed_any`.
+    after the recording stops, calls hand_over() and continues from
+    `committed_frames` / `committed_text` and the handed-over state.
     """
 
     def __init__(self, app, recording_id: int, post_preview: bool):
@@ -97,6 +97,10 @@ class LiveTyper:
         self.pending = ""  # committed but not yet typed (modifier was held)
         self.typed_any = False  # whether the next chunk needs a separating space
         self._prev: list[tuple[float, str]] | None = None
+        # Guards the hand-over of the untyped remainder to app._process, so the
+        # two can never type the same text (see hand_over).
+        self._hand_lock = threading.Lock()
+        self._handed_over = False
         self._thread = threading.Thread(target=self._run, name="live-type", daemon=True)
 
     def start(self) -> None:
@@ -107,6 +111,20 @@ class LiveTyper:
 
     def is_alive(self) -> bool:
         return self._thread.is_alive()
+
+    def hand_over(self) -> tuple[str, bool]:
+        """Take the still-untyped text back from the worker; returns the
+        (pending, typed_any) state app._process continues from.
+
+        Called right after the join: from here on the worker types nothing, not
+        even if it outlived the join timeout in a hung decode/injection and
+        resumes afterwards — it would type its `pending` a second time
+        otherwise (duplicate words). Blocks for at most one in-flight flush, so
+        the returned state is never read mid-write.
+        """
+        with self._hand_lock:
+            self._handed_over = True
+            return self.pending, self.typed_any
 
     # ------------------------------------------------------------- worker
 
@@ -175,15 +193,19 @@ class LiveTyper:
     def _flush_pending(self) -> None:
         """Type whatever is committed but not yet typed. Leaves the rest in
         `pending` when a held modifier interrupts — retried next tick, and
-        app._process picks up any final leftover."""
-        if not self.pending:
-            return
-        text = (" " if self.typed_any else "") + self.pending
-        try:
-            rest = self.app.injector.type_plain(text)
-        except Exception:
-            log.exception("live typing: keyboard injection failed — keeping text pending")
-            return
-        if rest != text:
-            self.typed_any = True
-        self.pending = rest.lstrip(" ")
+        app._process picks up any final leftover (and owns it exclusively once
+        hand_over() ran)."""
+        with self._hand_lock:
+            if self._handed_over:
+                return  # app._process owns the remaining text now
+            if not self.pending:
+                return
+            text = (" " if self.typed_any else "") + self.pending
+            try:
+                rest = self.app.injector.type_plain(text)
+            except Exception:
+                log.exception("live typing: keyboard injection failed — keeping text pending")
+                return
+            if rest != text:
+                self.typed_any = True
+            self.pending = rest.lstrip(" ")
