@@ -119,6 +119,13 @@ class _DiagSignals(QObject):
 # How long the hotkey test waits for the combination before giving up.
 _HOTKEY_TEST_TIMEOUT_MS = 10_000
 
+# Status line under the Whisper page's model/transcription test buttons while
+# nothing runs — restored whenever a "please wait" note is cleared.
+_DIAG_STATUS_IDLE = "Both buttons use the values currently entered — no Save needed."
+# Shown on the page that is NOT running the diagnostic: its test buttons are
+# disabled meanwhile, and a greyed-out button with no reason reads as broken.
+_DIAG_BUSY_NOTE = "Another test is still running — it has to finish first."
+
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
 # with the first-run onboarding wizard.
@@ -953,9 +960,7 @@ class SettingsWindow(QDialog):
         # is running. (The Audio page's level bar sits in a labelled row.)
         self.diag_progress.setAccessibleName("Model download and transcription test progress")
         tv.addWidget(self.diag_progress)
-        self.diag_status = self._hint(
-            "Both buttons use the values currently entered — no Save needed."
-        )
+        self.diag_status = self._hint(_DIAG_STATUS_IDLE)
         self.diag_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         tv.addWidget(self.diag_status)
         layout.addWidget(tools)
@@ -1414,6 +1419,22 @@ class SettingsWindow(QDialog):
         # Only the Cancel button next to the running diagnostic is active.
         self.diag_cancel_button.setEnabled(busy and kind in ("model", "tx"))
         self.mic_cancel_button.setEnabled(busy and kind == "mic")
+        # The diagnostics share the recorder and the model, so starting one
+        # disables the buttons on the *other* page too. Switching there and
+        # finding them greyed out with an empty status line reads as broken —
+        # say what is going on. The caller writes the running test's own status
+        # after this, so only the idle page keeps the note.
+        self._note_diag_wait(self.mic_status, busy and kind != "mic", "")
+        self._note_diag_wait(self.diag_status, busy and kind == "mic", _DIAG_STATUS_IDLE)
+
+    @staticmethod
+    def _note_diag_wait(label: QLabel, waiting: bool, idle_text: str) -> None:
+        """Show/clear the "another test is running" note without clobbering a
+        result message: only the note itself is ever replaced."""
+        if waiting:
+            label.setText(_DIAG_BUSY_NOTE)
+        elif label.text() == _DIAG_BUSY_NOTE:
+            label.setText(idle_text)
 
     def _begin_diag(self, kind: str) -> tuple[int, threading.Event]:
         """Mark a diagnostic as started; returns its (generation, cancel event).
