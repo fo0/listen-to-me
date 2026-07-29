@@ -997,15 +997,18 @@ class _StubApp:
             self.state, self.queued_state = self.queued_state, None
 
     def _register_hotkey(self):
-        pass
+        self.hotkeys.running = True
 
     def apply_settings(self):
         pass
 
 
 class _StubHotkeys:
+    def __init__(self):
+        self.running = True
+
     def stop(self):
-        pass
+        self.running = False
 
 
 def _gui_construction():
@@ -1272,8 +1275,12 @@ def _gui_construction():
         gen, cancel = window._begin_diag("mic")
         assert window._diag_busy and window.mic_cancel_button.isEnabled()
         assert not window.mic_test_button.isEnabled()
+        # A recording test owns the microphone: the global hotkey is paused so
+        # a press can't open a second input stream on the same device.
+        assert not stub.hotkeys.running
         window._cancel_diagnostic()
         assert cancel.is_set() and not window._diag_busy
+        assert stub.hotkeys.running
         assert window.mic_test_button.isEnabled() and not window.mic_cancel_button.isEnabled()
         assert "cancelled" in window.mic_status.text()
         window._on_mic_done(gen, {"peak": 0.5, "rms": 0.1, "seconds": 3.0, "verdict": "ok"})
