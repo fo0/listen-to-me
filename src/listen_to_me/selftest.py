@@ -1281,7 +1281,13 @@ def _gui_construction():
         window._cancel_diagnostic()
         assert cancel.is_set() and not window._diag_busy
         assert stub.hotkeys.running
-        assert window.mic_test_button.isEnabled() and not window.mic_cancel_button.isEnabled()
+        assert not window.mic_cancel_button.isEnabled()
+        # Cool-down: the start buttons come back only after the timer, so a
+        # restart can't race the worker that was just detached.
+        assert window._diag_cooldown_timer.isActive()
+        assert not window.mic_test_button.isEnabled()
+        window._end_diag_cooldown()
+        assert window.mic_test_button.isEnabled()
         assert "cancelled" in window.mic_status.text()
         window._on_mic_done(gen, {"peak": 0.5, "rms": 0.1, "seconds": 3.0, "verdict": "ok"})
         assert "cancelled" in window.mic_status.text()  # stale result ignored

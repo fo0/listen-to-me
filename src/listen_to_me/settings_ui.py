@@ -119,6 +119,10 @@ class _DiagSignals(QObject):
 # How long the hotkey test waits for the combination before giving up.
 _HOTKEY_TEST_TIMEOUT_MS = 10_000
 
+# How long the diagnostic start buttons stay disabled after a Cancel, so a
+# restart can't race the worker that was just detached (see _cancel_diagnostic).
+_DIAG_COOLDOWN_MS = 400
+
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
 # with the first-run onboarding wizard.
@@ -366,6 +370,12 @@ class SettingsWindow(QDialog):
         self._status_timer.setSingleShot(True)
         self._status_timer.setInterval(600)
         self._status_timer.timeout.connect(self._maybe_refresh_status)
+        # Cool-down after a Cancel (see _cancel_diagnostic). A child QTimer, so
+        # it dies with the window instead of firing into a deleted one.
+        self._diag_cooldown_timer = QTimer(self)
+        self._diag_cooldown_timer.setSingleShot(True)
+        self._diag_cooldown_timer.setInterval(_DIAG_COOLDOWN_MS)
+        self._diag_cooldown_timer.timeout.connect(self._end_diag_cooldown)
         # currentTextChanged (not currentIndexChanged): the custom-model dialog
         # can rename the selected custom item in place without an index change.
         self.model_combo.currentTextChanged.connect(self._on_status_inputs_changed)
@@ -1482,6 +1492,7 @@ class SettingsWindow(QDialog):
             self._diag_cancel_event.set()
         self._diag = DiagnosticsEngine()
         self._set_diag_busy(False)
+        self._begin_diag_cooldown()
         if kind == "mic":
             self.mic_level_bar.setValue(0)
             self.mic_status.setText("Microphone test cancelled.")
@@ -1494,6 +1505,24 @@ class SettingsWindow(QDialog):
             )
         else:
             self.diag_status.setText("Transcription test cancelled.")
+
+    def _begin_diag_cooldown(self) -> None:
+        """Keep the start buttons disabled for a moment after a Cancel.
+
+        The cancelled worker is detached, not stopped: a recording loop needs
+        up to a poll tick to release its input stream (restarting instantly
+        would briefly open a second one on the same device), and a model
+        download keeps running, so an immediate retry would start a second
+        snapshot_download of the same repo in parallel."""
+        for button in (self.model_download_button, self.tx_test_button, self.mic_test_button):
+            button.setEnabled(False)
+        self._diag_cooldown_timer.start()
+
+    def _end_diag_cooldown(self) -> None:
+        if self._diag_busy:
+            return  # a new diagnostic owns the buttons now
+        for button in (self.model_download_button, self.tx_test_button, self.mic_test_button):
+            button.setEnabled(True)
 
     def _on_diag_status(self, gen: int, message: str) -> None:
         if gen != self._diag_gen:
