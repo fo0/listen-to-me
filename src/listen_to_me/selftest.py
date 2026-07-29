@@ -1108,6 +1108,22 @@ def _gui_construction():
         window.home._toggle()  # the double-click's second click
         assert stub.posts[posts_before:] == [("toggle",)]
 
+        # The at-a-glance cards are controls, not decoration: they must take
+        # keyboard focus and open their settings page on Space/Enter. Enter
+        # especially — an unaccepted Return would fall through to the dialog's
+        # default button (Save) and close the window instead.
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        for key in (Qt.Key.Key_Return, Qt.Key.Key_Space):
+            window._show_page("Home")
+            card = window.home.card_mic
+            assert card.focusPolicy() != Qt.FocusPolicy.NoFocus, "stat card is not focusable"
+            assert card.accessibleName(), "stat card has no accessible name"
+            card.setFocus(Qt.FocusReason.TabFocusReason)
+            card.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier))
+            assert window.nav.currentRow() == window._nav_row["Audio"], key
+
         # The language card must not show the (ignored) Whisper language for
         # the Parakeet backend — Parakeet always auto-detects.
         stub.cfg.data["backend"] = "parakeet"

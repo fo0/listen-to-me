@@ -88,13 +88,23 @@ def pretty_keys(combo: str) -> list[str]:
 
 
 class _StatCard(QFrame):
-    """A clickable at-a-glance card that navigates to a settings page."""
+    """A clickable at-a-glance card that navigates to a settings page.
+
+    It is a real control, not decoration, so it behaves like one: it takes
+    keyboard focus (the style sheet rings it, like every button) and Space /
+    Enter activate it. Without that the card is reachable by mouse only — a
+    keyboard user can neither see nor trigger it, and a screen reader
+    announces an unnamed frame. The accessible name carries the card's title
+    because the visible heading is a sibling label, not a real label relation.
+    """
 
     def __init__(self, title: str, on_click):
         super().__init__()
         self.setProperty("card", "stat")
         self._on_click = on_click
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(f"{title} — open in Settings")
         box = QVBoxLayout(self)
         box.setContentsMargins(14, 12, 14, 12)
         box.setSpacing(4)
@@ -113,8 +123,19 @@ class _StatCard(QFrame):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
             self._on_click()
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        # Accepting the event matters as much as handling it: the owning
+        # window is a QDialog, so an unhandled Return would fall through to
+        # its default button (Save) instead of opening the settings page.
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            event.accept()
+            self._on_click()
+            return
+        super().keyPressEvent(event)
 
 
 class HomePage(QWidget):

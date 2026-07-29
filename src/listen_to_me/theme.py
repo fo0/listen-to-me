@@ -341,6 +341,9 @@ def _qss(t: dict) -> str:
         border-radius: 12px;
     }}
     QFrame[card="stat"]:hover {{ border: 1px solid {ACCENT}; }}
+    /* The at-a-glance cards are clickable controls and take keyboard focus —
+       ring them like a button (same width, so nothing shifts). */
+    QFrame[card="stat"]:focus {{ border: 1px solid {ACCENT}; }}
     QFrame[card="stat"] QLabel {{ background: transparent; }}
     QLabel[role="cardTitle"] {{
         color: {t["muted"]};
