@@ -1382,6 +1382,25 @@ class SettingsWindow(QDialog):
 
     # --------------------------------------------------------- diagnostics
 
+    def _app_busy(self) -> bool:
+        """Whether the app is recording or transcribing right now — the guard
+        every test that borrows the microphone or the hotkey listener runs.
+
+        A hotkey press posted by the listener thread can sit in App's event
+        queue for up to one poll tick (100 ms), so App.state alone is stale:
+        hold the combo and start a test within that window and the guard would
+        pass, the test takes over, and the queued press then starts a recording
+        whose release is never delivered. Draining the queue first applies the
+        press before the state is read.
+        """
+        poll = getattr(self.app, "_poll", None)
+        if callable(poll):
+            try:
+                poll()
+            except Exception:
+                log.debug("could not drain the app event queue", exc_info=True)
+        return getattr(self.app, "state", "idle") != "idle"
+
     def _diag_snapshot(self) -> dict:
         """The UI values the transcribers read, as a plain dict — so the
         diagnostics test exactly what is entered right now, saved or not."""
@@ -1498,7 +1517,7 @@ class SettingsWindow(QDialog):
     def _test_transcription(self) -> None:
         if self._diag_busy:
             return
-        if getattr(self.app, "state", "idle") != "idle":
+        if self._app_busy():
             self.diag_status.setText("Finish the current recording first, then run the test.")
             return
         snapshot = self._diag_snapshot()
@@ -1557,7 +1576,7 @@ class SettingsWindow(QDialog):
     def _test_microphone(self) -> None:
         if self._diag_busy:
             return
-        if getattr(self.app, "state", "idle") != "idle":
+        if self._app_busy():
             self.mic_status.setText("Finish the current recording first, then run the test.")
             return
         device = self._selected_input_device()
@@ -1613,9 +1632,10 @@ class SettingsWindow(QDialog):
     def _test_hotkey(self) -> None:
         if self._hotkey_test is not None:
             return  # already listening
-        if getattr(self.app, "state", "idle") != "idle":
+        if self._app_busy():
             # Stopping the app's listener mid-recording would lose a hold-mode
-            # release, leaving the recording stuck until stopped via the overlay.
+            # release, leaving the recording stuck until stopped via the overlay
+            # — including a press still sitting in the queue (see _app_busy).
             self.hotkey_test_status.setText("Finish the current recording first, then run the test.")
             return
         combo = self.hotkey_edit.text().strip()

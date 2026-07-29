@@ -984,9 +984,17 @@ class _StubApp:
         self.history.add("An entry with a corrupt timestamp.", timestamp=1e300)
         self.hotkeys = _StubHotkeys()
         self.posts: list = []  # events the UI posted (asserted by the tests)
+        self.state = "idle"
+        # Stands in for an event still sitting in App's queue: _poll() applies
+        # it, exactly like the real 100 ms poll timer does.
+        self.queued_state: str | None = None
 
     def post(self, *args, **kwargs):
         self.posts.append(args)
+
+    def _poll(self):
+        if self.queued_state is not None:
+            self.state, self.queued_state = self.queued_state, None
 
     def _register_hotkey(self):
         pass
@@ -1250,6 +1258,14 @@ def _gui_construction():
         assert window.hw_cuda_label.text() == "Not checked yet."
         window._on_hw_done(2, probe)
         assert window.hw_cuda_label.text().startswith("✗") and not window._hw_busy
+
+        # Idle guard: a hotkey press still queued in App is applied before the
+        # state is read, so a test can't take the microphone/listener while a
+        # recording is starting behind it.
+        stub.queued_state = "recording"
+        assert window._app_busy()
+        stub.state = "idle"
+        assert not window._app_busy()
 
         # Cancel plumbing: Cancel stops the diagnostic, re-enables the buttons
         # and makes everything the detached worker still emits stale.
