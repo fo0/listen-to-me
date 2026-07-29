@@ -196,8 +196,12 @@ The app reads no custom env vars for its own config (settings live in `config.js
 | `HF_HOME` / `HF_HUB_CACHE` / `HUGGINGFACE_HUB_CACHE` | Where faster-whisper caches downloaded Whisper models | `~/.cache/huggingface/hub` |
 | `QT_QPA_PLATFORM` | Set to `offscreen` for headless Qt (CI smoke test) | (unset) |
 | `APPDATA` / `XDG_CONFIG_HOME` | Base for the app config dir (`ListenToMe` / `listen-to-me`) | OS default |
+| `PYINSTALLER_RESET_ENVIRONMENT` | Written (`"1"`) by `updater._swap_env()` for every in-app (re)launch of the frozen exe — forces a fresh top-level bootloader start | (unset) |
+| `_MEIPASS2` / `_PYI_*` | PyInstaller bootloader internals. Never set by the app — `updater._swap_env()` **strips** them from the child environment; a relaunched exe that inherits them dies on startup | (set by the bootloader) |
 
-There is no `.env` file. Config path: `config.py → config_dir()`.
+There is no `.env` file. Config path: `config.py → config_dir()`. The last two rows
+are the frozen-build relaunch contract — any in-app launch of the exe must go through
+`updater._swap_env()`; the *why* is in `MEMORY.md`.
 
 ### Secrets Locations
 
