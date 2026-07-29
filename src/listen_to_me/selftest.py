@@ -740,6 +740,21 @@ def _openvino_backend_logic():
     except ValueError:
         pass
 
+    # Format pre-check for custom ids: an OpenVINO IR directory passes, a
+    # CTranslate2 one is recognized as the wrong format, and anything that
+    # can't be listed (no network, private repo) stays permissive (None).
+    from listen_to_me.transcriber_openvino import _looks_like_openvino_model
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ir_dir = Path(tmp) / "ir-model"
+        ir_dir.mkdir()
+        (ir_dir / "openvino_encoder_model.xml").write_text("<net/>", encoding="utf-8")
+        assert _looks_like_openvino_model(str(ir_dir)) is True
+        ct2_dir = Path(tmp) / "ct2-model"
+        ct2_dir.mkdir()
+        (ct2_dir / "model.bin").write_bytes(b"")
+        assert _looks_like_openvino_model(str(ct2_dir)) is False
+
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Config(path=Path(tmp) / "config.json")
         assert isinstance(create_transcriber(cfg), Transcriber)  # default backend
