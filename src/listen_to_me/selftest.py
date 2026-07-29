@@ -368,6 +368,14 @@ def _live_typing_logic():
     lt._flush_pending()  # later chunks get a separating space
     assert lt.app.injector.typed == ["hello", " world"] and lt.pending == ""
 
+    # Hand-over: app._process takes the untyped remainder and its typed_any
+    # bookkeeping; a worker resuming after the join timeout must not type that
+    # text a second time (duplicate words).
+    lt.pending = "again"
+    assert lt.hand_over() == ("again", True)
+    lt._flush_pending()
+    assert lt.app.injector.typed == ["hello", " world"] and lt.pending == "again"
+
 
 def _key_mapping():
     from PySide6.QtCore import Qt
@@ -732,6 +740,21 @@ def _openvino_backend_logic():
     except ValueError:
         pass
 
+    # Format pre-check for custom ids: an OpenVINO IR directory passes, a
+    # CTranslate2 one is recognized as the wrong format, and anything that
+    # can't be listed (no network, private repo) stays permissive (None).
+    from listen_to_me.transcriber_openvino import _looks_like_openvino_model
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ir_dir = Path(tmp) / "ir-model"
+        ir_dir.mkdir()
+        (ir_dir / "openvino_encoder_model.xml").write_text("<net/>", encoding="utf-8")
+        assert _looks_like_openvino_model(str(ir_dir)) is True
+        ct2_dir = Path(tmp) / "ct2-model"
+        ct2_dir.mkdir()
+        (ct2_dir / "model.bin").write_bytes(b"")
+        assert _looks_like_openvino_model(str(ct2_dir)) is False
+
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Config(path=Path(tmp) / "config.json")
         assert isinstance(create_transcriber(cfg), Transcriber)  # default backend
@@ -1040,20 +1063,31 @@ class _StubApp:
         self.history.add("An entry with a corrupt timestamp.", timestamp=1e300)
         self.hotkeys = _StubHotkeys()
         self.posts: list = []  # events the UI posted (asserted by the tests)
+        self.state = "idle"
+        # Stands in for an event still sitting in App's queue: _poll() applies
+        # it, exactly like the real 100 ms poll timer does.
+        self.queued_state: str | None = None
 
     def post(self, *args, **kwargs):
         self.posts.append(args)
 
+    def _poll(self):
+        if self.queued_state is not None:
+            self.state, self.queued_state = self.queued_state, None
+
     def _register_hotkey(self):
-        pass
+        self.hotkeys.running = True
 
     def apply_settings(self):
         pass
 
 
 class _StubHotkeys:
+    def __init__(self):
+        self.running = True
+
     def stop(self):
-        pass
+        self.running = False
 
 
 def _gui_construction():
@@ -1323,14 +1357,32 @@ def _gui_construction():
         window._on_hw_done(2, probe)
         assert window.hw_cuda_label.text().startswith("✗") and not window._hw_busy
 
+        # Idle guard: a hotkey press still queued in App is applied before the
+        # state is read, so a test can't take the microphone/listener while a
+        # recording is starting behind it.
+        stub.queued_state = "recording"
+        assert window._app_busy()
+        stub.state = "idle"
+        assert not window._app_busy()
+
         # Cancel plumbing: Cancel stops the diagnostic, re-enables the buttons
         # and makes everything the detached worker still emits stale.
         gen, cancel = window._begin_diag("mic")
         assert window._diag_busy and window.mic_cancel_button.isEnabled()
         assert not window.mic_test_button.isEnabled()
+        # A recording test owns the microphone: the global hotkey is paused so
+        # a press can't open a second input stream on the same device.
+        assert not stub.hotkeys.running
         window._cancel_diagnostic()
         assert cancel.is_set() and not window._diag_busy
-        assert window.mic_test_button.isEnabled() and not window.mic_cancel_button.isEnabled()
+        assert stub.hotkeys.running
+        assert not window.mic_cancel_button.isEnabled()
+        # Cool-down: the start buttons come back only after the timer, so a
+        # restart can't race the worker that was just detached.
+        assert window._diag_cooldown_timer.isActive()
+        assert not window.mic_test_button.isEnabled()
+        window._end_diag_cooldown()
+        assert window.mic_test_button.isEnabled()
         assert "cancelled" in window.mic_status.text()
         window._on_mic_done(gen, {"peak": 0.5, "rms": 0.1, "seconds": 3.0, "verdict": "ok"})
         assert "cancelled" in window.mic_status.text()  # stale result ignored
