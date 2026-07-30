@@ -1336,12 +1336,23 @@ class SettingsWindow(QDialog):
     def _refresh_autostart_status(self) -> None:
         """Mirror the real OS autostart state below the checkbox — including
         the two states that are invisible in the config: an entry Windows has
-        switched off, and one pointing at a program file that moved."""
+        switched off, and one pointing at a program file that moved.
+
+        The line itself names only the program file (a full path has nothing to
+        wrap at and would widen the page); the command the OS really has on file
+        goes into the tooltip, where its length costs nothing."""
         from . import autostart
 
         _healthy, text = autostart.describe(self.chk_autostart.isChecked())
         self.autostart_status.setText(text)
         self.autostart_status.setVisible(bool(text))
+        try:
+            stored = autostart.stored_command()
+        except Exception:
+            stored = None
+        self.autostart_status.setToolTip(
+            f"Registered command:\n{stored}" if stored else ""
+        )
 
     def _checkbox(self, text: str, checked: bool, tip: str) -> QCheckBox:
         chk = QCheckBox(text)

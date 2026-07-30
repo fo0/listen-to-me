@@ -435,8 +435,22 @@ def _autostart_reporting():
     assert autostart._is_blocked(bytes([0x06]) + bytes(11)) is False
     assert autostart._is_blocked(bytes([0x03]) + bytes(11)) is True
     assert autostart._is_blocked(bytes([0x09]) + bytes(11)) is True
-    # Never a hard error just because the import probe couldn't run.
-    assert autostart.launch_problem() is None or isinstance(autostart.launch_problem(), str)
+    # The import probe answers with a reason or with nothing at all — never an
+    # exception, and never a second subprocess (it caches its verdict).
+    verdict = autostart.launch_problem()
+    assert verdict is None or (isinstance(verdict, str) and verdict)
+    assert autostart.launch_problem() is verdict
+    # A status line must never carry a raw program path: a Windows path has no
+    # space to wrap at, so the label would set a minimum width that widens the
+    # whole settings page and clips its cards (see MEMORY.md).
+    # Native separators: _split_command only keeps backslashes on Windows, so a
+    # hard-coded Windows path would test nothing on the CI runner.
+    deep = os.path.join(os.sep + "programs", "listen to me", "ListenToMe.exe")
+    assert autostart.short_command(f'"{deep}"') == "ListenToMe.exe"  # quoted, with spaces
+    assert autostart.short_command(
+        os.path.join(os.sep + "usr", "bin", "python3") + " -m listen_to_me"
+    ) == "python3 -m listen_to_me"
+    assert autostart.short_command("") == ""
 
     if sys.platform in ("win32", "darwin"):
         return  # the entry lives in the registry / the real home — don't touch it
@@ -454,7 +468,10 @@ def _autostart_reporting():
             stored = autostart.stored_command()
             assert stored and autostart._launch_command() in stored
             healthy, text = autostart.describe(True)
-            assert healthy and stored in text
+            # The file name identifies the build; the full path stays out of
+            # the label (it lands in its tooltip instead).
+            assert healthy and autostart.short_command(stored) in text
+            assert stored not in text and len(text) < 80
             # Unticked but still registered: say that saving removes it.
             healthy, text = autostart.describe(False)
             assert healthy and "remove" in text

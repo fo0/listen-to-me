@@ -28,7 +28,11 @@ _WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 _WIN_APPROVED_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 
 _CREATE_NO_WINDOW = 0x08000000  # keeps the import probe from flashing a console
-_PROBE_TIMEOUT = 20  # seconds; the probe only imports our own tiny __init__
+# The probe only starts an interpreter and imports our own tiny __init__, so it
+# is a fraction of a second — but it runs on the Qt main thread during startup,
+# and a timeout here would stall the whole app. Giving up early is free: an
+# unfinished probe reports no problem at all.
+_PROBE_TIMEOUT = 5
 
 _probe_done = False  # module-level cache: the probe spawns a process
 _probe_problem: str | None = None
@@ -199,7 +203,9 @@ def sync(desired: bool, repair_block: bool = False) -> str | None:
         if reason is None and repair_block and blocked():
             reason = "Windows had switched the entry off"
         if reason:
-            log.info("writing the autostart entry — %s", reason)
+            # The reason names only the file (it is shown in Settings), so the
+            # full previous command goes into the log for debugging.
+            log.info("writing the autostart entry — %s (was: %s)", reason, stored or "nothing")
             enable(clear_block=repair_block)
         return _blocking_problem()
     except Exception as exc:
@@ -311,9 +317,9 @@ def launch_problem() -> str | None:
         return None
     if result.returncode != 0:
         _probe_problem = (
-            "this source checkout is only importable through PYTHONPATH, so the "
-            "registered command would start nothing. Install it into the "
-            "environment (pip install -e .) or use the packaged build"
+            "a bare interpreter cannot import the app, so the registered command "
+            "would start nothing. Install it into the environment "
+            "(pip install -e .) or use the packaged build"
         )
         log.warning("autostart would not work from here: %s", _probe_problem)
     return _probe_problem
@@ -323,6 +329,10 @@ def describe(desired: bool) -> tuple[bool, str]:
     """(healthy, one-line status) of the OS autostart entry for the UI.
 
     An empty string means "nothing worth saying" — no entry, and none wanted.
+    Program paths are shortened to their file name: a full Windows path has no
+    spaces to wrap at, and a label that cannot wrap sets a minimum width the
+    scroll area honours — which silently clips every card on the page at the
+    right edge. The caller shows the full command as a tooltip instead.
     """
     try:
         stored = stored_command()
@@ -341,10 +351,23 @@ def describe(desired: bool) -> tuple[bool, str]:
             return False, f"⚠ The registered entry is stale — {reason}. Save to repair it."
         if not desired:
             return True, f"Still registered with {where} — save to remove the entry."
-        return True, f"Registered with {where}: {stored}"
+        return True, f"Registered with {where}: {short_command(stored)}"
     except Exception:
         log.debug("could not describe the autostart state", exc_info=True)
         return True, ""
+
+
+def short_command(text: str) -> str:
+    """A stored command with the program path reduced to its file name.
+
+    ``"C:\\…\\ListenToMe.exe"`` → ``ListenToMe.exe``, and a source launch stays
+    recognizable as ``pythonw.exe -m listen_to_me``. Enough to tell which build
+    is registered without dragging a 200 px path into the layout.
+    """
+    parts = _split_command(text)
+    if not parts:
+        return text.strip()
+    return " ".join([Path(parts[0]).name, *parts[1:]])
 
 
 def _os_label() -> str:
@@ -402,11 +425,14 @@ def _refresh_reason(stored: str) -> str | None:
         return "the registered command is empty"
     target = Path(stored_parts[0])
     if not target.exists():
-        return f"the registered program {target} no longer exists"
+        # File name only: the reason is shown in the Settings status line, and
+        # a full path there cannot wrap (see describe()). The complete command
+        # stays in the log and in the label's tooltip.
+        return f"the registered program {target.name} no longer exists"
     if len(stored_parts) == 1 and len(current) == 1:
         # A single argument is our frozen-build form; a source launch always
         # carries "-m listen_to_me" on top of the interpreter path.
-        return f"another build is registered ({target})"
+        return f"another build is registered ({target.name})"
     return None
 
 
