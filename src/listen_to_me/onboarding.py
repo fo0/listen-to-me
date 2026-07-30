@@ -200,6 +200,12 @@ class OnboardingWizard(QWizard):
             "the selected hardware is unavailable. Compute type and other "
             "engine details live in Settings → Whisper."
         ))
+        # Filled by _on_backend_changed for Parakeet: it ignores the model and
+        # language just picked on the previous page, and a wizard that accepts
+        # those choices and then drops them silently is simply misleading. The
+        # settings window greys the same fields out for this reason.
+        self._engine_note = _hint("")
+        form.addRow(self._engine_note)
         self._engine_form = form
         self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self._on_backend_changed()
@@ -299,10 +305,20 @@ class OnboardingWizard(QWizard):
         return False
 
     def _on_backend_changed(self) -> None:
-        """Show only the device row that applies to the selected backend."""
-        openvino = backend_from_label(self.backend_combo.currentText()) == "openvino"
+        """Show only the device row that applies to the selected backend, and
+        say when the previous page's choices no longer apply."""
+        backend = backend_from_label(self.backend_combo.currentText())
+        openvino = backend == "openvino"
         self._engine_form.setRowVisible(self.device_combo, not openvino)
         self._engine_form.setRowVisible(self.ov_device_combo, openvino)
+        self._engine_note.setText(
+            "Note: Parakeet ignores the Whisper model and the spoken language "
+            "from the previous page — it runs one fixed model and detects the "
+            "language itself (25 supported). Go Back and choose another backend "
+            "to use them; your selections are kept either way."
+            if backend == "parakeet"
+            else ""
+        )
 
     def _load_devices(self) -> None:
         values, current = input_device_choices(self.cfg["input_device"])

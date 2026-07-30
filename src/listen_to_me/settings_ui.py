@@ -270,6 +270,7 @@ class SettingsWindow(QDialog):
         self._releases_newer: list = []
         self._update_busy = False
         self._updates_auto_checked = False
+        self._update_download_label = ""  # version named in the progress lines
 
         # Diagnostics state (Download model / Test transcription on the Whisper
         # page, Test microphone on the Audio page, Test hotkey on General),
@@ -308,6 +309,14 @@ class SettingsWindow(QDialog):
         # Set by force_close(): skip the unsaved-changes prompt when the app
         # itself closes the window (shutdown, updater restart).
         self._force_close = False
+
+        # Debounces the History page's search field (see
+        # _on_history_filter_changed). Created before the pages are built, so
+        # the field's textChanged handler can never reach a missing timer.
+        self._history_filter_timer = QTimer(self)
+        self._history_filter_timer.setSingleShot(True)
+        self._history_filter_timer.setInterval(200)
+        self._history_filter_timer.timeout.connect(self._refresh_history)
 
         # The sidebar groups the pages into sections: the Home hub (no header),
         # the settings proper, and the "around the app" pages
@@ -1243,6 +1252,28 @@ class SettingsWindow(QDialog):
             "Stored locally on this computer only. Click a transcript's “Copy” button to put it back on the clipboard."
         ))
 
+        # Find a transcript. Up to `history_max` (5000) entries are kept and 300
+        # are rendered — scrolling for the one dictation you remember a few words
+        # from is the only way to get at it otherwise.
+        find_row = QWidget()
+        fh = QHBoxLayout(find_row)
+        fh.setContentsMargins(0, 0, 0, 0)
+        fh.setSpacing(8)
+        self.history_filter_edit = QLineEdit()
+        self.history_filter_edit.setPlaceholderText("Search transcripts…")
+        self.history_filter_edit.setClearButtonEnabled(True)
+        # No form-row label to borrow a name from — see the progress bars.
+        self.history_filter_edit.setAccessibleName("Search transcripts")
+        self.history_filter_edit.setToolTip(
+            "Show only transcripts containing these words (in any order, "
+            "upper/lower case ignored). Clear the field to see all of them again."
+        )
+        self.history_filter_edit.textChanged.connect(self._on_history_filter_changed)
+        fh.addWidget(self.history_filter_edit, 1)
+        self.history_count_label = self._hint("")
+        fh.addWidget(self.history_count_label)
+        layout.addWidget(find_row)
+
         # Scrollable list of past transcripts, rendered lazily on first view.
         self._history_scroll = QScrollArea()
         self._history_scroll.setWidgetResizable(True)
@@ -1261,11 +1292,14 @@ class SettingsWindow(QDialog):
         refresh.clicked.connect(self._refresh_history)
         bottom.addWidget(refresh)
         bottom.addStretch(1)
-        clear = QPushButton("Clear history")
-        clear.setProperty("destructive", True)
-        clear.setToolTip("Permanently delete every stored transcript.")
-        clear.clicked.connect(self._clear_history)
-        bottom.addWidget(clear)
+        # Enabled state is set by _refresh_history, which always runs before this
+        # page can be reached (lazy first render): clicking it on an empty
+        # history used to do nothing at all, which reads as a broken button.
+        self.history_clear_button = QPushButton("Clear history")
+        self.history_clear_button.setProperty("destructive", True)
+        self.history_clear_button.setToolTip("Permanently delete every stored transcript.")
+        self.history_clear_button.clicked.connect(self._clear_history)
+        bottom.addWidget(self.history_clear_button)
         layout.addLayout(bottom)
 
         return page
@@ -1975,6 +2009,8 @@ class SettingsWindow(QDialog):
         threading.Thread(target=work, name="update-check", daemon=True).start()
 
     def _on_update_check_done(self, newer: list) -> None:
+        from . import updater
+
         self._update_busy = False
         self.update_check_button.setEnabled(True)
         self._releases_newer = newer
@@ -1989,6 +2025,11 @@ class SettingsWindow(QDialog):
         )
         for release in newer:
             label = f"{release.tag or release.title}   ·   {release.date}"
+            # How big the download is belongs next to the version, not only in
+            # the confirmation — it is the deciding factor on a slow line.
+            size = updater.format_size(release.asset_size)
+            if size:
+                label += f"   ·   {size}"
             if release.prerelease:
                 label += "   (pre-release)"
             self.update_list.addItem(label)
@@ -2029,10 +2070,12 @@ class SettingsWindow(QDialog):
             # API response and webbrowser.open() would hand any scheme to the OS.
             webbrowser.open(updater.release_page_url(release))
             return
+        size = updater.format_size(release.asset_size)
         confirm = QMessageBox.question(
             self,
             APP_NAME,
-            f"Download {release.tag} and restart {APP_NAME} to update?\n\n"
+            f"Download {release.tag}{f' ({size})' if size else ''} and restart "
+            f"{APP_NAME} to update?\n\n"
             f"{APP_NAME} will close, replace its program file and reopen automatically.\n\n"
             "The download is not code-signed (Windows SmartScreen may warn).",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -2055,7 +2098,10 @@ class SettingsWindow(QDialog):
         self.update_progress.setRange(0, 100)
         self.update_progress.setValue(0)
         self.update_progress.setVisible(True)
-        self.update_status.setText(f"Downloading {release.tag}…")
+        # Named once here so every progress line can repeat which version is
+        # being fetched without re-reading the (selectable) release list.
+        self._update_download_label = release.tag or release.title
+        self.update_status.setText(f"Downloading {self._update_download_label}…")
         from . import updater
 
         url = release.asset_url
@@ -2099,11 +2145,27 @@ class SettingsWindow(QDialog):
         self.update_status.setText("Cancelling download…")
 
     def _on_update_progress(self, done: int, total: int) -> None:
+        from . import updater
+
         if total > 0:
             self.update_progress.setRange(0, 100)
             self.update_progress.setValue(int(done * 100 / total))
+            text = (
+                f"Downloading {self._update_download_label} — "
+                f"{updater.format_size(done)} of {updater.format_size(total)}"
+            )
         else:
             self.update_progress.setRange(0, 0)  # indeterminate
+            # No Content-Length: the bar can only spin, so the amount already
+            # downloaded is the only sign the transfer is still moving.
+            text = (
+                f"Downloading {self._update_download_label} — "
+                f"{updater.format_size(done)} so far"
+            )
+        # progress_cb fires per 256 KB chunk — several hundred times for the
+        # portable build. Relabel only when the text actually changed.
+        if text != self.update_status.text():
+            self.update_status.setText(text)
 
     def _on_update_downloaded(self, path: str) -> None:
         from pathlib import Path
@@ -2169,11 +2231,29 @@ class SettingsWindow(QDialog):
                 widget.setParent(None)
                 widget.deleteLater()
 
+    def _on_history_filter_changed(self, *_args) -> None:
+        """Re-render debounced: rebuilding up to 300 transcript rows on every
+        keystroke stutters, so wait until the typing pauses briefly.
+        (*_args: textChanged passes the new text, which is read from the field.)"""
+        self._history_filter_timer.start()
+
     def _refresh_history(self) -> None:
+        from .history import filter_entries
+
         self._history_rendered = True
+        self._history_filter_timer.stop()  # a pending re-render is this one
         self._clear_history_rows()
-        entries = self.app.history.entries()
-        if not entries:
+        stored = self.app.history.entries()
+        # Deleting nothing is not a destructive action worth offering.
+        self.history_clear_button.setEnabled(bool(stored))
+        self.history_clear_button.setToolTip(
+            "Permanently delete every stored transcript."
+            if stored
+            else "Nothing to delete — no transcripts are stored."
+        )
+        query = self.history_filter_edit.text().strip()
+        if not stored:
+            self.history_count_label.setText("")
             # "No transcripts yet" promises the list will fill up — which is a
             # lie once history is switched off. Say which of the two empty
             # states this is, and where to change it.
@@ -2184,10 +2264,28 @@ class SettingsWindow(QDialog):
                 "“Keep a history of transcribed text” above to collect them."
             ))
             return
+        entries = filter_entries(stored, query)
+        self.history_count_label.setText(
+            f"{len(entries)} of {len(stored)} match"
+            if query
+            else f"{len(stored)} transcript{'s' if len(stored) != 1 else ''}"
+        )
+        if not entries:
+            # A filtered-to-empty list must not look like an empty history —
+            # name the search term and how to get back to the full list.
+            self._history_layout.insertWidget(0, self._hint(
+                f"No transcript contains “{query}”. Clear the search field above "
+                "to see all of them again."
+            ))
+            return
         shown = entries[:_HISTORY_RENDER_LIMIT]
         insert_at = 0
         if len(entries) > len(shown):
-            note = self._hint(f"Showing the {len(shown)} most recent of {len(entries)} transcripts.")
+            note = self._hint(
+                f"Showing the {len(shown)} most recent of {len(entries)} matching transcripts."
+                if query
+                else f"Showing the {len(shown)} most recent of {len(entries)} transcripts."
+            )
             self._history_layout.insertWidget(insert_at, note)
             insert_at += 1
         for entry in shown:

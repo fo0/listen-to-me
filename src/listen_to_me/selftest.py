@@ -125,6 +125,30 @@ def _history_normalizes_entries():
         assert len(store.entries()) == 2
 
 
+def _history_search_matching():
+    """The History page's search rule: every term must appear, in any order and
+    any case. An empty query must never hide anything."""
+    from listen_to_me.history import filter_entries
+
+    entries = [
+        {"time": 1.0, "text": "Meeting notes for the Kubernetes migration"},
+        {"time": 2.0, "text": "Grocery list: Äpfel, Milch"},
+        {"time": 3.0, "text": "kubernetes cluster upgrade plan"},
+    ]
+
+    def texts(query):
+        return [e["text"] for e in filter_entries(entries, query)]
+
+    assert len(texts("")) == 3 and len(texts("   ")) == 3  # no query hides nothing
+    assert len(texts("KUBERNETES")) == 2  # case-insensitive
+    assert texts("kubernetes migration") == [entries[0]["text"]]  # AND over terms
+    assert texts("migration kubernetes") == [entries[0]["text"]]  # order-independent
+    assert texts("ÄPFEL") == [entries[1]["text"]]  # casefold, not ASCII lower
+    assert texts("nothing here") == []
+    # A non-string text must not raise: the store normalizes, the file is not.
+    assert filter_entries([{"text": None}], "x") == []
+
+
 def _recorder_start_failure_resets():
     """A stream that opens but fails to start must leave the recorder idle.
     self._stream used to be assigned before start(), so `active` stayed True
@@ -428,6 +452,15 @@ def _updater_logic():
     assert updater.parse_version("v2026.07.19.11") == (2026, 7, 19, 11)
     assert updater.parse_version("0.0.0.dev0") == (0, 0, 0, 0)
     assert updater.parse_version("v2026.07.19.11") > updater.parse_version("v2026.07.19.5")
+
+    # Asset sizes shown in the release list, the confirmation and the download
+    # progress line. An unknown size must format to "" so callers can skip it.
+    assert updater.format_size(None) == "" and updater.format_size(0) == ""
+    assert updater.format_size(-1) == ""
+    assert updater.format_size(512) == "512 bytes"
+    assert updater.format_size(2048) == "2 KB"
+    assert updater.format_size(198 * 1024 * 1024) == "198.0 MB"
+    assert updater.format_size(3 * 1024**3) == "3.0 GB"
 
     def mk(tag):
         return updater.Release(
@@ -1190,6 +1223,46 @@ def _gui_construction():
 
         assert all(_detached(row) for row in rows)
 
+        # History search: it must narrow the list, report how much of the
+        # history matched, and a no-match search must not read like an empty
+        # history (the transcripts are still there, just hidden).
+        def _history_text() -> str:
+            return " ".join(
+                label.text() for label in window._history_inner.findChildren(QLabel)
+            )
+
+        window.history_filter_edit.setText("corrupt")
+        window._refresh_history()  # the debounce timer would need the event loop
+        assert "corrupt timestamp" in _history_text()
+        assert "A stored transcript" not in _history_text()
+        assert "1 of 2" in window.history_count_label.text()
+        window.history_filter_edit.setText("nothing-matches-this")
+        window._refresh_history()
+        assert "No transcript contains" in _history_text()
+        assert window.history_clear_button.isEnabled()  # entries exist, only hidden
+        window.history_filter_edit.clear()
+        window._refresh_history()
+        assert "2 transcripts" in window.history_count_label.text()
+        assert "A stored transcript" in _history_text()
+
+        # "Clear history" on an empty history did nothing at all when clicked —
+        # a greyed-out button says so instead.
+        class _NoHistory:
+            @staticmethod
+            def entries():
+                return []
+
+        stored_history = stub.history
+        stub.history = _NoHistory()
+        try:
+            window._refresh_history()
+            assert not window.history_clear_button.isEnabled()
+            assert "No transcripts yet" in _history_text()
+        finally:
+            stub.history = stored_history
+            window._refresh_history()
+        assert window.history_clear_button.isEnabled()
+
         # The Parakeet backend ignores the Whisper preset, the spoken language
         # and the initial prompt — those inputs must read as inactive instead of
         # silently doing nothing. (Values are kept, so the dialog stays clean.)
@@ -1357,6 +1430,17 @@ def _gui_construction():
         window._on_hw_done(2, probe)
         assert window.hw_cuda_label.text().startswith("✗") and not window._hw_busy
 
+        # Update download feedback: a bare percentage says nothing about a
+        # few-hundred-MB transfer, so the status line carries the sizes — and
+        # keeps reporting progress when the server sends no Content-Length.
+        window._update_download_label = "v2026.07.30.1"
+        window._on_update_progress(50 * 1024 * 1024, 200 * 1024 * 1024)
+        assert window.update_progress.value() == 25
+        assert "50.0 MB of 200.0 MB" in window.update_status.text()
+        window._on_update_progress(1024 * 1024, 0)  # unknown total → indeterminate
+        assert window.update_progress.maximum() == 0
+        assert "1.0 MB so far" in window.update_status.text()
+
         # Idle guard: a hotkey press still queued in App is applied before the
         # state is read, so a test can't take the microphone/listener while a
         # recording is starting behind it.
@@ -1419,7 +1503,13 @@ def _gui_construction():
         assert wizard.language_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus  # wheel guard
         assert not wizard.model_combo.isEditable()  # read-only — presets only
         wizard.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
+        assert not wizard._engine_note.text()
+        # Parakeet ignores the model and language chosen on the previous wizard
+        # page — the page must say so instead of dropping them silently.
+        wizard.backend_combo.setCurrentIndex(2)  # Parakeet
+        assert "Parakeet" in wizard._engine_note.text()
         wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert not wizard._engine_note.text()
         wizard._apply()
         assert stub.cfg["backend"] == "faster-whisper"
         assert stub.cfg["model"] == "small"  # preset label round-trips to the id
@@ -1484,6 +1574,7 @@ _LIGHT_CHECKS = [
     ("config defaults", _config_defaults),
     ("config survives corrupt sections", _config_survives_corrupt_sections),
     ("history normalizes entries", _history_normalizes_entries),
+    ("history search matching", _history_search_matching),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),

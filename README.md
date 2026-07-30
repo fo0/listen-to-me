@@ -39,7 +39,8 @@ standalone system-tray app that works in *every* application.
   window to the front.
 - **Transcript history** — the transcribed text of each recording is kept
   locally (never the audio) so you can copy it again from **Settings → History**
-  if a paste is lost. Bounded in size, and easy to switch off or clear.
+  if a paste is lost. Searchable, bounded in size, and easy to switch off or
+  clear.
 - **Home hub** — the main window opens on a **Home page**: the live recording
   state with a big **Start/Stop** button (red while recording), your hotkey
   shown as key caps, at-a-glance cards for the active engine/model, language
@@ -121,8 +122,8 @@ Right-click the tray icon → **Settings…**
 | **Overlay** | Floating always-on-top icon on/off, transcript bubble after each recording, experimental **live transcript preview while recording**, preview display time |
 | **Integrations** | **Mute other apps while recording** (Discord, …): master switch (off by default) plus a list of apps, each with an enabled toggle, name, **mute keybind** (with the same key picker) and **mode** (*push-to-mute* / *toggle mute*). Add or remove apps freely. |
 | **Assistant** | Enable/disable, API base URL, model, API key, temperature, **system prompt** (editable, with *Reset to default*) |
-| **History** | Recent **transcribed text** kept locally (never the audio), each with a **Copy** button so a lost transcript can be recovered; toggle history on/off, how many entries to keep, and **Clear history** |
-| **Updates** | Installed version, **check on startup** toggle, include pre-releases, **Check now**, changelog per release and **Download & install** (frozen Windows build) with progress and a **Cancel download** button. The new build is written over the running executable — same folder, same file name — so shortcuts, pinned taskbar entries and the autostart entry keep working; the dated `ListenToMe-…-win64.exe` name is only how the download is published |
+| **History** | Recent **transcribed text** kept locally (never the audio), each with a **Copy** button so a lost transcript can be recovered; a **search field** narrows the list to the transcripts containing your words (any order, case-insensitive) and shows how many of them matched; toggle history on/off, how many entries to keep, and **Clear history** |
+| **Updates** | Installed version, **check on startup** toggle, include pre-releases, **Check now**, changelog per release and **Download & install** (frozen Windows build) with progress — **download size** next to each release and in the confirmation, and "42.0 MB of 198.0 MB" while it runs — and a **Cancel download** button. The new build is written over the running executable — same folder, same file name — so shortcuts, pinned taskbar entries and the autostart entry keep working; the dated `ListenToMe-…-win64.exe` name is only how the download is published |
 | **Help** | Built-in **troubleshooting** page (GPU/CUDA errors, Intel GPU/NPU setup, hotkey, text insertion, model storage, assistant setup) with clickable links — also on the tray menu |
 
 Every option has a hover tooltip explaining what it does. The sidebar groups
