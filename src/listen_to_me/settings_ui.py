@@ -129,6 +129,11 @@ _DIAG_BUSY_NOTE = "Another test is still running — it has to finish first."
 # restart can't race the worker that was just detached (see _cancel_diagnostic).
 _DIAG_COOLDOWN_MS = 400
 
+# Updates page: the check button's idle and running labels. Same length, so
+# swapping them can't resize the button mid-click.
+_CHECK_LABEL = "Check now"
+_CHECKING_LABEL = "Checking…"
+
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
 # with the first-run onboarding wizard.
@@ -1960,7 +1965,8 @@ class SettingsWindow(QDialog):
             "Also offer pre-release (beta) builds, not just stable releases.",
         )
         form.addRow("", self.chk_prereleases)
-        self.update_check_button = QPushButton("Check now")
+        self.update_check_button = QPushButton(_CHECK_LABEL)
+        self.update_check_button.setAutoDefault(False)
         self.update_check_button.setToolTip("Fetch the latest releases from GitHub now.")
         self.update_check_button.clicked.connect(self._check_updates)
         form.addRow("", self.update_check_button)
@@ -2002,6 +2008,7 @@ class SettingsWindow(QDialog):
         actions.addWidget(self.update_cancel_button)
         self.update_button = QPushButton("Install selected")
         self.update_button.setProperty("accent", True)
+        self.update_button.setAutoDefault(False)
         self.update_button.setEnabled(False)
         self.update_button.clicked.connect(self._install_selected_update)
         actions.addWidget(self.update_button)
@@ -2018,7 +2025,12 @@ class SettingsWindow(QDialog):
         if self._update_busy:
             return
         self._update_busy = True
+        # Opening the page starts this check automatically, so the buttons are
+        # dead for the length of a GitHub round trip exactly when the user
+        # reaches for them. The greyed-out styling says "not now"; the label
+        # says why, right where they are clicking.
         self.update_check_button.setEnabled(False)
+        self.update_check_button.setText(_CHECKING_LABEL)
         self.update_button.setEnabled(False)
         self.update_list.clear()
         self.update_changelog.clear()
@@ -2040,7 +2052,7 @@ class SettingsWindow(QDialog):
         from . import updater
 
         self._update_busy = False
-        self.update_check_button.setEnabled(True)
+        self._end_update_check()
         self._releases_newer = newer
         self.update_list.clear()
         if not newer:
@@ -2065,9 +2077,14 @@ class SettingsWindow(QDialog):
 
     def _on_update_check_failed(self, message: str) -> None:
         self._update_busy = False
-        self.update_check_button.setEnabled(True)
+        self._end_update_check()
         self.update_button.setEnabled(False)
         self.update_status.setText(f"Update check failed: {message}")
+
+    def _end_update_check(self) -> None:
+        """Hand the check button back to the user (both check outcomes)."""
+        self.update_check_button.setEnabled(True)
+        self.update_check_button.setText(_CHECK_LABEL)
 
     def _on_release_selected(self, row: int) -> None:
         if row < 0 or row >= len(self._releases_newer):
