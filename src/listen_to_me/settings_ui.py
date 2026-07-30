@@ -309,6 +309,14 @@ class SettingsWindow(QDialog):
         # itself closes the window (shutdown, updater restart).
         self._force_close = False
 
+        # Debounces the History page's search field (see
+        # _on_history_filter_changed). Created before the pages are built, so
+        # the field's textChanged handler can never reach a missing timer.
+        self._history_filter_timer = QTimer(self)
+        self._history_filter_timer.setSingleShot(True)
+        self._history_filter_timer.setInterval(200)
+        self._history_filter_timer.timeout.connect(self._refresh_history)
+
         # The sidebar groups the pages into sections: the Home hub (no header),
         # the settings proper, and the "around the app" pages
         # (History/Updates/Help). Section headers are non-selectable rows, so a
@@ -1243,6 +1251,28 @@ class SettingsWindow(QDialog):
             "Stored locally on this computer only. Click a transcript's “Copy” button to put it back on the clipboard."
         ))
 
+        # Find a transcript. Up to `history_max` (5000) entries are kept and 300
+        # are rendered — scrolling for the one dictation you remember a few words
+        # from is the only way to get at it otherwise.
+        find_row = QWidget()
+        fh = QHBoxLayout(find_row)
+        fh.setContentsMargins(0, 0, 0, 0)
+        fh.setSpacing(8)
+        self.history_filter_edit = QLineEdit()
+        self.history_filter_edit.setPlaceholderText("Search transcripts…")
+        self.history_filter_edit.setClearButtonEnabled(True)
+        # No form-row label to borrow a name from — see the progress bars.
+        self.history_filter_edit.setAccessibleName("Search transcripts")
+        self.history_filter_edit.setToolTip(
+            "Show only transcripts containing these words (in any order, "
+            "upper/lower case ignored). Clear the field to see all of them again."
+        )
+        self.history_filter_edit.textChanged.connect(self._on_history_filter_changed)
+        fh.addWidget(self.history_filter_edit, 1)
+        self.history_count_label = self._hint("")
+        fh.addWidget(self.history_count_label)
+        layout.addWidget(find_row)
+
         # Scrollable list of past transcripts, rendered lazily on first view.
         self._history_scroll = QScrollArea()
         self._history_scroll.setWidgetResizable(True)
@@ -1261,11 +1291,14 @@ class SettingsWindow(QDialog):
         refresh.clicked.connect(self._refresh_history)
         bottom.addWidget(refresh)
         bottom.addStretch(1)
-        clear = QPushButton("Clear history")
-        clear.setProperty("destructive", True)
-        clear.setToolTip("Permanently delete every stored transcript.")
-        clear.clicked.connect(self._clear_history)
-        bottom.addWidget(clear)
+        # Enabled state is set by _refresh_history, which always runs before this
+        # page can be reached (lazy first render): clicking it on an empty
+        # history used to do nothing at all, which reads as a broken button.
+        self.history_clear_button = QPushButton("Clear history")
+        self.history_clear_button.setProperty("destructive", True)
+        self.history_clear_button.setToolTip("Permanently delete every stored transcript.")
+        self.history_clear_button.clicked.connect(self._clear_history)
+        bottom.addWidget(self.history_clear_button)
         layout.addLayout(bottom)
 
         return page
@@ -2169,11 +2202,28 @@ class SettingsWindow(QDialog):
                 widget.setParent(None)
                 widget.deleteLater()
 
+    def _on_history_filter_changed(self) -> None:
+        """Re-render debounced: rebuilding up to 300 transcript rows on every
+        keystroke stutters, so wait until the typing pauses briefly."""
+        self._history_filter_timer.start()
+
     def _refresh_history(self) -> None:
+        from .history import filter_entries
+
         self._history_rendered = True
+        self._history_filter_timer.stop()  # a pending re-render is this one
         self._clear_history_rows()
-        entries = self.app.history.entries()
-        if not entries:
+        stored = self.app.history.entries()
+        # Deleting nothing is not a destructive action worth offering.
+        self.history_clear_button.setEnabled(bool(stored))
+        self.history_clear_button.setToolTip(
+            "Permanently delete every stored transcript."
+            if stored
+            else "Nothing to delete — no transcripts are stored."
+        )
+        query = self.history_filter_edit.text().strip()
+        if not stored:
+            self.history_count_label.setText("")
             # "No transcripts yet" promises the list will fill up — which is a
             # lie once history is switched off. Say which of the two empty
             # states this is, and where to change it.
@@ -2184,10 +2234,28 @@ class SettingsWindow(QDialog):
                 "“Keep a history of transcribed text” above to collect them."
             ))
             return
+        entries = filter_entries(stored, query)
+        self.history_count_label.setText(
+            f"{len(entries)} of {len(stored)} match"
+            if query
+            else f"{len(stored)} transcript{'s' if len(stored) != 1 else ''}"
+        )
+        if not entries:
+            # A filtered-to-empty list must not look like an empty history —
+            # name the search term and how to get back to the full list.
+            self._history_layout.insertWidget(0, self._hint(
+                f"No transcript contains “{query}”. Clear the search field above "
+                "to see all of them again."
+            ))
+            return
         shown = entries[:_HISTORY_RENDER_LIMIT]
         insert_at = 0
         if len(entries) > len(shown):
-            note = self._hint(f"Showing the {len(shown)} most recent of {len(entries)} transcripts.")
+            note = self._hint(
+                f"Showing the {len(shown)} most recent of {len(entries)} matching transcripts."
+                if query
+                else f"Showing the {len(shown)} most recent of {len(entries)} transcripts."
+            )
             self._history_layout.insertWidget(insert_at, note)
             insert_at += 1
         for entry in shown:
