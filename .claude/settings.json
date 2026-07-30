@@ -1,6 +1,9 @@
 {
   "permissions": {
     "allow": [
+      "mcp__claude-code-remote__*",
+      "mcp__Claude_Code_Remote__*",
+      "mcp__claude_code_remote__*",
       "mcp__claude-code-remote__send_later",
       "mcp__claude-code-remote__create_trigger",
       "mcp__claude-code-remote__update_trigger",
@@ -38,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "f=\"$CLAUDE_PROJECT_DIR/CLAUDE.md\"; [ -f \"$f\" ] && [ $(wc -c < \"$f\") -gt 40000 ] && echo 'WARNING: CLAUDE.md exceeds 40000 chars — extract largest section to agent_docs/ per Documentation Rules.' || true"
+            "command": "over=\"\"; for spec in \"CLAUDE.md 20000\" \"MEMORY.md 16000\" \"SCRATCHPAD.md 8000\"; do set -- $spec; f=\"$CLAUDE_PROJECT_DIR/$1\"; [ -f \"$f\" ] || continue; c=$(wc -c < \"$f\"); [ \"$c\" -gt \"$2\" ] && over=\"$over $1 $c/$2 chars;\"; done; if [ -n \"$over\" ]; then printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"Context budget exceeded —'\"$over\"' offload now per agent_docs/context_budget.md: MOVE content out (CLAUDE.md sections to agent_docs/, memory entries to docs/adr/ or agent_docs/memory_archive/) and leave a one-line pointer. Never delete to fit.\"}}'; fi; exit 0"
           }
         ]
       }

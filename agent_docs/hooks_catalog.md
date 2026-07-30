@@ -2,7 +2,7 @@
 
 Ready-to-paste hook snippets that enforce optimizer rules beyond the Tier-1 minimum in `.claude/settings.json`. Copy what fits, paste into `.claude/settings.json` under the matching trigger.
 
-> **Tier-1 hooks** (already in `.claude/settings.json`): CLAUDE.md size guard, SessionStart memory reminder. (GitNexus is OFF in this project's manifest — no GitNexus pre-commit guard.)
+> **Tier-1 hooks** (already in `.claude/settings.json`): the **context budget guard** (one `PostToolUse` hook covering `CLAUDE.md` 20k / `MEMORY.md` 16k / `SCRATCHPAD.md` 8k) and the SessionStart memory reminder. (GitNexus is OFF in this project's manifest — no GitNexus pre-commit guard.)
 > **Tier-2** = recommended, default off — copy if relevant.
 > **Tier-3** = optional, situational — copy only if you actively want the behavior.
 
@@ -11,41 +11,23 @@ Ready-to-paste hook snippets that enforce optimizer rules beyond the Tier-1 mini
 2. Find the matching trigger (`PostToolUse`, `PreToolUse`, `Stop`, `PreCompact`, `UserPromptSubmit`).
 3. Append the snippet's hook entry to the trigger's array. Don't duplicate matchers — merge into existing matcher's `hooks` list.
 
+## Reaching the agent (read before writing your own)
+
+Plain stdout from a hook is **only** added to the model's context on `SessionStart`, `UserPromptSubmit` and `UserPromptExpansion`. On `PreToolUse`, `PostToolUse`, `Stop` and friends it goes to the debug log — an `echo 'WARNING: …'` there is invisible to both agent and user. To actually reach the agent, print this JSON to stdout and exit 0:
+
+```
+{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"…message…"}}
+```
+
+Build it with `jq -nc --arg m "$msg" '…'` whenever the message contains captured output, so quotes and newlines stay escaped. Alternatives: exit 2 + stderr (blocks the call on `PreToolUse`), `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask"}}` (forces the permission prompt), `{"systemMessage":"…"}` (shown to the user, not the agent).
+
+Each snippet below states its **Trigger** and, where it matters, whether it is agent-facing or user-facing.
+
 ---
 
 ## Tier 2 — Recommended
 
-### MEMORY.md size warning (>16,000 chars)
-
-```json
-{
-  "matcher": "Edit|Write",
-  "hooks": [
-    {
-      "type": "command",
-      "command": "f=\"$CLAUDE_PROJECT_DIR/MEMORY.md\"; [ -f \"$f\" ] && [ $(wc -c < \"$f\") -gt 16000 ] && echo 'MEMORY.md > 16000 chars — remove obsolete entries per memory_process.md.' || true"
-    }
-  ]
-}
-```
-
-Trigger: `PostToolUse`
-
-### SCRATCHPAD.md size warning (>8,000 chars)
-
-```json
-{
-  "matcher": "Edit|Write",
-  "hooks": [
-    {
-      "type": "command",
-      "command": "f=\"$CLAUDE_PROJECT_DIR/SCRATCHPAD.md\"; [ -f \"$f\" ] && [ $(wc -c < \"$f\") -gt 8000 ] && echo 'SCRATCHPAD.md > 8000 chars — clean resolved entries; promote long-lived ones to MEMORY.md.' || true"
-    }
-  ]
-}
-```
-
-Trigger: `PostToolUse`
+> **MEMORY.md / SCRATCHPAD.md size warnings are no longer here** — they are part of the Tier-1 **context budget guard** in `.claude/settings.json`, which checks all three budgeted files in a single `PostToolUse` hook and points at `agent_docs/context_budget.md`. Nothing to paste; adjust the thresholds there if this project ever needs different ones.
 
 ### Stop — scratchpad cleanup reminder
 
@@ -54,13 +36,13 @@ Trigger: `PostToolUse`
   "hooks": [
     {
       "type": "command",
-      "command": "echo 'Session ending — verify SCRATCHPAD.md is clean. Promote stable entries to MEMORY.md per memory_process.md.'"
+      "command": "printf '%s' '{\"systemMessage\":\"Session ending — verify SCRATCHPAD.md is clean. Promote stable entries to MEMORY.md per memory_process.md.\"}'"
     }
   ]
 }
 ```
 
-Trigger: `Stop`
+Trigger: `Stop`. **User-facing** by design: `additionalContext` on `Stop` would resume the turn so the agent can act on it — not what an end-of-session reminder should do.
 
 ### PreCompact — dump scratchpad state
 
@@ -69,13 +51,13 @@ Trigger: `Stop`
   "hooks": [
     {
       "type": "command",
-      "command": "f=\"$CLAUDE_PROJECT_DIR/SCRATCHPAD.md\"; [ -f \"$f\" ] && echo '=== SCRATCHPAD before compact ===' && cat \"$f\" || true"
+      "command": "f=\"$CLAUDE_PROJECT_DIR/SCRATCHPAD.md\"; [ -f \"$f\" ] && cp \"$f\" \"$CLAUDE_PROJECT_DIR/.claude/scratchpad-precompact.bak\"; exit 0"
     }
   ]
 }
 ```
 
-Trigger: `PreCompact`
+Trigger: `PreCompact`. **Neither agent- nor user-facing:** `PreCompact` supports no `additionalContext`, and its stdout only reaches the debug log — so the snippet writes a side-file instead of printing. The reliable path back into context after a compaction is the SessionStart reminder plus re-reading `SCRATCHPAD.md`. Gitignore the `.bak`.
 
 ### Stop — review reminder
 
@@ -84,13 +66,13 @@ Trigger: `PreCompact`
   "hooks": [
     {
       "type": "command",
-      "command": "echo 'Session ending — if code changed this session, review process per agent_docs/review_process.md must have run before commit.'"
+      "command": "printf '%s' '{\"systemMessage\":\"Session ending — if code changed this session, the review process per agent_docs/review_process.md must have run before commit.\"}'"
     }
   ]
 }
 ```
 
-Trigger: `Stop`
+Trigger: `Stop`. User-facing (same reasoning as the cleanup reminder above).
 
 ### Block push to main on red (project checks)
 
@@ -132,13 +114,13 @@ Trigger: `PreToolUse`. Catches `--force`, `--force-with-lease`, and the short `-
   "hooks": [
     {
       "type": "command",
-      "command": "fp=$(jq -r '.tool_input.file_path // empty'); if echo \"$fp\" | grep -q '\\.mmd$'; then cd \"$CLAUDE_PROJECT_DIR\" && npx -y -p @mermaid-js/mermaid-cli mmdc -i docs/ARCHITECTURE.mmd -o docs/ARCHITECTURE.svg 2>&1 | tail -5 || echo 'Mermaid syntax error — check diagram_prompt.md syntax rules.'; fi"
+      "command": "fp=$(jq -r '.tool_input.file_path // empty'); if echo \"$fp\" | grep -q '\\.mmd$'; then cd \"$CLAUDE_PROJECT_DIR\" || exit 0; out=$(npx -y -p @mermaid-js/mermaid-cli mmdc -i docs/ARCHITECTURE.mmd -o docs/ARCHITECTURE.svg 2>&1) || jq -nc --arg m \"Mermaid render failed — fix per diagram_prompt.md syntax rules: $(printf '%s' \"$out\" | tail -5)\" '{hookSpecificOutput:{hookEventName:\"PostToolUse\",additionalContext:$m}}'; fi; exit 0"
     }
   ]
 }
 ```
 
-Trigger: `PostToolUse`
+Trigger: `PostToolUse`. Agent-facing — the failure comes back as `additionalContext`, not as debug-log stdout.
 
 ### Doc-update reminder after src/ edit
 
@@ -148,13 +130,13 @@ Trigger: `PostToolUse`
   "hooks": [
     {
       "type": "command",
-      "command": "fp=$(jq -r '.tool_input.file_path // empty'); if echo \"$fp\" | grep -qE '(^|/)src/'; then echo 'Source changed — verify CLAUDE.md / README.md / MEMORY.md / config table need updates per Documentation Rules.'; fi"
+      "command": "fp=$(jq -r '.tool_input.file_path // empty'); if echo \"$fp\" | grep -qE '(^|/)src/'; then printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"Source changed — check whether CLAUDE.md / README.md / MEMORY.md / the config table need updates per Documentation Rules.\"}}'; fi; exit 0"
     }
   ]
 }
 ```
 
-Trigger: `PostToolUse`
+Trigger: `PostToolUse`. Agent-facing.
 
 ---
 
@@ -168,13 +150,13 @@ Trigger: `PostToolUse`
   "hooks": [
     {
       "type": "command",
-      "command": "fp=$(jq -r '.tool_input.file_path // empty'); if echo \"$fp\" | grep -qE 'src/listen_to_me/.*\\.py$'; then echo 'Reminder: keep PySide6/sounddevice/pynput/faster_whisper/numpy imports lazy (inside functions), and never touch Qt from a worker thread.'; fi"
+      "command": "fp=$(jq -r '.tool_input.file_path // empty'); if echo \"$fp\" | grep -qE 'src/listen_to_me/.*\\.py$'; then printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"Reminder: keep PySide6/sounddevice/pynput/faster_whisper/numpy imports lazy (inside functions), and never touch Qt from a worker thread.\"}}'; fi; exit 0"
     }
   ]
 }
 ```
 
-Trigger: `PostToolUse`
+Trigger: `PostToolUse`. Agent-facing.
 
 ### Dependency-install warning
 
@@ -184,13 +166,13 @@ Trigger: `PostToolUse`
   "hooks": [
     {
       "type": "command",
-      "command": "cmd=$(jq -r '.tool_input.command // empty'); if echo \"$cmd\" | grep -qE 'pip install [a-zA-Z]|pip install -e'; then echo 'New dependency? Confirm with user, and keep requirements.txt + pyproject.toml (+ PyInstaller --collect-all) in sync per CLAUDE.md.'; fi"
+      "command": "cmd=$(jq -r '.tool_input.command // empty'); if echo \"$cmd\" | grep -qE 'pip install [a-zA-Z]|pip install -e'; then printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"New dependency — confirm with the user, and keep requirements.txt + pyproject.toml (+ PyInstaller --collect-all) in sync per CLAUDE.md.\"}}'; fi; exit 0"
     }
   ]
 }
 ```
 
-Trigger: `PreToolUse`
+Trigger: `PreToolUse`. Forces the permission prompt instead of only mentioning the rule, so the install cannot slip through unconfirmed.
 
 ### Done-skill auto-trigger on "done"/"fertig"
 
@@ -205,14 +187,15 @@ Trigger: `PreToolUse`
 }
 ```
 
-Trigger: `UserPromptSubmit`
+Trigger: `UserPromptSubmit`. One of the three events where bare stdout *is* added to the agent's context — no JSON needed here.
 
 ---
 
 ## Notes
 - **Hook input arrives as a JSON payload on stdin**, not via environment variables. Relevant fields: `.tool_input.command` (Bash tool), `.tool_input.file_path` (Edit/Write), `.prompt` (UserPromptSubmit). The snippets parse stdin with `jq` — there are no `$CLAUDE_TOOL_INPUT` / `$CLAUDE_USER_PROMPT` env vars.
 - `$CLAUDE_PROJECT_DIR` IS a real environment variable (absolute project root), usable in any hook command.
-- **`jq` is required** for every snippet that reads stdin. Without `jq` the hook errors out and does NOT block — for reminder hooks that's harmless, but the two BLOCK hooks then provide no protection.
-- Exit code `2` from a `PreToolUse` hook blocks the tool call and feeds **stderr** back to Claude — block messages must go to stderr (`>&2`). Other non-zero exits print stderr but don't block.
+- **`jq` is required** for every snippet that reads stdin. Without `jq` the hook errors out and does NOT block — for reminder hooks that's harmless, but the two BLOCK hooks then provide no protection. Verify `jq` is installed wherever you rely on them.
+- **Exit-0 stdout reaches the agent only on `SessionStart` / `UserPromptSubmit` / `UserPromptExpansion`.** Everywhere else it lands in the debug log — see *Reaching the agent* above for the `additionalContext` / `permissionDecision` / `systemMessage` alternatives. An `echo 'WARNING…'` on `PreToolUse` or `PostToolUse` is a no-op.
+- Exit code `2` from a `PreToolUse` hook blocks the tool call and feeds **stderr** back to Claude — block messages must go to stderr (`>&2`). On `PostToolUse` the tool already ran, so exit 2 cannot block; stderr is still shown to Claude. Other non-zero exits print stderr but don't block.
 - Hooks run in the user's shell. Quote paths, escape `$` carefully when copying.
 - After modifying `.claude/settings.json`, restart the Claude Code session (or review via `/hooks`) for changes to take effect.

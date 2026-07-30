@@ -14,7 +14,7 @@ This file documents:
 | MCP                | Purpose in this project           | Notes |
 |--------------------|-----------------------------------|-------|
 | `github`           | PRs, issues, CI status, releases via the GitHub API | Used in Claude Code web/remote sessions instead of a local `gh` CLI. PR-activity subscribe/unsubscribe registers here on the web surface. |
-| `claude-code-remote` | Web/remote session management — scheduled Routines/triggers, `send_later` self check-ins, PR-activity subscriptions | Trigger self-management tools are pre-approved in `.claude/settings.json` → `permissions.allow`. |
+| `claude-code-remote` | Web/remote session management — scheduled Routines/triggers, `send_later` self check-ins, PR-activity subscriptions | The whole server is pre-approved in `.claude/settings.json` → `permissions.allow` via one `mcp__<server>__*` glob per spelling. See *Prompt-free triggers* below. |
 
 ## Common MCPs (reference — not necessarily used here)
 
@@ -31,6 +31,32 @@ This file documents:
 | `sentry`       | Error tracking lookup                                       |
 | `notion` / `linear` / `jira` | Work tracking integrations                  |
 | `aws` / `gcp` / `azure` | Cloud resource queries (use carefully — non-zero cost) |
+
+## Prompt-free triggers everywhere (one-time, optional)
+
+This repo's `.claude/settings.json` pre-approves **every** Claude Code Remote tool — present and future — with one `mcp__<server>__*` glob per known server spelling (`claude-code-remote`, `Claude_Code_Remote`, `claude_code_remote`), plus the two exact `mcp__github__(un)subscribe_pr_activity` entries because the PR-activity pair registers under the GitHub server on the web surface.
+
+**No carve-outs, including `add_repo` / `register_repo_root`.** A prompt that fires mid-run is exactly what breaks unattended operation, and those tools can only attach repositories the account already reaches. To re-gate one in this repo, add it to `permissions.ask` by hand — rules evaluate **deny → ask → allow**, first match wins, so an `ask` entry prompts even though the broader `allow` glob matches. The optimizer never writes that array and never removes a user-added entry.
+
+**Trust gate** (the usual cause of "the allowlist is there but it still prompts"): `permissions.allow` from a *project* settings file only applies after the workspace-trust dialog for this repo has been accepted. Until then the rules are read but inert (`ask`/`deny` are unaffected). Fix it once per machine by accepting the dialog, or put the same list into the **user-level** `~/.claude/settings.json`, where no trust gate applies and it covers every repo:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "mcp__claude-code-remote__*",
+      "mcp__Claude_Code_Remote__*",
+      "mcp__claude_code_remote__*",
+      "mcp__github__subscribe_pr_activity",
+      "mcp__github__unsubscribe_pr_activity"
+    ]
+  }
+}
+```
+
+Merge additively into an existing file; never remove user entries. **The agent never writes this file on its own** — it lives outside the repo, so applying it is the user's call.
+
+**Self-heal:** if a Claude Code Remote tool still raises an approval prompt, its server spelling is missing. Append `mcp__<that spelling>__*` to the repo's `permissions.allow` and commit it on the current branch/PR — additive only, never `deny`/`ask`, never a reorder. One heal per spelling.
 
 ## Selection Heuristic for the Agent
 
