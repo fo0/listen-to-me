@@ -1409,6 +1409,27 @@ def _gui_construction():
         stub.cfg.data["backend"] = "faster-whisper"
         window.home.refresh()
 
+        # The Updates check button swaps its label while the check runs. A
+        # control that resizes under the cursor can drop the click that is
+        # pressing it, so the button is pinned to the wider label — character
+        # counts are no proof of that in a proportional font.
+        # Deliberately WITHOUT opening the page: _on_page_changed would fire the
+        # automatic check, and the checks must never touch the network.
+        from listen_to_me.settings_ui import _CHECK_LABEL, _CHECKING_LABEL
+
+        def _laid_out_width(button) -> int:
+            # What the user actually sees: a layout gives the button its size
+            # hint but never goes below the pinned minimum, and sizeHint() on
+            # its own is blind to that pin.
+            return max(button.sizeHint().width(), button.minimumWidth())
+
+        idle_width = _laid_out_width(window.update_check_button)
+        window.update_check_button.setText(_CHECKING_LABEL)
+        assert _laid_out_width(window.update_check_button) == idle_width, (
+            "the update check button resizes when it switches to the busy label"
+        )
+        window.update_check_button.setText(_CHECK_LABEL)
+
         window._show_page("History")  # force History render (lazy on first view)
         assert window.stack.currentIndex() == window._history_index
         window._refresh_history()

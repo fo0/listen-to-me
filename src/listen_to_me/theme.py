@@ -440,21 +440,28 @@ def _qss(t: dict) -> str:
         border-color: {t["danger"]};
     }}
     /* A disabled button MUST look disabled. This used to be a single
-       `QPushButton:disabled {{ color: ... }}` placed above the variant rules —
+       `QPushButton:disabled {{ color: ... }}` placed ABOVE the variant rules —
        and `:disabled` and `[accent="true"]` carry the same CSS specificity, so
        the later variant rule simply won: the accent and destructive buttons
        rendered pixel-identically enabled and disabled. Settings → Updates
        disables "Download & install" while it queries GitHub, so users clicked a
        button that still looked live, got nothing, and reported having to press
-       every button twice. Each variant therefore needs its own :disabled
-       selector, listed after the variant it overrides — every one of them drops
-       the variant's colour cue (accent fill, danger red) instead of only dimming
-       the label. Border width and padding stay untouched so enabling/disabling
-       never nudges the layout; gui_smoke asserts both. #recordBtn is absent on
-       purpose: its own :disabled rule further up outranks these by id. */
+       every button twice.
+
+       Position is what fixes that — the block now sits after every variant, so
+       even the bare selector outranks them. The per-variant selectors are the
+       belt to that braces: `[accent="true"]:hover` and friends are *more*
+       specific than a bare `:disabled`, so should any Qt version start
+       reporting a hover state on a disabled widget, the accent fill would come
+       straight back. Each one drops the variant's colour cue (accent fill,
+       danger red) rather than only dimming the label. Border width and padding
+       stay untouched so enabling/disabling never nudges the layout; gui_smoke
+       asserts both. #recordBtn is the one deliberate omission — its own
+       :disabled rule above outranks anything here by id. */
     QPushButton:disabled,
     QPushButton[accent="true"]:disabled,
-    QPushButton[destructive="true"]:disabled {{
+    QPushButton[destructive="true"]:disabled,
+    QPushButton[quick="true"]:disabled {{
         background: {t["disabled_bg"]};
         border: 1px solid {t["border"]};
         color: {t["disabled"]};

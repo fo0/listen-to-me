@@ -129,8 +129,9 @@ _DIAG_BUSY_NOTE = "Another test is still running — it has to finish first."
 # restart can't race the worker that was just detached (see _cancel_diagnostic).
 _DIAG_COOLDOWN_MS = 400
 
-# Updates page: the check button's idle and running labels. Same length, so
-# swapping them can't resize the button mid-click.
+# Updates page: the check button's idle and running labels. Equal character
+# counts prove nothing in a proportional font ("Checking…" is 3 px wider), so
+# the button is pinned to the wider of the two — see _pin_width.
 _CHECK_LABEL = "Check now"
 _CHECKING_LABEL = "Checking…"
 
@@ -562,6 +563,24 @@ class SettingsWindow(QDialog):
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(8)
         return box, form
+
+    @staticmethod
+    def _pin_width(button: QPushButton, *labels: str) -> None:
+        """Stop `button` from resizing when its label is swapped at runtime.
+
+        A control that changes width while the user is pressing it can move out
+        from under the cursor, so the release lands nowhere and the click is
+        lost — the very failure the Updates page was already reported for.
+        Measured through the real size hint (style, padding and font all count)
+        rather than by comparing string lengths.
+        """
+        original = button.text()
+        widest = 0
+        for label in labels:
+            button.setText(label)
+            widest = max(widest, button.sizeHint().width())
+        button.setText(original)
+        button.setMinimumWidth(widest)
 
     @staticmethod
     def _hint(text: str) -> QLabel:
@@ -1967,6 +1986,7 @@ class SettingsWindow(QDialog):
         form.addRow("", self.chk_prereleases)
         self.update_check_button = QPushButton(_CHECK_LABEL)
         self.update_check_button.setAutoDefault(False)
+        self._pin_width(self.update_check_button, _CHECK_LABEL, _CHECKING_LABEL)
         self.update_check_button.setToolTip("Fetch the latest releases from GitHub now.")
         self.update_check_button.clicked.connect(self._check_updates)
         form.addRow("", self.update_check_button)
