@@ -1173,6 +1173,47 @@ class _StubHotkeys:
         self.running = False
 
 
+def _tray_survives_a_missing_notification_area():
+    """Started by the OS autostart, the app can be up before the shell is: the
+    tray icon is dropped and Qt still reports it visible. Tray.start() must keep
+    re-adding it and, when there is no floating icon either, fall back to a
+    window instead of leaving the app running with nothing to see.
+
+    The offscreen platform reproduces the situation exactly (no tray available,
+    isVisible() == True anyway); on a machine with a real notification area
+    there is no retry to exercise, so the check passes trivially."""
+    from listen_to_me import tray as tray_module
+
+    _ensure_qapp()
+    if tray_module.QSystemTrayIcon.isSystemTrayAvailable():
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        stub.cfg["overlay"]["enabled"] = False
+        tray = tray_module.Tray(stub)
+        tray.start()
+        assert tray._retry_timer is not None and tray._retry_timer.isActive()
+        for _ in range(tray_module._RETRY_LIMIT - 1):
+            tray._retry_show()  # keep trying, quietly
+        assert tray._retry_timer is not None and not stub.posts
+        tray._retry_show()  # ... and give up on the last attempt
+        assert tray._retry_timer is None
+        assert ("settings",) in stub.posts
+        tray.stop()
+
+        # With the floating icon on there is something to see, so no window is
+        # forced on the user.
+        stub.posts.clear()
+        stub.cfg["overlay"]["enabled"] = True
+        tray = tray_module.Tray(stub)
+        tray.start()
+        for _ in range(tray_module._RETRY_LIMIT):
+            tray._retry_show()
+        assert tray._retry_timer is None and not stub.posts
+        tray.stop()  # a stopped tray must not leave a timer running
+        assert tray._retry_timer is None
+
+
 def _gui_construction():
     from listen_to_me.onboarding import OnboardingWizard
     from listen_to_me.overlay import Overlay
@@ -1594,6 +1635,7 @@ _LIGHT_CHECKS = [
     ("glyph icons render", _glyph_icons),
     ("keyboard focus stays visible", _theme_focus_visible),
     ("voice mic widget", _voice_mic_widget),
+    ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("Qt UI construction", _gui_construction),
 ]
 
