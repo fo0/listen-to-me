@@ -1,0 +1,61 @@
+# Key Patterns — full reference
+
+Offloaded from `CLAUDE.md` (context budget). CLAUDE.md keeps the top-5 index; everything below is the complete set, including the per-module roles.
+
+All modules referenced here live in `src/listen_to_me/`. The app is a **flat single package** — there are no sub-packages. Find files via glob/grep.
+
+## App core & state machine
+
+`app.py` — `App` owns the state machine (`idle` → `recording` → `processing`), a thread-safe event `queue`, and wires every component. A `QTimer` drains the queue on the Qt main thread.
+
+## Threading model (critical)
+
+Main thread = Qt event loop + the 100 ms poll `QTimer`; **all** GUI/tray/overlay work happens here. Background threads (pynput hotkey listener, the `process`/`live-preview`/`update` workers) never touch Qt directly — they call `App.post(kind, payload)` (or `App.notify(...)`, which posts a `"notify"` event). Violating this from a worker thread crashes Qt.
+
+## Lazy heavy imports
+
+Qt, `sounddevice`, `pynput`, `faster_whisper`, `numpy` are imported **inside** functions/methods, not at module top, so `--version`/`--selftest` stay fast and headless. Preserve this — do not hoist heavy imports to module scope.
+
+## Config
+
+`config.py` — `Config` loads/merges a JSON file under the platform config dir over a `DEFAULTS` dict (deep-merge, so new keys appear on upgrade). A stored value that is **not** a dict where the default is one (`"overlay": null`) is dropped with a warning instead of replacing the whole section — otherwise `cfg["overlay"]["enabled"]` raises during startup, before any UI exists. `atomic_write_json` writes via temp-file + `os.replace`. Access with `cfg["key"]`. `Config.first_run` is `True` only when no config file existed before load — it drives the one-time onboarding wizard.
+
+## Qt-free modules (headless-testable)
+
+`icons.py` (Pillow), `keymap.py` (QtCore only), `help_content.py`, `diagnostics.py`, `choices.py`, and the low-level parts of `qtutil.py`/`selftest.py` avoid `QtWidgets`/`QtGui` so they import and test on a headless machine. Keep new pure logic Qt-free when practical.
+
+## Transcription + CUDA→CPU fallback
+
+`transcriber.py` — wraps faster-whisper; on a missing/unloadable CUDA library it forces CPU **for the session** (not for transient OOM) and retries. `_lock` guards model load, `_use_lock` serializes decodes. `audio.py` `Recorder` captures via sounddevice; `snapshot()` feeds the live preview cheaply.
+
+## Backend abstraction (Intel via OpenVINO, NVIDIA Parakeet via onnx-asr)
+
+`create_transcriber(cfg)` in `transcriber.py` picks the backend from `cfg["backend"]`: the default `Transcriber` (faster-whisper), `transcriber_openvino.py` `OpenVinoTranscriber` (OpenVINO GenAI `WhisperPipeline`, Intel CPU/GPU/NPU, config keys `openvino_device`/`openvino_precision`) or `transcriber_parakeet.py` `ParakeetTranscriber` (NVIDIA Parakeet TDT 0.6b v3 via onnx-asr/ONNX Runtime — not a Whisper model: one fixed model, 25 languages auto-detected, so model preset/language/initial prompt/VAD/beam size don't apply; config key `parakeet_quantization`, device shared with faster-whisper's `device`). All expose the same surface (`ensure_loaded`/`transcribe`/`preview`/`loaded`/`backend`); `App.apply_settings` re-creates the instance on a backend switch, and live typing gates itself via `hasattr(transcriber, "preview_segments")` (faster-whisper only). The OpenVINO backend downloads pre-converted `OpenVINO/whisper-*-ov` models from Hugging Face (`openvino_model_repo()` maps preset+precision; `distil-*.en`/`distil-large-v3.5` and the German CT2 preset have no conversion → ValueError); the Parakeet backend downloads `istupakov/parakeet-tdt-0.6b-v3-onnx` and keeps ONNX Runtime's CPU provider as last resort instead of an error-string CPU fallback. `openvino`/`openvino_genai`/`onnx_asr` are optional deps — imported lazily, never at module top; the app must run without them. faster-whisper's decode reads `cfg["beam_size"]` (default 5, clamped ≥1; previews stay greedy).
+
+## Component modules (one responsibility each)
+
+- **`singleinstance.py`** — Qt-free single-instance guard: named kernel mutex on Windows / `flock` file in the config dir on POSIX. A TCP-port lock was unreliable on Windows port-exclusion ranges; port 52697 remains only as the activation channel through which a second launch pings the running instance, which then notifies, re-asserts the overlay and opens Settings.
+- **`hotkeys.py`** — global hotkey, toggle/hold.
+- **`injector.py`** — paste/type at cursor + `sanitize_typed_text`/`type_plain` (modifier-guarded plain-text typing). `insert` falls back from paste to typing when the clipboard is unusable, so a finished transcript is never lost to a clipboard error.
+- **`livetype.py`** — experimental live typing: a per-take worker types transcript segments at the cursor *while* recording once two consecutive preview passes agree on them — append-only, sanitized plain text only, pauses while Ctrl/Alt/Shift/Win is held. Config key `live_typing`, faster-whisper backend only, gated in hold mode via `Hotkeys.combo_flags`.
+- **`integrations.py`** — mute Discord/Teams/… while recording.
+- **`assistant.py`** — optional OpenAI-compatible post-processing.
+- **`history.py`** — transcript JSON; `_load` keeps only entries whose `text` is a non-empty string — the file is untrusted input and its values go straight into a `QLabel`.
+- **`autostart.py`** — start-with-OS. `sync(desired, repair_block=False)` *repairs* a registered command that no longer points at this program: `stored_command()` reads back the Run value / plist / `.desktop` `Exec=` and `_refresh_reason` rewrites it when the target is gone or another frozen build is registered (e.g. after a manually downloaded exe replaced the old one). A source-checkout launch never hijacks a still-existing installed build's entry; the in-app updater needs no repair because it swaps onto the running exe's own path. Nothing here may fail silently — an autostart failure only shows up at the next reboot: `enable()` reads its own write back and raises `AutostartError`; `sync()` *returns* a user-facing problem string (`App._sync_autostart` turns it into a forced notification); `blocked()` decodes the Windows `StartupApproved\Run` flag that Task Manager's "Startup apps" switch writes — an entry disabled there is never started and rewriting the Run value does not clear it, so only an explicit settings save (`repair_block=True`) clears it; `launch_problem()` probes (once per process, never frozen) whether a bare interpreter can import the package, catching a `PYTHONPATH`-only source checkout whose entry would start nothing; `describe(desired)` renders all of that as the status line under the Settings → General checkbox.
+- **`updater.py`** — GitHub Releases. All requests go through `_verified_get`, which forces `verify=True` — the update path is deliberately **not** covered by `insecure_ssl`, and a certificate failure raises `UpdateTrustError` carrying a user-facing explanation instead of failing silently. See ADR-0002.
+- **`netutil.py`** — app-wide `insecure_ssl` switch, disabling TLS verification for corporate proxies: requests `verify=` + the huggingface_hub client factory (httpx-based `set_client_factory` on hub >= 1.0 / `configure_http_backend` on < 1.0). The updater is excluded.
+- **`tray.py`** — `QSystemTrayIcon`. Started from the OS autostart the app can beat the shell's notification area to it — the icon is then dropped silently, so `start()` polls `isSystemTrayAvailable()` every 2 s for a minute and re-adds it via `hide()`/`show()`, falling back to opening the main window when there is no tray *and* no overlay to see.
+- **`overlay.py` + `voice_mic_widget.py`** — floating animated icon. A 30 s watchdog re-asserts visibility/topmost and hard-reshows after suspend or monitor changes — Windows drops layered always-on-top windows while Qt still reports them visible.
+- **`settings_ui.py`** — the main window and **largest file (~2400 lines)**: branded sidebar with painted glyph icons, a Home entry hub as the preselected page, then the settings pages. `set_app_state` mirrors App state transitions into Home; it carries the minimize/maximize window hints a bare `QDialog` lacks; `_on_color_scheme_changed` repaints the code-drawn visuals (nav glyphs, Home quick actions, the Help browser's baked style sheet) on a live OS light/dark switch. `App._open_settings` `deleteLater()`s the window it replaces, so open/close cycles don't retain it.
+- **`home_page.py`** — Home hub: hero card with live state + start/stop/cancel via `App.post`, hotkey rendered as key caps, clickable at-a-glance cards, quick actions that navigate the sidebar, recent transcripts. Dynamic sub-layouts are cleared via detach+hide before `deleteLater` (ghost-paint gotcha, see the memory archive).
+- **`glyphs.py`** — QPainter-drawn line icons for the nav + Home, so no SVG plugin dependency. `glyph_icon(name, color, selected_color)` recolours for selected nav rows.
+- **`onboarding.py`** — first-run setup wizard (hotkey/language/model/backend + device/microphone/startup), shown once when `Config.first_run`, i.e. no config file existed. Takes the optional `app=` so its key picker can pause the already-registered global hotkey, like `settings_ui._capture_hotkey`.
+- **`choices.py`** — Qt-free shared dropdown lists + label↔value mapping used by settings_ui and onboarding. Settings dropdowns are **read-only**, never `setEditable(True)`: free text was once saved verbatim as the model id. Unlisted CT2 model ids go through the `CUSTOM_MODEL_LABEL` sentinel entry, which `settings_ui._on_model_activated` resolves via an input dialog and never stores as a value.
+- **`theme.py`** — Qt Fusion light/dark. `tokens()` exposes the current palette for code-built visuals like the nav glyphs; the Home hero gradient switches per app state via a dynamic `state` property; the `scroll` token keeps the scroll-bar handle above 3:1 against the page — the horizontal bar is off, so it is the only "there is more below" affordance, and gui_smoke asserts the ratio. The `:disabled` block must stay **after** every button variant and name each of them (`accent`/`destructive`/`quick`) — `QPushButton:disabled` only ties on specificity with `QPushButton[accent="true"]`, so declared first it loses and paints a dead control exactly like a live one, which reads as "I have to click twice". `#recordBtn` wins by id wherever it sits.
+- **`widgets.py`** — hotkey capture dialog.
+- **`diagnostics.py`** — Qt-free engine behind the Settings self-test buttons: model download/load, mic level check, end-to-end transcription test, plus the hardware/status probes `probe_cuda`/`probe_openvino`/`model_cache_status` feeding the Whisper-page status card. Runs on worker threads; results are marshaled to the UI via `_DiagSignals` carrying a generation int so a diagnostic cancelled via the Cancel buttons can't emit stale results into the UI.
+- **`qtutil.py`** — Qt helpers: Pillow→QPixmap bridge, `tray_icon`, `guard_wheel` (combo/spin boxes ignore mouse-wheel events until explicitly focused so page scrolling can't change values — apply it to every new value widget on a scrollable page) and `elastic_combo` (caps a combo's minimum width so one long item, e.g. a model id or audio device name, can't force a settings page wider than its scroll viewport, which clips every card at the right edge — apply it to every combo whose item texts are unbounded).
+
+## Error Handling
+
+Desktop app that must never crash: broad `except Exception` at boundaries, logged via module-level `log = logging.getLogger(__name__)` with `log.exception(...)`; user-facing failures surface through `App.notify(...)`. Logs go to a rotating file in the config dir + stderr (absent in `--windowed` builds). Best-effort cleanup (`_quit`, `integrations.reset()`) must never leave a target app stuck muted.

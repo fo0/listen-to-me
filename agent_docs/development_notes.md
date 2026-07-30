@@ -1,0 +1,36 @@
+# Development Notes
+
+Offloaded from `CLAUDE.md` (context budget). Setup hints, platform quirks and runtime specifics. Stable knowledge that outgrows this file belongs in `MEMORY.md`; decisions belong in `docs/adr/`.
+
+## Platform
+
+- **Windows-first.** `injector.py`, `autostart.py`, `config.py` and `_beep` branch per `sys.platform`. Linux/macOS paths exist and must stay coherent — when you touch one branch, check the others still make sense.
+- **Config location** comes from `config.py → config_dir()`: `%APPDATA%\ListenToMe` on Windows, `$XDG_CONFIG_HOME/listen-to-me` (or `~/.config/listen-to-me`) elsewhere. Logs and `history.json` live next to `config.json`.
+
+## Single instance
+
+A named kernel mutex on Windows / an `flock`-ed file on POSIX (`singleinstance.py`). Deliberately **not** a TCP port bind — Windows port-exclusion ranges made that both falsely fail and falsely succeed. Port 52697 survives only as the activation channel: a second launch pings it, and the running instance notifies, re-asserts the overlay and opens Settings.
+
+## Running from source
+
+`PYTHONPATH=src python -m listen_to_me`. Note that an OS autostart entry registered from such a checkout starts nothing (the spawned interpreter gets a bare environment) — `autostart.launch_problem()` detects and reports that instead of registering a no-op.
+
+## Versioning
+
+`__init__.py` carries `0.0.0.dev0` in source; CI stamps the real version at build time. `python -m listen_to_me --version` prints it without importing Qt.
+
+## Frozen-build specifics
+
+- `--windowed` builds have `sys.stdout` / `sys.stderr` set to `None`; `app._ensure_std_streams()` stubs them with devnull right after logging setup. Keep that call early in `main()`.
+- Any in-app (re)launch of the exe must go through `updater._swap_env()` — a spawned copy otherwise inherits `_MEIPASS2` / `_PYI_*` and dies on startup once the parent's unpack dir is gone.
+- A new dependency with C extensions or data files usually needs a `--collect-all` in `release.yml`; verify with the built exe's `--selftest`.
+
+## Local Windows build
+
+Normally CI's job — run locally only when debugging packaging:
+
+```bash
+pyinstaller --noconfirm --clean --onefile --windowed --name ListenToMe \
+  --collect-all faster_whisper --collect-all ctranslate2 \
+  --collect-all onnxruntime --collect-all av src/listen_to_me/__main__.py
+```
