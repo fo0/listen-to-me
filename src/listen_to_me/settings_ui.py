@@ -2231,9 +2231,10 @@ class SettingsWindow(QDialog):
                 widget.setParent(None)
                 widget.deleteLater()
 
-    def _on_history_filter_changed(self) -> None:
+    def _on_history_filter_changed(self, *_args) -> None:
         """Re-render debounced: rebuilding up to 300 transcript rows on every
-        keystroke stutters, so wait until the typing pauses briefly."""
+        keystroke stutters, so wait until the typing pauses briefly.
+        (*_args: textChanged passes the new text, which is read from the field.)"""
         self._history_filter_timer.start()
 
     def _refresh_history(self) -> None:

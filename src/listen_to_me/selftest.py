@@ -1503,7 +1503,13 @@ def _gui_construction():
         assert wizard.language_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus  # wheel guard
         assert not wizard.model_combo.isEditable()  # read-only — presets only
         wizard.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
+        assert not wizard._engine_note.text()
+        # Parakeet ignores the model and language chosen on the previous wizard
+        # page — the page must say so instead of dropping them silently.
+        wizard.backend_combo.setCurrentIndex(2)  # Parakeet
+        assert "Parakeet" in wizard._engine_note.text()
         wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert not wizard._engine_note.text()
         wizard._apply()
         assert stub.cfg["backend"] == "faster-whisper"
         assert stub.cfg["model"] == "small"  # preset label round-trips to the id
