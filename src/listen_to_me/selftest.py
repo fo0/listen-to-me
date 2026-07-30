@@ -221,6 +221,19 @@ def _injector_paste_falls_back_to_typing():
     assert typed == ["recovered text"]
 
 
+def _contrast(a: str, b: str) -> float:
+    """WCAG contrast ratio between two "#rrggbb" palette tokens."""
+
+    def _relative_luminance(hex_color: str) -> float:
+        raw = hex_color.lstrip("#")
+        channels = [int(raw[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+        linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    la, lb = _relative_luminance(a), _relative_luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
 def _theme_scrollbar_contrast():
     """The scroll-bar handle must be visible against the page it sits on.
 
@@ -231,16 +244,6 @@ def _theme_scrollbar_contrast():
     for non-text UI components.
     """
     from listen_to_me.theme import _DARK, _LIGHT
-
-    def _relative_luminance(hex_color: str) -> float:
-        raw = hex_color.lstrip("#")
-        channels = [int(raw[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
-        linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
-        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
-
-    def _contrast(a: str, b: str) -> float:
-        la, lb = _relative_luminance(a), _relative_luminance(b)
-        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 
     for name, palette in (("light", _LIGHT), ("dark", _DARK)):
         for surface in ("window", "base"):
@@ -1078,6 +1081,19 @@ def _glyph_icons():
     assert not glyph_icon("home", "#888888", "#4f6ef7").isNull()
 
 
+def _styled_button(text: str, prop: str | None = None, name: str | None = None):
+    """A QPushButton in one of the stylesheet's variants (theme.py) — the
+    property/object name is what selects the variant rule."""
+    from PySide6.QtWidgets import QPushButton
+
+    button = QPushButton(text)
+    if prop:
+        button.setProperty(prop, True)
+    if name:
+        button.setObjectName(name)
+    return button
+
+
 def _theme_focus_visible():
     """Keyboard focus must be visible on every control the user can tab to.
 
@@ -1092,7 +1108,6 @@ def _theme_focus_visible():
     from PySide6.QtWidgets import (
         QCheckBox,
         QLineEdit,
-        QPushButton,
         QRadioButton,
         QVBoxLayout,
         QWidget,
@@ -1123,23 +1138,94 @@ def _theme_focus_visible():
         assert widget.sizeHint() == hint, f"{name} changes size when focused"
         host.deleteLater()
 
-    def _button(text: str, prop: str | None = None, name: str | None = None):
-        button = QPushButton(text)
-        if prop:
-            button.setProperty(prop, True)
-        if name:
-            button.setObjectName(name)
-        return button
-
-    _focus_changes(_button("Apply"), "QPushButton")
-    _focus_changes(_button("Save", prop="accent"), "accent QPushButton")
-    _focus_changes(_button("Clear history", prop="destructive"), "destructive QPushButton")
-    _focus_changes(_button("  Change hotkey", prop="quick"), "quick QPushButton")
-    _focus_changes(_button("Start recording", name="recordBtn"), "hero record button")
-    _focus_changes(_button("Cancel", name="heroCancel"), "hero cancel button")
+    _focus_changes(_styled_button("Apply"), "QPushButton")
+    _focus_changes(_styled_button("Save", prop="accent"), "accent QPushButton")
+    _focus_changes(
+        _styled_button("Clear history", prop="destructive"), "destructive QPushButton"
+    )
+    _focus_changes(_styled_button("  Change hotkey", prop="quick"), "quick QPushButton")
+    _focus_changes(_styled_button("Start recording", name="recordBtn"), "hero record button")
+    _focus_changes(_styled_button("Cancel", name="heroCancel"), "hero cancel button")
     _focus_changes(QCheckBox("Beep on start/stop"), "QCheckBox")
     _focus_changes(QRadioButton("Toggle"), "QRadioButton")
     _focus_changes(QLineEdit("text"), "QLineEdit")
+
+
+def _theme_disabled_visible():
+    """A disabled button must LOOK disabled — in every stylesheet variant.
+
+    `QPushButton:disabled` and `QPushButton[accent="true"]` carry the same CSS
+    specificity, so while the plain `:disabled` rule sat above the variant
+    rules, the variant simply won: an accent or destructive button rendered
+    pixel-identically enabled and disabled. Settings → Updates disables
+    "Download & install" for the length of a GitHub round trip (and the hotkey
+    picker's OK, and Clear history on an empty list, start out disabled too), so
+    users clicked a button that still looked live, got nothing, and reported
+    having to press it twice. Rendered, not read off the style sheet — only the
+    render proves the rule applies. The size hint has to stay put as well, or
+    every enable/disable would nudge the layout.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLineEdit, QVBoxLayout, QWidget
+
+    app = _ensure_qapp()
+    from listen_to_me.theme import apply_theme
+
+    apply_theme(app)
+
+    def _surface(image):
+        """The button's fill, sampled above the label and inside the border —
+        the part the variant rules paint."""
+        return image.pixelColor(image.width() // 2, 4)
+
+    def _disabled_changes(widget, name: str) -> None:
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.addWidget(widget)
+        # Park the focus somewhere else first. A focus ring appearing or
+        # vanishing between the two renders differs all by itself and would
+        # pass this check for a disabled state that changes nothing else.
+        elsewhere = QLineEdit()
+        layout.addWidget(elsewhere)
+        host.show()
+        elsewhere.setFocus(Qt.FocusReason.TabFocusReason)
+        app.processEvents()
+        hint, enabled = widget.sizeHint(), widget.grab().toImage()
+        widget.setEnabled(False)
+        app.processEvents()
+        disabled = widget.grab().toImage()
+        assert enabled != disabled, f"{name} looks identical enabled and disabled"
+        # Dimming only the label is what let the accent button read as live:
+        # the surface has to drop its colour cue too.
+        assert _surface(enabled) != _surface(disabled), (
+            f"{name} keeps its surface colour when disabled"
+        )
+        assert widget.sizeHint() == hint, f"{name} changes size when disabled"
+        host.deleteLater()
+
+    _disabled_changes(_styled_button("Check now"), "QPushButton")
+    _disabled_changes(
+        _styled_button("Download && install", prop="accent"), "accent QPushButton"
+    )
+    _disabled_changes(
+        _styled_button("Clear history", prop="destructive"), "destructive QPushButton"
+    )
+    _disabled_changes(_styled_button("  Change hotkey", prop="quick"), "quick QPushButton")
+    _disabled_changes(_styled_button("Start recording", name="recordBtn"), "hero record button")
+
+    # The renders above only exercise whatever scheme the test host runs in (CI
+    # is light), so a dark-palette edit could bring the bug back for half the
+    # users unseen. Check the tokens themselves for both, like the scroll-bar
+    # contrast check does: a disabled button must shed the accent fill and the
+    # danger red, and dim its label.
+    from listen_to_me.theme import ACCENT, _DARK, _LIGHT
+
+    for name, palette in (("light", _LIGHT), ("dark", _DARK)):
+        ratio = _contrast(palette["disabled_bg"], ACCENT)
+        assert ratio >= 2.0, f"{name} disabled surface vs the accent fill: {ratio:.2f}:1"
+        for live in ("text", "danger"):
+            ratio = _contrast(palette["disabled"], palette[live])
+            assert ratio >= 1.5, f"{name} disabled label vs {live}: {ratio:.2f}:1"
 
 
 def _voice_mic_widget():
@@ -1322,6 +1408,42 @@ def _gui_construction():
         assert window.home.card_language.value.text() == "Auto-detect"
         stub.cfg.data["backend"] = "faster-whisper"
         window.home.refresh()
+
+        # The Updates check button swaps its label while the check runs. A
+        # control that resizes under the cursor can drop the click that is
+        # pressing it, so the button is pinned to the wider label — character
+        # counts are no proof of that in a proportional font.
+        # Deliberately WITHOUT opening the page: _on_page_changed would fire the
+        # automatic check, and the checks must never touch the network.
+        from listen_to_me.settings_ui import _CHECK_LABEL, _CHECKING_LABEL
+
+        def _laid_out_width(button) -> int:
+            # What the user actually sees: a layout gives the button its size
+            # hint but never goes below the pinned minimum, and sizeHint() on
+            # its own is blind to that pin.
+            return max(button.sizeHint().width(), button.minimumWidth())
+
+        idle_width = _laid_out_width(window.update_check_button)
+        window.update_check_button.setText(_CHECKING_LABEL)
+        assert _laid_out_width(window.update_check_button) == idle_width, (
+            "the update check button resizes when it switches to the busy label"
+        )
+        window.update_check_button.setText(_CHECK_LABEL)
+
+        # Every download outcome that does NOT restart the app has to leave the
+        # page idle. The failed-swap path used to reset it by hand and had
+        # drifted: it left the progress bar at 100 %, so the failure message sat
+        # under a full bar that reads as success.
+        window.update_progress.setValue(100)
+        window.update_progress.setVisible(True)
+        window.update_cancel_button.setVisible(True)
+        window._update_busy = True
+        window._end_update_download("Could not apply update: boom")
+        assert window.update_progress.isHidden(), "progress bar survives a failed update"
+        assert window.update_cancel_button.isHidden(), "cancel button survives a failed update"
+        assert window.update_check_button.isEnabled() and window.update_button.isEnabled()
+        assert not window._update_busy
+        assert "Could not apply update" in window.update_status.text()
 
         window._show_page("History")  # force History render (lazy on first view)
         assert window.stack.currentIndex() == window._history_index
@@ -1725,6 +1847,7 @@ _LIGHT_CHECKS = [
     ("Qt icon conversion", _qt_icons),
     ("glyph icons render", _glyph_icons),
     ("keyboard focus stays visible", _theme_focus_visible),
+    ("disabled buttons look disabled", _theme_disabled_visible),
     ("voice mic widget", _voice_mic_widget),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("Qt UI construction", _gui_construction),

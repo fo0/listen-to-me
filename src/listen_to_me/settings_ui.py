@@ -129,6 +129,12 @@ _DIAG_BUSY_NOTE = "Another test is still running — it has to finish first."
 # restart can't race the worker that was just detached (see _cancel_diagnostic).
 _DIAG_COOLDOWN_MS = 400
 
+# Updates page: the check button's idle and running labels. Equal character
+# counts prove nothing in a proportional font ("Checking…" is 3 px wider), so
+# the button is pinned to the wider of the two — see _pin_width.
+_CHECK_LABEL = "Check now"
+_CHECKING_LABEL = "Checking…"
+
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
 # with the first-run onboarding wizard.
@@ -557,6 +563,24 @@ class SettingsWindow(QDialog):
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(8)
         return box, form
+
+    @staticmethod
+    def _pin_width(button: QPushButton, *labels: str) -> None:
+        """Stop `button` from resizing when its label is swapped at runtime.
+
+        A control that changes width while the user is pressing it can move out
+        from under the cursor, so the release lands nowhere and the click is
+        lost — the very failure the Updates page was already reported for.
+        Measured through the real size hint (style, padding and font all count)
+        rather than by comparing string lengths.
+        """
+        original = button.text()
+        widest = 0
+        for label in labels:
+            button.setText(label)
+            widest = max(widest, button.sizeHint().width())
+        button.setText(original)
+        button.setMinimumWidth(widest)
 
     @staticmethod
     def _hint(text: str) -> QLabel:
@@ -1960,7 +1984,9 @@ class SettingsWindow(QDialog):
             "Also offer pre-release (beta) builds, not just stable releases.",
         )
         form.addRow("", self.chk_prereleases)
-        self.update_check_button = QPushButton("Check now")
+        self.update_check_button = QPushButton(_CHECK_LABEL)
+        self.update_check_button.setAutoDefault(False)
+        self._pin_width(self.update_check_button, _CHECK_LABEL, _CHECKING_LABEL)
         self.update_check_button.setToolTip("Fetch the latest releases from GitHub now.")
         self.update_check_button.clicked.connect(self._check_updates)
         form.addRow("", self.update_check_button)
@@ -2002,6 +2028,7 @@ class SettingsWindow(QDialog):
         actions.addWidget(self.update_cancel_button)
         self.update_button = QPushButton("Install selected")
         self.update_button.setProperty("accent", True)
+        self.update_button.setAutoDefault(False)
         self.update_button.setEnabled(False)
         self.update_button.clicked.connect(self._install_selected_update)
         actions.addWidget(self.update_button)
@@ -2018,7 +2045,12 @@ class SettingsWindow(QDialog):
         if self._update_busy:
             return
         self._update_busy = True
+        # Opening the page starts this check automatically, so the buttons are
+        # dead for the length of a GitHub round trip exactly when the user
+        # reaches for them. The greyed-out styling says "not now"; the label
+        # says why, right where they are clicking.
         self.update_check_button.setEnabled(False)
+        self.update_check_button.setText(_CHECKING_LABEL)
         self.update_button.setEnabled(False)
         self.update_list.clear()
         self.update_changelog.clear()
@@ -2040,7 +2072,7 @@ class SettingsWindow(QDialog):
         from . import updater
 
         self._update_busy = False
-        self.update_check_button.setEnabled(True)
+        self._end_update_check()
         self._releases_newer = newer
         self.update_list.clear()
         if not newer:
@@ -2065,9 +2097,14 @@ class SettingsWindow(QDialog):
 
     def _on_update_check_failed(self, message: str) -> None:
         self._update_busy = False
-        self.update_check_button.setEnabled(True)
+        self._end_update_check()
         self.update_button.setEnabled(False)
         self.update_status.setText(f"Update check failed: {message}")
+
+    def _end_update_check(self) -> None:
+        """Hand the check button back to the user (both check outcomes)."""
+        self.update_check_button.setEnabled(True)
+        self.update_check_button.setText(_CHECK_LABEL)
 
     def _on_release_selected(self, row: int) -> None:
         if row < 0 or row >= len(self._releases_newer):
@@ -2218,29 +2255,34 @@ class SettingsWindow(QDialog):
             updater.apply_update_windows(Path(path))
         except Exception as exc:  # surfaced in the UI
             log.exception("could not apply update")
-            self.update_status.setText(f"Could not apply update: {exc}")
-            self.update_button.setEnabled(True)
-            self.update_check_button.setEnabled(True)
+            self._end_update_download(f"Could not apply update: {exc}")
             return
         self.update_status.setText("Update downloaded — restarting…")
         # Quit so the detached swapper can replace the (now unlocked) exe.
         self.app.post("quit")
 
-    def _on_update_download_failed(self, message: str) -> None:
+    def _end_update_download(self, status: str) -> None:
+        """Put the page back into its idle state after a download ended badly.
+
+        Every non-restarting outcome routes through here — a failed download, a
+        cancelled one, and a download that arrived but could not be swapped in.
+        The three used to reset the page on their own and had already drifted:
+        the failed-swap path left the progress bar sitting at 100 %, so "Could
+        not apply update" was reported underneath a full bar that reads as
+        success.
+        """
         self._update_busy = False
         self.update_cancel_button.setVisible(False)
         self.update_progress.setVisible(False)
         self.update_check_button.setEnabled(True)
         self.update_button.setEnabled(True)
-        self.update_status.setText(f"Download failed: {message}")
+        self.update_status.setText(status)
+
+    def _on_update_download_failed(self, message: str) -> None:
+        self._end_update_download(f"Download failed: {message}")
 
     def _on_update_download_cancelled(self) -> None:
-        self._update_busy = False
-        self.update_cancel_button.setVisible(False)
-        self.update_progress.setVisible(False)
-        self.update_check_button.setEnabled(True)
-        self.update_button.setEnabled(True)
-        self.update_status.setText("Download cancelled — nothing was installed.")
+        self._end_update_download("Download cancelled — nothing was installed.")
 
     # ---------------------------------------------------------- history UI
 
