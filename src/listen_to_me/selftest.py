@@ -1430,6 +1430,21 @@ def _gui_construction():
         )
         window.update_check_button.setText(_CHECK_LABEL)
 
+        # Every download outcome that does NOT restart the app has to leave the
+        # page idle. The failed-swap path used to reset it by hand and had
+        # drifted: it left the progress bar at 100 %, so the failure message sat
+        # under a full bar that reads as success.
+        window.update_progress.setValue(100)
+        window.update_progress.setVisible(True)
+        window.update_cancel_button.setVisible(True)
+        window._update_busy = True
+        window._end_update_download("Could not apply update: boom")
+        assert window.update_progress.isHidden(), "progress bar survives a failed update"
+        assert window.update_cancel_button.isHidden(), "cancel button survives a failed update"
+        assert window.update_check_button.isEnabled() and window.update_button.isEnabled()
+        assert not window._update_busy
+        assert "Could not apply update" in window.update_status.text()
+
         window._show_page("History")  # force History render (lazy on first view)
         assert window.stack.currentIndex() == window._history_index
         window._refresh_history()

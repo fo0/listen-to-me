@@ -2255,29 +2255,34 @@ class SettingsWindow(QDialog):
             updater.apply_update_windows(Path(path))
         except Exception as exc:  # surfaced in the UI
             log.exception("could not apply update")
-            self.update_status.setText(f"Could not apply update: {exc}")
-            self.update_button.setEnabled(True)
-            self.update_check_button.setEnabled(True)
+            self._end_update_download(f"Could not apply update: {exc}")
             return
         self.update_status.setText("Update downloaded — restarting…")
         # Quit so the detached swapper can replace the (now unlocked) exe.
         self.app.post("quit")
 
-    def _on_update_download_failed(self, message: str) -> None:
+    def _end_update_download(self, status: str) -> None:
+        """Put the page back into its idle state after a download ended badly.
+
+        Every non-restarting outcome routes through here — a failed download, a
+        cancelled one, and a download that arrived but could not be swapped in.
+        The three used to reset the page on their own and had already drifted:
+        the failed-swap path left the progress bar sitting at 100 %, so "Could
+        not apply update" was reported underneath a full bar that reads as
+        success.
+        """
         self._update_busy = False
         self.update_cancel_button.setVisible(False)
         self.update_progress.setVisible(False)
         self.update_check_button.setEnabled(True)
         self.update_button.setEnabled(True)
-        self.update_status.setText(f"Download failed: {message}")
+        self.update_status.setText(status)
+
+    def _on_update_download_failed(self, message: str) -> None:
+        self._end_update_download(f"Download failed: {message}")
 
     def _on_update_download_cancelled(self) -> None:
-        self._update_busy = False
-        self.update_cancel_button.setVisible(False)
-        self.update_progress.setVisible(False)
-        self.update_check_button.setEnabled(True)
-        self.update_button.setEnabled(True)
-        self.update_status.setText("Download cancelled — nothing was installed.")
+        self._end_update_download("Download cancelled — nothing was installed.")
 
     # ---------------------------------------------------------- history UI
 
