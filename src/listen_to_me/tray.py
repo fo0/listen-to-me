@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import webbrowser
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
@@ -12,6 +13,11 @@ from . import APP_NAME, REPO_URL
 from .qtutil import tray_icon
 
 log = logging.getLogger(__name__)
+
+# Started from the OS autostart, the app can be up before the shell's
+# notification area is: the icon is then silently dropped and never appears.
+_RETRY_MS = 2000
+_RETRY_LIMIT = 30  # ~1 minute of logging in is enough for any machine
 
 _STATE_LABELS = {
     "idle": "Idle — press the hotkey to record",
@@ -29,12 +35,11 @@ class Tray:
         self._act_toggle = None
         self._act_cancel = None
         self._act_overlay = None
+        self._retry_timer = None
+        self._retries = 0
 
     def start(self) -> None:
         app = self.app
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            log.warning("no system tray available — tray icon/menu will not be shown")
-
         self._icon = QSystemTrayIcon(tray_icon("idle"))
         self._icon.setToolTip(f"{APP_NAME} — {_STATE_LABELS['idle']}")
 
@@ -91,6 +96,53 @@ class Tray:
         # Left click / double click the tray icon: start/stop like the default item.
         self._icon.activated.connect(self._on_activated)
         self._icon.show()
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            log.warning(
+                "no system tray available yet — retrying for %d s",
+                _RETRY_MS * _RETRY_LIMIT // 1000,
+            )
+            self._retries = 0
+            self._retry_timer = QTimer()
+            self._retry_timer.timeout.connect(self._retry_show)
+            self._retry_timer.start(_RETRY_MS)
+
+    def _retry_show(self) -> None:
+        """Re-add the icon once the notification area exists.
+
+        At logon the app (started by the OS autostart) can beat the shell to
+        it: the icon is dropped, `show()` above was a no-op and the app runs
+        with no visible sign at all — the classic "it's not there after a
+        reboot". Qt reports isVisible() == True either way, so the tray
+        availability is what we poll, and hide()/show() forces a fresh
+        registration instead of a no-op.
+        """
+        self._retries += 1
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self._stop_retry()
+            try:
+                self._icon.hide()
+                self._icon.show()
+                self.set_state(self.app.state)
+            except Exception:
+                log.debug("re-adding the tray icon failed", exc_info=True)
+            log.info("system tray became available — icon re-added")
+            return
+        if self._retries >= _RETRY_LIMIT:
+            self._stop_retry()
+            log.warning("still no system tray — falling back to a window")
+            try:
+                if not self.app.cfg["overlay"]["enabled"]:
+                    # Without tray icon and without the floating icon there is
+                    # nothing left to see: open the main window so the app is
+                    # reachable at all.
+                    self.app.post("settings")
+            except Exception:
+                log.debug("tray fallback failed", exc_info=True)
+
+    def _stop_retry(self) -> None:
+        if self._retry_timer is not None:
+            self._retry_timer.stop()
+            self._retry_timer = None
 
     def _on_activated(self, reason) -> None:
         # Double-click only (matches the original tray default action) so a
@@ -123,6 +175,7 @@ class Tray:
             log.debug("notification failed", exc_info=True)
 
     def stop(self) -> None:
+        self._stop_retry()
         if self._icon is not None:
             try:
                 self._icon.hide()

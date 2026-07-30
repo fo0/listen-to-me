@@ -746,6 +746,13 @@ class SettingsWindow(QDialog):
         )
         for chk in (self.chk_autostart, self.chk_start_in_tray):
             sv.addWidget(chk)
+        # What the OS *actually* has on file. Without it, a registration that
+        # never took looks exactly like a working one — until the next reboot
+        # starts nothing.
+        self.autostart_status = self._hint("")
+        sv.addWidget(self.autostart_status)
+        self.chk_autostart.toggled.connect(lambda _checked: self._refresh_autostart_status())
+        self._refresh_autostart_status()
         layout.addWidget(startup)
 
         network = QGroupBox("Network")
@@ -1325,6 +1332,16 @@ class SettingsWindow(QDialog):
         self._show_page("Help")
 
     # ------------------------------------------------------ small helpers
+
+    def _refresh_autostart_status(self) -> None:
+        """Mirror the real OS autostart state below the checkbox — including
+        the two states that are invisible in the config: an entry Windows has
+        switched off, and one pointing at a program file that moved."""
+        from . import autostart
+
+        _healthy, text = autostart.describe(self.chk_autostart.isChecked())
+        self.autostart_status.setText(text)
+        self.autostart_status.setVisible(bool(text))
 
     def _checkbox(self, text: str, checked: bool, tip: str) -> QCheckBox:
         chk = QCheckBox(text)
@@ -2488,6 +2505,7 @@ class SettingsWindow(QDialog):
         self.cfg.save()
         self.app.apply_settings()
         self._saved_snapshot = self._collect()
+        self._refresh_autostart_status()  # apply_settings just (re)wrote the entry
         self.home.refresh()  # hotkey chips / stat cards may show old values
         if self._history_rendered:
             # The empty-list note names the applied on/off state, so it goes

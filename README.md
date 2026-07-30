@@ -79,7 +79,11 @@ standalone system-tray app that works in *every* application.
   included). The entry survives updates: the in-app updater keeps the
   executable's path, and if you replace the exe by hand — a manually downloaded
   build, a rename, a move — the next start repairs the registered path instead
-  of silently booting the old version.
+  of silently booting the old version. It also **reports back**: the settings
+  page shows the command the system actually has on file, an entry Windows
+  switched off in *Task Manager → Startup apps* is named as such (and switched
+  back on when you save), and a registration that fails says so instead of
+  looking fine until the next reboot.
 - **Cross-platform code base** — Windows first; Linux and macOS are prepared
   (see [platform notes](#platform-notes)).
 
@@ -115,7 +119,7 @@ Right-click the tray icon → **Settings…**
 | Tab | Options |
 | --- | --- |
 | **Home** | The entry hub: live recording state with **Start recording / Stop & insert** (and **Cancel**) buttons, the hotkey rendered as key caps, **at-a-glance cards** (engine & model, language, microphone — click one to jump to its settings page), **quick actions** (change hotkey, model & engine, test microphone, overlay, updates, help) and the **most recent transcripts** with a Copy button each |
-| **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), clipboard restore, notifications, beep, **autostart**, **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
+| **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), clipboard restore, notifications, beep, **autostart** (with a status line showing what the system actually has registered), **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
 | **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU, **Parakeet** = fastest engine, NVIDIA CUDA / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model/Parakeet precision, **beam size** (faster-whisper: 5 = best accuracy, 1 = greedy ≈ 1.5–2× faster), VAD silence filter (faster-whisper only), **Detected hardware & model status** card (NVIDIA GPU/CUDA found? OpenVINO installed and which Intel devices? Is the selected model already downloaded? — with a **Refresh status** button, updates automatically when you change model/backend), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), both cancellable with a **Cancel** button, initial prompt (domain vocabulary hint) |
 | **Audio** | Microphone selection, **Test microphone** (3-second check with a live level bar, a clear verdict — works / too quiet / no signal — and a **Cancel** button), maximum recording length |
 | **Overlay** | Floating always-on-top icon on/off, transcript bubble after each recording, experimental **live transcript preview while recording**, preview display time |
@@ -374,6 +378,30 @@ same API response as the download URL. Behind an intercepting proxy the updater
 therefore reports that it could not verify GitHub's certificate; download the
 release manually from the [releases page](https://github.com/fo0/listen-to-me/releases)
 instead.
+
+### The app doesn't start with Windows
+
+**Start with the system** (*Settings → General → Startup*) registers the app in
+your account's autostart. The line right below the checkbox shows what the
+system really has on file — `Registered with Windows: …` means the entry is in
+place; anything else names the problem and how to fix it.
+
+- **Windows can switch the entry off.** *Task Manager* (`Ctrl+Shift+Esc`) →
+  **Startup apps** shows it as *Disabled* then, and re-registering alone does
+  not change that — the switch lives outside the entry. Set it to *Enabled*
+  there, or press **Save** once in the settings with the checkbox ticked: that
+  switches it back on. (The same list is in *Windows Settings → Apps → Startup*.)
+- **It may be running and just invisible.** Windows 11 hides new tray icons in
+  the overflow (**^**) next to the clock — open it and drag the icon onto the
+  taskbar to pin it. With **Start minimized to the system tray** ticked, no
+  window opens at logon by design. Starting the app again never creates a
+  second instance; it brings the running one to the front.
+- **Running from a source checkout?** Autostart needs the package installed in
+  the environment (`pip install -e .`), because the system starts the command
+  without your `PYTHONPATH`. The app probes this and says so instead of
+  registering something that would silently do nothing.
+- Every launch is logged to `listen-to-me.log` in the config folder (tray menu →
+  *Open config folder*) — if the app really didn't start, there is no new line.
 
 The in-app Help page also covers the hotkey not firing, text not being inserted,
 where models are stored, and assistant/Ollama setup.

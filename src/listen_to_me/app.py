@@ -103,7 +103,7 @@ class App:
             # surface this instance then (thread-safe via the event queue).
             _instance_lock.start_server(lambda: self.post("activate"))
         self._register_hotkey()
-        autostart.sync(bool(self.cfg["autostart"]))
+        self._sync_autostart()
         try:
             self.overlay = Overlay(self)
             self.overlay.set_visible(bool(self.cfg["overlay"]["enabled"]))
@@ -461,6 +461,15 @@ class App:
 
         threading.Thread(target=play, daemon=True).start()
 
+    def _sync_autostart(self, repair_block: bool = False) -> None:
+        """Match the OS autostart entry to the setting — and say so when that
+        failed. A registration that silently doesn't take is indistinguishable
+        from a working one until the machine is rebooted and the app isn't
+        there, so this never fails quietly."""
+        problem = autostart.sync(bool(self.cfg["autostart"]), repair_block=repair_block)
+        if problem:
+            self.notify(f"“Start with the system” is not active: {problem}.", force=True)
+
     def _register_hotkey(self) -> None:
         combo = self.cfg["hotkey"]
         try:
@@ -483,7 +492,9 @@ class App:
             # A backend switch needs a fresh instance; a worker thread that
             # still holds the old transcriber finishes on it harmlessly.
             self.transcriber = create_transcriber(self.cfg)
-        autostart.sync(bool(self.cfg["autostart"]))
+        # repair_block: saving the settings is the explicit user action that
+        # may switch a Windows-disabled entry back on (see autostart.sync).
+        self._sync_autostart(repair_block=True)
         self.history.max_entries = max(1, int(self.cfg["history_max"]))
         self.tray.set_state(self.state)
         if self.overlay is not None:

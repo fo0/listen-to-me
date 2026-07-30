@@ -422,6 +422,72 @@ def _autostart_refresh():
             autostart._launch_args = original
 
 
+def _autostart_reporting():
+    """A registration that doesn't take must be reported, not assumed: the
+    Windows startup block is decoded, enable() reads its own write back, and
+    sync()/describe() turn all of that into something the user can act on."""
+    from listen_to_me import autostart
+
+    # Windows StartupApproved record: even first byte = enabled, odd = disabled.
+    assert autostart._is_blocked(None) is False
+    assert autostart._is_blocked(b"") is False
+    assert autostart._is_blocked(bytes([0x02]) + bytes(11)) is False
+    assert autostart._is_blocked(bytes([0x06]) + bytes(11)) is False
+    assert autostart._is_blocked(bytes([0x03]) + bytes(11)) is True
+    assert autostart._is_blocked(bytes([0x09]) + bytes(11)) is True
+    # Never a hard error just because the import probe couldn't run.
+    assert autostart.launch_problem() is None or isinstance(autostart.launch_problem(), str)
+
+    if sys.platform in ("win32", "darwin"):
+        return  # the entry lives in the registry / the real home — don't touch it
+    original = os.environ.get("XDG_CONFIG_HOME")
+    probe = autostart.launch_problem
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        # The real probe would flag this very checkout when it runs from
+        # PYTHONPATH (as CI does) — pin it so both outcomes are exercised.
+        autostart.launch_problem = lambda: None
+        try:
+            assert autostart.stored_command() is None
+            assert autostart.describe(False) == (True, "")  # nothing to say
+            assert autostart.sync(True) is None
+            stored = autostart.stored_command()
+            assert stored and autostart._launch_command() in stored
+            healthy, text = autostart.describe(True)
+            assert healthy and stored in text
+            # Unticked but still registered: say that saving removes it.
+            healthy, text = autostart.describe(False)
+            assert healthy and "remove" in text
+            # A launch that would start nothing is reported, never green.
+            autostart.launch_problem = lambda: "the command would start nothing"
+            healthy, text = autostart.describe(True)
+            assert not healthy and "⚠" in text
+            assert autostart.sync(True) == "the command would start nothing"
+            autostart.launch_problem = lambda: None
+            assert autostart.sync(False) is None
+            assert autostart.stored_command() is None
+            # A write that silently produced nothing must raise, not pass.
+            readable = autostart.stored_command
+            autostart.stored_command = lambda: None
+            try:
+                enable_failed = False
+                try:
+                    autostart.enable()
+                except autostart.AutostartError:
+                    enable_failed = True
+                assert enable_failed
+                # ... and sync() turns that into a message instead of silence.
+                assert autostart.sync(True)
+            finally:
+                autostart.stored_command = readable
+        finally:
+            autostart.launch_problem = probe
+            if original is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = original
+
+
 def _updater_logic():
     from listen_to_me import updater
 
@@ -1493,6 +1559,7 @@ _LIGHT_CHECKS = [
     ("icon render", _icon_render),
     ("key picker key mapping", _key_mapping),
     ("autostart entry refresh", _autostart_refresh),
+    ("autostart reports a failed registration", _autostart_reporting),
     ("updater version logic", _updater_logic),
     ("updater forces TLS verification", _updater_forces_tls_verification),
     ("insecure SSL switch", _insecure_ssl_switch),
