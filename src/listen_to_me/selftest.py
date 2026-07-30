@@ -446,6 +446,89 @@ def _autostart_refresh():
             autostart._launch_args = original
 
 
+def _autostart_reporting():
+    """A registration that doesn't take must be reported, not assumed: the
+    Windows startup block is decoded, enable() reads its own write back, and
+    sync()/describe() turn all of that into something the user can act on."""
+    from listen_to_me import autostart
+
+    # Windows StartupApproved record: even first byte = enabled, odd = disabled.
+    assert autostart._is_blocked(None) is False
+    assert autostart._is_blocked(b"") is False
+    assert autostart._is_blocked(bytes([0x02]) + bytes(11)) is False
+    assert autostart._is_blocked(bytes([0x06]) + bytes(11)) is False
+    assert autostart._is_blocked(bytes([0x03]) + bytes(11)) is True
+    assert autostart._is_blocked(bytes([0x09]) + bytes(11)) is True
+    # The import probe answers with a reason or with nothing at all — never an
+    # exception, and never a second subprocess (it caches its verdict).
+    verdict = autostart.launch_problem()
+    assert verdict is None or (isinstance(verdict, str) and verdict)
+    assert autostart.launch_problem() is verdict
+    # A status line must never carry a raw program path: a Windows path has no
+    # space to wrap at, so the label would set a minimum width that widens the
+    # whole settings page and clips its cards (see MEMORY.md).
+    # Native separators: _split_command only keeps backslashes on Windows, so a
+    # hard-coded Windows path would test nothing on the CI runner.
+    deep = os.path.join(os.sep + "programs", "listen to me", "ListenToMe.exe")
+    assert autostart.short_command(f'"{deep}"') == "ListenToMe.exe"  # quoted, with spaces
+    assert autostart.short_command(
+        os.path.join(os.sep + "usr", "bin", "python3") + " -m listen_to_me"
+    ) == "python3 -m listen_to_me"
+    assert autostart.short_command("") == ""
+
+    if sys.platform in ("win32", "darwin"):
+        return  # the entry lives in the registry / the real home — don't touch it
+    original = os.environ.get("XDG_CONFIG_HOME")
+    probe = autostart.launch_problem
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        # The real probe would flag this very checkout when it runs from
+        # PYTHONPATH (as CI does) — pin it so both outcomes are exercised.
+        autostart.launch_problem = lambda: None
+        try:
+            assert autostart.stored_command() is None
+            assert autostart.describe(False) == (True, "")  # nothing to say
+            assert autostart.sync(True) is None
+            stored = autostart.stored_command()
+            assert stored and autostart._launch_command() in stored
+            healthy, text = autostart.describe(True)
+            # The file name identifies the build; the full path stays out of
+            # the label (it lands in its tooltip instead).
+            assert healthy and autostart.short_command(stored) in text
+            assert stored not in text and len(text) < 80
+            # Unticked but still registered: say that saving removes it.
+            healthy, text = autostart.describe(False)
+            assert healthy and "remove" in text
+            # A launch that would start nothing is reported, never green.
+            autostart.launch_problem = lambda: "the command would start nothing"
+            healthy, text = autostart.describe(True)
+            assert not healthy and "⚠" in text
+            assert autostart.sync(True) == "the command would start nothing"
+            autostart.launch_problem = lambda: None
+            assert autostart.sync(False) is None
+            assert autostart.stored_command() is None
+            # A write that silently produced nothing must raise, not pass.
+            readable = autostart.stored_command
+            autostart.stored_command = lambda: None
+            try:
+                enable_failed = False
+                try:
+                    autostart.enable()
+                except autostart.AutostartError:
+                    enable_failed = True
+                assert enable_failed
+                # ... and sync() turns that into a message instead of silence.
+                assert autostart.sync(True)
+            finally:
+                autostart.stored_command = readable
+        finally:
+            autostart.launch_problem = probe
+            if original is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = original
+
+
 def _updater_logic():
     from listen_to_me import updater
 
@@ -1123,6 +1206,47 @@ class _StubHotkeys:
         self.running = False
 
 
+def _tray_survives_a_missing_notification_area():
+    """Started by the OS autostart, the app can be up before the shell is: the
+    tray icon is dropped and Qt still reports it visible. Tray.start() must keep
+    re-adding it and, when there is no floating icon either, fall back to a
+    window instead of leaving the app running with nothing to see.
+
+    The offscreen platform reproduces the situation exactly (no tray available,
+    isVisible() == True anyway); on a machine with a real notification area
+    there is no retry to exercise, so the check passes trivially."""
+    from listen_to_me import tray as tray_module
+
+    _ensure_qapp()
+    if tray_module.QSystemTrayIcon.isSystemTrayAvailable():
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        stub.cfg["overlay"]["enabled"] = False
+        tray = tray_module.Tray(stub)
+        tray.start()
+        assert tray._retry_timer is not None and tray._retry_timer.isActive()
+        for _ in range(tray_module._RETRY_LIMIT - 1):
+            tray._retry_show()  # keep trying, quietly
+        assert tray._retry_timer is not None and not stub.posts
+        tray._retry_show()  # ... and give up on the last attempt
+        assert tray._retry_timer is None
+        assert ("settings",) in stub.posts
+        tray.stop()
+
+        # With the floating icon on there is something to see, so no window is
+        # forced on the user.
+        stub.posts.clear()
+        stub.cfg["overlay"]["enabled"] = True
+        tray = tray_module.Tray(stub)
+        tray.start()
+        for _ in range(tray_module._RETRY_LIMIT):
+            tray._retry_show()
+        assert tray._retry_timer is None and not stub.posts
+        tray.stop()  # a stopped tray must not leave a timer running
+        assert tray._retry_timer is None
+
+
 def _gui_construction():
     from listen_to_me.onboarding import OnboardingWizard
     from listen_to_me.overlay import Overlay
@@ -1584,6 +1708,7 @@ _LIGHT_CHECKS = [
     ("icon render", _icon_render),
     ("key picker key mapping", _key_mapping),
     ("autostart entry refresh", _autostart_refresh),
+    ("autostart reports a failed registration", _autostart_reporting),
     ("updater version logic", _updater_logic),
     ("updater forces TLS verification", _updater_forces_tls_verification),
     ("insecure SSL switch", _insecure_ssl_switch),
@@ -1601,6 +1726,7 @@ _LIGHT_CHECKS = [
     ("glyph icons render", _glyph_icons),
     ("keyboard focus stays visible", _theme_focus_visible),
     ("voice mic widget", _voice_mic_widget),
+    ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("Qt UI construction", _gui_construction),
 ]
 
