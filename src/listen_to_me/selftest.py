@@ -453,6 +453,15 @@ def _updater_logic():
     assert updater.parse_version("0.0.0.dev0") == (0, 0, 0, 0)
     assert updater.parse_version("v2026.07.19.11") > updater.parse_version("v2026.07.19.5")
 
+    # Asset sizes shown in the release list, the confirmation and the download
+    # progress line. An unknown size must format to "" so callers can skip it.
+    assert updater.format_size(None) == "" and updater.format_size(0) == ""
+    assert updater.format_size(-1) == ""
+    assert updater.format_size(512) == "512 bytes"
+    assert updater.format_size(2048) == "2 KB"
+    assert updater.format_size(198 * 1024 * 1024) == "198.0 MB"
+    assert updater.format_size(3 * 1024**3) == "3.0 GB"
+
     def mk(tag):
         return updater.Release(
             tag=tag, name=tag, body="", published_at="2026-01-02T00:00:00Z",
@@ -1420,6 +1429,17 @@ def _gui_construction():
         assert window.hw_cuda_label.text() == "Not checked yet."
         window._on_hw_done(2, probe)
         assert window.hw_cuda_label.text().startswith("✗") and not window._hw_busy
+
+        # Update download feedback: a bare percentage says nothing about a
+        # few-hundred-MB transfer, so the status line carries the sizes — and
+        # keeps reporting progress when the server sends no Content-Length.
+        window._update_download_label = "v2026.07.30.1"
+        window._on_update_progress(50 * 1024 * 1024, 200 * 1024 * 1024)
+        assert window.update_progress.value() == 25
+        assert "50.0 MB of 200.0 MB" in window.update_status.text()
+        window._on_update_progress(1024 * 1024, 0)  # unknown total → indeterminate
+        assert window.update_progress.maximum() == 0
+        assert "1.0 MB so far" in window.update_status.text()
 
         # Idle guard: a hotkey press still queued in App is applied before the
         # state is read, so a test can't take the microphone/listener while a

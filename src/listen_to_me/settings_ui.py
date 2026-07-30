@@ -270,6 +270,7 @@ class SettingsWindow(QDialog):
         self._releases_newer: list = []
         self._update_busy = False
         self._updates_auto_checked = False
+        self._update_download_label = ""  # version named in the progress lines
 
         # Diagnostics state (Download model / Test transcription on the Whisper
         # page, Test microphone on the Audio page, Test hotkey on General),
@@ -2008,6 +2009,8 @@ class SettingsWindow(QDialog):
         threading.Thread(target=work, name="update-check", daemon=True).start()
 
     def _on_update_check_done(self, newer: list) -> None:
+        from . import updater
+
         self._update_busy = False
         self.update_check_button.setEnabled(True)
         self._releases_newer = newer
@@ -2022,6 +2025,11 @@ class SettingsWindow(QDialog):
         )
         for release in newer:
             label = f"{release.tag or release.title}   ·   {release.date}"
+            # How big the download is belongs next to the version, not only in
+            # the confirmation — it is the deciding factor on a slow line.
+            size = updater.format_size(release.asset_size)
+            if size:
+                label += f"   ·   {size}"
             if release.prerelease:
                 label += "   (pre-release)"
             self.update_list.addItem(label)
@@ -2062,10 +2070,12 @@ class SettingsWindow(QDialog):
             # API response and webbrowser.open() would hand any scheme to the OS.
             webbrowser.open(updater.release_page_url(release))
             return
+        size = updater.format_size(release.asset_size)
         confirm = QMessageBox.question(
             self,
             APP_NAME,
-            f"Download {release.tag} and restart {APP_NAME} to update?\n\n"
+            f"Download {release.tag}{f' ({size})' if size else ''} and restart "
+            f"{APP_NAME} to update?\n\n"
             f"{APP_NAME} will close, replace its program file and reopen automatically.\n\n"
             "The download is not code-signed (Windows SmartScreen may warn).",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -2088,7 +2098,10 @@ class SettingsWindow(QDialog):
         self.update_progress.setRange(0, 100)
         self.update_progress.setValue(0)
         self.update_progress.setVisible(True)
-        self.update_status.setText(f"Downloading {release.tag}…")
+        # Named once here so every progress line can repeat which version is
+        # being fetched without re-reading the (selectable) release list.
+        self._update_download_label = release.tag or release.title
+        self.update_status.setText(f"Downloading {self._update_download_label}…")
         from . import updater
 
         url = release.asset_url
@@ -2132,11 +2145,27 @@ class SettingsWindow(QDialog):
         self.update_status.setText("Cancelling download…")
 
     def _on_update_progress(self, done: int, total: int) -> None:
+        from . import updater
+
         if total > 0:
             self.update_progress.setRange(0, 100)
             self.update_progress.setValue(int(done * 100 / total))
+            text = (
+                f"Downloading {self._update_download_label} — "
+                f"{updater.format_size(done)} of {updater.format_size(total)}"
+            )
         else:
             self.update_progress.setRange(0, 0)  # indeterminate
+            # No Content-Length: the bar can only spin, so the amount already
+            # downloaded is the only sign the transfer is still moving.
+            text = (
+                f"Downloading {self._update_download_label} — "
+                f"{updater.format_size(done)} so far"
+            )
+        # progress_cb fires per 256 KB chunk — several hundred times for the
+        # portable build. Relabel only when the text actually changed.
+        if text != self.update_status.text():
+            self.update_status.setText(text)
 
     def _on_update_downloaded(self, path: str) -> None:
         from pathlib import Path
