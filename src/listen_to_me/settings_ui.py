@@ -64,7 +64,7 @@ from .diagnostics import DiagnosticsEngine
 from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
-from .qtutil import elastic_combo, guard_wheel
+from .qtutil import elastic_combo, elastic_label, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -583,20 +583,26 @@ class SettingsWindow(QDialog):
         button.setMinimumWidth(widest)
 
     @staticmethod
-    def _hint(text: str) -> QLabel:
+    def _hint(text: str, *, elastic: bool = False) -> QLabel:
+        """A muted, wrapping note. Pass `elastic=True` for every hint whose
+        text is composed at runtime from a path, a URL or an exception — those
+        carry unbreakable words that would otherwise widen the whole page."""
         label = QLabel(text)
         label.setProperty("role", "hint")
         label.setWordWrap(True)
+        if elastic:
+            elastic_label(label)
         return label
 
     @staticmethod
     def _status_value(text: str) -> QLabel:
         """A wrapping, selectable value label for the status card — device
         names and error messages can be long, and selectable text lets the
-        user copy an error into a search."""
+        user copy an error into a search. Always elastic: every value on the
+        card comes from a probe and can be a path or a driver error."""
         label = QLabel(text)
-        label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        elastic_label(label)
         return label
 
     @staticmethod
@@ -671,7 +677,7 @@ class SettingsWindow(QDialog):
         )
         self.hotkey_test_button.clicked.connect(self._test_hotkey)
         ht.addWidget(self.hotkey_test_button)
-        self.hotkey_test_status = self._hint("")
+        self.hotkey_test_status = self._hint("", elastic=True)
         ht.addWidget(self.hotkey_test_status, 1)
         form.addRow("", hotkey_test)
 
@@ -782,7 +788,7 @@ class SettingsWindow(QDialog):
         # What the OS *actually* has on file. Without it, a registration that
         # never took looks exactly like a working one — until the next reboot
         # starts nothing.
-        self.autostart_status = self._hint("")
+        self.autostart_status = self._hint("", elastic=True)
         sv.addWidget(self.autostart_status)
         self.chk_autostart.toggled.connect(lambda _checked: self._refresh_autostart_status())
         self._refresh_autostart_status()
@@ -966,7 +972,7 @@ class SettingsWindow(QDialog):
         fv.addWidget(dir_row)
         fv.addWidget(self._hint(
             "Models are fetched from Hugging Face on first use and stored here.\n"
-            f"Empty = default cache: {default_model_dir()}"
+            f"Empty = default cache: {default_model_dir()}", elastic=True
         ))
         layout.addWidget(folder)
 
@@ -1010,7 +1016,7 @@ class SettingsWindow(QDialog):
         # is running. (The Audio page's level bar sits in a labelled row.)
         self.diag_progress.setAccessibleName("Model download and transcription test progress")
         tv.addWidget(self.diag_progress)
-        self.diag_status = self._hint(_DIAG_STATUS_IDLE)
+        self.diag_status = self._hint(_DIAG_STATUS_IDLE, elastic=True)
         self.diag_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         tv.addWidget(self.diag_status)
         layout.addWidget(tools)
@@ -1094,7 +1100,7 @@ class SettingsWindow(QDialog):
         self.mic_level_bar.setTextVisible(False)
         self.mic_level_bar.setToolTip("Input level while the microphone test records.")
         form.addRow("Level:", self.mic_level_bar)
-        self.mic_status = self._hint("")
+        self.mic_status = self._hint("", elastic=True)
         form.addRow("", self.mic_status)
         layout.addWidget(card)
 
@@ -1992,7 +1998,7 @@ class SettingsWindow(QDialog):
         form.addRow("", self.update_check_button)
         layout.addWidget(card)
 
-        self.update_status = self._hint("Not checked yet.")
+        self.update_status = self._hint("Not checked yet.", elastic=True)
         layout.addWidget(self.update_status)
 
         self.update_list = QListWidget()

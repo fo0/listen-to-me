@@ -1676,6 +1676,37 @@ def _gui_construction():
         window._on_hw_done(2, probe)
         assert window.hw_cuda_label.text().startswith("✗") and not window._hw_busy
 
+        # The clipping guard above only ever renders short strings, which is
+        # why this trap survived it: a wrapping QLabel reports its longest
+        # *word* as its minimum width, and a Windows path, a URL or a repo id
+        # has nothing to wrap at. One such status line used to push the whole
+        # page past its viewport. Every label whose text is composed from a
+        # probe, a path or an exception must therefore stay elastic — what the
+        # layout really asks for is the widget item's minimum, so measure that.
+        from PySide6.QtWidgets import QWidgetItem
+
+        long_path = (
+            r"C:\Users\a.verylongusername\AppData\Local\Programs\ListenToMe"
+            r"\models\huggingface\hub\models--openai--whisper-large-v3"
+        )
+        for name, label in {
+            "CUDA status": window.hw_cuda_label,
+            "OpenVINO status": window.hw_ov_label,
+            "model status": window.hw_model_label,
+            "transcription test": window.diag_status,
+            "microphone test": window.mic_status,
+            "hotkey test": window.hotkey_test_status,
+            "update check": window.update_status,
+            "autostart": window.autostart_status,
+        }.items():
+            label.setText(f"failed: {long_path}")
+            label.setVisible(True)  # the autostart line hides itself when empty
+            demanded = QWidgetItem(label).minimumSize().width()
+            assert 0 < demanded <= label.minimumWidth(), (
+                f"{name} label demands {demanded}px for its longest word "
+                f"(elastic floor {label.minimumWidth()}px) — that widens the page"
+            )
+
         # Update download feedback: a bare percentage says nothing about a
         # few-hundred-MB transfer, so the status line carries the sizes — and
         # keeps reporting progress when the server sends no Content-Length.
