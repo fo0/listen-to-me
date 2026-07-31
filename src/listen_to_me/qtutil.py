@@ -78,6 +78,35 @@ def elastic_combo(*combos, min_chars: int = 24) -> None:
             combo.lineEdit().setCursorPosition(0)
 
 
+def elastic_label(*labels, min_chars: int = 24) -> None:
+    """Stop wrapping `labels` from demanding the width of their widest word.
+
+    Word wrap breaks at spaces only, so a QLabel's minimum width is the width
+    of its longest single word — and a Windows path, a URL or a Hugging Face
+    repo id is one unbreakable word (a realistic exe path measures ~550 px).
+    A status line that reports one therefore pushes the whole settings page
+    past its scroll viewport, and with the horizontal scroll bar off that
+    clips the right edge of every card on the page — the label version of the
+    trap `elastic_combo` handles for combo boxes.
+
+    The explicit minimum is what does the work: Qt's `qSmartMinSize` uses it
+    *instead of* the longest-word minimum, so the label asks for a fixed,
+    modest width and stretches into whatever the layout offers. `Ignored`
+    additionally drops the label out of the layout's preferred width, so one
+    long word can't inflate the window's natural size either. The text stays
+    untouched — a selectable label still copies the full path even when it is
+    too long to render.
+    """
+    from PySide6.QtWidgets import QSizePolicy
+
+    for label in labels:
+        label.setWordWrap(True)
+        policy = label.sizePolicy()
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        label.setSizePolicy(policy)
+        label.setMinimumWidth(min_chars * label.fontMetrics().averageCharWidth())
+
+
 def pil_to_pixmap(img) -> QPixmap:
     """Convert a Pillow RGBA image to a QPixmap.
 
