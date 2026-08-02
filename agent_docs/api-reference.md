@@ -10,7 +10,7 @@ Entry point: `listen_to_me.app:main` (console scripts `listen-to-me` / `listen-t
 |------|--------|
 | `--version` | Print `Listen To Me <version>` and exit `0`. Does **not** import Qt. |
 | `--selftest` | Run the packaging self-test (`selftest.run`); writes `<tempdir>/listen-to-me-selftest.log`, exits non-zero on failure. Used by CI after the PyInstaller build. |
-| _(none)_ | Launch the tray app. A localhost single-instance lock (port `52697`) makes a second launch exit quietly. |
+| _(none)_ | Launch the tray app. A single-instance guard (named mutex on Windows, `flock()`-ed `instance.lock` in the config dir on POSIX) makes a second launch exit quietly after pinging the running instance to show itself over loopback port `52697`. |
 
 Own flags are stripped before Qt sees `sys.argv` (`sys.argv[:1]`), so they never clash with Qt options.
 
@@ -43,4 +43,4 @@ The authoritative schema is `DEFAULTS` in `src/listen_to_me/config.py` (deep-mer
 
 ## Internal Event Interface
 
-`App.post(kind, payload)` is the thread-safe channel from any background thread to the main loop. Event kinds handled in `app.py → _handle`: `toggle`, `hotkey_press`, `hotkey_release`, `preview_text`, `flash_text`, `toggle_overlay`, `cancel`, `auto_stop`, `done`, `notify`, `settings`, `updates`, `help`, `open_config`, `quit`. This is the app's real "API surface" for wiring new triggers.
+`App.post(kind, payload)` is the thread-safe channel from any background thread to the main loop. Event kinds handled in `app.py → _handle`: `toggle`, `hotkey_press`, `hotkey_release`, `preview_text`, `flash_text`, `toggle_overlay`, `cancel`, `auto_stop`, `done`, `notify`, `activate`, `settings`, `updates`, `help`, `open_config`, `quit`. This is the app's real "API surface" for wiring new triggers.
