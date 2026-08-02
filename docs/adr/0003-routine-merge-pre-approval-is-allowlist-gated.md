@@ -1,9 +1,13 @@
 # ADR-0003: Routine merge pre-approval is allowlist-gated, not self-declared
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0004
 - **Date:** 2026-07-27
 - **Decider(s):** user + agent
 - **Tags:** security, process, deployment
+
+> Superseded on 2026-08-02 by [ADR-0004](0004-agent-merges-require-an-explicit-user-command.md):
+> the exception was dropped entirely and `agent_docs/authorized_routines.md` deleted. The text
+> below is kept as history — its references to that file no longer resolve.
 
 ## Context
 
