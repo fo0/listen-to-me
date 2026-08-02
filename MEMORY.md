@@ -9,7 +9,7 @@ Structured decisions live in `docs/adr/`. Grep there before contradicting one. T
 - **PySide6/Qt over Tkinter/pystray** — the UI was migrated to PySide6 for a modern look, tray, and the animated overlay. (See git history "Revamp UI".) A proper ADR can be back-filled if the choice is revisited.
 - **Fully local transcription** — faster-whisper (CTranslate2), no cloud, no account; only the optional assistant + updater touch the network.
 - **The updater is carved out of `insecure_ssl`** — see ADR-0002. (#20, 2026-07-27)
-- **The agent never merges or releases on its own** — an explicit interactive user command is required; the allowlist-gated routine exception of ADR-0003 (and its allowlist file) was dropped as dead weight, see ADR-0004. Don't reintroduce a routine, schedule or prompt-declared bypass. (#21, 2026-08-02)
+- **Merging and releasing need an explicit user command — but an owner-authorized routine counts as one.** Only for non-destructive change sets with green verification; destructive changes stay gated. ADR-0005 superseded ADR-0004 on owner decision, to match the 15 sibling repos, and records the accepted risk honestly: the routine claim is prompt text the agent cannot verify, so a prompt-injection boundary was traded for automation throughput. **Do not reintroduce the interactive-only gate without a new ADR** — and don't quietly drop the "non-destructive + green" qualifiers either. (#21, 2026-08-02)
 
 ## Gotchas & Pitfalls
 
@@ -42,6 +42,7 @@ _(none recorded yet — superseded designs live in the archive: the TCP-port sin
 - **No new tooling without approval** — there is intentionally no linter/formatter/type-checker/test-framework. Don't add ruff/black/mypy/pytest to make a check pass; match style by hand. (2026-07-19)
 - **Windows-first**, Linux/macOS paths kept coherent. (2026-07-19)
 - **Every agent-config rule is stated in exactly one place; the others point at it.** Three that were pruned back and should not be rebuilt: reviews run **on demand** via the `review` skill — don't re-add "every implementation triggers a review" to `agent_docs/review_process.md`; there is no Dependabot/Renovate here — don't re-add a dep-bot PR workflow to the `pr` skill; the `gh` → `mcp__github__*` fallback is stated once in `agent_docs/mcp_catalog.md` — skills link to it instead of each restating a different variant. (2026-08-02)
+- **`permissions.allow` holds one `mcp__<server>__*` glob per spelling and nothing a glob already covers.** 16 redundant per-tool entries were pruned on 2026-08-02; they granted nothing the globs didn't. Self-heal by *appending* a missing glob, never per-tool names, and never a `deny`/`ask` entry. The two `mcp__github__(un)subscribe_pr_activity` entries stay only because there is deliberately no `mcp__github__*` glob. (2026-08-02)
 
 ## Archive
 

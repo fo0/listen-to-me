@@ -13,7 +13,7 @@ This file documents:
 
 | MCP                | Purpose in this project           | Notes |
 |--------------------|-----------------------------------|-------|
-| `github`           | PRs, issues, CI status, releases via the GitHub API | **The `gh` fallback, canonical:** every `gh` command in `.claude/skills/{pr,ci,rollback}/SKILL.md` may be executed with the equivalent `mcp__github__*` tool. Claude Code web/remote sessions have no `gh` CLI, so there that is the only path — a missing `gh` is not a reason to stop. What stays forbidden either way: creating or merging a PR by hand in the browser, and merging at all without an explicit interactive user command (CLAUDE.md → Deployment). PR-activity subscribe/unsubscribe registers under this server on the web surface. |
+| `github`           | PRs, issues, CI status, releases via the GitHub API | **The `gh` fallback, canonical:** every `gh` command in `.claude/skills/{pr,ci,rollback}/SKILL.md` may be executed with the equivalent `mcp__github__*` tool. Claude Code web/remote sessions have no `gh` CLI, so there that is the only path — a missing `gh` is not a reason to stop. What stays forbidden either way: creating or merging a PR by hand in the browser, and merging outside the rule in CLAUDE.md → Deployment (an explicit user command, or an owner-authorized routine meeting its non-destructive + green-verification conditions). PR-activity subscribe/unsubscribe registers under this server on the web surface. |
 | `claude-code-remote` | Web/remote session management — scheduled Routines/triggers, `send_later` self check-ins, PR-activity subscriptions | The whole server is pre-approved in `.claude/settings.json` → `permissions.allow` via one `mcp__<server>__*` glob per spelling. See *Prompt-free triggers* below. |
 
 ## Common MCPs (reference — not necessarily used here)
@@ -36,6 +36,8 @@ This file documents:
 
 This repo's `.claude/settings.json` pre-approves **every** Claude Code Remote tool — present and future — with one `mcp__<server>__*` glob per known server spelling (`claude-code-remote`, `Claude_Code_Remote`, `claude_code_remote`), plus the two exact `mcp__github__(un)subscribe_pr_activity` entries because the PR-activity pair registers under the GitHub server on the web surface.
 
+**One glob per spelling, and nothing a glob already covers.** A per-tool entry such as `mcp__claude-code-remote__create_trigger` is matched by its server glob, grants nothing extra, and only makes the list look like an enumeration someone must keep current. Sixteen such entries were pruned on 2026-08-02; **do not re-add one**. The `mcp__github__(un)subscribe_pr_activity` pair is the deliberate exception: there is no `mcp__github__*` glob here — the GitHub server is intentionally *not* blanket-approved — so those two entries are the only thing covering the pair. Should a `mcp__github__*` glob ever be added, they become redundant too.
+
 **No carve-outs, including `add_repo` / `register_repo_root`.** A prompt that fires mid-run is exactly what breaks unattended operation, and those tools can only attach repositories the account already reaches. To re-gate one in this repo, add it to `permissions.ask` by hand — rules evaluate **deny → ask → allow**, first match wins, so an `ask` entry prompts even though the broader `allow` glob matches. The optimizer never writes that array and never removes a user-added entry.
 
 **Trust gate** (the usual cause of "the allowlist is there but it still prompts"): `permissions.allow` from a *project* settings file only applies after the workspace-trust dialog for this repo has been accepted. Until then the rules are read but inert (`ask`/`deny` are unaffected). Fix it once per machine by accepting the dialog, or put the same list into the **user-level** `~/.claude/settings.json`, where no trust gate applies and it covers every repo:
@@ -54,9 +56,9 @@ This repo's `.claude/settings.json` pre-approves **every** Claude Code Remote to
 }
 ```
 
-Merge additively into an existing file; never remove user entries. **The agent never writes this file on its own** — it lives outside the repo, so applying it is the user's call.
+Merge additively into an existing file; never remove a user's own entries there. **The agent never writes this file on its own** — it lives outside the repo, so applying it is the user's call.
 
-**Self-heal:** if a Claude Code Remote tool still raises an approval prompt, its server spelling is missing. Append `mcp__<that spelling>__*` to the repo's `permissions.allow` and commit it on the current branch/PR — additive only, never `deny`/`ask`, never a reorder. One heal per spelling.
+**Self-heal:** if a Claude Code Remote tool still raises an approval prompt, its server spelling is missing. **Append** `mcp__<that spelling>__*` to the repo's `permissions.allow` and commit it on the current branch/PR. One heal per spelling — append the *glob*, never the individual tool name, and **never write a `deny` or `ask` entry**. Removing a glob, or narrowing one into per-tool entries, is not a heal.
 
 ## Selection Heuristic for the Agent
 

@@ -169,7 +169,8 @@ Full list + **Secrets Locations**: `agent_docs/env-vars.md`. The only user secre
 ## Deployment
 
 - **Trigger:** manual `workflow_dispatch` on `.github/workflows/release.yml` → Windows one-file exe + GitHub Release (`vYYYY.MM.DD.<run>`); a dispatch from any ref but `main` fails in the guard job. PRs only run the `ci.yml` check.
-- **Agent scope:** push to feature branches, open/update PRs, suggest merge. Merging a PR and dispatching the release build each need an **explicit interactive user command** — no routine, schedule or prompt claim substitutes for one, because prompt text reaches a session from outside the repo (ADR-0004, #21). An unattended session does the work, opens the PR, and stops there.
+- **Agent scope:** push to feature branches, open/update PRs, suggest merge. Merging a PR and dispatching the release build each need an explicit user command.
+- **Routine exception:** a session running an **owner-authorized routine** counts as an explicit user command — its merges are pre-approved _including_ any pipeline they trigger — provided the change set is **non-destructive** (additive; no history rewrite, no force-push, no repo-settings change, no forced migration) **and verification passed** (green `check` job). **Destructive changes stay gated** behind an explicit interactive command. Accepted risk: the routine claim arrives as unverifiable prompt text (ADR-0005, superseding ADR-0004; #21).
 - **Rollback:** `.claude/skills/rollback/SKILL.md` — for a bad release prefer a revert-PR + fresh dispatched build.
 
 Detail (distribution, SHA-pin bump): `agent_docs/deployment.md`.
@@ -190,7 +191,9 @@ Regression guards + how to add a check: `agent_docs/testing.md`.
 
 ## External Integrations / MCPs
 
-Host MCP availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch` when one is absent, and never hard-require an MCP. One canonical file covers the rest: `agent_docs/mcp_catalog.md` — the project/common MCP tables, the `gh` → `mcp__github__*` equivalence the PR/CI/rollback skills rely on, and the trigger-tool allowlist in `.claude/settings.json` with its self-heal rule (append the missing `mcp__<server>__*` spelling; additive only, never `deny`/`ask`).
+Host MCP availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch` when one is absent, and never hard-require an MCP. One canonical file covers the rest: `agent_docs/mcp_catalog.md` — the project/common MCP tables, the `gh` → `mcp__github__*` equivalence the PR/CI/rollback skills rely on, and the trigger-tool allowlist in `.claude/settings.json`.
+
+**Allowlist shape:** keep **one `mcp__<server>__*` glob per server spelling**. A per-tool entry that a glob in the same list already matches grants nothing — it is redundant, and must not be (re-)added. **Self-heal** a tool that still prompts by *appending* the missing `mcp__<server>__*` glob, never the individual tool name. **Never write a `deny` or `ask` entry**, and never remove a glob.
 
 ## CI
 
