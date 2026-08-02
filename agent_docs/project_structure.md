@@ -5,7 +5,7 @@ Offloaded from `CLAUDE.md` (context budget). CLAUDE.md keeps the two-level direc
 ```
 src/listen_to_me/     # The single application package — flat, no sub-packages
 scripts/              # make_icon.py — generates the .ico PyInstaller bundles
-.github/workflows/    # ci.yml (check job: compileall + Qt smoke, on PR/push)
+.github/workflows/    # ci.yml (check job: compileall + Qt smoke, on PR + workflow_call)
                       # release.yml (manual dispatch: Windows exe + GitHub Release, main only)
 docs/                 # ARCHITECTURE.mmd (+ .svg), adr/, research/
 agent_docs/           # Agent process docs (this file, review, backlog, memory, budget, …)
