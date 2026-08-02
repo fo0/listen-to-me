@@ -19,45 +19,9 @@ description: "Use for any GitHub Pull Request work. Auto-detects lifecycle phase
 gh auth status && gh repo view --json name,owner
 ```
 
-If `gh` is missing or unauthenticated:
-- Print: `gh CLI required. Install: https://cli.github.com — then run: gh auth login`
-- Stop. Do NOT fall back to manual PR creation via web.
+No `gh`? Use the equivalent `mcp__github__*` tool for every `gh` call below — that is the normal path in web/remote sessions and is not a reason to stop (`agent_docs/mcp_catalog.md` → the `github` row). Never create or merge a PR by hand in the browser instead.
 
-> **Web/remote sessions:** if the `gh` CLI is unavailable but the GitHub MCP server is connected, use the `mcp__github__*` tools (create/update PR, list PRs, checks) as the equivalent of the `gh` calls below.
-
-## Dependency-Bot PRs (auto-detect)
-
-Before normal auto-routing, detect dep-bot PRs by **head branch pattern** (not by author — author can be spoofed):
-
-| Bot          | Branch pattern               |
-|--------------|------------------------------|
-| Dependabot   | `dependabot/**`              |
-| Renovate     | `renovate/**` or `renovate-bot/**` |
-| Snyk         | `snyk-fix/**` / `snyk-upgrade/**` |
-| pyup         | `pyup-update-**`             |
-
-When a dep-bot PR is detected, follow the **Dep-Bot PR Workflow** below instead of standard `/pr` routing.
-
-### Dep-Bot PR Workflow
-
-1. **Identify scope** — `gh pr view --json title,body,files` — what packages and from/to versions.
-2. **Read changelog/release notes** for each upgraded package. For major bumps, fetch the upstream changelog.
-3. **Run the project's checks locally** on the dep-bot branch (`compileall` + Qt smoke; `--selftest` if deps installed).
-4. **Classify by bump type:** patch → tests green → recommend merge · minor → review behavior changes → recommend merge if clean · major → never auto-recommend; read migration guide, surface breaking changes.
-5. **Security advisories** in PR body → treat as P0 (security-review skill) — fix-forward.
-6. **Group strategy** — multiple dep-bot PRs open → ask user whether to batch by ecosystem; never silently rebase across bots.
-7. **Never auto-merge** dep-bot PRs without an explicit interactive user command — a scheduled or unattended dependency run never counts as one. Recommend, then stop.
-
-Report:
-
-```
-🤖 Dep-bot PR detected (<bot>): <N> packages bumped
-Bumps: <package@from→to, ...>
-Bump type: patch | minor | major
-Local checks: <pass/fail>
-Changelog risks: <none / list>
-Recommendation: <merge / hold / surface for review>
-```
+> **Dependency bots:** this repo has no Dependabot, Renovate, Snyk or pyup configured (`agent_docs/deployment.md` — bumps are manual). Should a bot PR ever appear, route it like any other PR and run `/beacon` for the compatibility verdict; the unconditional no-auto-merge rule under `/pr merge` covers it with no separate workflow.
 
 ## Auto-Routing (default `/pr`)
 

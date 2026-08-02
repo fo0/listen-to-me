@@ -13,7 +13,7 @@ This file documents:
 
 | MCP                | Purpose in this project           | Notes |
 |--------------------|-----------------------------------|-------|
-| `github`           | PRs, issues, CI status, releases via the GitHub API | Used in Claude Code web/remote sessions instead of a local `gh` CLI. PR-activity subscribe/unsubscribe registers here on the web surface. |
+| `github`           | PRs, issues, CI status, releases via the GitHub API | **The `gh` fallback, canonical:** every `gh` command in `.claude/skills/{pr,ci,rollback}/SKILL.md` may be executed with the equivalent `mcp__github__*` tool. Claude Code web/remote sessions have no `gh` CLI, so there that is the only path — a missing `gh` is not a reason to stop. What stays forbidden either way: creating or merging a PR by hand in the browser, and merging at all without an explicit interactive user command (CLAUDE.md → Deployment). PR-activity subscribe/unsubscribe registers under this server on the web surface. |
 | `claude-code-remote` | Web/remote session management — scheduled Routines/triggers, `send_later` self check-ins, PR-activity subscriptions | The whole server is pre-approved in `.claude/settings.json` → `permissions.allow` via one `mcp__<server>__*` glob per spelling. See *Prompt-free triggers* below. |
 
 ## Common MCPs (reference — not necessarily used here)

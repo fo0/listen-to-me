@@ -41,6 +41,7 @@ _(none recorded yet — superseded designs live in the archive: the TCP-port sin
 
 - **No new tooling without approval** — there is intentionally no linter/formatter/type-checker/test-framework. Don't add ruff/black/mypy/pytest to make a check pass; match style by hand. (2026-07-19)
 - **Windows-first**, Linux/macOS paths kept coherent. (2026-07-19)
+- **Every agent-config rule is stated in exactly one place; the others point at it.** Three that were pruned back and should not be rebuilt: reviews run **on demand** via the `review` skill — don't re-add "every implementation triggers a review" to `agent_docs/review_process.md`; there is no Dependabot/Renovate here — don't re-add a dep-bot PR workflow to the `pr` skill; the `gh` → `mcp__github__*` fallback is stated once in `agent_docs/mcp_catalog.md` — skills link to it instead of each restating a different variant. (2026-08-02)
 
 ## Archive
 

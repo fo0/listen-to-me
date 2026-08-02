@@ -146,7 +146,7 @@ Significant decisions are recorded as ADRs under `docs/adr/`. Triggers + format:
 - **Commit Messages:** imperative, capitalized subject (~50–72 chars), e.g. `Add in-app Help page and auto CPU fallback`; an optional lowercase `area:` prefix appears occasionally (`ci: run the check job`). **Not** Conventional Commits — never force `feat:`/`fix:`. Reference issues/PRs with `#N`.
 - **Merge Strategy:** GitHub **merge commits**, not squash. **CI/CD:** `ci.yml` check job on every PR; `release.yml` = manual dispatch only, guarded to `main`.
 - **Actions are pinned by commit SHA, never by tag** (#22) — a tag can be moved, and `release.yml` runs with `contents: write` and publishes the exe the updater hands to users. Bump procedure: `agent_docs/deployment.md`.
-- **Formatting guard:** n/a — no formatter here. Never bypass a configured hook with `--no-verify`.
+- **Never bypass a git hook with `--no-verify`** — unconditional, whatever is or isn't configured.
 
 ## Dependency Management
 
@@ -184,15 +184,13 @@ Full reference: `agent_docs/api-reference.md`.
 
 - **Framework:** none (no pytest) — verification is the CI `check` job. **Run:** the two commands under *Automated Checks*; full packaging self-test `python -m listen_to_me --selftest` (needs all deps).
 - **Structure:** `selftest.py` holds the checks; `gui_smoke()` is the dependency-light subset CI runs from source.
-- **Constraints:** agent-runnable (no setup, credentials, mic or GPU), zero-cost (no real API calls, no model downloads), deterministic (mock `sounddevice`/`pynput`/`requests`/`faster_whisper`).
+- **Constraints:** agent-runnable, zero-cost, deterministic — binding wording in `agent_docs/review_process.md → Test execution constraints`.
 
 Regression guards + how to add a check: `agent_docs/testing.md`.
 
 ## External Integrations / MCPs
 
-Project-intended and common MCPs: `agent_docs/mcp_catalog.md`. Host MCP availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch` when one is absent. Workflows must never hard-require an MCP.
-
-**Trigger tools never prompt.** `.claude/settings.json` → `permissions.allow` carries one `mcp__<server>__*` glob per Claude Code Remote spelling plus the two `mcp__github__(un)subscribe_pr_activity` entries, so scheduled check-ins and PR-watch subscriptions run unattended — deliberately without carve-outs. **Self-heal:** a tool that still prompts is missing its server spelling — append `mcp__<that server>__*` and commit it on the current branch/PR (additive only). Rationale, trust-gate caveat and the user-level fallback: `agent_docs/mcp_catalog.md`.
+Host MCP availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch` when one is absent, and never hard-require an MCP. One canonical file covers the rest: `agent_docs/mcp_catalog.md` — the project/common MCP tables, the `gh` → `mcp__github__*` equivalence the PR/CI/rollback skills rely on, and the trigger-tool allowlist in `.claude/settings.json` with its self-heal rule (append the missing `mcp__<server>__*` spelling; additive only, never `deny`/`ask`).
 
 ## CI
 
