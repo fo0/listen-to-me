@@ -95,7 +95,7 @@ Ordered by priority.
 | # | Category | What to check |
 |---|----------|---------------|
 | 3 | **Edge Cases** | Empty/too-short audio, no microphone, no GPU, no network (assistant/updater), clipboard access denied, missed hotkey release (hold mode), multi-monitor overlay placement, non-ASCII paths |
-| 4 | **Typing & Type Safety** | Correct type hints, `X | None` handled, no silent `Any`, config value types match `DEFAULTS` |
+| 4 | **Typing & Type Safety** | Correct type hints, `X \| None` handled, no silent `Any`, config value types match `DEFAULTS` |
 | 5 | **Modern Coding Standards** | Idiomatic PySide6/Qt, no deprecated Qt APIs, `from __future__ import annotations` present, lazy heavy imports preserved, Qt-free modules stay Qt-free, DRY/KISS/SRP |
 
 ### P2 — Contextual (review when relevant, defer freely)

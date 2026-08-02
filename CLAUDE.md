@@ -24,6 +24,7 @@ When a session begins, read in this order. Stop early if a file is missing.
 | "rollback" / "revert" / "undo" / "/rollback" | `.claude/skills/rollback/SKILL.md` |
 | "CI" / "fix CI" / "check the build" / "/ci" | `.claude/skills/ci/SKILL.md` |
 | "stuck" / "loop" / "going in circles" / "/stuck" | `.claude/skills/stuck/SKILL.md` |
+| "check dependencies" / "update deps" / "/beacon" | `.claude/skills/beacon/SKILL.md` |
 | Diagram request | `agent_docs/diagram_prompt.md` → `docs/ARCHITECTURE.mmd` |
 
 > Review runs on demand via the `review` skill — done-skill does NOT auto-run it. Unresolved findings → `BACKLOG.md` (`agent_docs/backlog_process.md`); long-term knowledge → `MEMORY.md`, temporary context → `SCRATCHPAD.md` (`agent_docs/memory_process.md`).
@@ -74,7 +75,7 @@ scripts/              # Dev/build helpers (make_icon.py)
 .github/workflows/    # ci.yml (check job on PRs); release.yml (manual Windows build, main only)
 docs/                 # ARCHITECTURE.mmd (+ .svg), adr/, research/
 agent_docs/           # Agent process docs (review, backlog, memory, budget, API ref, hooks, MCP)
-.claude/skills/       # done, pr, review, security-review, rollback, ci, stuck
+.claude/skills/       # done, pr, review, security-review, rollback, ci, stuck, beacon
 ```
 
 Module map + notable file sizes: `agent_docs/project_structure.md`. Find files via glob/grep.

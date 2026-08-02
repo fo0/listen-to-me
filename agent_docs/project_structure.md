@@ -9,7 +9,7 @@ scripts/              # make_icon.py — generates the .ico PyInstaller bundles
                       # release.yml (manual dispatch: Windows exe + GitHub Release, main only)
 docs/                 # ARCHITECTURE.mmd (+ .svg), adr/, research/
 agent_docs/           # Agent process docs (this file, review, backlog, memory, budget, …)
-.claude/skills/       # done, pr, review, security-review, rollback, ci, stuck
+.claude/skills/       # done, pr, review, security-review, rollback, ci, stuck, beacon
 ```
 
 ## `src/listen_to_me/` modules
