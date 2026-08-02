@@ -28,9 +28,9 @@ Grouped by role. Full behavioral notes: `agent_docs/key-patterns.md`.
 | Data & extras | `history.py`, `assistant.py` |
 | Verification | `selftest.py` (`gui_smoke()` = the CI subset), `diagnostics.py` (Settings self-test engine) |
 
-## Notable sizes (2026-07-30)
+## Notable sizes
 
-`settings_ui.py` ~2700 lines and `selftest.py` ~1900 lines are the two files far past the size guideline; `app.py` (~720) and `theme.py` / `home_page.py` (~550 / ~530) are over it. Split plans: `agent_docs/refactoring_guidelines.md`.
+Which files are past the size guideline, and the split plan for each: `agent_docs/refactoring_guidelines.md`. Re-measure with `wc -l src/listen_to_me/*.py | sort -rn` rather than trusting a copied number.
 
 ## Finding things
 

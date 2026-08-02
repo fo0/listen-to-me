@@ -35,10 +35,4 @@ Keep new pure logic Qt-free where practical — that is what makes it exercisabl
 
 ## Constraints (autonomy + zero-cost)
 
-This codebase is built and verified by AI agents. Any check added must be:
-
-- **Agent-runnable** with the two commands above — no manual setup, no credentials, no interactive login, no real microphone, no GPU.
-- **Zero-cost** — no real API calls (paid LLMs, GitHub), no model downloads in the default check path, no audio hardware.
-- **Deterministic** — fake clocks/random; mock `sounddevice` / `pynput` / `requests` / `faster_whisper` at the boundary.
-
-Real-service smoke/E2E tests only on explicit user request — never part of the default check pipeline. Rationale: `agent_docs/review_process.md → Test execution constraints`.
+Agent-runnable, zero-cost, deterministic — the binding wording lives in one place: `agent_docs/review_process.md → Test execution constraints`. It applies unchanged to every check added here.

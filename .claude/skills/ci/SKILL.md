@@ -23,7 +23,7 @@ Two separate workflows:
 gh auth status && gh repo view --json name,owner
 ```
 
-If `gh` is missing or unauthenticated → print install/login instructions, or use `mcp__github__actions_*` / `mcp__github__get_job_logs` if the GitHub MCP server is connected.
+No `gh`? Use the equivalent `mcp__github__*` tool (`actions_*`, `get_job_logs`) for every `gh` call below — see `agent_docs/mcp_catalog.md` → the `github` row.
 
 ## Auto-Routing (default `/ci`)
 

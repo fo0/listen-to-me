@@ -23,7 +23,7 @@ Review findings not immediately fixed. **Only work on these upon explicit reques
 
 | # | Date | Category | Sev | Location | Finding | Status | Source |
 |---|------|----------|-----|----------|---------|--------|--------|
-| 1 | 2026-07-19 | Code Smells | P2 | settings_ui.py → SettingsWindow | 1300-line file, split into per-page modules | Deferred | Optimizer setup |
+| 1 | YYYY-MM-DD | Code Smells | P2 | module.py → ClassOrFunction | What is wrong and what the fix would be | Deferred | Task/branch it was found in |
 
 ## Done
 

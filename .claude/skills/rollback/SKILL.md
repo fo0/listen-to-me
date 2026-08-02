@@ -12,6 +12,8 @@ description: "Use when the user wants to undo a broken commit, push, or PR — t
 
 ## Auto-Detect Target
 
+No `gh`? Use the equivalent `mcp__github__*` tool for every `gh` call below — see `agent_docs/mcp_catalog.md` → the `github` row.
+
 ```bash
 git rev-parse --abbrev-ref HEAD
 git status --porcelain

@@ -1,9 +1,14 @@
 # ADR-0004: Agent merges and releases require an explicit interactive user command
 
-- **Status:** Accepted — supersedes ADR-0003
+- **Status:** Superseded by ADR-0005
 - **Date:** 2026-08-02
 - **Decider(s):** user
 - **Tags:** security, process, deployment
+
+> Superseded on 2026-08-02 by [ADR-0005](0005-owner-authorized-routines-count-as-a-user-command.md):
+> the routine exception was reinstated for non-destructive change sets with green verification, aligning
+> this repo with its fifteen siblings. The text below is kept as history — its unconditional rule is no
+> longer in force.
 
 ## Context
 
