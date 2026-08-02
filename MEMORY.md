@@ -9,7 +9,7 @@ Structured decisions live in `docs/adr/`. Grep there before contradicting one. T
 - **PySide6/Qt over Tkinter/pystray** — the UI was migrated to PySide6 for a modern look, tray, and the animated overlay. (See git history "Revamp UI".) A proper ADR can be back-filled if the choice is revisited.
 - **Fully local transcription** — faster-whisper (CTranslate2), no cloud, no account; only the optional assistant + updater touch the network.
 - **The updater is carved out of `insecure_ssl`** — see ADR-0002. (#20, 2026-07-27)
-- **Routine merge pre-approval is allowlist-gated, not self-declared** — see ADR-0003. Don't loosen this back to a prompt claim. (#21, 2026-07-27)
+- **The agent never merges or releases on its own** — an explicit interactive user command is required; the allowlist-gated routine exception of ADR-0003 (and its allowlist file) was dropped as dead weight, see ADR-0004. Don't reintroduce a routine, schedule or prompt-declared bypass. (#21, 2026-08-02)
 
 ## Gotchas & Pitfalls
 
