@@ -1,11 +1,11 @@
 # Review Process
 
-This file defines the mandatory review process executed after every implementation.
+This file defines the review process the `review` skill executes. It runs **on demand** — `/review` or an explicit user request — never automatically; the done-skill does not trigger it (CLAUDE.md → Workflow Triggers).
 
 ## Core Rules
 
-1. **Every implementation triggers a full review** — no exceptions, no user prompt needed.
-2. **Never commit without completed review** — all P0/P1 findings must be fixed first.
+1. **Run it in full once invoked** — all categories below, no cherry-picking. Scope (diff / full-read / large-scale) is chosen per *Review Scope*, coverage is not.
+2. **A review that has started blocks the commit until it is finished** — every P0/P1 finding fixed, or explicitly deferred to `BACKLOG.md` with reasoning.
 3. **Deterministic checks run first** — the syntax check + Qt smoke test catch what they catch. The review covers what tools cannot (this project has no linter/typechecker).
 4. **Fix, don't list** — when a finding is actionable, fix it immediately. Don't just document it.
 5. **Re-review after fixes** — if fixes touched code, re-run automated checks and re-review affected categories only.
@@ -95,7 +95,7 @@ Ordered by priority.
 | # | Category | What to check |
 |---|----------|---------------|
 | 3 | **Edge Cases** | Empty/too-short audio, no microphone, no GPU, no network (assistant/updater), clipboard access denied, missed hotkey release (hold mode), multi-monitor overlay placement, non-ASCII paths |
-| 4 | **Typing & Type Safety** | Correct type hints, `X | None` handled, no silent `Any`, config value types match `DEFAULTS` |
+| 4 | **Typing & Type Safety** | Correct type hints, `X \| None` handled, no silent `Any`, config value types match `DEFAULTS` |
 | 5 | **Modern Coding Standards** | Idiomatic PySide6/Qt, no deprecated Qt APIs, `from __future__ import annotations` present, lazy heavy imports preserved, Qt-free modules stay Qt-free, DRY/KISS/SRP |
 
 ### P2 — Contextual (review when relevant, defer freely)

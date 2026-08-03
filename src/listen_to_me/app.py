@@ -103,7 +103,7 @@ class App:
             # surface this instance then (thread-safe via the event queue).
             _instance_lock.start_server(lambda: self.post("activate"))
         self._register_hotkey()
-        autostart.sync(bool(self.cfg["autostart"]))
+        self._sync_autostart()
         try:
             self.overlay = Overlay(self)
             self.overlay.set_visible(bool(self.cfg["overlay"]["enabled"]))
@@ -176,6 +176,8 @@ class App:
             self.tray.set_state(self.state)  # refresh the "Show floating icon" tick
         elif kind == "cancel":
             self._cancel_recording()
+        elif kind == "copy_last":
+            self._copy_last_transcript()
         elif kind == "auto_stop":
             if self.state == STATE_RECORDING:
                 self.notify("Maximum recording length reached.")
@@ -384,6 +386,39 @@ class App:
         finally:
             self.post("done")
 
+    def _copy_last_transcript(self) -> None:
+        """Put the most recent transcript back on the clipboard.
+
+        Recovery in one click for the case the app already tells users about:
+        an insertion that failed, a paste that landed in the wrong window, a
+        transcript overwritten by the next copy. The alternative — open
+        Settings, walk the sidebar to History, find the entry, press its Copy
+        button — is four steps for the text the user just dictated.
+
+        Main thread only (posted as an event): the clipboard fallback is Qt's.
+        """
+        try:
+            text = self.history.latest()
+        except Exception:
+            log.exception("could not read the transcript history")
+            self.notify("Could not read the transcript history.", force=True)
+            return
+        if not text:
+            # Also the state right after "Keep a local history" was switched
+            # off — say what is missing instead of a silent no-op.
+            self.notify("No transcript in the history yet.", force=True)
+            return
+        from .qtutil import copy_to_clipboard
+
+        if copy_to_clipboard(text):
+            preview = text if len(text) <= 60 else text[:60].rstrip() + "…"
+            self.notify(f"Copied to the clipboard: {preview}")
+        else:
+            self.notify(
+                "Could not copy to the clipboard — open Settings → History to copy it there.",
+                force=True,
+            )
+
     def _live_preview_loop(self, recording_id: int) -> None:
         """Worker thread: periodically transcribe the audio captured so far
         and push a rolling preview to the overlay bubble. Skips a round when
@@ -461,6 +496,15 @@ class App:
 
         threading.Thread(target=play, daemon=True).start()
 
+    def _sync_autostart(self, repair_block: bool = False) -> None:
+        """Match the OS autostart entry to the setting — and say so when that
+        failed. A registration that silently doesn't take is indistinguishable
+        from a working one until the machine is rebooted and the app isn't
+        there, so this never fails quietly."""
+        problem = autostart.sync(bool(self.cfg["autostart"]), repair_block=repair_block)
+        if problem:
+            self.notify(f"“Start with the system” is not active: {problem}.", force=True)
+
     def _register_hotkey(self) -> None:
         combo = self.cfg["hotkey"]
         try:
@@ -483,7 +527,9 @@ class App:
             # A backend switch needs a fresh instance; a worker thread that
             # still holds the old transcriber finishes on it harmlessly.
             self.transcriber = create_transcriber(self.cfg)
-        autostart.sync(bool(self.cfg["autostart"]))
+        # repair_block: saving the settings is the explicit user action that
+        # may switch a Windows-disabled entry back on (see autostart.sync).
+        self._sync_autostart(repair_block=True)
         self.history.max_entries = max(1, int(self.cfg["history_max"]))
         self.tray.set_state(self.state)
         if self.overlay is not None:

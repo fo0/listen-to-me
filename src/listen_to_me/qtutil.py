@@ -1,6 +1,7 @@
 """Small Qt helpers: bridge the Pillow-drawn icons (icons.py) into Qt
-pixmaps/icons, the wheel guard for value widgets on scrollable pages, and
-the width cap for combo boxes with unbounded item texts.
+pixmaps/icons, the wheel guard for value widgets on scrollable pages, the
+width cap for combo boxes with unbounded item texts, and the one clipboard
+path every "Copy" in the app uses.
 
 Kept separate from icons.py so that module stays Qt-free (the packaging
 self-test and make_icon.py import it without pulling in PySide6).
@@ -8,10 +9,14 @@ self-test and make_icon.py import it without pulling in PySide6).
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QIcon, QImage, QPixmap
 
 from .icons import mic_image
+
+log = logging.getLogger(__name__)
 
 
 class _WheelGuard(QObject):
@@ -76,6 +81,66 @@ def elastic_combo(*combos, min_chars: int = 24) -> None:
         # a long value out of view — show the value from its beginning instead.
         if combo.isEditable() and combo.lineEdit() is not None:
             combo.lineEdit().setCursorPosition(0)
+
+
+def elastic_label(*labels, min_chars: int = 24) -> None:
+    """Stop wrapping `labels` from demanding the width of their widest word.
+
+    Word wrap breaks at spaces only, so a QLabel's minimum width is the width
+    of its longest single word — and a Windows path, a URL or a Hugging Face
+    repo id is one unbreakable word (a realistic exe path measures ~550 px).
+    A status line that reports one therefore pushes the whole settings page
+    past its scroll viewport, and with the horizontal scroll bar off that
+    clips the right edge of every card on the page — the label version of the
+    trap `elastic_combo` handles for combo boxes.
+
+    The explicit minimum is what does the work: Qt's `qSmartMinSize` uses it
+    *instead of* the longest-word minimum, so the label asks for a fixed,
+    modest width and stretches into whatever the layout offers. `Ignored`
+    additionally drops the label out of the layout's preferred width, so one
+    long word can't inflate the window's natural size either. The text stays
+    untouched — a selectable label still copies the full path even when it is
+    too long to render.
+    """
+    from PySide6.QtWidgets import QSizePolicy
+
+    for label in labels:
+        label.setWordWrap(True)
+        policy = label.sizePolicy()
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        label.setSizePolicy(policy)
+        label.setMinimumWidth(min_chars * label.fontMetrics().averageCharWidth())
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """Put `text` on the system clipboard; True when it got there.
+
+    Two backends because either one alone loses transcripts: pyperclip works
+    without a Qt clipboard owner (and is what the paste injection already
+    uses), but needs `xclip`/`xsel` on Linux and raises without them; Qt's own
+    clipboard has no such requirement but is bound to this process. Trying the
+    second when the first raises means a "Copy" only fails when both do — and
+    then it says so (the caller reports it) instead of looking like it worked.
+
+    Qt main thread only: the fallback touches QApplication.
+    """
+    if not text:
+        return False
+    try:
+        import pyperclip
+
+        pyperclip.copy(text)
+        return True
+    except Exception:
+        log.debug("pyperclip clipboard write failed — trying Qt", exc_info=True)
+    try:
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.clipboard().setText(text)
+        return True
+    except Exception:
+        log.exception("could not copy text to the clipboard")
+        return False
 
 
 def pil_to_pixmap(img) -> QPixmap:

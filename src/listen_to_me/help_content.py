@@ -105,6 +105,46 @@ key grabbing). <b>macOS:</b> grant {APP_NAME} the <b>Accessibility</b> permissio
 """,
     },
     {
+        "id": "autostart",
+        "title": "The app doesn't start with Windows (or you just can't see it)",
+        "body": f"""
+<p><b>Start with the system</b> (<b>Settings → General → Startup</b>) registers
+{APP_NAME} with your user account&rsquo;s autostart. The line right below the
+checkbox shows what the system really has on file &mdash; if it says
+<b>Registered with Windows: &hellip;</b>, the entry is in place.</p>
+
+<p><b>Windows can switch the entry off.</b> Task Manager
+(<code>Ctrl+Shift+Esc</code>) &rarr; <b>Startup apps</b> lists it as
+<b>Disabled</b> then, and no amount of re-registering changes that on its own
+&mdash; the switch lives outside the entry. Set it to <b>Enabled</b> there, or
+simply press <b>Save</b> in {APP_NAME}&rsquo;s settings once: with the checkbox
+ticked, saving switches it back on. The same happens in
+<b>Windows Settings → Apps → Startup</b>.</p>
+
+<p><b>It may be running and just invisible.</b> Windows&nbsp;11 hides new tray
+icons in the overflow (<b>^</b>) next to the clock: open it and drag the
+{APP_NAME} icon onto the taskbar to pin it. With
+<b>Start minimized to the system tray</b> ticked, no window opens at logon by
+design &mdash; the floating icon (<b>Settings → Overlay</b>) or the tray icon is
+then the only sign of life. Starting the app a second time never opens a second
+copy; it brings the running one to the front.</p>
+
+<p><b>Running from a source checkout?</b> Autostart needs the package to be
+installed in the environment (<code>pip install -e .</code>), because the system
+starts the command without your <code>PYTHONPATH</code>. {APP_NAME} probes this
+and says so below the checkbox instead of registering something that would
+silently do nothing.</p>
+
+<p><b>Moved or replaced the program file?</b> A manually downloaded build under
+a new name leaves the old path registered. {APP_NAME} detects that at startup
+and rewrites the entry by itself &mdash; start it once from the new location.</p>
+
+<p>If it still doesn&rsquo;t come up, check <code>listen-to-me.log</code> in the
+config folder (tray menu &rarr; <b>Open config folder</b>): the startup line is
+written there on every launch.</p>
+""",
+    },
+    {
         "id": "insert",
         "title": "The transcribed text isn't inserted",
         "body": """

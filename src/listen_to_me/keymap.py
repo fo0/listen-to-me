@@ -1,4 +1,6 @@
-"""Qt key code → pynput token mapping for the hotkey capture dialog.
+"""Key naming, both directions: Qt key code → pynput token for the hotkey
+capture dialog, and pynput combo → human key caps for everything that shows a
+hotkey to the user (Home page, tray, floating icon).
 
 Kept apart from widgets.py (which needs QtWidgets/QtGui) so this pure mapping
 imports only QtCore — it stays unit-testable on a headless machine.
@@ -105,3 +107,59 @@ def is_function_key(token: str) -> bool:
 def allowed_standalone(token: str) -> bool:
     """Whether `token` is safe to bind without any modifier."""
     return is_function_key(token) or token in _STANDALONE_OK
+
+
+# pynput token → the label shown on a key cap / in a status line.
+_PRETTY_KEYS = {
+    "ctrl": "Ctrl",
+    "ctrl_l": "Ctrl",
+    "ctrl_r": "Ctrl",
+    "alt": "Alt",
+    "alt_l": "Alt",
+    "alt_r": "Alt",
+    "alt_gr": "AltGr",
+    "shift": "Shift",
+    "shift_l": "Shift",
+    "shift_r": "Shift",
+    "cmd": "Win",
+    "cmd_l": "Win",
+    "cmd_r": "Win",
+    "space": "Space",
+    "enter": "Enter",
+    "tab": "Tab",
+    "esc": "Esc",
+    "backspace": "Backspace",
+    "caps_lock": "Caps",
+    "plus": "+",
+}
+
+
+def pretty_keys(combo: str) -> list[str]:
+    """Human key-cap labels for a pynput combo ("<ctrl>+<alt>+<space>" →
+    ["Ctrl", "Alt", "Space"]). Unknown tokens pass through readably."""
+    combo = str(combo)
+    if not combo.strip():
+        return []
+    caps: list[str] = []
+    # A literal plus key is spelled "+" in pynput combos ("<ctrl>++" =
+    # Ctrl+Plus) — mask it before splitting on the "+" separator, or it would
+    # vanish from the key caps. A combo that is just "+" hits the fallback.
+    for part in combo.replace("++", "+<plus>").split("+"):
+        token = part.strip()
+        if token.startswith("<") and token.endswith(">"):
+            token = token[1:-1].strip()
+        if not token:
+            continue
+        caps.append(_PRETTY_KEYS.get(token.lower(), token.upper() if len(token) <= 3 else token.capitalize()))
+    return caps or [str(combo)]
+
+
+def hotkey_label(combo: str) -> str:
+    """`combo` as one readable combination ("Ctrl+Alt+Space"), or "" when it is
+    empty/unusable — callers fall back to generic wording then, never to a raw
+    pynput token in a sentence."""
+    try:
+        caps = pretty_keys(combo)
+    except Exception:  # a combo from an untrusted config.json
+        return ""
+    return "+".join(caps) if caps else ""

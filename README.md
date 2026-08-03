@@ -34,12 +34,17 @@ standalone system-tray app that works in *every* application.
   brings the icon back automatically if Windows drops it (display sleep,
   monitor changes, explorer restarts).
 - **System tray app** — runs quietly in the background; icon shows
-  idle / recording / transcribing state. Only one instance runs at a time:
+  idle / recording / transcribing state and names your configured hotkey
+  ("Idle — press Ctrl+Alt+Space to record"), so a forgotten combination is a
+  hover away. Only one instance runs at a time:
   starting the app again simply brings the running instance's settings
   window to the front.
 - **Transcript history** — the transcribed text of each recording is kept
   locally (never the audio) so you can copy it again from **Settings → History**
-  if a paste is lost. Bounded in size, and easy to switch off or clear.
+  if a paste is lost. Searchable, bounded in size, and easy to switch off or
+  clear. The newest one is a single click away: **Copy last transcript** in the
+  tray menu and in the floating icon's right-click menu puts it straight back
+  on the clipboard.
 - **Home hub** — the main window opens on a **Home page**: the live recording
   state with a big **Start/Stop** button (red while recording), your hotkey
   shown as key caps, at-a-glance cards for the active engine/model, language
@@ -79,7 +84,11 @@ standalone system-tray app that works in *every* application.
   included). The entry survives updates: the in-app updater keeps the
   executable's path, and if you replace the exe by hand — a manually downloaded
   build, a rename, a move — the next start repairs the registered path instead
-  of silently booting the old version.
+  of silently booting the old version. It also **reports back**: the settings
+  page shows the command the system actually has on file, an entry Windows
+  switched off in *Task Manager → Startup apps* is named as such (and switched
+  back on when you save), and a registration that fails says so instead of
+  looking fine until the next reboot.
 - **Cross-platform code base** — Windows first; Linux and macOS are prepared
   (see [platform notes](#platform-notes)).
 
@@ -115,14 +124,14 @@ Right-click the tray icon → **Settings…**
 | Tab | Options |
 | --- | --- |
 | **Home** | The entry hub: live recording state with **Start recording / Stop & insert** (and **Cancel**) buttons, the hotkey rendered as key caps, **at-a-glance cards** (engine & model, language, microphone — click one to jump to its settings page), **quick actions** (change hotkey, model & engine, test microphone, overlay, updates, help) and the **most recent transcripts** with a Copy button each |
-| **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), clipboard restore, notifications, beep, **autostart**, **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
+| **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), clipboard restore, notifications, beep, **autostart** (with a status line showing what the system actually has registered), **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
 | **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU, **Parakeet** = fastest engine, NVIDIA CUDA / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model/Parakeet precision, **beam size** (faster-whisper: 5 = best accuracy, 1 = greedy ≈ 1.5–2× faster), VAD silence filter (faster-whisper only), **Detected hardware & model status** card (NVIDIA GPU/CUDA found? OpenVINO installed and which Intel devices? Is the selected model already downloaded? — with a **Refresh status** button, updates automatically when you change model/backend), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), both cancellable with a **Cancel** button, initial prompt (domain vocabulary hint) |
 | **Audio** | Microphone selection, **Test microphone** (3-second check with a live level bar, a clear verdict — works / too quiet / no signal — and a **Cancel** button), maximum recording length |
 | **Overlay** | Floating always-on-top icon on/off, transcript bubble after each recording, experimental **live transcript preview while recording**, preview display time |
 | **Integrations** | **Mute other apps while recording** (Discord, …): master switch (off by default) plus a list of apps, each with an enabled toggle, name, **mute keybind** (with the same key picker) and **mode** (*push-to-mute* / *toggle mute*). Add or remove apps freely. |
 | **Assistant** | Enable/disable, API base URL, model, API key, temperature, **system prompt** (editable, with *Reset to default*) |
-| **History** | Recent **transcribed text** kept locally (never the audio), each with a **Copy** button so a lost transcript can be recovered; toggle history on/off, how many entries to keep, and **Clear history** |
-| **Updates** | Installed version, **check on startup** toggle, include pre-releases, **Check now**, changelog per release and **Download & install** (frozen Windows build) with progress and a **Cancel download** button. The new build is written over the running executable — same folder, same file name — so shortcuts, pinned taskbar entries and the autostart entry keep working; the dated `ListenToMe-…-win64.exe` name is only how the download is published |
+| **History** | Recent **transcribed text** kept locally (never the audio), each with a **Copy** button so a lost transcript can be recovered; a **search field** narrows the list to the transcripts containing your words (any order, case-insensitive) and shows how many of them matched; toggle history on/off, how many entries to keep, and **Clear history** |
+| **Updates** | Installed version, **check on startup** toggle, include pre-releases, **Check now**, changelog per release and **Download & install** (frozen Windows build) with progress — **download size** next to each release and in the confirmation, and "42.0 MB of 198.0 MB" while it runs — and a **Cancel download** button. The new build is written over the running executable — same folder, same file name — so shortcuts, pinned taskbar entries and the autostart entry keep working; the dated `ListenToMe-…-win64.exe` name is only how the download is published |
 | **Help** | Built-in **troubleshooting** page (GPU/CUDA errors, Intel GPU/NPU setup, hotkey, text insertion, model storage, assistant setup) with clickable links — also on the tray menu |
 
 Every option has a hover tooltip explaining what it does. The sidebar groups
@@ -374,6 +383,30 @@ same API response as the download URL. Behind an intercepting proxy the updater
 therefore reports that it could not verify GitHub's certificate; download the
 release manually from the [releases page](https://github.com/fo0/listen-to-me/releases)
 instead.
+
+### The app doesn't start with Windows
+
+**Start with the system** (*Settings → General → Startup*) registers the app in
+your account's autostart. The line right below the checkbox shows what the
+system really has on file — `Registered with Windows: …` means the entry is in
+place; anything else names the problem and how to fix it.
+
+- **Windows can switch the entry off.** *Task Manager* (`Ctrl+Shift+Esc`) →
+  **Startup apps** shows it as *Disabled* then, and re-registering alone does
+  not change that — the switch lives outside the entry. Set it to *Enabled*
+  there, or press **Save** once in the settings with the checkbox ticked: that
+  switches it back on. (The same list is in *Windows Settings → Apps → Startup*.)
+- **It may be running and just invisible.** Windows 11 hides new tray icons in
+  the overflow (**^**) next to the clock — open it and drag the icon onto the
+  taskbar to pin it. With **Start minimized to the system tray** ticked, no
+  window opens at logon by design. Starting the app again never creates a
+  second instance; it brings the running one to the front.
+- **Running from a source checkout?** Autostart needs the package installed in
+  the environment (`pip install -e .`), because the system starts the command
+  without your `PYTHONPATH`. The app probes this and says so instead of
+  registering something that would silently do nothing.
+- Every launch is logged to `listen-to-me.log` in the config folder (tray menu →
+  *Open config folder*) — if the app really didn't start, there is no new line.
 
 The in-app Help page also covers the hotkey not firing, text not being inserted,
 where models are stored, and assistant/Ollama setup.

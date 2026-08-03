@@ -21,6 +21,25 @@ log = logging.getLogger(__name__)
 DEFAULT_MAX_ENTRIES = 200
 
 
+def filter_entries(entries: list[dict], query: str) -> list[dict]:
+    """The entries whose text contains every whitespace-separated term of
+    `query`, case-insensitively; an empty query returns `entries` unchanged.
+
+    Kept here (Qt-free) rather than in the History page so the matching rule is
+    testable headlessly. AND over terms, order-independent: a user looking for
+    a past dictation remembers a few words from it, not the phrase verbatim.
+    casefold(), not lower(), so a German "ß"/"SS" or "Ä"/"ä" still matches."""
+    terms = [term.casefold() for term in str(query or "").split()]
+    if not terms:
+        return list(entries)
+    matched = []
+    for entry in entries:
+        text = str(entry.get("text", "")).casefold()
+        if all(term in text for term in terms):
+            matched.append(entry)
+    return matched
+
+
 class TranscriptHistory:
     def __init__(self, path: Path, max_entries: int = DEFAULT_MAX_ENTRIES):
         self.path = Path(path)
@@ -47,6 +66,16 @@ class TranscriptHistory:
         """All stored transcripts, newest first."""
         with self._lock:
             return list(reversed(self._load()))
+
+    def latest(self) -> str:
+        """The text of the most recent transcript, or "" when there is none.
+
+        Read from the file rather than a cached value: the recording worker
+        appends here while the main thread (tray → "Copy last transcript")
+        reads, and the file is the single source both already agree on."""
+        with self._lock:
+            entries = self._load()
+        return entries[-1]["text"] if entries else ""
 
     def clear(self) -> None:
         with self._lock:

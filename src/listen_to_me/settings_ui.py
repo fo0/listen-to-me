@@ -64,7 +64,7 @@ from .diagnostics import DiagnosticsEngine
 from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
-from .qtutil import elastic_combo, guard_wheel
+from .qtutil import copy_to_clipboard, elastic_combo, elastic_label, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -119,9 +119,21 @@ class _DiagSignals(QObject):
 # How long the hotkey test waits for the combination before giving up.
 _HOTKEY_TEST_TIMEOUT_MS = 10_000
 
+# Status line under the Whisper page's model/transcription test buttons while
+# nothing runs — restored whenever a "please wait" note is cleared.
+_DIAG_STATUS_IDLE = "Both buttons use the values currently entered — no Save needed."
+# Shown on the page that is NOT running the diagnostic: its test buttons are
+# disabled meanwhile, and a greyed-out button with no reason reads as broken.
+_DIAG_BUSY_NOTE = "Another test is still running — it has to finish first."
 # How long the diagnostic start buttons stay disabled after a Cancel, so a
 # restart can't race the worker that was just detached (see _cancel_diagnostic).
 _DIAG_COOLDOWN_MS = 400
+
+# Updates page: the check button's idle and running labels. Equal character
+# counts prove nothing in a proportional font ("Checking…" is 3 px wider), so
+# the button is pinned to the wider of the two — see _pin_width.
+_CHECK_LABEL = "Check now"
+_CHECKING_LABEL = "Checking…"
 
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
@@ -264,6 +276,7 @@ class SettingsWindow(QDialog):
         self._releases_newer: list = []
         self._update_busy = False
         self._updates_auto_checked = False
+        self._update_download_label = ""  # version named in the progress lines
 
         # Diagnostics state (Download model / Test transcription on the Whisper
         # page, Test microphone on the Audio page, Test hotkey on General),
@@ -302,6 +315,14 @@ class SettingsWindow(QDialog):
         # Set by force_close(): skip the unsaved-changes prompt when the app
         # itself closes the window (shutdown, updater restart).
         self._force_close = False
+
+        # Debounces the History page's search field (see
+        # _on_history_filter_changed). Created before the pages are built, so
+        # the field's textChanged handler can never reach a missing timer.
+        self._history_filter_timer = QTimer(self)
+        self._history_filter_timer.setSingleShot(True)
+        self._history_filter_timer.setInterval(200)
+        self._history_filter_timer.timeout.connect(self._refresh_history)
 
         # The sidebar groups the pages into sections: the Home hub (no header),
         # the settings proper, and the "around the app" pages
@@ -544,20 +565,44 @@ class SettingsWindow(QDialog):
         return box, form
 
     @staticmethod
-    def _hint(text: str) -> QLabel:
+    def _pin_width(button: QPushButton, *labels: str) -> None:
+        """Stop `button` from resizing when its label is swapped at runtime.
+
+        A control that changes width while the user is pressing it can move out
+        from under the cursor, so the release lands nowhere and the click is
+        lost — the very failure the Updates page was already reported for.
+        Measured through the real size hint (style, padding and font all count)
+        rather than by comparing string lengths.
+        """
+        original = button.text()
+        widest = 0
+        for label in labels:
+            button.setText(label)
+            widest = max(widest, button.sizeHint().width())
+        button.setText(original)
+        button.setMinimumWidth(widest)
+
+    @staticmethod
+    def _hint(text: str, *, elastic: bool = False) -> QLabel:
+        """A muted, wrapping note. Pass `elastic=True` for every hint whose
+        text is composed at runtime from a path, a URL or an exception — those
+        carry unbreakable words that would otherwise widen the whole page."""
         label = QLabel(text)
         label.setProperty("role", "hint")
         label.setWordWrap(True)
+        if elastic:
+            elastic_label(label)
         return label
 
     @staticmethod
     def _status_value(text: str) -> QLabel:
         """A wrapping, selectable value label for the status card — device
         names and error messages can be long, and selectable text lets the
-        user copy an error into a search."""
+        user copy an error into a search. Always elastic: every value on the
+        card comes from a probe and can be a path or a driver error."""
         label = QLabel(text)
-        label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        elastic_label(label)
         return label
 
     @staticmethod
@@ -632,7 +677,7 @@ class SettingsWindow(QDialog):
         )
         self.hotkey_test_button.clicked.connect(self._test_hotkey)
         ht.addWidget(self.hotkey_test_button)
-        self.hotkey_test_status = self._hint("")
+        self.hotkey_test_status = self._hint("", elastic=True)
         ht.addWidget(self.hotkey_test_status, 1)
         form.addRow("", hotkey_test)
 
@@ -740,6 +785,13 @@ class SettingsWindow(QDialog):
         )
         for chk in (self.chk_autostart, self.chk_start_in_tray):
             sv.addWidget(chk)
+        # What the OS *actually* has on file. Without it, a registration that
+        # never took looks exactly like a working one — until the next reboot
+        # starts nothing.
+        self.autostart_status = self._hint("", elastic=True)
+        sv.addWidget(self.autostart_status)
+        self.chk_autostart.toggled.connect(lambda _checked: self._refresh_autostart_status())
+        self._refresh_autostart_status()
         layout.addWidget(startup)
 
         network = QGroupBox("Network")
@@ -920,7 +972,7 @@ class SettingsWindow(QDialog):
         fv.addWidget(dir_row)
         fv.addWidget(self._hint(
             "Models are fetched from Hugging Face on first use and stored here.\n"
-            f"Empty = default cache: {default_model_dir()}"
+            f"Empty = default cache: {default_model_dir()}", elastic=True
         ))
         layout.addWidget(folder)
 
@@ -959,10 +1011,12 @@ class SettingsWindow(QDialog):
         self.diag_progress = QProgressBar()
         self.diag_progress.setTextVisible(False)
         self.diag_progress.setVisible(False)
+        # Standalone bars have no form-row label to borrow a name from, so a
+        # screen reader would announce a bare "progress bar" with no idea what
+        # is running. (The Audio page's level bar sits in a labelled row.)
+        self.diag_progress.setAccessibleName("Model download and transcription test progress")
         tv.addWidget(self.diag_progress)
-        self.diag_status = self._hint(
-            "Both buttons use the values currently entered — no Save needed."
-        )
+        self.diag_status = self._hint(_DIAG_STATUS_IDLE, elastic=True)
         self.diag_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         tv.addWidget(self.diag_status)
         layout.addWidget(tools)
@@ -1046,7 +1100,7 @@ class SettingsWindow(QDialog):
         self.mic_level_bar.setTextVisible(False)
         self.mic_level_bar.setToolTip("Input level while the microphone test records.")
         form.addRow("Level:", self.mic_level_bar)
-        self.mic_status = self._hint("")
+        self.mic_status = self._hint("", elastic=True)
         form.addRow("", self.mic_status)
         layout.addWidget(card)
 
@@ -1235,6 +1289,28 @@ class SettingsWindow(QDialog):
             "Stored locally on this computer only. Click a transcript's “Copy” button to put it back on the clipboard."
         ))
 
+        # Find a transcript. Up to `history_max` (5000) entries are kept and 300
+        # are rendered — scrolling for the one dictation you remember a few words
+        # from is the only way to get at it otherwise.
+        find_row = QWidget()
+        fh = QHBoxLayout(find_row)
+        fh.setContentsMargins(0, 0, 0, 0)
+        fh.setSpacing(8)
+        self.history_filter_edit = QLineEdit()
+        self.history_filter_edit.setPlaceholderText("Search transcripts…")
+        self.history_filter_edit.setClearButtonEnabled(True)
+        # No form-row label to borrow a name from — see the progress bars.
+        self.history_filter_edit.setAccessibleName("Search transcripts")
+        self.history_filter_edit.setToolTip(
+            "Show only transcripts containing these words (in any order, "
+            "upper/lower case ignored). Clear the field to see all of them again."
+        )
+        self.history_filter_edit.textChanged.connect(self._on_history_filter_changed)
+        fh.addWidget(self.history_filter_edit, 1)
+        self.history_count_label = self._hint("")
+        fh.addWidget(self.history_count_label)
+        layout.addWidget(find_row)
+
         # Scrollable list of past transcripts, rendered lazily on first view.
         self._history_scroll = QScrollArea()
         self._history_scroll.setWidgetResizable(True)
@@ -1253,11 +1329,14 @@ class SettingsWindow(QDialog):
         refresh.clicked.connect(self._refresh_history)
         bottom.addWidget(refresh)
         bottom.addStretch(1)
-        clear = QPushButton("Clear history")
-        clear.setProperty("destructive", True)
-        clear.setToolTip("Permanently delete every stored transcript.")
-        clear.clicked.connect(self._clear_history)
-        bottom.addWidget(clear)
+        # Enabled state is set by _refresh_history, which always runs before this
+        # page can be reached (lazy first render): clicking it on an empty
+        # history used to do nothing at all, which reads as a broken button.
+        self.history_clear_button = QPushButton("Clear history")
+        self.history_clear_button.setProperty("destructive", True)
+        self.history_clear_button.setToolTip("Permanently delete every stored transcript.")
+        self.history_clear_button.clicked.connect(self._clear_history)
+        bottom.addWidget(self.history_clear_button)
         layout.addLayout(bottom)
 
         return page
@@ -1317,6 +1396,27 @@ class SettingsWindow(QDialog):
         self._show_page("Help")
 
     # ------------------------------------------------------ small helpers
+
+    def _refresh_autostart_status(self) -> None:
+        """Mirror the real OS autostart state below the checkbox — including
+        the two states that are invisible in the config: an entry Windows has
+        switched off, and one pointing at a program file that moved.
+
+        The line itself names only the program file (a full path has nothing to
+        wrap at and would widen the page); the command the OS really has on file
+        goes into the tooltip, where its length costs nothing."""
+        from . import autostart
+
+        _healthy, text = autostart.describe(self.chk_autostart.isChecked())
+        self.autostart_status.setText(text)
+        self.autostart_status.setVisible(bool(text))
+        try:
+            stored = autostart.stored_command()
+        except Exception:
+            stored = None
+        self.autostart_status.setToolTip(
+            f"Registered command:\n{stored}" if stored else ""
+        )
 
     def _checkbox(self, text: str, checked: bool, tip: str) -> QCheckBox:
         chk = QCheckBox(text)
@@ -1464,6 +1564,22 @@ class SettingsWindow(QDialog):
         # Only the tests that record own the microphone; a model download can
         # run for minutes and must not take dictation away for that long.
         self._set_hotkey_paused(busy and kind in ("tx", "mic"))
+        # The diagnostics share the recorder and the model, so starting one
+        # disables the buttons on the *other* page too. Switching there and
+        # finding them greyed out with an empty status line reads as broken —
+        # say what is going on. The caller writes the running test's own status
+        # after this, so only the idle page keeps the note.
+        self._note_diag_wait(self.mic_status, busy and kind != "mic", "")
+        self._note_diag_wait(self.diag_status, busy and kind == "mic", _DIAG_STATUS_IDLE)
+
+    @staticmethod
+    def _note_diag_wait(label: QLabel, waiting: bool, idle_text: str) -> None:
+        """Show/clear the "another test is running" note without clobbering a
+        result message: only the note itself is ever replaced."""
+        if waiting:
+            label.setText(_DIAG_BUSY_NOTE)
+        elif label.text() == _DIAG_BUSY_NOTE:
+            label.setText(idle_text)
 
     def _begin_diag(self, kind: str) -> tuple[int, threading.Event]:
         """Mark a diagnostic as started; returns its (generation, cancel event).
@@ -1874,16 +1990,19 @@ class SettingsWindow(QDialog):
             "Also offer pre-release (beta) builds, not just stable releases.",
         )
         form.addRow("", self.chk_prereleases)
-        self.update_check_button = QPushButton("Check now")
+        self.update_check_button = QPushButton(_CHECK_LABEL)
+        self.update_check_button.setAutoDefault(False)
+        self._pin_width(self.update_check_button, _CHECK_LABEL, _CHECKING_LABEL)
         self.update_check_button.setToolTip("Fetch the latest releases from GitHub now.")
         self.update_check_button.clicked.connect(self._check_updates)
         form.addRow("", self.update_check_button)
         layout.addWidget(card)
 
-        self.update_status = self._hint("Not checked yet.")
+        self.update_status = self._hint("Not checked yet.", elastic=True)
         layout.addWidget(self.update_status)
 
         self.update_list = QListWidget()
+        self.update_list.setAccessibleName("Available releases")
         self.update_list.setMaximumHeight(140)
         self.update_list.currentRowChanged.connect(self._on_release_selected)
         self.update_list.setToolTip(
@@ -1893,10 +2012,12 @@ class SettingsWindow(QDialog):
         layout.addWidget(self.update_list)
 
         self.update_changelog = QTextBrowser()
+        self.update_changelog.setAccessibleName("Changelog of the selected release")
         self.update_changelog.setOpenExternalLinks(True)
         layout.addWidget(self.update_changelog, 1)
 
         self.update_progress = QProgressBar()
+        self.update_progress.setAccessibleName("Update download progress")
         self.update_progress.setVisible(False)
         layout.addWidget(self.update_progress)
 
@@ -1913,6 +2034,7 @@ class SettingsWindow(QDialog):
         actions.addWidget(self.update_cancel_button)
         self.update_button = QPushButton("Install selected")
         self.update_button.setProperty("accent", True)
+        self.update_button.setAutoDefault(False)
         self.update_button.setEnabled(False)
         self.update_button.clicked.connect(self._install_selected_update)
         actions.addWidget(self.update_button)
@@ -1929,7 +2051,12 @@ class SettingsWindow(QDialog):
         if self._update_busy:
             return
         self._update_busy = True
+        # Opening the page starts this check automatically, so the buttons are
+        # dead for the length of a GitHub round trip exactly when the user
+        # reaches for them. The greyed-out styling says "not now"; the label
+        # says why, right where they are clicking.
         self.update_check_button.setEnabled(False)
+        self.update_check_button.setText(_CHECKING_LABEL)
         self.update_button.setEnabled(False)
         self.update_list.clear()
         self.update_changelog.clear()
@@ -1948,8 +2075,10 @@ class SettingsWindow(QDialog):
         threading.Thread(target=work, name="update-check", daemon=True).start()
 
     def _on_update_check_done(self, newer: list) -> None:
+        from . import updater
+
         self._update_busy = False
-        self.update_check_button.setEnabled(True)
+        self._end_update_check()
         self._releases_newer = newer
         self.update_list.clear()
         if not newer:
@@ -1962,6 +2091,11 @@ class SettingsWindow(QDialog):
         )
         for release in newer:
             label = f"{release.tag or release.title}   ·   {release.date}"
+            # How big the download is belongs next to the version, not only in
+            # the confirmation — it is the deciding factor on a slow line.
+            size = updater.format_size(release.asset_size)
+            if size:
+                label += f"   ·   {size}"
             if release.prerelease:
                 label += "   (pre-release)"
             self.update_list.addItem(label)
@@ -1969,9 +2103,14 @@ class SettingsWindow(QDialog):
 
     def _on_update_check_failed(self, message: str) -> None:
         self._update_busy = False
-        self.update_check_button.setEnabled(True)
+        self._end_update_check()
         self.update_button.setEnabled(False)
         self.update_status.setText(f"Update check failed: {message}")
+
+    def _end_update_check(self) -> None:
+        """Hand the check button back to the user (both check outcomes)."""
+        self.update_check_button.setEnabled(True)
+        self.update_check_button.setText(_CHECK_LABEL)
 
     def _on_release_selected(self, row: int) -> None:
         if row < 0 or row >= len(self._releases_newer):
@@ -2002,10 +2141,12 @@ class SettingsWindow(QDialog):
             # API response and webbrowser.open() would hand any scheme to the OS.
             webbrowser.open(updater.release_page_url(release))
             return
+        size = updater.format_size(release.asset_size)
         confirm = QMessageBox.question(
             self,
             APP_NAME,
-            f"Download {release.tag} and restart {APP_NAME} to update?\n\n"
+            f"Download {release.tag}{f' ({size})' if size else ''} and restart "
+            f"{APP_NAME} to update?\n\n"
             f"{APP_NAME} will close, replace its program file and reopen automatically.\n\n"
             "The download is not code-signed (Windows SmartScreen may warn).",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -2028,7 +2169,10 @@ class SettingsWindow(QDialog):
         self.update_progress.setRange(0, 100)
         self.update_progress.setValue(0)
         self.update_progress.setVisible(True)
-        self.update_status.setText(f"Downloading {release.tag}…")
+        # Named once here so every progress line can repeat which version is
+        # being fetched without re-reading the (selectable) release list.
+        self._update_download_label = release.tag or release.title
+        self.update_status.setText(f"Downloading {self._update_download_label}…")
         from . import updater
 
         url = release.asset_url
@@ -2072,11 +2216,27 @@ class SettingsWindow(QDialog):
         self.update_status.setText("Cancelling download…")
 
     def _on_update_progress(self, done: int, total: int) -> None:
+        from . import updater
+
         if total > 0:
             self.update_progress.setRange(0, 100)
             self.update_progress.setValue(int(done * 100 / total))
+            text = (
+                f"Downloading {self._update_download_label} — "
+                f"{updater.format_size(done)} of {updater.format_size(total)}"
+            )
         else:
             self.update_progress.setRange(0, 0)  # indeterminate
+            # No Content-Length: the bar can only spin, so the amount already
+            # downloaded is the only sign the transfer is still moving.
+            text = (
+                f"Downloading {self._update_download_label} — "
+                f"{updater.format_size(done)} so far"
+            )
+        # progress_cb fires per 256 KB chunk — several hundred times for the
+        # portable build. Relabel only when the text actually changed.
+        if text != self.update_status.text():
+            self.update_status.setText(text)
 
     def _on_update_downloaded(self, path: str) -> None:
         from pathlib import Path
@@ -2101,29 +2261,34 @@ class SettingsWindow(QDialog):
             updater.apply_update_windows(Path(path))
         except Exception as exc:  # surfaced in the UI
             log.exception("could not apply update")
-            self.update_status.setText(f"Could not apply update: {exc}")
-            self.update_button.setEnabled(True)
-            self.update_check_button.setEnabled(True)
+            self._end_update_download(f"Could not apply update: {exc}")
             return
         self.update_status.setText("Update downloaded — restarting…")
         # Quit so the detached swapper can replace the (now unlocked) exe.
         self.app.post("quit")
 
-    def _on_update_download_failed(self, message: str) -> None:
+    def _end_update_download(self, status: str) -> None:
+        """Put the page back into its idle state after a download ended badly.
+
+        Every non-restarting outcome routes through here — a failed download, a
+        cancelled one, and a download that arrived but could not be swapped in.
+        The three used to reset the page on their own and had already drifted:
+        the failed-swap path left the progress bar sitting at 100 %, so "Could
+        not apply update" was reported underneath a full bar that reads as
+        success.
+        """
         self._update_busy = False
         self.update_cancel_button.setVisible(False)
         self.update_progress.setVisible(False)
         self.update_check_button.setEnabled(True)
         self.update_button.setEnabled(True)
-        self.update_status.setText(f"Download failed: {message}")
+        self.update_status.setText(status)
+
+    def _on_update_download_failed(self, message: str) -> None:
+        self._end_update_download(f"Download failed: {message}")
 
     def _on_update_download_cancelled(self) -> None:
-        self._update_busy = False
-        self.update_cancel_button.setVisible(False)
-        self.update_progress.setVisible(False)
-        self.update_check_button.setEnabled(True)
-        self.update_button.setEnabled(True)
-        self.update_status.setText("Download cancelled — nothing was installed.")
+        self._end_update_download("Download cancelled — nothing was installed.")
 
     # ---------------------------------------------------------- history UI
 
@@ -2142,17 +2307,61 @@ class SettingsWindow(QDialog):
                 widget.setParent(None)
                 widget.deleteLater()
 
+    def _on_history_filter_changed(self, *_args) -> None:
+        """Re-render debounced: rebuilding up to 300 transcript rows on every
+        keystroke stutters, so wait until the typing pauses briefly.
+        (*_args: textChanged passes the new text, which is read from the field.)"""
+        self._history_filter_timer.start()
+
     def _refresh_history(self) -> None:
+        from .history import filter_entries
+
         self._history_rendered = True
+        self._history_filter_timer.stop()  # a pending re-render is this one
         self._clear_history_rows()
-        entries = self.app.history.entries()
+        stored = self.app.history.entries()
+        # Deleting nothing is not a destructive action worth offering.
+        self.history_clear_button.setEnabled(bool(stored))
+        self.history_clear_button.setToolTip(
+            "Permanently delete every stored transcript."
+            if stored
+            else "Nothing to delete — no transcripts are stored."
+        )
+        query = self.history_filter_edit.text().strip()
+        if not stored:
+            self.history_count_label.setText("")
+            # "No transcripts yet" promises the list will fill up — which is a
+            # lie once history is switched off. Say which of the two empty
+            # states this is, and where to change it.
+            self._history_layout.insertWidget(0, self._hint(
+                "No transcripts yet — the text of your next dictation shows up here."
+                if self.cfg["history_enabled"]
+                else "History is off — new transcripts are not stored. Turn on "
+                "“Keep a history of transcribed text” above to collect them."
+            ))
+            return
+        entries = filter_entries(stored, query)
+        self.history_count_label.setText(
+            f"{len(entries)} of {len(stored)} match"
+            if query
+            else f"{len(stored)} transcript{'s' if len(stored) != 1 else ''}"
+        )
         if not entries:
-            self._history_layout.insertWidget(0, self._hint("No transcripts yet."))
+            # A filtered-to-empty list must not look like an empty history —
+            # name the search term and how to get back to the full list.
+            self._history_layout.insertWidget(0, self._hint(
+                f"No transcript contains “{query}”. Clear the search field above "
+                "to see all of them again."
+            ))
             return
         shown = entries[:_HISTORY_RENDER_LIMIT]
         insert_at = 0
         if len(entries) > len(shown):
-            note = self._hint(f"Showing the {len(shown)} most recent of {len(entries)} transcripts.")
+            note = self._hint(
+                f"Showing the {len(shown)} most recent of {len(entries)} matching transcripts."
+                if query
+                else f"Showing the {len(shown)} most recent of {len(entries)} transcripts."
+            )
             self._history_layout.insertWidget(insert_at, note)
             insert_at += 1
         for entry in shown:
@@ -2196,21 +2405,7 @@ class SettingsWindow(QDialog):
     def _copy_history(self, text: str, button: QPushButton) -> None:
         if not text:
             return
-        copied = False
-        try:
-            import pyperclip
-
-            pyperclip.copy(text)
-            copied = True
-        except Exception:
-            try:
-                from PySide6.QtWidgets import QApplication
-
-                QApplication.clipboard().setText(text)
-                copied = True
-            except Exception:
-                log.exception("could not copy transcript to clipboard")
-        if copied:
+        if copy_to_clipboard(text):
             button.setText("Copied ✓")
 
             def restore():
@@ -2453,7 +2648,16 @@ class SettingsWindow(QDialog):
         self.cfg.save()
         self.app.apply_settings()
         self._saved_snapshot = self._collect()
+        self._refresh_autostart_status()  # apply_settings just (re)wrote the entry
         self.home.refresh()  # hotkey chips / stat cards may show old values
+        if self._history_rendered:
+            # The empty-list note names the applied on/off state, so it goes
+            # stale the moment the history switch is applied. Re-render it now
+            # when it's on screen; otherwise let the next visit rebuild it.
+            if self.stack.currentIndex() == self._history_index:
+                self._refresh_history()
+            else:
+                self._history_rendered = False
         return True
 
     def _save(self) -> None:

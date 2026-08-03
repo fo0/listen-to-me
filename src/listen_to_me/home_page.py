@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
 
 from .choices import SYSTEM_DEFAULT_DEVICE, input_device_choices, language_label
 from .glyphs import glyph_icon
+from .keymap import pretty_keys
+from .qtutil import copy_to_clipboard
 
 log = logging.getLogger(__name__)
 
@@ -37,29 +39,6 @@ _RECENT_LIMIT = 3
 # dictation would blow the card up.
 _RECENT_CHARS = 160
 
-_PRETTY_KEYS = {
-    "ctrl": "Ctrl",
-    "ctrl_l": "Ctrl",
-    "ctrl_r": "Ctrl",
-    "alt": "Alt",
-    "alt_l": "Alt",
-    "alt_r": "Alt",
-    "alt_gr": "AltGr",
-    "shift": "Shift",
-    "shift_l": "Shift",
-    "shift_r": "Shift",
-    "cmd": "Win",
-    "cmd_l": "Win",
-    "cmd_r": "Win",
-    "space": "Space",
-    "enter": "Enter",
-    "tab": "Tab",
-    "esc": "Esc",
-    "backspace": "Backspace",
-    "caps_lock": "Caps",
-    "plus": "+",
-}
-
 _BACKEND_SHORT = {
     "faster-whisper": "faster-whisper",
     "openvino": "OpenVINO",
@@ -67,34 +46,24 @@ _BACKEND_SHORT = {
 }
 
 
-def pretty_keys(combo: str) -> list[str]:
-    """Human key-cap labels for a pynput combo ("<ctrl>+<alt>+<space>" →
-    ["Ctrl", "Alt", "Space"]). Unknown tokens pass through readably."""
-    combo = str(combo)
-    if not combo.strip():
-        return []
-    caps: list[str] = []
-    # A literal plus key is spelled "+" in pynput combos ("<ctrl>++" =
-    # Ctrl+Plus) — mask it before splitting on the "+" separator, or it would
-    # vanish from the key caps. A combo that is just "+" hits the fallback.
-    for part in combo.replace("++", "+<plus>").split("+"):
-        token = part.strip()
-        if token.startswith("<") and token.endswith(">"):
-            token = token[1:-1].strip()
-        if not token:
-            continue
-        caps.append(_PRETTY_KEYS.get(token.lower(), token.upper() if len(token) <= 3 else token.capitalize()))
-    return caps or [str(combo)]
-
-
 class _StatCard(QFrame):
-    """A clickable at-a-glance card that navigates to a settings page."""
+    """A clickable at-a-glance card that navigates to a settings page.
+
+    It is a real control, not decoration, so it behaves like one: it takes
+    keyboard focus (the style sheet rings it, like every button) and Space /
+    Enter activate it. Without that the card is reachable by mouse only — a
+    keyboard user can neither see nor trigger it, and a screen reader
+    announces an unnamed frame. The accessible name carries the card's title
+    because the visible heading is a sibling label, not a real label relation.
+    """
 
     def __init__(self, title: str, on_click):
         super().__init__()
         self.setProperty("card", "stat")
         self._on_click = on_click
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(f"{title} — open in Settings")
         box = QVBoxLayout(self)
         box.setContentsMargins(14, 12, 14, 12)
         box.setSpacing(4)
@@ -113,8 +82,19 @@ class _StatCard(QFrame):
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
             self._on_click()
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        # Accepting the event matters as much as handling it: the owning
+        # window is a QDialog, so an unhandled Return would fall through to
+        # its default button (Save) instead of opening the settings page.
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            event.accept()
+            self._on_click()
+            return
+        super().keyPressEvent(event)
 
 
 class HomePage(QWidget):
@@ -437,21 +417,7 @@ class HomePage(QWidget):
     def _copy(self, text: str, button: QPushButton) -> None:
         if not text:
             return
-        copied = False
-        try:
-            import pyperclip
-
-            pyperclip.copy(text)
-            copied = True
-        except Exception:
-            try:
-                from PySide6.QtWidgets import QApplication
-
-                QApplication.clipboard().setText(text)
-                copied = True
-            except Exception:
-                log.exception("could not copy transcript to clipboard")
-        if copied:
+        if copy_to_clipboard(text):
             button.setText("Copied ✓")
 
             def restore():

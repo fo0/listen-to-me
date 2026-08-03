@@ -4,10 +4,10 @@ Project knowledge is split into two files with different lifespans:
 
 | File          | Purpose                                                                | Lifespan                  | Max Size       |
 |---------------|------------------------------------------------------------------------|---------------------------|----------------|
-| `MEMORY.md`   | Long-term memory — stable knowledge that persists across many sessions | Long-lived (weeks/months) | **~16,000 chars** (~200 lines, ~4k tokens) |
-| `SCRATCHPAD.md` | Short-term memory — temporary context for current work               | Ephemeral (hours/days)    | **~8,000 chars** (~100 lines, ~2k tokens)  |
+| `MEMORY.md`   | Long-term memory — stable knowledge that persists across many sessions | Long-lived (weeks/months) | target **~8,000 chars**, archive at **16,000** |
+| `SCRATCHPAD.md` | Short-term memory — temporary context for current work               | Ephemeral (hours/days)    | target **~4,000 chars**, archive at **8,000**  |
 
-> **Unit:** primary limit is **chars** (matches CLAUDE.md's 40,000 char limit for consistency with Claude's context-window cost model). Line + token estimates are illustrative — the hook in `agent_docs/hooks_catalog.md` checks chars.
+> **Unit:** chars, measured with `wc -c` — both files load at session start, so their size is a per-session cost. Full budget table, archive procedure and format: `agent_docs/context_budget.md`. The Tier-1 budget guard in `.claude/settings.json` checks them (and `CLAUDE.md`) after every Edit/Write.
 
 ## When to use which file
 
@@ -50,13 +50,13 @@ See `agent_docs/adr_template.md` for format and lifecycle (Proposed / Accepted /
 3. **No duplication** — Between files or with CLAUDE.md/README.md/BACKLOG.md.
 
 ### MEMORY.md specific
-4. **Keep compact** — Each entry is a short, concise paragraph. Max ~16,000 chars.
-5. **Remove only when fundamentally obsolete** — Architecture decisions stay unless the code changes fundamentally.
+4. **Keep compact** — Each entry is a short, concise paragraph. Target ~8,000 chars; at 16,000 run the archive procedure in `agent_docs/context_budget.md`.
+5. **Archive, never delete** — Obsolete entries move to `agent_docs/memory_archive/`, real decisions get promoted to `docs/adr/`. Deleting knowledge to hit a budget is the one thing this file must not do.
 6. **Failed Approaches remain** as long as the alternative exists.
 
 ### SCRATCHPAD.md specific
 7. **Aggressively clean up** — Delete entries as soon as they're resolved or no longer relevant.
-8. **Max ~8,000 chars** — If it grows beyond this, completed items haven't been cleaned.
+8. **Target ~4,000 chars** — Past 8,000, completed items haven't been cleaned: delete resolved entries, promote 3+-session survivors to MEMORY.md, archive the stale remainder (`agent_docs/context_budget.md`).
 9. **Promote if long-lived** — If a SCRATCHPAD entry survives 3+ sessions, consider moving it to MEMORY.md (it's probably stable knowledge, not temporary context).
 
 ## MEMORY.md Format
@@ -116,5 +116,5 @@ Temporary working context. **Clean up aggressively — delete when resolved.**
 ```
 
 ## Size monitoring
-- **MEMORY.md > 16,000 chars** → Remove oldest entries that are no longer relevant. Architecture decisions and active gotchas should stay.
-- **SCRATCHPAD.md > 8,000 chars** → Completed items haven't been cleaned. Delete resolved entries first, then promote long-lived entries to MEMORY.md.
+
+Both files are budgeted (target 8,000 / 4,000 chars; act at 16,000 / 8,000) because both load at session start. Over budget is fixed by **archiving, not deleting** — real decisions become ADRs, the rest moves to `agent_docs/memory_archive/` with an index line left behind in `MEMORY.md → ## Archive`. Procedure + archive format: `agent_docs/context_budget.md`.

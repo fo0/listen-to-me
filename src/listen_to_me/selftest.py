@@ -92,6 +92,59 @@ def _config_survives_corrupt_sections():
         assert cfg["overlay"]["enabled"] == DEFAULTS["overlay"]["enabled"]
 
 
+def _config_guards_scalar_types():
+    """The section guard's little brother: a scalar of the wrong type must not
+    reach the code that uses it. `"history_max": "many"` used to raise inside
+    App.__init__ — before tray, overlay or any window existed — so the app just
+    never appeared. Plausible hand-edits (a quoted number) are repaired, the
+    rest falls back to that one option's default."""
+    import json
+
+    from listen_to_me.config import DEFAULTS, Config
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "history_max": "many",  # unusable → default
+                    "max_seconds": "120",  # quoted number → repaired
+                    "beam_size": 1.0,  # float for an int → repaired
+                    "notifications": 0,  # 0/1 for a bool → repaired
+                    "beep": "yes",  # unusable → default
+                    "hotkey": None,  # null where a value belongs → default
+                    "model": 3,  # number for a string → default
+                    "hotkey_mode": "hold",  # a valid sibling must still apply
+                    "overlay": {"preview_seconds": "9", "enabled": []},
+                    "input_device": 2,  # default is null → no type to check
+                    "model_dir": "/models",  # default is null → passed through
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        cfg = Config(path=path)
+        assert cfg["history_max"] == DEFAULTS["history_max"]
+        assert cfg["max_seconds"] == 120 and isinstance(cfg["max_seconds"], int)
+        assert cfg["beam_size"] == 1 and isinstance(cfg["beam_size"], int)
+        assert cfg["notifications"] is False
+        assert cfg["beep"] == DEFAULTS["beep"]
+        assert cfg["hotkey"] == DEFAULTS["hotkey"]
+        assert cfg["model"] == DEFAULTS["model"]
+        assert cfg["hotkey_mode"] == "hold"
+        assert cfg["overlay"]["preview_seconds"] == 9
+        assert cfg["overlay"]["enabled"] == DEFAULTS["overlay"]["enabled"]
+        assert cfg["input_device"] == 2
+        assert cfg["model_dir"] == "/models"
+        # A bool where a number belongs is a mistake, not a 1 (bool subclasses
+        # int) — and the repaired config must survive a save/reload cycle.
+        path.write_text(json.dumps({"beam_size": True}), encoding="utf-8")
+        cfg = Config(path=path)
+        assert cfg["beam_size"] == DEFAULTS["beam_size"]
+        cfg.save()
+        assert Config(path=path)["beam_size"] == DEFAULTS["beam_size"]
+
+
 def _history_normalizes_entries():
     """The history file is untrusted input and its text goes straight into a
     QLabel. Entries whose "text" is not a non-empty string are dropped, so no
@@ -123,6 +176,86 @@ def _history_normalizes_entries():
         assert [e["text"] for e in store.entries()] == ["second", "kept"]
         store.add("second")  # exact consecutive duplicate → ignored
         assert len(store.entries()) == 2
+
+
+def _history_latest_transcript():
+    """What the tray/overlay "Copy last transcript" hands to the clipboard: the
+    newest entry, "" when there is none (or the file is unreadable) — never an
+    exception into an event handler and never a stale value after an append."""
+    import json
+
+    from listen_to_me.history import TranscriptHistory
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "history.json"
+        store = TranscriptHistory(path)
+        assert store.latest() == ""  # nothing recorded yet
+        store.add("first")
+        store.add("second")
+        assert store.latest() == "second"
+        assert store.latest() == store.entries()[0]["text"]  # entries() is newest-first
+        # Same normalization as entries(): a corrupt tail entry is not "the
+        # last transcript", the newest usable one is.
+        path.write_text(
+            json.dumps([{"time": 1.0, "text": "kept"}, {"time": 2.0, "text": 42}]),
+            encoding="utf-8",
+        )
+        assert store.latest() == "kept"
+        path.write_text("{ truncated", encoding="utf-8")
+        assert store.latest() == ""
+
+
+def _clipboard_copy_falls_back_to_qt():
+    """pyperclip raises without xclip/xsel on Linux — the Qt clipboard then has
+    to take over, or every "Copy" button in the app silently does nothing on a
+    bare desktop. Only a failure of both paths may report False."""
+    from listen_to_me import qtutil
+
+    _ensure_qapp()
+    assert qtutil.copy_to_clipboard("") is False  # nothing to copy
+    assert qtutil.copy_to_clipboard("plain text") is True
+
+    class _Broken:
+        @staticmethod
+        def copy(_text):
+            raise RuntimeError("no clipboard mechanism available")
+
+    original = sys.modules.get("pyperclip")
+    sys.modules["pyperclip"] = _Broken
+    try:
+        assert qtutil.copy_to_clipboard("via Qt") is True
+        from PySide6.QtWidgets import QApplication
+
+        assert QApplication.clipboard().text() == "via Qt"
+    finally:
+        if original is None:
+            sys.modules.pop("pyperclip", None)
+        else:
+            sys.modules["pyperclip"] = original
+
+
+def _history_search_matching():
+    """The History page's search rule: every term must appear, in any order and
+    any case. An empty query must never hide anything."""
+    from listen_to_me.history import filter_entries
+
+    entries = [
+        {"time": 1.0, "text": "Meeting notes for the Kubernetes migration"},
+        {"time": 2.0, "text": "Grocery list: Äpfel, Milch"},
+        {"time": 3.0, "text": "kubernetes cluster upgrade plan"},
+    ]
+
+    def texts(query):
+        return [e["text"] for e in filter_entries(entries, query)]
+
+    assert len(texts("")) == 3 and len(texts("   ")) == 3  # no query hides nothing
+    assert len(texts("KUBERNETES")) == 2  # case-insensitive
+    assert texts("kubernetes migration") == [entries[0]["text"]]  # AND over terms
+    assert texts("migration kubernetes") == [entries[0]["text"]]  # order-independent
+    assert texts("ÄPFEL") == [entries[1]["text"]]  # casefold, not ASCII lower
+    assert texts("nothing here") == []
+    # A non-string text must not raise: the store normalizes, the file is not.
+    assert filter_entries([{"text": None}], "x") == []
 
 
 def _recorder_start_failure_resets():
@@ -197,6 +330,19 @@ def _injector_paste_falls_back_to_typing():
     assert typed == ["recovered text"]
 
 
+def _contrast(a: str, b: str) -> float:
+    """WCAG contrast ratio between two "#rrggbb" palette tokens."""
+
+    def _relative_luminance(hex_color: str) -> float:
+        raw = hex_color.lstrip("#")
+        channels = [int(raw[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+        linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    la, lb = _relative_luminance(a), _relative_luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
 def _theme_scrollbar_contrast():
     """The scroll-bar handle must be visible against the page it sits on.
 
@@ -207,16 +353,6 @@ def _theme_scrollbar_contrast():
     for non-text UI components.
     """
     from listen_to_me.theme import _DARK, _LIGHT
-
-    def _relative_luminance(hex_color: str) -> float:
-        raw = hex_color.lstrip("#")
-        channels = [int(raw[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
-        linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
-        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
-
-    def _contrast(a: str, b: str) -> float:
-        la, lb = _relative_luminance(a), _relative_luminance(b)
-        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
 
     for name, palette in (("light", _LIGHT), ("dark", _DARK)):
         for surface in ("window", "base"):
@@ -422,12 +558,104 @@ def _autostart_refresh():
             autostart._launch_args = original
 
 
+def _autostart_reporting():
+    """A registration that doesn't take must be reported, not assumed: the
+    Windows startup block is decoded, enable() reads its own write back, and
+    sync()/describe() turn all of that into something the user can act on."""
+    from listen_to_me import autostart
+
+    # Windows StartupApproved record: even first byte = enabled, odd = disabled.
+    assert autostart._is_blocked(None) is False
+    assert autostart._is_blocked(b"") is False
+    assert autostart._is_blocked(bytes([0x02]) + bytes(11)) is False
+    assert autostart._is_blocked(bytes([0x06]) + bytes(11)) is False
+    assert autostart._is_blocked(bytes([0x03]) + bytes(11)) is True
+    assert autostart._is_blocked(bytes([0x09]) + bytes(11)) is True
+    # The import probe answers with a reason or with nothing at all — never an
+    # exception, and never a second subprocess (it caches its verdict).
+    verdict = autostart.launch_problem()
+    assert verdict is None or (isinstance(verdict, str) and verdict)
+    assert autostart.launch_problem() is verdict
+    # A status line must never carry a raw program path: a Windows path has no
+    # space to wrap at, so the label would set a minimum width that widens the
+    # whole settings page and clips its cards (see MEMORY.md).
+    # Native separators: _split_command only keeps backslashes on Windows, so a
+    # hard-coded Windows path would test nothing on the CI runner.
+    deep = os.path.join(os.sep + "programs", "listen to me", "ListenToMe.exe")
+    assert autostart.short_command(f'"{deep}"') == "ListenToMe.exe"  # quoted, with spaces
+    assert autostart.short_command(
+        os.path.join(os.sep + "usr", "bin", "python3") + " -m listen_to_me"
+    ) == "python3 -m listen_to_me"
+    assert autostart.short_command("") == ""
+
+    if sys.platform in ("win32", "darwin"):
+        return  # the entry lives in the registry / the real home — don't touch it
+    original = os.environ.get("XDG_CONFIG_HOME")
+    probe = autostart.launch_problem
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["XDG_CONFIG_HOME"] = tmp
+        # The real probe would flag this very checkout when it runs from
+        # PYTHONPATH (as CI does) — pin it so both outcomes are exercised.
+        autostart.launch_problem = lambda: None
+        try:
+            assert autostart.stored_command() is None
+            assert autostart.describe(False) == (True, "")  # nothing to say
+            assert autostart.sync(True) is None
+            stored = autostart.stored_command()
+            assert stored and autostart._launch_command() in stored
+            healthy, text = autostart.describe(True)
+            # The file name identifies the build; the full path stays out of
+            # the label (it lands in its tooltip instead).
+            assert healthy and autostart.short_command(stored) in text
+            assert stored not in text and len(text) < 80
+            # Unticked but still registered: say that saving removes it.
+            healthy, text = autostart.describe(False)
+            assert healthy and "remove" in text
+            # A launch that would start nothing is reported, never green.
+            autostart.launch_problem = lambda: "the command would start nothing"
+            healthy, text = autostart.describe(True)
+            assert not healthy and "⚠" in text
+            assert autostart.sync(True) == "the command would start nothing"
+            autostart.launch_problem = lambda: None
+            assert autostart.sync(False) is None
+            assert autostart.stored_command() is None
+            # A write that silently produced nothing must raise, not pass.
+            readable = autostart.stored_command
+            autostart.stored_command = lambda: None
+            try:
+                enable_failed = False
+                try:
+                    autostart.enable()
+                except autostart.AutostartError:
+                    enable_failed = True
+                assert enable_failed
+                # ... and sync() turns that into a message instead of silence.
+                assert autostart.sync(True)
+            finally:
+                autostart.stored_command = readable
+        finally:
+            autostart.launch_problem = probe
+            if original is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = original
+
+
 def _updater_logic():
     from listen_to_me import updater
 
     assert updater.parse_version("v2026.07.19.11") == (2026, 7, 19, 11)
     assert updater.parse_version("0.0.0.dev0") == (0, 0, 0, 0)
     assert updater.parse_version("v2026.07.19.11") > updater.parse_version("v2026.07.19.5")
+
+    # Asset sizes shown in the release list, the confirmation and the download
+    # progress line. An unknown size must format to "" so callers can skip it.
+    assert updater.format_size(None) == "" and updater.format_size(0) == ""
+    assert updater.format_size(-1) == ""
+    assert updater.format_size(512) == "512 bytes"
+    assert updater.format_size(2048) == "2 KB"
+    assert updater.format_size(198 * 1024 * 1024) == "198.0 MB"
+    assert updater.format_size(3 * 1024**3) == "3.0 GB"
 
     def mk(tag):
         return updater.Release(
@@ -962,6 +1190,153 @@ def _glyph_icons():
     assert not glyph_icon("home", "#888888", "#4f6ef7").isNull()
 
 
+def _styled_button(text: str, prop: str | None = None, name: str | None = None):
+    """A QPushButton in one of the stylesheet's variants (theme.py) — the
+    property/object name is what selects the variant rule."""
+    from PySide6.QtWidgets import QPushButton
+
+    button = QPushButton(text)
+    if prop:
+        button.setProperty(prop, True)
+    if name:
+        button.setObjectName(name)
+    return button
+
+
+def _theme_focus_visible():
+    """Keyboard focus must be visible on every control the user can tab to.
+
+    The stylesheet gives buttons a custom border, which switches Qt to
+    stylesheet rendering and drops the native focus rect — before the :focus
+    rules in theme.py, tabbing through the window changed not a single pixel.
+    Rendered, not read off the style sheet, because only the render proves the
+    rule actually applies. The size hint must stay put as well: a ring that
+    widens the border would make the layout jump as focus moves.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import (
+        QCheckBox,
+        QLineEdit,
+        QRadioButton,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    app = _ensure_qapp()
+    from listen_to_me.theme import apply_theme
+
+    apply_theme(app)
+
+    def _focus_changes(widget, name: str) -> None:
+        host = QWidget()
+        # Set as real Tab navigation does — some styles only paint the focus
+        # ring after a keyboard-driven focus change.
+        host.setAttribute(Qt.WidgetAttribute.WA_KeyboardFocusChange, True)
+        layout = QVBoxLayout(host)
+        elsewhere = QLineEdit()
+        layout.addWidget(widget)
+        layout.addWidget(elsewhere)
+        host.show()
+        elsewhere.setFocus(Qt.FocusReason.TabFocusReason)
+        app.processEvents()
+        hint, before = widget.sizeHint(), widget.grab().toImage()
+        widget.setFocus(Qt.FocusReason.TabFocusReason)
+        app.processEvents()
+        after = widget.grab().toImage()
+        assert before != after, f"{name} looks identical focused and unfocused"
+        assert widget.sizeHint() == hint, f"{name} changes size when focused"
+        host.deleteLater()
+
+    _focus_changes(_styled_button("Apply"), "QPushButton")
+    _focus_changes(_styled_button("Save", prop="accent"), "accent QPushButton")
+    _focus_changes(
+        _styled_button("Clear history", prop="destructive"), "destructive QPushButton"
+    )
+    _focus_changes(_styled_button("  Change hotkey", prop="quick"), "quick QPushButton")
+    _focus_changes(_styled_button("Start recording", name="recordBtn"), "hero record button")
+    _focus_changes(_styled_button("Cancel", name="heroCancel"), "hero cancel button")
+    _focus_changes(QCheckBox("Beep on start/stop"), "QCheckBox")
+    _focus_changes(QRadioButton("Toggle"), "QRadioButton")
+    _focus_changes(QLineEdit("text"), "QLineEdit")
+
+
+def _theme_disabled_visible():
+    """A disabled button must LOOK disabled — in every stylesheet variant.
+
+    `QPushButton:disabled` and `QPushButton[accent="true"]` carry the same CSS
+    specificity, so while the plain `:disabled` rule sat above the variant
+    rules, the variant simply won: an accent or destructive button rendered
+    pixel-identically enabled and disabled. Settings → Updates disables
+    "Download & install" for the length of a GitHub round trip (and the hotkey
+    picker's OK, and Clear history on an empty list, start out disabled too), so
+    users clicked a button that still looked live, got nothing, and reported
+    having to press it twice. Rendered, not read off the style sheet — only the
+    render proves the rule applies. The size hint has to stay put as well, or
+    every enable/disable would nudge the layout.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLineEdit, QVBoxLayout, QWidget
+
+    app = _ensure_qapp()
+    from listen_to_me.theme import apply_theme
+
+    apply_theme(app)
+
+    def _surface(image):
+        """The button's fill, sampled above the label and inside the border —
+        the part the variant rules paint."""
+        return image.pixelColor(image.width() // 2, 4)
+
+    def _disabled_changes(widget, name: str) -> None:
+        host = QWidget()
+        layout = QVBoxLayout(host)
+        layout.addWidget(widget)
+        # Park the focus somewhere else first. A focus ring appearing or
+        # vanishing between the two renders differs all by itself and would
+        # pass this check for a disabled state that changes nothing else.
+        elsewhere = QLineEdit()
+        layout.addWidget(elsewhere)
+        host.show()
+        elsewhere.setFocus(Qt.FocusReason.TabFocusReason)
+        app.processEvents()
+        hint, enabled = widget.sizeHint(), widget.grab().toImage()
+        widget.setEnabled(False)
+        app.processEvents()
+        disabled = widget.grab().toImage()
+        assert enabled != disabled, f"{name} looks identical enabled and disabled"
+        # Dimming only the label is what let the accent button read as live:
+        # the surface has to drop its colour cue too.
+        assert _surface(enabled) != _surface(disabled), (
+            f"{name} keeps its surface colour when disabled"
+        )
+        assert widget.sizeHint() == hint, f"{name} changes size when disabled"
+        host.deleteLater()
+
+    _disabled_changes(_styled_button("Check now"), "QPushButton")
+    _disabled_changes(
+        _styled_button("Download && install", prop="accent"), "accent QPushButton"
+    )
+    _disabled_changes(
+        _styled_button("Clear history", prop="destructive"), "destructive QPushButton"
+    )
+    _disabled_changes(_styled_button("  Change hotkey", prop="quick"), "quick QPushButton")
+    _disabled_changes(_styled_button("Start recording", name="recordBtn"), "hero record button")
+
+    # The renders above only exercise whatever scheme the test host runs in (CI
+    # is light), so a dark-palette edit could bring the bug back for half the
+    # users unseen. Check the tokens themselves for both, like the scroll-bar
+    # contrast check does: a disabled button must shed the accent fill and the
+    # danger red, and dim its label.
+    from listen_to_me.theme import ACCENT, _DARK, _LIGHT
+
+    for name, palette in (("light", _LIGHT), ("dark", _DARK)):
+        ratio = _contrast(palette["disabled_bg"], ACCENT)
+        assert ratio >= 2.0, f"{name} disabled surface vs the accent fill: {ratio:.2f}:1"
+        for live in ("text", "danger"):
+            ratio = _contrast(palette["disabled"], palette[live])
+            assert ratio >= 1.5, f"{name} disabled label vs {live}: {ratio:.2f}:1"
+
+
 def _voice_mic_widget():
     """Render the animated overlay icon through a few ticks in every state."""
     _ensure_qapp()
@@ -1026,6 +1401,72 @@ class _StubHotkeys:
         self.running = False
 
 
+def _tray_names_the_hotkey():
+    """The tray status spells the configured combination out instead of saying
+    "the hotkey" — including after it was changed in the settings, and with the
+    right verb for hold mode. An unusable combo falls back to the generic
+    wording, never to a raw pynput token in a sentence."""
+    from listen_to_me.tray import _STATE_LABELS, state_label
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        assert state_label("idle", stub.cfg) == "Idle — press Ctrl+Alt+Space to record"
+        assert state_label("recording", stub.cfg) == "Recording… press Ctrl+Alt+Space to stop"
+        assert state_label("processing", stub.cfg) == _STATE_LABELS["processing"]
+
+        stub.cfg["hotkey"] = "<f9>"
+        stub.cfg["hotkey_mode"] = "hold"
+        # Hold mode stops on release — "press it again" would be wrong.
+        assert state_label("recording", stub.cfg) == "Recording… release F9 to stop"
+        assert state_label("idle", stub.cfg) == "Idle — press F9 to record"
+
+        stub.cfg["hotkey"] = ""  # nothing to name → generic wording
+        assert state_label("idle", stub.cfg) == _STATE_LABELS["idle"]
+        assert state_label("recording", stub.cfg) == _STATE_LABELS["recording"]
+        assert state_label("nonsense", stub.cfg) == "nonsense"
+
+
+def _tray_survives_a_missing_notification_area():
+    """Started by the OS autostart, the app can be up before the shell is: the
+    tray icon is dropped and Qt still reports it visible. Tray.start() must keep
+    re-adding it and, when there is no floating icon either, fall back to a
+    window instead of leaving the app running with nothing to see.
+
+    The offscreen platform reproduces the situation exactly (no tray available,
+    isVisible() == True anyway); on a machine with a real notification area
+    there is no retry to exercise, so the check passes trivially."""
+    from listen_to_me import tray as tray_module
+
+    _ensure_qapp()
+    if tray_module.QSystemTrayIcon.isSystemTrayAvailable():
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        stub.cfg["overlay"]["enabled"] = False
+        tray = tray_module.Tray(stub)
+        tray.start()
+        assert tray._retry_timer is not None and tray._retry_timer.isActive()
+        for _ in range(tray_module._RETRY_LIMIT - 1):
+            tray._retry_show()  # keep trying, quietly
+        assert tray._retry_timer is not None and not stub.posts
+        tray._retry_show()  # ... and give up on the last attempt
+        assert tray._retry_timer is None
+        assert ("settings",) in stub.posts
+        tray.stop()
+
+        # With the floating icon on there is something to see, so no window is
+        # forced on the user.
+        stub.posts.clear()
+        stub.cfg["overlay"]["enabled"] = True
+        tray = tray_module.Tray(stub)
+        tray.start()
+        for _ in range(tray_module._RETRY_LIMIT):
+            tray._retry_show()
+        assert tray._retry_timer is None and not stub.posts
+        tray.stop()  # a stopped tray must not leave a timer running
+        assert tray._retry_timer is None
+
+
 def _gui_construction():
     from listen_to_me.onboarding import OnboardingWizard
     from listen_to_me.overlay import Overlay
@@ -1050,7 +1491,7 @@ def _gui_construction():
         # set_app_state). isHidden() not isVisible(): the window isn't shown.
         from PySide6.QtWidgets import QLabel
 
-        from listen_to_me.home_page import pretty_keys
+        from listen_to_me.keymap import pretty_keys
 
         assert pretty_keys("<ctrl>+<alt>+<space>") == ["Ctrl", "Alt", "Space"]
         assert pretty_keys("<f9>") == ["F9"]
@@ -1078,6 +1519,22 @@ def _gui_construction():
         window.home._toggle()  # the double-click's second click
         assert stub.posts[posts_before:] == [("toggle",)]
 
+        # The at-a-glance cards are controls, not decoration: they must take
+        # keyboard focus and open their settings page on Space/Enter. Enter
+        # especially — an unaccepted Return would fall through to the dialog's
+        # default button (Save) and close the window instead.
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        for key in (Qt.Key.Key_Return, Qt.Key.Key_Space):
+            window._show_page("Home")
+            card = window.home.card_mic
+            assert card.focusPolicy() != Qt.FocusPolicy.NoFocus, "stat card is not focusable"
+            assert card.accessibleName(), "stat card has no accessible name"
+            card.setFocus(Qt.FocusReason.TabFocusReason)
+            card.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier))
+            assert window.nav.currentRow() == window._nav_row["Audio"], key
+
         # The language card must not show the (ignored) Whisper language for
         # the Parakeet backend — Parakeet always auto-detects.
         stub.cfg.data["backend"] = "parakeet"
@@ -1085,6 +1542,42 @@ def _gui_construction():
         assert window.home.card_language.value.text() == "Auto-detect"
         stub.cfg.data["backend"] = "faster-whisper"
         window.home.refresh()
+
+        # The Updates check button swaps its label while the check runs. A
+        # control that resizes under the cursor can drop the click that is
+        # pressing it, so the button is pinned to the wider label — character
+        # counts are no proof of that in a proportional font.
+        # Deliberately WITHOUT opening the page: _on_page_changed would fire the
+        # automatic check, and the checks must never touch the network.
+        from listen_to_me.settings_ui import _CHECK_LABEL, _CHECKING_LABEL
+
+        def _laid_out_width(button) -> int:
+            # What the user actually sees: a layout gives the button its size
+            # hint but never goes below the pinned minimum, and sizeHint() on
+            # its own is blind to that pin.
+            return max(button.sizeHint().width(), button.minimumWidth())
+
+        idle_width = _laid_out_width(window.update_check_button)
+        window.update_check_button.setText(_CHECKING_LABEL)
+        assert _laid_out_width(window.update_check_button) == idle_width, (
+            "the update check button resizes when it switches to the busy label"
+        )
+        window.update_check_button.setText(_CHECK_LABEL)
+
+        # Every download outcome that does NOT restart the app has to leave the
+        # page idle. The failed-swap path used to reset it by hand and had
+        # drifted: it left the progress bar at 100 %, so the failure message sat
+        # under a full bar that reads as success.
+        window.update_progress.setValue(100)
+        window.update_progress.setVisible(True)
+        window.update_cancel_button.setVisible(True)
+        window._update_busy = True
+        window._end_update_download("Could not apply update: boom")
+        assert window.update_progress.isHidden(), "progress bar survives a failed update"
+        assert window.update_cancel_button.isHidden(), "cancel button survives a failed update"
+        assert window.update_check_button.isEnabled() and window.update_button.isEnabled()
+        assert not window._update_busy
+        assert "Could not apply update" in window.update_status.text()
 
         window._show_page("History")  # force History render (lazy on first view)
         assert window.stack.currentIndex() == window._history_index
@@ -1109,6 +1602,46 @@ def _gui_construction():
                 return True  # already deleted — it cannot paint either
 
         assert all(_detached(row) for row in rows)
+
+        # History search: it must narrow the list, report how much of the
+        # history matched, and a no-match search must not read like an empty
+        # history (the transcripts are still there, just hidden).
+        def _history_text() -> str:
+            return " ".join(
+                label.text() for label in window._history_inner.findChildren(QLabel)
+            )
+
+        window.history_filter_edit.setText("corrupt")
+        window._refresh_history()  # the debounce timer would need the event loop
+        assert "corrupt timestamp" in _history_text()
+        assert "A stored transcript" not in _history_text()
+        assert "1 of 2" in window.history_count_label.text()
+        window.history_filter_edit.setText("nothing-matches-this")
+        window._refresh_history()
+        assert "No transcript contains" in _history_text()
+        assert window.history_clear_button.isEnabled()  # entries exist, only hidden
+        window.history_filter_edit.clear()
+        window._refresh_history()
+        assert "2 transcripts" in window.history_count_label.text()
+        assert "A stored transcript" in _history_text()
+
+        # "Clear history" on an empty history did nothing at all when clicked —
+        # a greyed-out button says so instead.
+        class _NoHistory:
+            @staticmethod
+            def entries():
+                return []
+
+        stored_history = stub.history
+        stub.history = _NoHistory()
+        try:
+            window._refresh_history()
+            assert not window.history_clear_button.isEnabled()
+            assert "No transcripts yet" in _history_text()
+        finally:
+            stub.history = stored_history
+            window._refresh_history()
+        assert window.history_clear_button.isEnabled()
 
         # The Parakeet backend ignores the Whisper preset, the spoken language
         # and the initial prompt — those inputs must read as inactive instead of
@@ -1277,6 +1810,48 @@ def _gui_construction():
         window._on_hw_done(2, probe)
         assert window.hw_cuda_label.text().startswith("✗") and not window._hw_busy
 
+        # The clipping guard above only ever renders short strings, which is
+        # why this trap survived it: a wrapping QLabel reports its longest
+        # *word* as its minimum width, and a Windows path, a URL or a repo id
+        # has nothing to wrap at. One such status line used to push the whole
+        # page past its viewport. Every label whose text is composed from a
+        # probe, a path or an exception must therefore stay elastic — what the
+        # layout really asks for is the widget item's minimum, so measure that.
+        from PySide6.QtWidgets import QWidgetItem
+
+        long_path = (
+            r"C:\Users\a.verylongusername\AppData\Local\Programs\ListenToMe"
+            r"\models\huggingface\hub\models--openai--whisper-large-v3"
+        )
+        for name, label in {
+            "CUDA status": window.hw_cuda_label,
+            "OpenVINO status": window.hw_ov_label,
+            "model status": window.hw_model_label,
+            "transcription test": window.diag_status,
+            "microphone test": window.mic_status,
+            "hotkey test": window.hotkey_test_status,
+            "update check": window.update_status,
+            "autostart": window.autostart_status,
+        }.items():
+            label.setText(f"failed: {long_path}")
+            label.setVisible(True)  # the autostart line hides itself when empty
+            demanded = QWidgetItem(label).minimumSize().width()
+            assert 0 < demanded <= label.minimumWidth(), (
+                f"{name} label demands {demanded}px for its longest word "
+                f"(elastic floor {label.minimumWidth()}px) — that widens the page"
+            )
+
+        # Update download feedback: a bare percentage says nothing about a
+        # few-hundred-MB transfer, so the status line carries the sizes — and
+        # keeps reporting progress when the server sends no Content-Length.
+        window._update_download_label = "v2026.07.30.1"
+        window._on_update_progress(50 * 1024 * 1024, 200 * 1024 * 1024)
+        assert window.update_progress.value() == 25
+        assert "50.0 MB of 200.0 MB" in window.update_status.text()
+        window._on_update_progress(1024 * 1024, 0)  # unknown total → indeterminate
+        assert window.update_progress.maximum() == 0
+        assert "1.0 MB so far" in window.update_status.text()
+
         # Idle guard: a hotkey press still queued in App is applied before the
         # state is read, so a test can't take the microphone/listener while a
         # recording is starting behind it.
@@ -1339,7 +1914,13 @@ def _gui_construction():
         assert wizard.language_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus  # wheel guard
         assert not wizard.model_combo.isEditable()  # read-only — presets only
         wizard.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
+        assert not wizard._engine_note.text()
+        # Parakeet ignores the model and language chosen on the previous wizard
+        # page — the page must say so instead of dropping them silently.
+        wizard.backend_combo.setCurrentIndex(2)  # Parakeet
+        assert "Parakeet" in wizard._engine_note.text()
         wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert not wizard._engine_note.text()
         wizard._apply()
         assert stub.cfg["backend"] == "faster-whisper"
         assert stub.cfg["model"] == "small"  # preset label round-trips to the id
@@ -1403,7 +1984,10 @@ _LIGHT_CHECKS = [
     ("config roundtrip", _config_roundtrip),
     ("config defaults", _config_defaults),
     ("config survives corrupt sections", _config_survives_corrupt_sections),
+    ("config guards scalar types", _config_guards_scalar_types),
     ("history normalizes entries", _history_normalizes_entries),
+    ("history latest transcript", _history_latest_transcript),
+    ("history search matching", _history_search_matching),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
@@ -1413,6 +1997,7 @@ _LIGHT_CHECKS = [
     ("icon render", _icon_render),
     ("key picker key mapping", _key_mapping),
     ("autostart entry refresh", _autostart_refresh),
+    ("autostart reports a failed registration", _autostart_reporting),
     ("updater version logic", _updater_logic),
     ("updater forces TLS verification", _updater_forces_tls_verification),
     ("insecure SSL switch", _insecure_ssl_switch),
@@ -1427,8 +2012,13 @@ _LIGHT_CHECKS = [
     ("hardware/status probes", _hardware_probes),
     ("help content renders", _help_content_renders),
     ("Qt icon conversion", _qt_icons),
+    ("clipboard copy falls back to Qt", _clipboard_copy_falls_back_to_qt),
     ("glyph icons render", _glyph_icons),
+    ("keyboard focus stays visible", _theme_focus_visible),
+    ("disabled buttons look disabled", _theme_disabled_visible),
     ("voice mic widget", _voice_mic_widget),
+    ("tray names the hotkey", _tray_names_the_hotkey),
+    ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("Qt UI construction", _gui_construction),
 ]
 

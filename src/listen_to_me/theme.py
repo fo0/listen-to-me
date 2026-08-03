@@ -44,6 +44,10 @@ _LIGHT = {
     "accent_soft": "#e2e8fd",
     "on_accent": "#ffffff",
     "disabled": "#a2a7b3",
+    # Surface of a disabled button. Its own token rather than "alt"/"window":
+    # it has to read as inert against BOTH the page background and a card, and
+    # dropping the accent fill onto it is the main "this control is dead" cue.
+    "disabled_bg": "#e6e8ef",
     "danger": "#b3261e",
     "danger_hover": "#f7e7e5",
 }
@@ -60,6 +64,7 @@ _DARK = {
     "accent_soft": "#28304f",
     "on_accent": "#ffffff",
     "disabled": "#5b6069",
+    "disabled_bg": "#1a1c21",  # see the light palette's note
     "danger": "#f2b8b5",
     "danger_hover": "#3b2a29",
 }
@@ -341,6 +346,9 @@ def _qss(t: dict) -> str:
         border-radius: 12px;
     }}
     QFrame[card="stat"]:hover {{ border: 1px solid {ACCENT}; }}
+    /* The at-a-glance cards are clickable controls and take keyboard focus —
+       ring them like a button (same width, so nothing shifts). */
+    QFrame[card="stat"]:focus {{ border: 1px solid {ACCENT}; }}
     QFrame[card="stat"] QLabel {{ background: transparent; }}
     QLabel[role="cardTitle"] {{
         color: {t["muted"]};
@@ -419,7 +427,6 @@ def _qss(t: dict) -> str:
     }}
     QPushButton:hover {{ background: {t["hover"]}; }}
     QPushButton:pressed {{ background: {t["alt"]}; }}
-    QPushButton:disabled {{ color: {t["disabled"]}; }}
     QPushButton[accent="true"] {{
         background: {ACCENT}; color: {t["on_accent"]}; border: 1px solid {ACCENT}; font-weight: 600;
     }}
@@ -432,8 +439,56 @@ def _qss(t: dict) -> str:
         background: {t["danger_hover"]};
         border-color: {t["danger"]};
     }}
+    /* A disabled button MUST look disabled. This used to be a single
+       `QPushButton:disabled {{ color: ... }}` placed ABOVE the variant rules —
+       and `:disabled` and `[accent="true"]` carry the same CSS specificity, so
+       the later variant rule simply won: the accent and destructive buttons
+       rendered pixel-identically enabled and disabled. Settings → Updates
+       disables "Download & install" while it queries GitHub, so users clicked a
+       button that still looked live, got nothing, and reported having to press
+       every button twice.
 
-    QCheckBox, QRadioButton {{ spacing: 8px; padding: 2px 0; }}
+       Position is what fixes that — the block now sits after every variant, so
+       even the bare selector outranks them. The per-variant selectors are the
+       belt to that braces: `[accent="true"]:hover` and friends are *more*
+       specific than a bare `:disabled`, so should any Qt version start
+       reporting a hover state on a disabled widget, the accent fill would come
+       straight back. Each one drops the variant's colour cue (accent fill,
+       danger red) rather than only dimming the label. Border width and padding
+       stay untouched so enabling/disabling never nudges the layout; gui_smoke
+       asserts both. #recordBtn is the one deliberate omission — its own
+       :disabled rule above outranks anything here by id. */
+    QPushButton:disabled,
+    QPushButton[accent="true"]:disabled,
+    QPushButton[destructive="true"]:disabled,
+    QPushButton[quick="true"]:disabled {{
+        background: {t["disabled_bg"]};
+        border: 1px solid {t["border"]};
+        color: {t["disabled"]};
+    }}
+    /* Keyboard focus must stay visible. Giving a button a border above switches
+       Qt to stylesheet rendering, which drops the native focus rect — without a
+       :focus rule of their own, tabbing through the window highlights nothing at
+       all (the inputs already carry one). Every ring keeps the border WIDTH of
+       the unfocused state, so gaining focus never nudges the layout. Placed
+       after the variant rules: equal specificity, so the later rule wins. */
+    QPushButton:focus {{ border: 1px solid {ACCENT}; }}
+    QPushButton[accent="true"]:focus {{ border: 1px solid {t["on_accent"]}; }}
+    QPushButton[destructive="true"]:focus {{ border: 1px solid {t["danger"]}; }}
+    /* Hero buttons sit on the accent gradient, where the accent ring would
+       disappear — ring them in the button's own foreground colour instead. */
+    QPushButton#recordBtn:focus {{ border: 2px solid {ACCENT_DOWN}; padding: 9px 22px; }}
+    QPushButton#heroCancel:focus {{ border: 1px solid #ffffff; }}
+
+    /* The transparent border reserves the ring's space, so :focus only
+       recolours it and the label never shifts. */
+    QCheckBox, QRadioButton {{
+        spacing: 8px;
+        padding: 2px 0;
+        border: 1px solid transparent;
+        border-radius: 6px;
+    }}
+    QCheckBox:focus, QRadioButton:focus {{ border-color: {ACCENT}; }}
     QCheckBox::indicator, QRadioButton::indicator {{ width: 17px; height: 17px; }}
 
     QScrollArea {{ border: none; background: transparent; }}

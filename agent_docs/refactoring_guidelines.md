@@ -29,8 +29,10 @@ Refactoring does NOT happen automatically. Only when:
 
 ## Current candidates (assessment, not a mandate)
 
-- **`settings_ui.py` (~1300 lines)** — the clearest split target: one module per settings page (General / Whisper / Audio / Overlay / Integrations / Assistant / History / Help) plus shared card/row helpers. Do it only when a change to the settings window is being blocked by the size. Tracked in `BACKLOG.md`.
-- **`app.py` (~500 lines)** — at the threshold. Keep new behavior in the component modules, not in `App`; extract the event `_handle` dispatch only if it keeps growing.
+- **`settings_ui.py` (~2700 lines)** — the clearest split target: one module per settings page (General / Whisper / Audio / Overlay / Integrations / Assistant / History / Help) plus shared card/row helpers. The Home page already lives in `home_page.py`. Do it only when a change to the settings window is being blocked by the size. Tracked in `BACKLOG.md`.
+- **`selftest.py` (~1900 lines)** — grows with every regression guard, which is the point; split by check group only if navigating it starts to cost more than it saves.
+- **`app.py` (~720 lines)** — over the ~500 bar. Keep new behavior in the component modules, not in `App`; extract the event `_handle` dispatch only if it keeps growing.
+- **`theme.py` (~550) / `home_page.py` (~530)** — just over the bar, both cohesive; no split planned.
 
 ## Verification after a refactor
 
