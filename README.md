@@ -419,15 +419,28 @@ Requires Python 3.10+.
 git clone https://github.com/fo0/listen-to-me
 cd listen-to-me
 pip install -r requirements.txt
-python -m listen_to_me   # add src/ to PYTHONPATH or `pip install -e .` first
+PYTHONPATH=src python -m listen_to_me   # Windows: set PYTHONPATH=src
 ```
 
 Or properly installed:
 
 ```bash
 pip install -e .                 # optional backends: pip install -e ".[openvino]" / ".[parakeet]"
-listen-to-me
+listen-to-me                     # or: listen-to-me-gui (same app, started without a console window)
 ```
+
+### Command line
+
+The app is configured in its settings window, not by flags — there are only two:
+
+| Flag | What it does |
+| --- | --- |
+| `--version` | Prints the version and exits. Imports no Qt, so it works before the GUI dependencies are installed |
+| `--selftest` | Runs the packaging self-test and exits with its result (`0` = pass). Needs all runtime dependencies; also used by the release pipeline against the built exe |
+
+Everything else — hotkey, model, backend, microphone — lives in `config.json`
+(see [config.json reference](#configjson-reference)). Planning to contribute?
+[CONTRIBUTING.md](CONTRIBUTING.md) lists the two checks CI runs on every pull request.
 
 ## Build the Windows executable locally
 
