@@ -770,7 +770,9 @@ class SettingsWindow(QDialog):
             "Where a finished transcript ends up besides the cursor. “Only when inserting "
             "fails” copies it exactly when the app could not paste or type it into the "
             "focused window — press Ctrl+V yourself instead of fetching it from "
-            "Settings → History. “Always” keeps every transcript on the clipboard."
+            "Settings → History. “Always” keeps every transcript on the clipboard, "
+            "which is the setting for dictating with no text field focused. "
+            "A notification confirms every transcript that stays on the clipboard."
         )
         elastic_combo(self.clipboard_combo)
         cr.addWidget(self.clipboard_combo, 1)

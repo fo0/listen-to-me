@@ -368,27 +368,10 @@ class App:
                         )
                 elif self.injector.clipboard_mode() == "always":
                     # Live typing never touches the clipboard by itself.
-                    self.injector.copy_to_clipboard(full_text)
+                    if self.injector.copy_to_clipboard(full_text):
+                        self._notify_copied(full_text)
             else:
-                try:
-                    self.injector.insert(text)
-                except Exception as exc:
-                    # The transcript itself worked — say so instead of letting
-                    # this surface as "Transcription failed", and point at the
-                    # place the text can be recovered from.
-                    log.exception("could not insert the transcript")
-                    if self._copy_for_recovery(full_text):
-                        self.notify(
-                            f"Could not insert the text ({exc}) — it is on the "
-                            "clipboard, press Ctrl+V.",
-                            force=True,
-                        )
-                    else:
-                        self.notify(
-                            f"Could not insert the text ({exc}) — copy it from "
-                            "Settings → History.",
-                            force=True,
-                        )
+                self._insert_transcript(full_text)
             self.post("flash_text", full_text)
         except Exception as exc:
             log.exception("processing failed")
@@ -405,6 +388,51 @@ class App:
                 self.notify(f"Transcription failed: {exc}", force=True)
         finally:
             self.post("done")
+
+    def _insert_transcript(self, text: str) -> None:
+        """Insert `text` at the cursor and say where it ended up.
+
+        A successful insertion is silent — the text is visibly there. But a
+        transcript that stayed on the clipboard has to be announced: the app
+        cannot see whether the focused window took the paste, so with no text
+        field under the cursor the insertion "succeeds" into nothing and only
+        this message tells the user that Ctrl+V still produces the text.
+        At most one notification per recording: a failed insertion has its own
+        (forced) message and returns instead of also confirming the copy.
+        """
+        try:
+            on_clipboard = self.injector.insert(text)
+        except Exception as exc:
+            # The transcript itself worked — say so instead of letting this
+            # surface as "Transcription failed", and point at the place the
+            # text can be recovered from.
+            log.exception("could not insert the transcript")
+            if self._copy_for_recovery(text):
+                self.notify(
+                    f"Could not insert the text ({exc}) — it is on the "
+                    "clipboard, press Ctrl+V.",
+                    force=True,
+                )
+            else:
+                self.notify(
+                    f"Could not insert the text ({exc}) — copy it from "
+                    "Settings → History.",
+                    force=True,
+                )
+            return
+        if on_clipboard:
+            self._notify_copied(text)
+
+    def _notify_copied(self, text: str) -> None:
+        """Confirm a transcript that is now on the clipboard.
+
+        Same wording and preview as the tray's "Copy last transcript", because
+        it is the same promise — and the preview is what makes the message
+        useful: it says *which* text a Ctrl+V would produce. Not forced; this
+        is a success message, so the notifications setting decides.
+        """
+        preview = text if len(text) <= 60 else text[:60].rstrip() + "…"
+        self.notify(f"Copied to the clipboard: {preview}")
 
     def _copy_for_recovery(self, text: str) -> bool:
         """Put a transcript the app could not insert on the clipboard, so it is
@@ -444,8 +472,7 @@ class App:
         from .qtutil import copy_to_clipboard
 
         if copy_to_clipboard(text):
-            preview = text if len(text) <= 60 else text[:60].rstrip() + "…"
-            self.notify(f"Copied to the clipboard: {preview}")
+            self._notify_copied(text)
         else:
             self.notify(
                 "Could not copy to the clipboard — open Settings → History to copy it there.",

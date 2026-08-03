@@ -21,7 +21,11 @@ standalone system-tray app that works in *every* application.
 - **Clipboard safety net** — when the text cannot be inserted into the focused
   window, it is put on the clipboard so one Ctrl+V recovers it. Optionally
   **always** (every transcript stays on the clipboard) or **never**
-  (Settings → General → *Copy the transcript to the clipboard*).
+  (Settings → General → *Copy the transcript to the clipboard*). Whenever a
+  transcript is left on the clipboard, a notification says so and shows the
+  first few words — so a recording made with no text field focused (the paste
+  lands nowhere and the app cannot tell) still ends with a visible
+  "Copied to the clipboard: …" instead of silence.
 - **Live typing (experimental)** — start typing while you are still speaking:
   parts of the transcript that have become stable are typed at the cursor
   during the recording, the rest follows right after you stop. Strictly
