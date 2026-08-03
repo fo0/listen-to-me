@@ -156,8 +156,12 @@ method set in <b>Settings → General → Insert text by</b>.</p>
 <b>Paste via clipboard</b> to <b>Simulate typing</b>.</li>
 <li><b>Linux:</b> clipboard paste needs <code>xclip</code> or <code>xsel</code>
 installed.</li>
-<li>Nothing is lost: every transcript is also kept under
-<b>Settings → History</b>, each with a <b>Copy</b> button.</li>
+<li>Nothing is lost: a transcript that could not be inserted is put on the
+clipboard &mdash; just press <b>Ctrl+V</b> where you want it. Set when that
+happens under <b>Settings → General → Copy the transcript to the clipboard</b>
+(only on failure, always, or never).</li>
+<li>Every transcript is also kept under <b>Settings → History</b>, each with a
+<b>Copy</b> button.</li>
 </ul>
 """,
     },

@@ -41,6 +41,7 @@ def _config_defaults():
     assert DEFAULTS["start_in_tray"] is False
     assert DEFAULTS["injection_mode"] in ("paste", "type")
     assert DEFAULTS["live_typing"] is False  # experimental, opt-in
+    assert DEFAULTS["clipboard_copy"] in ("off", "on_failure", "always")
     assert DEFAULTS["backend"] in ("faster-whisper", "openvino", "parakeet")
     assert DEFAULTS["openvino_device"] in ("auto", "cpu", "gpu", "npu")
     assert DEFAULTS["openvino_precision"] in ("int8", "fp16", "int4")
@@ -317,17 +318,105 @@ def _injector_paste_falls_back_to_typing():
     typed: list[str] = []
 
     class _Injector(Injector):
-        def _paste(self, text):
+        def _paste(self, text, keep=False):
             raise RuntimeError("clipboard is unavailable")
 
         def _type(self, text):
             typed.append(text)
 
-    injector = _Injector({"injection_mode": "paste", "restore_clipboard": True})
+    injector = _Injector(
+        {"injection_mode": "paste", "restore_clipboard": True, "clipboard_copy": "off"}
+    )
     injector.insert("recovered text")
     assert typed == ["recovered text"]
     injector.insert("")  # empty stays a no-op
     assert typed == ["recovered text"]
+
+
+def _injector_clipboard_policy():
+    """The clipboard option holds for every insertion path — and never fights
+    the "restore previous clipboard" setting.
+
+    "always" is what a user picks to be safe, so it must also work in typing
+    mode (which never touches the clipboard on its own) and must suppress the
+    restore in paste mode — putting the old content back would wipe the very
+    transcript that mode promises to keep. "off" must stay off: an unwanted
+    copy leaks dictated text into the clipboard of a shared machine. An
+    unknown value from a hand-edited config falls back to the default safety
+    net, not to "off".
+    """
+    from listen_to_me.injector import Injector
+
+    copied: list[str] = []
+    pastes: list[bool] = []
+
+    class _Injector(Injector):
+        def _type(self, text):
+            pass
+
+        def _paste(self, text, keep=False):
+            pastes.append(keep)
+            return keep  # a kept paste leaves the transcript on the clipboard
+
+        def copy_to_clipboard(self, text):
+            copied.append(text)
+            return True
+
+    def _cfg(clipboard_copy, injection_mode="type"):
+        return {
+            "injection_mode": injection_mode,
+            "restore_clipboard": True,
+            "clipboard_copy": clipboard_copy,
+        }
+
+    assert _Injector(_cfg("always")).insert("hello") is True
+    assert copied == ["hello"], "typing mode must still put the transcript on the clipboard"
+    copied.clear()
+    for mode in ("on_failure", "off", "hand-edited nonsense"):
+        assert _Injector(_cfg(mode)).insert("hello") is False
+        assert copied == [], f"{mode} must not copy after a successful insertion"
+
+    # Paste mode: only "always" suppresses the restore, and it does not copy a
+    # second time on top of the paste that already left the text there.
+    assert _Injector(_cfg("always", "paste")).insert("hello") is True
+    assert pastes == [True] and copied == []
+    pastes.clear()
+    assert _Injector(_cfg("on_failure", "paste")).insert("hello") is False
+    assert pastes == [False] and copied == []
+
+    assert _Injector(_cfg("hand-edited nonsense")).clipboard_mode() == "on_failure"
+    assert _Injector(_cfg("off")).clipboard_mode() == "off"
+
+    # The write is read back, because "could not insert it — press Ctrl+V" must
+    # not point at a clipboard that took nothing: the user would paste whatever
+    # was there before and never notice the transcript is gone. Windows hands
+    # the text back with \r\n line endings, which is the same text.
+    class _FakeClipboard:
+        def __init__(self):
+            self.stored = "something else"
+            self.accepts = True
+
+        def copy(self, text):
+            if self.accepts:
+                self.stored = text.replace("\n", "\r\n")
+
+        def paste(self):
+            return self.stored
+
+    fake = _FakeClipboard()
+    injector = Injector(_cfg("always"))
+    previous = sys.modules.get("pyperclip")
+    sys.modules["pyperclip"] = fake
+    try:
+        assert injector.copy_to_clipboard("line one\nline two") is True
+        fake.accepts = False  # the write silently did nothing
+        assert injector.copy_to_clipboard("lost text") is False
+        assert injector.copy_to_clipboard("") is False
+    finally:
+        if previous is None:
+            del sys.modules["pyperclip"]
+        else:
+            sys.modules["pyperclip"] = previous
 
 
 def _contrast(a: str, b: str) -> float:
@@ -1287,7 +1376,7 @@ def _theme_disabled_visible():
         the part the variant rules paint."""
         return image.pixelColor(image.width() // 2, 4)
 
-    def _disabled_changes(widget, name: str) -> None:
+    def _disabled_changes(widget, name: str, *, surface: bool = True) -> None:
         host = QWidget()
         layout = QVBoxLayout(host)
         layout.addWidget(widget)
@@ -1305,10 +1394,12 @@ def _theme_disabled_visible():
         disabled = widget.grab().toImage()
         assert enabled != disabled, f"{name} looks identical enabled and disabled"
         # Dimming only the label is what let the accent button read as live:
-        # the surface has to drop its colour cue too.
-        assert _surface(enabled) != _surface(disabled), (
-            f"{name} keeps its surface colour when disabled"
-        )
+        # the surface has to drop its colour cue too. Widgets that paint no
+        # surface of their own (check boxes) pass surface=False.
+        if surface:
+            assert _surface(enabled) != _surface(disabled), (
+                f"{name} keeps its surface colour when disabled"
+            )
         assert widget.sizeHint() == hint, f"{name} changes size when disabled"
         host.deleteLater()
 
@@ -1321,6 +1412,15 @@ def _theme_disabled_visible():
     )
     _disabled_changes(_styled_button("  Change hotkey", prop="quick"), "quick QPushButton")
     _disabled_changes(_styled_button("Start recording", name="recordBtn"), "hero record button")
+    # Check boxes fall into the same trap: the QSS rule that reserves their
+    # focus ring switches them to stylesheet rendering, where the palette's
+    # Disabled group stops applying. General greys out "restore the previous
+    # clipboard" while clipboard_copy = "always" overrules it — an option that
+    # no longer applies has to look that way. Only the label can dim (a check
+    # box paints no surface), so this one checks the render alone.
+    from PySide6.QtWidgets import QCheckBox
+
+    _disabled_changes(QCheckBox("Restore previous clipboard content"), "QCheckBox", surface=False)
 
     # The renders above only exercise whatever scheme the test host runs in (CI
     # is light), so a dark-palette edit could bring the bug back for half the
@@ -1678,6 +1778,21 @@ def _gui_construction():
         assert window.windowFlags() & _Qt.WindowType.WindowMinimizeButtonHint
         assert window.windowFlags() & _Qt.WindowType.WindowMaximizeButtonHint
 
+        # "Always keep it on the clipboard" and "restore the previous clipboard
+        # content" contradict each other, and the injector resolves it in favour
+        # of the first. A checkbox nothing acts on must not stay tickable: it
+        # greys out and the hint says why.
+        from listen_to_me.choices import clipboard_copy_label
+
+        saved_clipboard = window._selected_clipboard_mode()
+        window.clipboard_combo.setCurrentText(clipboard_copy_label("always"))
+        assert not window.chk_restore.isEnabled()
+        assert "Always" in window._clipboard_hint.text()
+        window.clipboard_combo.setCurrentText(clipboard_copy_label("on_failure"))
+        assert window.chk_restore.isEnabled() and not window._clipboard_hint.text()
+        assert window._collect()["clipboard_copy"] == "on_failure"
+        window.clipboard_combo.setCurrentText(clipboard_copy_label(saved_clipboard))
+
         # Unsaved-changes tracking: untouched dialog is clean, a toggled
         # checkbox makes it dirty, toggling back makes it clean again.
         assert window._collect() == window._saved_snapshot
@@ -1990,6 +2105,7 @@ _LIGHT_CHECKS = [
     ("history search matching", _history_search_matching),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
+    ("injector clipboard policy", _injector_clipboard_policy),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
     ("mute integrations no-op", _integrations_noop),
     ("single-instance guard", _single_instance_guard),

@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 from . import APP_NAME, __version__
 from .choices import (
     BACKENDS,
+    CLIPBOARD_COPY_MODES,
     COMPUTE_TYPES,
     CUSTOM_MODEL_LABEL,
     DEVICES,
@@ -52,6 +53,9 @@ from .choices import (
     PARAKEET_QUANTIZATIONS,
     backend_from_label,
     backend_label,
+    clipboard_copy_from_label,
+    clipboard_copy_label,
+    clipboard_copy_mode,
     input_device_choices,
     input_device_from_label,
     language_from_label,
@@ -750,11 +754,33 @@ class SettingsWindow(QDialog):
         behavior = QGroupBox("Behavior")
         bv = QVBoxLayout(behavior)
         bv.setSpacing(4)
+        clipboard_row = QWidget()
+        cr = QHBoxLayout(clipboard_row)
+        cr.setContentsMargins(0, 0, 0, 0)
+        cr.setSpacing(8)
+        cr.addWidget(QLabel("Copy the transcript to the clipboard:"))
+        self.clipboard_combo = QComboBox()
+        self.clipboard_combo.addItems([label for _, label in CLIPBOARD_COPY_MODES])
+        # Normalized, not raw: a hand-edited value must show the mode that will
+        # actually run, otherwise the dropdown promises something else.
+        self.clipboard_combo.setCurrentText(
+            clipboard_copy_label(clipboard_copy_mode(self.cfg["clipboard_copy"]))
+        )
+        self.clipboard_combo.setToolTip(
+            "Where a finished transcript ends up besides the cursor. “Only when inserting "
+            "fails” copies it exactly when the app could not paste or type it into the "
+            "focused window — press Ctrl+V yourself instead of fetching it from "
+            "Settings → History. “Always” keeps every transcript on the clipboard."
+        )
+        elastic_combo(self.clipboard_combo)
+        cr.addWidget(self.clipboard_combo, 1)
+        bv.addWidget(clipboard_row)
         self.chk_restore = self._checkbox(
             "Restore previous clipboard content after pasting",
             self.cfg["restore_clipboard"],
             "After inserting the transcript, put whatever was on the clipboard before back again.",
         )
+        self._clipboard_hint = self._hint("")
         self.chk_notifications = self._checkbox(
             "Show desktop notifications",
             self.cfg["notifications"],
@@ -765,8 +791,13 @@ class SettingsWindow(QDialog):
             self.cfg["beep"],
             "Short beep when a recording starts (high tone) and stops (low tone). Windows only.",
         )
-        for chk in (self.chk_restore, self.chk_notifications, self.chk_beep):
+        bv.addWidget(self.chk_restore)
+        bv.addWidget(self._clipboard_hint)
+        for chk in (self.chk_notifications, self.chk_beep):
             bv.addWidget(chk)
+        # Wired after both widgets exist; the initial call sets the hint/state.
+        self.clipboard_combo.currentIndexChanged.connect(self._on_clipboard_mode_changed)
+        self._on_clipboard_mode_changed()
         layout.addWidget(behavior)
 
         startup = QGroupBox("Startup")
@@ -2437,6 +2468,30 @@ class SettingsWindow(QDialog):
     def _selected_backend(self) -> str:
         return backend_from_label(self.backend_combo.currentText())
 
+    def _selected_clipboard_mode(self) -> str:
+        return clipboard_copy_from_label(self.clipboard_combo.currentText())
+
+    def _on_clipboard_mode_changed(self) -> None:
+        """“Always” owns the clipboard, so the restore option cannot also apply.
+
+        Putting the previous content back would wipe the transcript that mode
+        just promised to keep. The injector ignores the restore in that case —
+        a checkbox that stays tickable while nothing acts on it would be the
+        silent no-op this project keeps running into, so grey it out and say
+        why. The stored value is untouched and returns with another mode.
+        """
+        always = self._selected_clipboard_mode() == "always"
+        self.chk_restore.setEnabled(not always)
+        self._clipboard_hint.setText(
+            "“Always” keeps the transcript on the clipboard — the previous content "
+            "is not restored while that mode is selected."
+            if always
+            else ""
+        )
+        # Hidden rather than empty: an always-present blank line would leave a
+        # gap in the group for the mode nearly everyone runs.
+        self._clipboard_hint.setVisible(always)
+
     def _on_backend_changed(self) -> None:
         """Show only the Engine rows that apply to the selected backend."""
         backend = self._selected_backend()
@@ -2539,6 +2594,7 @@ class SettingsWindow(QDialog):
             "model_dir": self.model_dir_edit.text().strip() or None,
             "injection_mode": "type" if self.rb_type.isChecked() else "paste",
             "live_typing": self.chk_live_typing.isChecked(),
+            "clipboard_copy": self._selected_clipboard_mode(),
             "restore_clipboard": self.chk_restore.isChecked(),
             "notifications": self.chk_notifications.isChecked(),
             "beep": self.chk_beep.isChecked(),

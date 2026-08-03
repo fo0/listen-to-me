@@ -18,6 +18,10 @@ standalone system-tray app that works in *every* application.
 - **Inserts at the cursor** — via clipboard paste (default) or simulated
   typing; if the clipboard is unavailable, paste mode falls back to typing
   instead of losing the transcript.
+- **Clipboard safety net** — when the text cannot be inserted into the focused
+  window, it is put on the clipboard so one Ctrl+V recovers it. Optionally
+  **always** (every transcript stays on the clipboard) or **never**
+  (Settings → General → *Copy the transcript to the clipboard*).
 - **Live typing (experimental)** — start typing while you are still speaking:
   parts of the transcript that have become stable are typed at the cursor
   during the recording, the rest follows right after you stop. Strictly
@@ -124,7 +128,7 @@ Right-click the tray icon → **Settings…**
 | Tab | Options |
 | --- | --- |
 | **Home** | The entry hub: live recording state with **Start recording / Stop & insert** (and **Cancel**) buttons, the hotkey rendered as key caps, **at-a-glance cards** (engine & model, language, microphone — click one to jump to its settings page), **quick actions** (change hotkey, model & engine, test microphone, overlay, updates, help) and the **most recent transcripts** with a Copy button each |
-| **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), clipboard restore, notifications, beep, **autostart** (with a status line showing what the system actually has registered), **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
+| **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), **copy the transcript to the clipboard** (only when inserting fails / always / never), clipboard restore, notifications, beep, **autostart** (with a status line showing what the system actually has registered), **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
 | **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU, **Parakeet** = fastest engine, NVIDIA CUDA / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model/Parakeet precision, **beam size** (faster-whisper: 5 = best accuracy, 1 = greedy ≈ 1.5–2× faster), VAD silence filter (faster-whisper only), **Detected hardware & model status** card (NVIDIA GPU/CUDA found? OpenVINO installed and which Intel devices? Is the selected model already downloaded? — with a **Refresh status** button, updates automatically when you change model/backend), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), both cancellable with a **Cancel** button, initial prompt (domain vocabulary hint) |
 | **Audio** | Microphone selection, **Test microphone** (3-second check with a live level bar, a clear verdict — works / too quiet / no signal — and a **Cancel** button), maximum recording length |
 | **Overlay** | Floating always-on-top icon on/off, transcript bubble after each recording, experimental **live transcript preview while recording**, preview display time |
@@ -189,6 +193,7 @@ settings window writes the same keys.
 | `max_seconds` | `300` | Hard cap for a single recording, in seconds |
 | `injection_mode` | `"paste"` | Insert via `paste` (clipboard) or `type` (simulated typing) |
 | `live_typing` | `false` | Experimental live typing while recording (faster-whisper only) |
+| `clipboard_copy` | `"on_failure"` | Also copy the transcript to the clipboard: `on_failure` (only when inserting at the cursor fails), `always` (every transcript — suppresses `restore_clipboard`) or `off` |
 | `restore_clipboard` | `true` | Restore the previous clipboard content after a paste |
 | `notifications` / `beep` | `true` / `true` | Desktop notifications and the audible start/stop cue |
 | `autostart` | `false` | Start with the OS |
