@@ -419,6 +419,85 @@ def _injector_clipboard_policy():
             sys.modules["pyperclip"] = previous
 
 
+def _clipboard_copy_is_announced():
+    """A transcript that ends up on the clipboard says so — and a recording
+    never produces two notifications about it.
+
+    The app cannot see whether the focused window took the paste: with no text
+    field under the cursor the insertion "succeeds" into nothing, so without
+    this message the clipboard option looks like it did nothing at all. The
+    failure path must keep replacing that message instead of adding to it, and
+    must still never promise a clipboard that took nothing.
+    """
+    from listen_to_me.app import App
+
+    class _Injector:
+        def __init__(self, on_clipboard, mode="always", exc=None):
+            self._on_clipboard = on_clipboard
+            self._mode = mode
+            self._exc = exc
+            self.recovered: list[str] = []
+
+        def clipboard_mode(self):
+            return self._mode
+
+        def insert(self, text):
+            if self._exc is not None:
+                raise self._exc
+            return self._on_clipboard
+
+        def copy_to_clipboard(self, text):
+            self.recovered.append(text)
+            return self._on_clipboard
+
+    class _App:
+        # Borrowed unbound: the notification wording is App's, but building a
+        # real App would need the tray, the recorder and a transcriber.
+        _insert_transcript = App._insert_transcript
+        _notify_copied = App._notify_copied
+        _copy_for_recovery = App._copy_for_recovery
+
+        def __init__(self, injector):
+            self.injector = injector
+            self.messages: list[tuple[str, bool]] = []
+
+        def notify(self, message, force=False):
+            self.messages.append((message, force))
+
+    app = _App(_Injector(True))
+    app._insert_transcript("kept text")
+    assert app.messages == [("Copied to the clipboard: kept text", False)]
+
+    app = _App(_Injector(False))
+    app._insert_transcript("inserted at the cursor")
+    assert app.messages == [], "an insertion that kept nothing stays silent"
+
+    # A notification is a one-line toast: long transcripts are previewed.
+    app = _App(_Injector(True))
+    app._insert_transcript("word " * 40)
+    assert app.messages[0][0].endswith("…") and len(app.messages[0][0]) < 100
+
+    # A failed insertion reports the failure — that message replaces the copy
+    # confirmation rather than arriving next to it.
+    injector = _Injector(True, exc=RuntimeError("blocked"))
+    app = _App(injector)
+    app._insert_transcript("recovered")
+    assert len(app.messages) == 1 and app.messages[0][1] is True
+    assert "press Ctrl+V" in app.messages[0][0] and injector.recovered == ["recovered"]
+
+    injector = _Injector(False, exc=RuntimeError("blocked"))
+    app = _App(injector)
+    app._insert_transcript("lost")
+    assert len(app.messages) == 1 and "Settings → History" in app.messages[0][0]
+
+    # "off" still means off: the recovery copy is skipped and the message says
+    # where the text really is.
+    injector = _Injector(True, mode="off", exc=RuntimeError("blocked"))
+    app = _App(injector)
+    app._insert_transcript("private")
+    assert injector.recovered == [] and "Settings → History" in app.messages[0][0]
+
+
 def _contrast(a: str, b: str) -> float:
     """WCAG contrast ratio between two "#rrggbb" palette tokens."""
 
@@ -2106,6 +2185,7 @@ _LIGHT_CHECKS = [
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),
+    ("clipboard copy is announced", _clipboard_copy_is_announced),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
     ("mute integrations no-op", _integrations_noop),
     ("single-instance guard", _single_instance_guard),

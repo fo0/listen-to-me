@@ -160,6 +160,10 @@ installed.</li>
 clipboard &mdash; just press <b>Ctrl+V</b> where you want it. Set when that
 happens under <b>Settings → General → Copy the transcript to the clipboard</b>
 (only on failure, always, or never).</li>
+<li>If no field had the focus, the paste goes nowhere and the app cannot see
+it. Set the option above to <b>Always</b>: every transcript then stays on the
+clipboard and a notification (&ldquo;Copied to the clipboard: …&rdquo;)
+confirms it, so <b>Ctrl+V</b> gets the text once you click into a field.</li>
 <li>Every transcript is also kept under <b>Settings → History</b>, each with a
 <b>Copy</b> button.</li>
 </ul>
