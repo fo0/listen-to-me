@@ -12,6 +12,22 @@ changes at a glance.
 
 ## [Unreleased]
 
+### Added
+
+- **Copy last transcript** in the tray menu and the floating icon's right-click
+  menu — puts the text of the most recent recording back on the clipboard
+  without opening Settings → History.
+- The tray status line and the floating icon's tooltip now name the configured
+  hotkey ("Idle — press Ctrl+Alt+Space to record") instead of saying "the
+  hotkey", and follow it when it is changed in the settings.
+
+### Fixed
+
+- A `config.json` with a wrong-typed value (a quoted number, a string where a
+  number belongs, `null` where a value belongs) no longer reaches the code that
+  uses it: plausible hand-edits are repaired, anything else falls back to that
+  one option's default instead of failing during startup.
+
 ### Changed
 
 - Documentation and repository housekeeping in preparation for the public

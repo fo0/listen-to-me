@@ -1401,6 +1401,31 @@ class _StubHotkeys:
         self.running = False
 
 
+def _tray_names_the_hotkey():
+    """The tray status spells the configured combination out instead of saying
+    "the hotkey" — including after it was changed in the settings, and with the
+    right verb for hold mode. An unusable combo falls back to the generic
+    wording, never to a raw pynput token in a sentence."""
+    from listen_to_me.tray import _STATE_LABELS, state_label
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        assert state_label("idle", stub.cfg) == "Idle — press Ctrl+Alt+Space to record"
+        assert state_label("recording", stub.cfg) == "Recording… press Ctrl+Alt+Space to stop"
+        assert state_label("processing", stub.cfg) == _STATE_LABELS["processing"]
+
+        stub.cfg["hotkey"] = "<f9>"
+        stub.cfg["hotkey_mode"] = "hold"
+        # Hold mode stops on release — "press it again" would be wrong.
+        assert state_label("recording", stub.cfg) == "Recording… release F9 to stop"
+        assert state_label("idle", stub.cfg) == "Idle — press F9 to record"
+
+        stub.cfg["hotkey"] = ""  # nothing to name → generic wording
+        assert state_label("idle", stub.cfg) == _STATE_LABELS["idle"]
+        assert state_label("recording", stub.cfg) == _STATE_LABELS["recording"]
+        assert state_label("nonsense", stub.cfg) == "nonsense"
+
+
 def _tray_survives_a_missing_notification_area():
     """Started by the OS autostart, the app can be up before the shell is: the
     tray icon is dropped and Qt still reports it visible. Tray.start() must keep
@@ -1466,7 +1491,7 @@ def _gui_construction():
         # set_app_state). isHidden() not isVisible(): the window isn't shown.
         from PySide6.QtWidgets import QLabel
 
-        from listen_to_me.home_page import pretty_keys
+        from listen_to_me.keymap import pretty_keys
 
         assert pretty_keys("<ctrl>+<alt>+<space>") == ["Ctrl", "Alt", "Space"]
         assert pretty_keys("<f9>") == ["F9"]
@@ -1992,6 +2017,7 @@ _LIGHT_CHECKS = [
     ("keyboard focus stays visible", _theme_focus_visible),
     ("disabled buttons look disabled", _theme_disabled_visible),
     ("voice mic widget", _voice_mic_widget),
+    ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("Qt UI construction", _gui_construction),
 ]

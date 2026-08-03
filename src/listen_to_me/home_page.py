@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from .choices import SYSTEM_DEFAULT_DEVICE, input_device_choices, language_label
 from .glyphs import glyph_icon
+from .keymap import pretty_keys
 from .qtutil import copy_to_clipboard
 
 log = logging.getLogger(__name__)
@@ -38,54 +39,11 @@ _RECENT_LIMIT = 3
 # dictation would blow the card up.
 _RECENT_CHARS = 160
 
-_PRETTY_KEYS = {
-    "ctrl": "Ctrl",
-    "ctrl_l": "Ctrl",
-    "ctrl_r": "Ctrl",
-    "alt": "Alt",
-    "alt_l": "Alt",
-    "alt_r": "Alt",
-    "alt_gr": "AltGr",
-    "shift": "Shift",
-    "shift_l": "Shift",
-    "shift_r": "Shift",
-    "cmd": "Win",
-    "cmd_l": "Win",
-    "cmd_r": "Win",
-    "space": "Space",
-    "enter": "Enter",
-    "tab": "Tab",
-    "esc": "Esc",
-    "backspace": "Backspace",
-    "caps_lock": "Caps",
-    "plus": "+",
-}
-
 _BACKEND_SHORT = {
     "faster-whisper": "faster-whisper",
     "openvino": "OpenVINO",
     "parakeet": "Parakeet",
 }
-
-
-def pretty_keys(combo: str) -> list[str]:
-    """Human key-cap labels for a pynput combo ("<ctrl>+<alt>+<space>" →
-    ["Ctrl", "Alt", "Space"]). Unknown tokens pass through readably."""
-    combo = str(combo)
-    if not combo.strip():
-        return []
-    caps: list[str] = []
-    # A literal plus key is spelled "+" in pynput combos ("<ctrl>++" =
-    # Ctrl+Plus) — mask it before splitting on the "+" separator, or it would
-    # vanish from the key caps. A combo that is just "+" hits the fallback.
-    for part in combo.replace("++", "+<plus>").split("+"):
-        token = part.strip()
-        if token.startswith("<") and token.endswith(">"):
-            token = token[1:-1].strip()
-        if not token:
-            continue
-        caps.append(_PRETTY_KEYS.get(token.lower(), token.upper() if len(token) <= 3 else token.capitalize()))
-    return caps or [str(combo)]
 
 
 class _StatCard(QFrame):

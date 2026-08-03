@@ -34,7 +34,9 @@ standalone system-tray app that works in *every* application.
   brings the icon back automatically if Windows drops it (display sleep,
   monitor changes, explorer restarts).
 - **System tray app** — runs quietly in the background; icon shows
-  idle / recording / transcribing state. Only one instance runs at a time:
+  idle / recording / transcribing state and names your configured hotkey
+  ("Idle — press Ctrl+Alt+Space to record"), so a forgotten combination is a
+  hover away. Only one instance runs at a time:
   starting the app again simply brings the running instance's settings
   window to the front.
 - **Transcript history** — the transcribed text of each recording is kept
