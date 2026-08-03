@@ -59,6 +59,11 @@ class Tray:
         self._act_cancel.triggered.connect(lambda: app.post("cancel"))
         self._act_cancel.setVisible(False)
         menu.addAction(self._act_cancel)
+
+        act_copy = QAction("Copy last transcript", menu)
+        act_copy.setToolTip("Put the text of the most recent recording back on the clipboard.")
+        act_copy.triggered.connect(lambda: app.post("copy_last"))
+        menu.addAction(act_copy)
         menu.addSeparator()
 
         self._act_overlay = QAction("Show floating icon", menu)

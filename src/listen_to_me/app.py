@@ -176,6 +176,8 @@ class App:
             self.tray.set_state(self.state)  # refresh the "Show floating icon" tick
         elif kind == "cancel":
             self._cancel_recording()
+        elif kind == "copy_last":
+            self._copy_last_transcript()
         elif kind == "auto_stop":
             if self.state == STATE_RECORDING:
                 self.notify("Maximum recording length reached.")
@@ -383,6 +385,39 @@ class App:
                 self.notify(f"Transcription failed: {exc}", force=True)
         finally:
             self.post("done")
+
+    def _copy_last_transcript(self) -> None:
+        """Put the most recent transcript back on the clipboard.
+
+        Recovery in one click for the case the app already tells users about:
+        an insertion that failed, a paste that landed in the wrong window, a
+        transcript overwritten by the next copy. The alternative — open
+        Settings, walk the sidebar to History, find the entry, press its Copy
+        button — is four steps for the text the user just dictated.
+
+        Main thread only (posted as an event): the clipboard fallback is Qt's.
+        """
+        try:
+            text = self.history.latest()
+        except Exception:
+            log.exception("could not read the transcript history")
+            self.notify("Could not read the transcript history.", force=True)
+            return
+        if not text:
+            # Also the state right after "Keep a local history" was switched
+            # off — say what is missing instead of a silent no-op.
+            self.notify("No transcript in the history yet.", force=True)
+            return
+        from .qtutil import copy_to_clipboard
+
+        if copy_to_clipboard(text):
+            preview = text if len(text) <= 60 else text[:60].rstrip() + "…"
+            self.notify(f"Copied to the clipboard: {preview}")
+        else:
+            self.notify(
+                "Could not copy to the clipboard — open Settings → History to copy it there.",
+                force=True,
+            )
 
     def _live_preview_loop(self, recording_id: int) -> None:
         """Worker thread: periodically transcribe the audio captured so far

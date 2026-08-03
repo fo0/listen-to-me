@@ -163,6 +163,7 @@ class Overlay:
         self._menu = QMenu()
         self._menu.addAction("Start / stop recording", lambda: app.post("toggle"))
         self._menu.addAction("Cancel recording", lambda: app.post("cancel"))
+        self._menu.addAction("Copy last transcript", lambda: app.post("copy_last"))
         self._menu.addSeparator()
         self._menu.addAction("Settings…", lambda: app.post("settings"))
         self._menu.addAction("Hide floating icon", lambda: app.post("toggle_overlay"))

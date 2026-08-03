@@ -178,6 +178,62 @@ def _history_normalizes_entries():
         assert len(store.entries()) == 2
 
 
+def _history_latest_transcript():
+    """What the tray/overlay "Copy last transcript" hands to the clipboard: the
+    newest entry, "" when there is none (or the file is unreadable) — never an
+    exception into an event handler and never a stale value after an append."""
+    import json
+
+    from listen_to_me.history import TranscriptHistory
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "history.json"
+        store = TranscriptHistory(path)
+        assert store.latest() == ""  # nothing recorded yet
+        store.add("first")
+        store.add("second")
+        assert store.latest() == "second"
+        assert store.latest() == store.entries()[0]["text"]  # entries() is newest-first
+        # Same normalization as entries(): a corrupt tail entry is not "the
+        # last transcript", the newest usable one is.
+        path.write_text(
+            json.dumps([{"time": 1.0, "text": "kept"}, {"time": 2.0, "text": 42}]),
+            encoding="utf-8",
+        )
+        assert store.latest() == "kept"
+        path.write_text("{ truncated", encoding="utf-8")
+        assert store.latest() == ""
+
+
+def _clipboard_copy_falls_back_to_qt():
+    """pyperclip raises without xclip/xsel on Linux — the Qt clipboard then has
+    to take over, or every "Copy" button in the app silently does nothing on a
+    bare desktop. Only a failure of both paths may report False."""
+    from listen_to_me import qtutil
+
+    _ensure_qapp()
+    assert qtutil.copy_to_clipboard("") is False  # nothing to copy
+    assert qtutil.copy_to_clipboard("plain text") is True
+
+    class _Broken:
+        @staticmethod
+        def copy(_text):
+            raise RuntimeError("no clipboard mechanism available")
+
+    original = sys.modules.get("pyperclip")
+    sys.modules["pyperclip"] = _Broken
+    try:
+        assert qtutil.copy_to_clipboard("via Qt") is True
+        from PySide6.QtWidgets import QApplication
+
+        assert QApplication.clipboard().text() == "via Qt"
+    finally:
+        if original is None:
+            sys.modules.pop("pyperclip", None)
+        else:
+            sys.modules["pyperclip"] = original
+
+
 def _history_search_matching():
     """The History page's search rule: every term must appear, in any order and
     any case. An empty query must never hide anything."""
@@ -1905,6 +1961,7 @@ _LIGHT_CHECKS = [
     ("config survives corrupt sections", _config_survives_corrupt_sections),
     ("config guards scalar types", _config_guards_scalar_types),
     ("history normalizes entries", _history_normalizes_entries),
+    ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
@@ -1930,6 +1987,7 @@ _LIGHT_CHECKS = [
     ("hardware/status probes", _hardware_probes),
     ("help content renders", _help_content_renders),
     ("Qt icon conversion", _qt_icons),
+    ("clipboard copy falls back to Qt", _clipboard_copy_falls_back_to_qt),
     ("glyph icons render", _glyph_icons),
     ("keyboard focus stays visible", _theme_focus_visible),
     ("disabled buttons look disabled", _theme_disabled_visible),

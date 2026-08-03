@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from .choices import SYSTEM_DEFAULT_DEVICE, input_device_choices, language_label
 from .glyphs import glyph_icon
+from .qtutil import copy_to_clipboard
 
 log = logging.getLogger(__name__)
 
@@ -458,21 +459,7 @@ class HomePage(QWidget):
     def _copy(self, text: str, button: QPushButton) -> None:
         if not text:
             return
-        copied = False
-        try:
-            import pyperclip
-
-            pyperclip.copy(text)
-            copied = True
-        except Exception:
-            try:
-                from PySide6.QtWidgets import QApplication
-
-                QApplication.clipboard().setText(text)
-                copied = True
-            except Exception:
-                log.exception("could not copy transcript to clipboard")
-        if copied:
+        if copy_to_clipboard(text):
             button.setText("Copied ✓")
 
             def restore():
