@@ -92,6 +92,59 @@ def _config_survives_corrupt_sections():
         assert cfg["overlay"]["enabled"] == DEFAULTS["overlay"]["enabled"]
 
 
+def _config_guards_scalar_types():
+    """The section guard's little brother: a scalar of the wrong type must not
+    reach the code that uses it. `"history_max": "many"` used to raise inside
+    App.__init__ — before tray, overlay or any window existed — so the app just
+    never appeared. Plausible hand-edits (a quoted number) are repaired, the
+    rest falls back to that one option's default."""
+    import json
+
+    from listen_to_me.config import DEFAULTS, Config
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "history_max": "many",  # unusable → default
+                    "max_seconds": "120",  # quoted number → repaired
+                    "beam_size": 1.0,  # float for an int → repaired
+                    "notifications": 0,  # 0/1 for a bool → repaired
+                    "beep": "yes",  # unusable → default
+                    "hotkey": None,  # null where a value belongs → default
+                    "model": 3,  # number for a string → default
+                    "hotkey_mode": "hold",  # a valid sibling must still apply
+                    "overlay": {"preview_seconds": "9", "enabled": []},
+                    "input_device": 2,  # default is null → no type to check
+                    "model_dir": "/models",  # default is null → passed through
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        cfg = Config(path=path)
+        assert cfg["history_max"] == DEFAULTS["history_max"]
+        assert cfg["max_seconds"] == 120 and isinstance(cfg["max_seconds"], int)
+        assert cfg["beam_size"] == 1 and isinstance(cfg["beam_size"], int)
+        assert cfg["notifications"] is False
+        assert cfg["beep"] == DEFAULTS["beep"]
+        assert cfg["hotkey"] == DEFAULTS["hotkey"]
+        assert cfg["model"] == DEFAULTS["model"]
+        assert cfg["hotkey_mode"] == "hold"
+        assert cfg["overlay"]["preview_seconds"] == 9
+        assert cfg["overlay"]["enabled"] == DEFAULTS["overlay"]["enabled"]
+        assert cfg["input_device"] == 2
+        assert cfg["model_dir"] == "/models"
+        # A bool where a number belongs is a mistake, not a 1 (bool subclasses
+        # int) — and the repaired config must survive a save/reload cycle.
+        path.write_text(json.dumps({"beam_size": True}), encoding="utf-8")
+        cfg = Config(path=path)
+        assert cfg["beam_size"] == DEFAULTS["beam_size"]
+        cfg.save()
+        assert Config(path=path)["beam_size"] == DEFAULTS["beam_size"]
+
+
 def _history_normalizes_entries():
     """The history file is untrusted input and its text goes straight into a
     QLabel. Entries whose "text" is not a non-empty string are dropped, so no
@@ -1850,6 +1903,7 @@ _LIGHT_CHECKS = [
     ("config roundtrip", _config_roundtrip),
     ("config defaults", _config_defaults),
     ("config survives corrupt sections", _config_survives_corrupt_sections),
+    ("config guards scalar types", _config_guards_scalar_types),
     ("history normalizes entries", _history_normalizes_entries),
     ("history search matching", _history_search_matching),
     ("recorder start failure resets", _recorder_start_failure_resets),
