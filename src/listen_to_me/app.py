@@ -346,29 +346,49 @@ class App:
                 rest = sanitize_typed_text(text)
                 if pending:
                     rest = f"{pending} {rest}" if rest else pending
+                leftover = ""
                 if rest:
                     leftover = self.injector.type_plain_blocking(
                         (" " if typed_any else "") + rest
                     )
-                    if leftover:
+                if leftover:
+                    # Only the untyped remainder goes to the clipboard: pasting
+                    # the whole transcript would duplicate what was typed.
+                    if self._copy_for_recovery(leftover):
+                        self.notify(
+                            "A modifier key was held down — the rest of the transcript "
+                            "is on the clipboard, press Ctrl+V.",
+                            force=True,
+                        )
+                    else:
                         self.notify(
                             "A modifier key was held down — part of the transcript "
                             "was not typed. Copy it from Settings → History.",
                             force=True,
                         )
+                elif self.injector.clipboard_mode() == "always":
+                    # Live typing never touches the clipboard by itself.
+                    self.injector.copy_to_clipboard(full_text)
             else:
                 try:
                     self.injector.insert(text)
                 except Exception as exc:
                     # The transcript itself worked — say so instead of letting
                     # this surface as "Transcription failed", and point at the
-                    # history the text was just written to.
+                    # place the text can be recovered from.
                     log.exception("could not insert the transcript")
-                    self.notify(
-                        f"Could not insert the text ({exc}) — copy it from "
-                        "Settings → History.",
-                        force=True,
-                    )
+                    if self._copy_for_recovery(full_text):
+                        self.notify(
+                            f"Could not insert the text ({exc}) — it is on the "
+                            "clipboard, press Ctrl+V.",
+                            force=True,
+                        )
+                    else:
+                        self.notify(
+                            f"Could not insert the text ({exc}) — copy it from "
+                            "Settings → History.",
+                            force=True,
+                        )
             self.post("flash_text", full_text)
         except Exception as exc:
             log.exception("processing failed")
@@ -385,6 +405,19 @@ class App:
                 self.notify(f"Transcription failed: {exc}", force=True)
         finally:
             self.post("done")
+
+    def _copy_for_recovery(self, text: str) -> bool:
+        """Put a transcript the app could not insert on the clipboard, so it is
+        one Ctrl+V away instead of four clicks into Settings → History.
+
+        Returns whether it really got there — the caller words its notification
+        after it, because promising a clipboard that stayed empty is worse than
+        naming the history. Disabled by `clipboard_copy = "off"`; runs on the
+        processing thread, so it goes through the injector (pyperclip, no Qt).
+        """
+        if self.injector.clipboard_mode() == "off":
+            return False
+        return self.injector.copy_to_clipboard(text)
 
     def _copy_last_transcript(self) -> None:
         """Put the most recent transcript back on the clipboard.

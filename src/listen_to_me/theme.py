@@ -490,6 +490,13 @@ def _qss(t: dict) -> str:
     }}
     QCheckBox:focus, QRadioButton:focus {{ border-color: {ACCENT}; }}
     QCheckBox::indicator, QRadioButton::indicator {{ width: 17px; height: 17px; }}
+    /* The rule above switches check boxes to stylesheet rendering, and the
+       palette's Disabled group stops applying: a greyed-out option rendered
+       pixel-identically to a live one (same trap as the buttons below). The
+       app disables options that another setting overrules — "restore the
+       previous clipboard" under clipboard_copy = "always" — so it has to be
+       visible that they no longer apply. */
+    QCheckBox:disabled, QRadioButton:disabled {{ color: {t["disabled"]}; }}
 
     QScrollArea {{ border: none; background: transparent; }}
     QScrollBar:vertical {{ background: transparent; width: 11px; margin: 0; }}

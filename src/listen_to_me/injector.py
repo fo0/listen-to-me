@@ -6,6 +6,8 @@ import logging
 import sys
 import time
 
+from .choices import clipboard_copy_mode
+
 log = logging.getLogger(__name__)
 
 # Windows virtual-key codes of the keys that turn a typed character into a
@@ -50,7 +52,11 @@ class Injector:
     def __init__(self, cfg):
         self.cfg = cfg
 
-    def insert(self, text: str) -> None:
+    def clipboard_mode(self) -> str:
+        """The configured clipboard policy: "off", "on_failure" or "always"."""
+        return clipboard_copy_mode(self.cfg["clipboard_copy"])
+
+    def insert(self, text: str) -> bool:
         """Insert `text` at the cursor of whatever window has focus.
 
         Paste mode falls back to simulated typing when the clipboard can't be
@@ -58,20 +64,63 @@ class Injector:
         holding it open): the transcript already exists at that point, so
         dropping it because a clipboard write failed would be the worst
         possible outcome. Only a failure of both paths propagates.
+
+        Returns whether the transcript is on the clipboard afterwards — either
+        because paste mode left it there or because `clipboard_copy = "always"`
+        put it there on purpose.
         """
         if not text:
-            return
+            return False
+        keep = self.clipboard_mode() == "always"
         mode = self.cfg["injection_mode"]
+        on_clipboard = False
         if mode == "type":
             self._type(text)
         else:
             try:
-                self._paste(text)
+                on_clipboard = self._paste(text, keep=keep)
             except Exception:
                 log.exception("clipboard paste failed — falling back to typing")
                 self._type(text)
                 mode = "type (clipboard unavailable)"
-        log.info("inserted %d chars via %s", len(text), mode)
+        if keep and not on_clipboard:
+            # Typing mode, or a paste that fell back to it: the option promises
+            # the clipboard copy independently of how the text got inserted.
+            on_clipboard = self.copy_to_clipboard(text)
+        log.info(
+            "inserted %d chars via %s%s",
+            len(text),
+            mode,
+            " (kept on the clipboard)" if on_clipboard else "",
+        )
+        return on_clipboard
+
+    def copy_to_clipboard(self, text: str) -> bool:
+        """Put `text` on the clipboard and confirm it arrived; True when it did.
+
+        The worker-thread twin of `qtutil.copy_to_clipboard`: this runs on the
+        processing thread, so it must never touch Qt — pyperclip only, no
+        QApplication fallback. The write is read back because a successful
+        `copy()` only means the call returned: another application can own or
+        overwrite the clipboard in the same moment, and a clipboard that
+        silently didn't take the transcript is exactly the failure this option
+        exists to prevent — the caller tells the user which it was.
+        """
+        if not text:
+            return False
+        try:
+            import pyperclip
+
+            pyperclip.copy(text)
+            stored = pyperclip.paste()
+        except Exception:
+            log.exception("could not copy the transcript to the clipboard")
+            return False
+        # Windows hands back \r\n for the \n that went in — compare normalized.
+        if (stored or "").replace("\r\n", "\n") != text.replace("\r\n", "\n"):
+            log.warning("the clipboard did not take the transcript (%d chars)", len(text))
+            return False
+        return True
 
     def _type(self, text: str) -> None:
         from pynput.keyboard import Controller
@@ -122,12 +171,19 @@ class Injector:
             time.sleep(0.05)
         return ""
 
-    def _paste(self, text: str) -> None:
+    def _paste(self, text: str, keep: bool = False) -> bool:
+        """Copy the text, send Ctrl+V, restore the previous clipboard content.
+
+        Returns whether the transcript is still on the clipboard when this
+        returns. `keep` (clipboard_copy = "always") suppresses the restore:
+        putting the old content back would undo exactly what that option
+        promises, so the two settings must not fight over the clipboard.
+        """
         import pyperclip
         from pynput.keyboard import Controller, Key
 
         previous = None
-        if self.cfg["restore_clipboard"]:
+        if self.cfg["restore_clipboard"] and not keep:
             try:
                 previous = pyperclip.paste()
             except Exception:
@@ -146,5 +202,7 @@ class Injector:
             time.sleep(0.3)  # let the target application read the clipboard first
             try:
                 pyperclip.copy(previous)
+                return False
             except Exception:
                 log.debug("could not restore clipboard", exc_info=True)
+        return True

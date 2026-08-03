@@ -36,7 +36,7 @@ Qt, `sounddevice`, `pynput`, `faster_whisper`, `numpy` are imported **inside** f
 
 - **`singleinstance.py`** — Qt-free single-instance guard: named kernel mutex on Windows / `flock` file in the config dir on POSIX. A TCP-port lock was unreliable on Windows port-exclusion ranges; port 52697 remains only as the activation channel through which a second launch pings the running instance, which then notifies, re-asserts the overlay and opens Settings.
 - **`hotkeys.py`** — global hotkey, toggle/hold.
-- **`injector.py`** — paste/type at cursor + `sanitize_typed_text`/`type_plain` (modifier-guarded plain-text typing). `insert` falls back from paste to typing when the clipboard is unusable, so a finished transcript is never lost to a clipboard error.
+- **`injector.py`** — paste/type at cursor + `sanitize_typed_text`/`type_plain` (modifier-guarded plain-text typing). `insert` falls back from paste to typing when the clipboard is unusable, so a finished transcript is never lost to a clipboard error. Config key `clipboard_copy` (`on_failure`/`always`/`off`) decides whether the transcript *also* lands on the clipboard; `always` suppresses `restore_clipboard`, and `copy_to_clipboard` is the worker-thread (pyperclip-only, read-back-verified) twin of `qtutil.copy_to_clipboard`.
 - **`livetype.py`** — experimental live typing: a per-take worker types transcript segments at the cursor *while* recording once two consecutive preview passes agree on them — append-only, sanitized plain text only, pauses while Ctrl/Alt/Shift/Win is held. Config key `live_typing`, faster-whisper backend only, gated in hold mode via `Hotkeys.combo_flags`.
 - **`integrations.py`** — mute Discord/Teams/… while recording.
 - **`assistant.py`** — optional OpenAI-compatible post-processing.

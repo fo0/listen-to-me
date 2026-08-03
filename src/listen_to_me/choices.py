@@ -95,6 +95,14 @@ OPENVINO_DEVICES = ["auto", "cpu", "gpu", "npu"]
 OPENVINO_PRECISIONS = ["int8", "fp16", "int4"]
 PARAKEET_QUANTIZATIONS = ["int8", "fp32"]
 
+# What happens to a finished transcript *besides* being inserted at the cursor.
+# (config value, label shown in the dropdown)
+CLIPBOARD_COPY_MODES = [
+    ("on_failure", "Only when inserting at the cursor fails (recommended)"),
+    ("always", "Always — every transcript also stays on the clipboard"),
+    ("off", "Never — only insert at the cursor"),
+]
+
 SYSTEM_DEFAULT_DEVICE = "System default"
 
 
@@ -122,6 +130,28 @@ def backend_label(backend: str) -> str:
     return backend
 
 
+def clipboard_copy_mode(value: str) -> str:
+    """`value` narrowed to a clipboard mode this code knows.
+
+    config.json is untrusted input, and the modes differ in what they promise:
+    an unrecognised string must fall back to the default safety net, never to
+    "off" — that would leave a failed insertion with nowhere to recover from
+    while the settings dropdown still shows something else.
+    """
+    for mode, _ in CLIPBOARD_COPY_MODES:
+        if value == mode:
+            return mode
+    log.warning("unknown clipboard_copy value %r — using %r", value, CLIPBOARD_COPY_MODES[0][0])
+    return CLIPBOARD_COPY_MODES[0][0]
+
+
+def clipboard_copy_label(mode: str) -> str:
+    for value, label in CLIPBOARD_COPY_MODES:
+        if value == mode:
+            return label
+    return CLIPBOARD_COPY_MODES[0][1]
+
+
 # ------------------------------------------------------- label -> value
 
 
@@ -146,6 +176,13 @@ def backend_from_label(label: str) -> str:
         if label == full_label:
             return backend
     return "faster-whisper"
+
+
+def clipboard_copy_from_label(label: str) -> str:
+    for mode, full_label in CLIPBOARD_COPY_MODES:
+        if label == full_label:
+            return mode
+    return CLIPBOARD_COPY_MODES[0][0]
 
 
 def input_device_from_label(label: str) -> int | None:

@@ -73,6 +73,13 @@ DEFAULTS: dict = {
     # text, but typed text can't be taken back). faster-whisper backend only;
     # in hold mode only for hotkeys without modifiers (e.g. <f9>).
     "live_typing": False,
+    # Whether a finished transcript also goes to the clipboard:
+    # "on_failure" (default) = only when it could not be inserted at the cursor,
+    # so it can be pasted manually instead of being fetched from the history;
+    # "always" = every transcript stays on the clipboard (this suppresses
+    # restore_clipboard — putting the old content back would undo it);
+    # "off" = never touch the clipboard beyond what paste mode needs.
+    "clipboard_copy": "on_failure",
     "restore_clipboard": True,
     "notifications": True,
     "beep": True,
