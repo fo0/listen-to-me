@@ -67,6 +67,16 @@ class TranscriptHistory:
         with self._lock:
             return list(reversed(self._load()))
 
+    def latest(self) -> str:
+        """The text of the most recent transcript, or "" when there is none.
+
+        Read from the file rather than a cached value: the recording worker
+        appends here while the main thread (tray → "Copy last transcript")
+        reads, and the file is the single source both already agree on."""
+        with self._lock:
+            entries = self._load()
+        return entries[-1]["text"] if entries else ""
+
     def clear(self) -> None:
         with self._lock:
             self._save([])

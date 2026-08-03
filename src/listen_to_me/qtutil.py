@@ -1,6 +1,7 @@
 """Small Qt helpers: bridge the Pillow-drawn icons (icons.py) into Qt
-pixmaps/icons, the wheel guard for value widgets on scrollable pages, and
-the width cap for combo boxes with unbounded item texts.
+pixmaps/icons, the wheel guard for value widgets on scrollable pages, the
+width cap for combo boxes with unbounded item texts, and the one clipboard
+path every "Copy" in the app uses.
 
 Kept separate from icons.py so that module stays Qt-free (the packaging
 self-test and make_icon.py import it without pulling in PySide6).
@@ -8,10 +9,14 @@ self-test and make_icon.py import it without pulling in PySide6).
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtGui import QIcon, QImage, QPixmap
 
 from .icons import mic_image
+
+log = logging.getLogger(__name__)
 
 
 class _WheelGuard(QObject):
@@ -105,6 +110,37 @@ def elastic_label(*labels, min_chars: int = 24) -> None:
         policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
         label.setSizePolicy(policy)
         label.setMinimumWidth(min_chars * label.fontMetrics().averageCharWidth())
+
+
+def copy_to_clipboard(text: str) -> bool:
+    """Put `text` on the system clipboard; True when it got there.
+
+    Two backends because either one alone loses transcripts: pyperclip works
+    without a Qt clipboard owner (and is what the paste injection already
+    uses), but needs `xclip`/`xsel` on Linux and raises without them; Qt's own
+    clipboard has no such requirement but is bound to this process. Trying the
+    second when the first raises means a "Copy" only fails when both do — and
+    then it says so (the caller reports it) instead of looking like it worked.
+
+    Qt main thread only: the fallback touches QApplication.
+    """
+    if not text:
+        return False
+    try:
+        import pyperclip
+
+        pyperclip.copy(text)
+        return True
+    except Exception:
+        log.debug("pyperclip clipboard write failed — trying Qt", exc_info=True)
+    try:
+        from PySide6.QtWidgets import QApplication
+
+        QApplication.clipboard().setText(text)
+        return True
+    except Exception:
+        log.exception("could not copy text to the clipboard")
+        return False
 
 
 def pil_to_pixmap(img) -> QPixmap:

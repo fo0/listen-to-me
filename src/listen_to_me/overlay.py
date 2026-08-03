@@ -26,6 +26,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QLabel, QMenu, QVBoxLayout, QWidget
 
 from .audio import SAMPLE_RATE, band_levels
+from .keymap import hotkey_label
 from .voice_mic_widget import VoiceMicWidget
 
 log = logging.getLogger(__name__)
@@ -45,6 +46,18 @@ _STATE_LABELS = {
     "recording": "Recording… click again to stop",
     "processing": "Transcribing…",
 }
+
+
+def _idle_label(cfg) -> str:
+    """The idle tooltip, naming the configured combination when it renders —
+    the floating icon is as likely a place to look up a forgotten hotkey as
+    the tray is."""
+    try:
+        combo = hotkey_label(cfg["hotkey"])
+    except Exception:
+        log.debug("could not render the hotkey for the overlay tooltip", exc_info=True)
+        return _STATE_LABELS["idle"]
+    return f"Idle — click or press {combo} to record" if combo else _STATE_LABELS["idle"]
 
 _WIN_FLAGS = (
     Qt.WindowType.FramelessWindowHint
@@ -136,7 +149,7 @@ class Overlay:
         self.state = "idle"
 
         self.win = _FloatingIcon(self)
-        self.win.setToolTip(_STATE_LABELS["idle"] + "\nDrag to move • right-click for menu")
+        self.win.setToolTip(_idle_label(app.cfg) + "\nDrag to move • right-click for menu")
 
         self.bubble = _Bubble()
 
@@ -163,6 +176,7 @@ class Overlay:
         self._menu = QMenu()
         self._menu.addAction("Start / stop recording", lambda: app.post("toggle"))
         self._menu.addAction("Cancel recording", lambda: app.post("cancel"))
+        self._menu.addAction("Copy last transcript", lambda: app.post("copy_last"))
         self._menu.addSeparator()
         self._menu.addAction("Settings…", lambda: app.post("settings"))
         self._menu.addAction("Hide floating icon", lambda: app.post("toggle_overlay"))
@@ -246,9 +260,8 @@ class Overlay:
 
     def set_state(self, state: str) -> None:
         self.state = state
-        self.win.setToolTip(
-            _STATE_LABELS.get(state, state) + "\nDrag to move • right-click for menu"
-        )
+        label = _idle_label(self.app.cfg) if state == "idle" else _STATE_LABELS.get(state, state)
+        self.win.setToolTip(label + "\nDrag to move • right-click for menu")
         self.win.mic.set_recording(state == "recording")
         self.win.mic.set_processing(state == "processing")
         if state == "recording":

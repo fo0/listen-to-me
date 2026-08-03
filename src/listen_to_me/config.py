@@ -189,6 +189,52 @@ def config_dir() -> Path:
     return base / "listen-to-me"
 
 
+def _coerce(key: str, default, value):
+    """`value` narrowed to the type its default implies — or `default` when the
+    stored value cannot be used at all.
+
+    Same reasoning as the section guard in `_merge`, one level down: a scalar of
+    the wrong type slips through the merge just as far and fails much later,
+    where nothing can report it. ``"history_max": "many"`` raises inside
+    ``App.__init__`` — before the tray, the overlay or any window exists — so
+    the app simply never appears and only the log file says why. Repairing the
+    plausible hand-edits (a quoted number) and falling back to the default for
+    everything else keeps a broken value to the one option it belongs to.
+
+    A default of ``None`` carries no type information (``model_dir``,
+    ``input_device``, ``overlay.x/y`` accept null *and* a value), so anything
+    stored under such a key is passed through unchanged.
+    """
+    if default is None:
+        return value
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return value
+        # 0/1 from a hand-edit is unambiguous; nothing else is.
+        if isinstance(value, int) and value in (0, 1):
+            return bool(value)
+    elif isinstance(default, (int, float)):
+        # bool is an int subclass — `true` where a number belongs is a mistake,
+        # not a 1, so it must not sneak through the isinstance checks below.
+        if isinstance(value, bool):
+            pass
+        elif isinstance(value, (int, float)):
+            return type(default)(value)
+        elif isinstance(value, str):
+            # "300" instead of 300 is the classic hand-edit; keep the value.
+            try:
+                return type(default)(value.strip())
+            except ValueError:
+                pass
+    elif isinstance(value, type(default)):
+        return value
+    log.warning(
+        "config key %r is %s, expected %s — keeping the default %r",
+        key, type(value).__name__, type(default).__name__, default,
+    )
+    return default
+
+
 def _merge(base: dict, override: dict) -> dict:
     """Deep-merge `override` into `base` (the defaults), so new keys appear on
     upgrade without touching what the user configured.
@@ -197,7 +243,8 @@ def _merge(base: dict, override: dict) -> dict:
     would replace a whole nested section (overlay/assistant/integrations) with
     a scalar, and code like ``cfg["overlay"]["enabled"]`` then raises during
     startup — before any UI exists to report it. A hand-edited or truncated
-    config.json must cost at most the affected section, never the app.
+    config.json must cost at most the affected section, never the app. Scalars
+    are type-checked against their default by `_coerce` for the same reason.
     """
     for key, value in override.items():
         if isinstance(base.get(key), dict):
@@ -208,7 +255,12 @@ def _merge(base: dict, override: dict) -> dict:
                     "config key %r is %s, expected an object — keeping the defaults",
                     key, type(value).__name__,
                 )
+        elif key in base:
+            base[key] = _coerce(key, base[key], value)
         else:
+            # A key the defaults don't know (an option of an older build, or a
+            # typo): kept verbatim — there is no type to check it against, and
+            # nothing reads it.
             base[key] = value
     return base
 

@@ -64,7 +64,7 @@ from .diagnostics import DiagnosticsEngine
 from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
-from .qtutil import elastic_combo, elastic_label, guard_wheel
+from .qtutil import copy_to_clipboard, elastic_combo, elastic_label, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -2405,21 +2405,7 @@ class SettingsWindow(QDialog):
     def _copy_history(self, text: str, button: QPushButton) -> None:
         if not text:
             return
-        copied = False
-        try:
-            import pyperclip
-
-            pyperclip.copy(text)
-            copied = True
-        except Exception:
-            try:
-                from PySide6.QtWidgets import QApplication
-
-                QApplication.clipboard().setText(text)
-                copied = True
-            except Exception:
-                log.exception("could not copy transcript to clipboard")
-        if copied:
+        if copy_to_clipboard(text):
             button.setText("Copied ✓")
 
             def restore():

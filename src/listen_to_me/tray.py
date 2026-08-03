@@ -10,6 +10,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from . import APP_NAME, REPO_URL
+from .keymap import hotkey_label
 from .qtutil import tray_icon
 
 log = logging.getLogger(__name__)
@@ -26,6 +27,35 @@ _STATE_LABELS = {
 }
 
 
+def state_label(state: str, cfg) -> str:
+    """The tray's one-line status, naming the combination that acts on it.
+
+    "Press the hotkey" is the one thing the tray can't assume the user knows:
+    it is configurable, it was chosen once in a wizard, and the tray icon is
+    exactly where someone looks after forgetting it. Spelling it out costs a
+    lookup per state change and saves opening the settings window.
+
+    Falls back to the generic wording when the combination can't be rendered
+    (an empty or unusable `hotkey` in the config) — never to a raw pynput
+    token in the middle of a sentence.
+    """
+    generic = _STATE_LABELS.get(state, state)
+    if state not in ("idle", "recording"):
+        return generic
+    try:
+        combo = hotkey_label(cfg["hotkey"])
+        hold = cfg["hotkey_mode"] == "hold"
+    except Exception:
+        log.debug("could not render the hotkey for the tray status", exc_info=True)
+        return generic
+    if not combo:
+        return generic
+    if state == "recording":
+        # Hold mode stops on release, so "press it again" would be wrong.
+        return f"Recording… {'release' if hold else 'press'} {combo} to stop"
+    return f"Idle — press {combo} to record"
+
+
 class Tray:
     def __init__(self, app):
         self.app = app
@@ -40,13 +70,14 @@ class Tray:
 
     def start(self) -> None:
         app = self.app
+        idle_label = state_label("idle", app.cfg)
         self._icon = QSystemTrayIcon(tray_icon("idle"))
-        self._icon.setToolTip(f"{APP_NAME} — {_STATE_LABELS['idle']}")
+        self._icon.setToolTip(f"{APP_NAME} — {idle_label}")
 
         menu = QMenu()
         self._menu = menu
 
-        self._act_state = QAction(_STATE_LABELS["idle"], menu)
+        self._act_state = QAction(idle_label, menu)
         self._act_state.setEnabled(False)
         menu.addAction(self._act_state)
         menu.addSeparator()
@@ -59,6 +90,11 @@ class Tray:
         self._act_cancel.triggered.connect(lambda: app.post("cancel"))
         self._act_cancel.setVisible(False)
         menu.addAction(self._act_cancel)
+
+        act_copy = QAction("Copy last transcript", menu)
+        act_copy.setToolTip("Put the text of the most recent recording back on the clipboard.")
+        act_copy.triggered.connect(lambda: app.post("copy_last"))
+        menu.addAction(act_copy)
         menu.addSeparator()
 
         self._act_overlay = QAction("Show floating icon", menu)
@@ -153,7 +189,9 @@ class Tray:
     def set_state(self, state: str) -> None:
         if self._icon is None:
             return
-        label = _STATE_LABELS.get(state, state)
+        # Rebuilt on every state change rather than cached, so a hotkey changed
+        # in the settings shows up here as soon as apply_settings() calls in.
+        label = state_label(state, self.app.cfg)
         self._icon.setIcon(tray_icon(state))
         self._icon.setToolTip(f"{APP_NAME} — {label}")
         self._act_state.setText(label)

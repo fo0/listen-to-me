@@ -34,13 +34,17 @@ standalone system-tray app that works in *every* application.
   brings the icon back automatically if Windows drops it (display sleep,
   monitor changes, explorer restarts).
 - **System tray app** — runs quietly in the background; icon shows
-  idle / recording / transcribing state. Only one instance runs at a time:
+  idle / recording / transcribing state and names your configured hotkey
+  ("Idle — press Ctrl+Alt+Space to record"), so a forgotten combination is a
+  hover away. Only one instance runs at a time:
   starting the app again simply brings the running instance's settings
   window to the front.
 - **Transcript history** — the transcribed text of each recording is kept
   locally (never the audio) so you can copy it again from **Settings → History**
   if a paste is lost. Searchable, bounded in size, and easy to switch off or
-  clear.
+  clear. The newest one is a single click away: **Copy last transcript** in the
+  tray menu and in the floating icon's right-click menu puts it straight back
+  on the clipboard.
 - **Home hub** — the main window opens on a **Home page**: the live recording
   state with a big **Start/Stop** button (red while recording), your hotkey
   shown as key caps, at-a-glance cards for the active engine/model, language

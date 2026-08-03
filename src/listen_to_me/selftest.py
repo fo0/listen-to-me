@@ -92,6 +92,59 @@ def _config_survives_corrupt_sections():
         assert cfg["overlay"]["enabled"] == DEFAULTS["overlay"]["enabled"]
 
 
+def _config_guards_scalar_types():
+    """The section guard's little brother: a scalar of the wrong type must not
+    reach the code that uses it. `"history_max": "many"` used to raise inside
+    App.__init__ — before tray, overlay or any window existed — so the app just
+    never appeared. Plausible hand-edits (a quoted number) are repaired, the
+    rest falls back to that one option's default."""
+    import json
+
+    from listen_to_me.config import DEFAULTS, Config
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "history_max": "many",  # unusable → default
+                    "max_seconds": "120",  # quoted number → repaired
+                    "beam_size": 1.0,  # float for an int → repaired
+                    "notifications": 0,  # 0/1 for a bool → repaired
+                    "beep": "yes",  # unusable → default
+                    "hotkey": None,  # null where a value belongs → default
+                    "model": 3,  # number for a string → default
+                    "hotkey_mode": "hold",  # a valid sibling must still apply
+                    "overlay": {"preview_seconds": "9", "enabled": []},
+                    "input_device": 2,  # default is null → no type to check
+                    "model_dir": "/models",  # default is null → passed through
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        cfg = Config(path=path)
+        assert cfg["history_max"] == DEFAULTS["history_max"]
+        assert cfg["max_seconds"] == 120 and isinstance(cfg["max_seconds"], int)
+        assert cfg["beam_size"] == 1 and isinstance(cfg["beam_size"], int)
+        assert cfg["notifications"] is False
+        assert cfg["beep"] == DEFAULTS["beep"]
+        assert cfg["hotkey"] == DEFAULTS["hotkey"]
+        assert cfg["model"] == DEFAULTS["model"]
+        assert cfg["hotkey_mode"] == "hold"
+        assert cfg["overlay"]["preview_seconds"] == 9
+        assert cfg["overlay"]["enabled"] == DEFAULTS["overlay"]["enabled"]
+        assert cfg["input_device"] == 2
+        assert cfg["model_dir"] == "/models"
+        # A bool where a number belongs is a mistake, not a 1 (bool subclasses
+        # int) — and the repaired config must survive a save/reload cycle.
+        path.write_text(json.dumps({"beam_size": True}), encoding="utf-8")
+        cfg = Config(path=path)
+        assert cfg["beam_size"] == DEFAULTS["beam_size"]
+        cfg.save()
+        assert Config(path=path)["beam_size"] == DEFAULTS["beam_size"]
+
+
 def _history_normalizes_entries():
     """The history file is untrusted input and its text goes straight into a
     QLabel. Entries whose "text" is not a non-empty string are dropped, so no
@@ -123,6 +176,62 @@ def _history_normalizes_entries():
         assert [e["text"] for e in store.entries()] == ["second", "kept"]
         store.add("second")  # exact consecutive duplicate → ignored
         assert len(store.entries()) == 2
+
+
+def _history_latest_transcript():
+    """What the tray/overlay "Copy last transcript" hands to the clipboard: the
+    newest entry, "" when there is none (or the file is unreadable) — never an
+    exception into an event handler and never a stale value after an append."""
+    import json
+
+    from listen_to_me.history import TranscriptHistory
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "history.json"
+        store = TranscriptHistory(path)
+        assert store.latest() == ""  # nothing recorded yet
+        store.add("first")
+        store.add("second")
+        assert store.latest() == "second"
+        assert store.latest() == store.entries()[0]["text"]  # entries() is newest-first
+        # Same normalization as entries(): a corrupt tail entry is not "the
+        # last transcript", the newest usable one is.
+        path.write_text(
+            json.dumps([{"time": 1.0, "text": "kept"}, {"time": 2.0, "text": 42}]),
+            encoding="utf-8",
+        )
+        assert store.latest() == "kept"
+        path.write_text("{ truncated", encoding="utf-8")
+        assert store.latest() == ""
+
+
+def _clipboard_copy_falls_back_to_qt():
+    """pyperclip raises without xclip/xsel on Linux — the Qt clipboard then has
+    to take over, or every "Copy" button in the app silently does nothing on a
+    bare desktop. Only a failure of both paths may report False."""
+    from listen_to_me import qtutil
+
+    _ensure_qapp()
+    assert qtutil.copy_to_clipboard("") is False  # nothing to copy
+    assert qtutil.copy_to_clipboard("plain text") is True
+
+    class _Broken:
+        @staticmethod
+        def copy(_text):
+            raise RuntimeError("no clipboard mechanism available")
+
+    original = sys.modules.get("pyperclip")
+    sys.modules["pyperclip"] = _Broken
+    try:
+        assert qtutil.copy_to_clipboard("via Qt") is True
+        from PySide6.QtWidgets import QApplication
+
+        assert QApplication.clipboard().text() == "via Qt"
+    finally:
+        if original is None:
+            sys.modules.pop("pyperclip", None)
+        else:
+            sys.modules["pyperclip"] = original
 
 
 def _history_search_matching():
@@ -1292,6 +1401,31 @@ class _StubHotkeys:
         self.running = False
 
 
+def _tray_names_the_hotkey():
+    """The tray status spells the configured combination out instead of saying
+    "the hotkey" — including after it was changed in the settings, and with the
+    right verb for hold mode. An unusable combo falls back to the generic
+    wording, never to a raw pynput token in a sentence."""
+    from listen_to_me.tray import _STATE_LABELS, state_label
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        assert state_label("idle", stub.cfg) == "Idle — press Ctrl+Alt+Space to record"
+        assert state_label("recording", stub.cfg) == "Recording… press Ctrl+Alt+Space to stop"
+        assert state_label("processing", stub.cfg) == _STATE_LABELS["processing"]
+
+        stub.cfg["hotkey"] = "<f9>"
+        stub.cfg["hotkey_mode"] = "hold"
+        # Hold mode stops on release — "press it again" would be wrong.
+        assert state_label("recording", stub.cfg) == "Recording… release F9 to stop"
+        assert state_label("idle", stub.cfg) == "Idle — press F9 to record"
+
+        stub.cfg["hotkey"] = ""  # nothing to name → generic wording
+        assert state_label("idle", stub.cfg) == _STATE_LABELS["idle"]
+        assert state_label("recording", stub.cfg) == _STATE_LABELS["recording"]
+        assert state_label("nonsense", stub.cfg) == "nonsense"
+
+
 def _tray_survives_a_missing_notification_area():
     """Started by the OS autostart, the app can be up before the shell is: the
     tray icon is dropped and Qt still reports it visible. Tray.start() must keep
@@ -1357,7 +1491,7 @@ def _gui_construction():
         # set_app_state). isHidden() not isVisible(): the window isn't shown.
         from PySide6.QtWidgets import QLabel
 
-        from listen_to_me.home_page import pretty_keys
+        from listen_to_me.keymap import pretty_keys
 
         assert pretty_keys("<ctrl>+<alt>+<space>") == ["Ctrl", "Alt", "Space"]
         assert pretty_keys("<f9>") == ["F9"]
@@ -1850,7 +1984,9 @@ _LIGHT_CHECKS = [
     ("config roundtrip", _config_roundtrip),
     ("config defaults", _config_defaults),
     ("config survives corrupt sections", _config_survives_corrupt_sections),
+    ("config guards scalar types", _config_guards_scalar_types),
     ("history normalizes entries", _history_normalizes_entries),
+    ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
@@ -1876,10 +2012,12 @@ _LIGHT_CHECKS = [
     ("hardware/status probes", _hardware_probes),
     ("help content renders", _help_content_renders),
     ("Qt icon conversion", _qt_icons),
+    ("clipboard copy falls back to Qt", _clipboard_copy_falls_back_to_qt),
     ("glyph icons render", _glyph_icons),
     ("keyboard focus stays visible", _theme_focus_visible),
     ("disabled buttons look disabled", _theme_disabled_visible),
     ("voice mic widget", _voice_mic_widget),
+    ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("Qt UI construction", _gui_construction),
 ]
