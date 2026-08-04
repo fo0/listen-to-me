@@ -196,6 +196,90 @@ def input_device_from_label(label: str) -> int | None:
         return None
 
 
+# Ready-made mute targets for the apps people actually dictate next to, so the
+# keybind doesn't have to be looked up. Ships as the default target list (all
+# disabled) and backs the "Add app" menu on the Integrations page.
+#
+# `note` is the part that a bare key combination can't carry: this feature
+# synthesizes an app's *global* mute keybind, and most of these apps only listen
+# for theirs while their own window has focus. An app-local shortcut would make
+# the target a silent no-op — so each preset says what it still needs. Discord
+# is the only one that works untouched, which is why it comes first.
+#
+# Display-only, and deliberately not stored in config.json: `mute_preset_note`
+# looks it up by name, so the config schema stays name/enabled/mode/hotkey.
+MUTE_PRESETS = [
+    {
+        "name": "Discord",
+        "hotkey": "<ctrl>+<shift>+m",
+        "mode": "toggle",
+        "note": "Discord's built-in Toggle Mute keybind — global already, nothing "
+                "to set up. For push-to-mute instead, bind a “Push to Mute” key "
+                "under User Settings → Keybinds and switch the mode above.",
+    },
+    {
+        "name": "Zoom",
+        "hotkey": "<alt>+a",
+        "mode": "toggle",
+        "note": "Zoom's mute shortcut. Tick Settings → Keyboard Shortcuts → "
+                "“Enable Global Shortcut” next to it, or Zoom only reacts while "
+                "its own window has focus.",
+    },
+    {
+        "name": "Slack",
+        "hotkey": "<ctrl>+<shift>+<space>",
+        "mode": "toggle",
+        "note": "Mutes a Slack huddle. Turn on Preferences → Audio & video → "
+                "“When Slack is in the background: allow keyboard shortcut to "
+                "mute”, or it only works while Slack has focus.",
+    },
+    {
+        "name": "Microsoft Teams",
+        "hotkey": "<ctrl>+<shift>+m",
+        "mode": "toggle",
+        "note": "Teams' mute shortcut — but Teams only reacts while its own "
+                "window has focus, and offers no global keybind at all. On "
+                "Windows 11, Win+Alt+K mutes the call system-wide instead: enter "
+                "it here as <cmd>+<alt>+k and test it before relying on it.",
+    },
+    {
+        "name": "OBS Studio",
+        "hotkey": "",
+        "mode": "hold",
+        "note": "OBS ships no mute hotkey — set one under Settings → Hotkeys at "
+                "your Mic/Aux source (“Push-to-mute” for this mode, or the same "
+                "key on both “Mute” and “Unmute” for Toggle) and copy it here. "
+                "OBS hotkeys are global, so it works once a key is set.",
+    },
+]
+
+
+def mute_preset_note(name: str) -> str:
+    """The setup note for a preset target, matched by name — "" for a custom or
+    renamed entry, which simply shows no note."""
+    wanted = (name or "").strip().casefold()
+    for preset in MUTE_PRESETS:
+        if preset["name"].casefold() == wanted:
+            return preset["note"]
+    return ""
+
+
+def default_mute_targets() -> list[dict]:
+    """The presets as fresh config entries, all disabled: every one of them
+    needs the matching keybind to exist in the target app, and half of them need
+    a setting turned on there first. Enabling any by default would mute — or
+    silently fail to mute — without the user ever choosing it."""
+    return [
+        {
+            "name": preset["name"],
+            "enabled": False,
+            "mode": preset["mode"],
+            "hotkey": preset["hotkey"],
+        }
+        for preset in MUTE_PRESETS
+    ]
+
+
 def input_device_choices(current_index: int | None = None) -> tuple[list[str], str]:
     """Labels for the input-device dropdown and the entry to preselect for
     `current_index`. An enumeration failure yields an inline error entry

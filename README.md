@@ -80,11 +80,12 @@ standalone system-tray app that works in *every* application.
   OpenAI-compatible API (local **Ollama**, LM Studio, llama.cpp, OpenWebUI, or a
   hosted service) with a **freely editable system prompt** (a sensible default
   is built in, one click restores it).
-- **Mute other apps while dictating** — optionally mute **Discord** (Teams, OBS,
-  any app with a global mute keybind) for exactly the duration of a recording,
-  so your dictation isn't transmitted into a voice call, then restored when you
-  stop. Works via the app's own **push-to-mute / toggle-mute** keybind — no API
-  or account needed.
+- **Mute other apps while dictating** — optionally mute **Discord, Zoom, Slack,
+  Teams, OBS** (or any app with a global mute keybind) for exactly the duration
+  of a recording, so your dictation isn't transmitted into a voice call, then
+  restored when you stop. Works via the app's own **push-to-mute / toggle-mute**
+  keybind — no API or account needed — and ready-made presets bring each app's
+  documented keybind along, so there is nothing to look up.
 - **First-run setup wizard** — the very first launch walks you through the
   essentials (hotkey, language, model, backend + device, microphone, startup
   behaviour); everything stays changeable in Settings later.
@@ -220,7 +221,7 @@ settings window writes the same keys.
 | `assistant.system_prompt` | *(built-in default)* | Cleanup prompt, editable in Settings (one click restores it) |
 | `assistant.temperature` / `assistant.timeout` | `0.2` / `120` | Sampling temperature and request timeout in seconds |
 | `integrations.mute_while_recording` | `false` | Master switch for muting other apps while recording |
-| `integrations.targets` | Discord, disabled | Per-app entries: `name`, `enabled`, `mode` (`hold`/`toggle`), `hotkey` |
+| `integrations.targets` | 5 presets, all disabled | Per-app entries: `name`, `enabled`, `mode` (`hold`/`toggle`), `hotkey` |
 
 ### Choosing a Whisper model
 
@@ -275,9 +276,23 @@ up by that call too. The **Integrations** page can mute other apps for exactly
 the time you are recording and restore them when you stop.
 
 It uses the target app's own **global mute keybind** — no API, account or
-vendor approval is required, so it works with **Discord**, Microsoft Teams, OBS
-or anything else that exposes such a keybind. Set the *same* key combination in
-both places:
+vendor approval is required, so it works with anything that exposes such a
+keybind. The **Add app** menu comes with the common ones ready-made, each with
+that app's documented mute keybind already filled in:
+
+| Preset | Keybind | Works from another window? |
+| --- | --- | --- |
+| **Discord** | `Ctrl+Shift+M` (Toggle Mute) | ✅ Yes, nothing to set up |
+| **Zoom** | `Alt+A` | Only after ticking *Settings → Keyboard Shortcuts → Enable Global Shortcut* |
+| **Slack** | `Ctrl+Shift+Space` (huddle) | Only after enabling *Preferences → Audio & video → allow keyboard shortcut to mute* |
+| **Microsoft Teams** | `Ctrl+Shift+M` | ❌ Teams reacts only while focused — no global keybind exists. On Windows 11 try `Win+Alt+K` (`<cmd>+<alt>+k`) |
+| **OBS Studio** | — | OBS ships no default; set one under *Settings → Hotkeys* at your Mic/Aux source, then copy it here |
+
+Every preset ships **disabled** and repeats its caveat in the app, right under
+the row — because a keybind an app only honours while it has focus would do
+nothing at all here, silently. Discord is the one that just works.
+
+To set an app up manually, the same combination has to exist in both places:
 
 1. In the app, bind a key to mute. In Discord: **User Settings → Keybinds → Add
    a Keybind** and choose either **Push to Mute** or **Toggle Mute**, then press
@@ -296,18 +311,26 @@ hotkey is refused; one that merely shares keys with it (Discord's default
 `Ctrl+Shift+M` next to the default `Ctrl+Alt+Space`) is fine — the keybind is
 sent a moment after you let the hotkey go, because the target app reads the
 same keyboard you are still holding. Add as many apps as you like; the master
-switch turns the whole feature off without losing your entries. Both the `mute_while_recording` master switch and the bundled
-**Discord entry ship disabled by default** — turn the switch on, set your
-keybind, then enable the entry (as shown):
+switch turns the whole feature off without losing your entries. Two apps that
+share a keybind (Discord and Teams both default to `Ctrl+Shift+M`) are sent it
+**once** — one press reaches both, and sending it twice would toggle each of
+them right back.
+
+Both the `mute_while_recording` master switch and every preset **ship
+disabled** — turn the switch on, check the keybind, then enable the entries you
+want:
 
 ```jsonc
 "integrations": {
   "mute_while_recording": true,
   "targets": [
-    { "name": "Discord", "enabled": true, "mode": "hold", "hotkey": "<f9>" }
+    { "name": "Discord", "enabled": true, "mode": "toggle", "hotkey": "<ctrl>+<shift>+m" }
   ]
 }
 ```
+
+> An existing `config.json` keeps its own target list on upgrade — your entries
+> are never overwritten. The presets are then one click away under **Add app**.
 
 ## Troubleshooting
 
