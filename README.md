@@ -291,10 +291,12 @@ both places:
      when it stops. Match this to a *Toggle Mute* keybind.
 
 Prefer a modifier chord or a function key so the combination stays inert in the
-document you're dictating into, and don't reuse your recording hotkey's keys —
-Listen To Me refuses to save a mute keybind identical to it. Add as many apps as
-you like; the master switch turns the whole feature off without losing your
-entries. Both the `mute_while_recording` master switch and the bundled
+document you're dictating into. A mute keybind identical to your recording
+hotkey is refused; one that merely shares keys with it (Discord's default
+`Ctrl+Shift+M` next to the default `Ctrl+Alt+Space`) is fine — the keybind is
+sent a moment after you let the hotkey go, because the target app reads the
+same keyboard you are still holding. Add as many apps as you like; the master
+switch turns the whole feature off without losing your entries. Both the `mute_while_recording` master switch and the bundled
 **Discord entry ship disabled by default** — turn the switch on, set your
 keybind, then enable the entry (as shown):
 

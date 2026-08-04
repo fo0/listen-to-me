@@ -590,6 +590,89 @@ def _mute_keybind_uses_virtual_keys():
         integrations._char_vk = original
 
 
+def _mute_keybind_waits_for_the_hotkey():
+    """A mute keybind must not go out while the recording hotkey is still held.
+
+    The target application reads one shared keyboard state, so the hotkey that
+    just started the recording lands in the combination it sees: Ctrl+Alt+Space
+    turns a Ctrl+Shift+M keybind into Ctrl+Alt+Shift+M, and letting go of the
+    shared Ctrl a moment later releases it back out of a held keybind. Both
+    halves are why the keys wait for the keyboard to go quiet first.
+    """
+    import threading
+    import time
+
+    from listen_to_me import injector, integrations
+
+    original, held = injector.modifiers_down, [True]
+    try:
+        # Still held: give up at the timeout and report it, rather than block
+        # a recording that is already running for a hotkey held all take long.
+        injector.modifiers_down = lambda: True
+        started = time.monotonic()
+        assert integrations._wait_for_quiet_modifiers(timeout=0.05) is False
+        assert time.monotonic() - started >= 0.05, "must not return before the timeout"
+
+        # Released while waiting: proceed as soon as the keyboard is quiet.
+        injector.modifiers_down = lambda: held[0]
+        threading.Timer(0.02, lambda: held.__setitem__(0, False)).start()
+        assert integrations._wait_for_quiet_modifiers(timeout=2.0) is True
+
+        # Nothing held (and every non-Windows run, where the physical state
+        # can't be polled): no wait at all, so behaviour is unchanged there.
+        injector.modifiers_down = lambda: False
+        started = time.monotonic()
+        assert integrations._wait_for_quiet_modifiers(timeout=5.0) is True
+        assert time.monotonic() - started < 0.05, "a quiet keyboard must not wait"
+    finally:
+        injector.modifiers_down = original
+
+
+def _mute_keybind_survives_a_superseded_stop():
+    """A stop overtaken by the next recording must not strand held keys.
+
+    The keys go out on a worker now, so a stop's worker can still be waiting
+    when the next recording starts and invalidates it. The activation that
+    overtook it has to undo the previous one instead of clearing the
+    bookkeeping — the alternative leaves the target muted with keys held down
+    that nothing will ever release.
+    """
+    import threading
+
+    from listen_to_me import integrations
+
+    events = []
+
+    class _Controller:
+        def press(self, key):
+            events.append(("press", key))
+
+        def release(self, key):
+            events.append(("release", key))
+
+    mute = integrations.MuteIntegrations.__new__(integrations.MuteIntegrations)
+    mute._controller = _Controller()
+    mute._held = ["ctrl", "m"]  # left over from the stop that never ran
+    mute._toggles = [["shift", "x"]]
+    mute._lock = threading.Lock()
+    mute._generation = 7
+
+    with mute._lock:
+        mute._undo()
+
+    assert events[:2] == [("release", "m"), ("release", "ctrl")], events
+    assert ("press", "shift") in events, "a toggle target must be re-tapped"
+    assert mute._held == [] and mute._toggles == []
+
+    # A worker whose generation was bumped must not touch a key at all.
+    events.clear()
+    mute._held = ["ctrl"]
+    mute._deactivate(generation=6)  # stale — the current generation is 7
+    assert events == [], "a superseded worker must not send keys"
+    assert mute._held == ["ctrl"], "...and must leave the bookkeeping alone"
+    assert not mute._lock.locked(), "the lock must be released either way"
+
+
 def _single_instance_guard():
     """The OS-level guard (mutex on Windows, flock elsewhere) admits exactly
     one holder; a refused second acquire pings the winner's activation
@@ -2233,6 +2316,8 @@ _LIGHT_CHECKS = [
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
     ("mute integrations no-op", _integrations_noop),
     ("mute keybind uses virtual keys", _mute_keybind_uses_virtual_keys),
+    ("mute keybind waits for the hotkey", _mute_keybind_waits_for_the_hotkey),
+    ("mute keybind survives a superseded stop", _mute_keybind_survives_a_superseded_stop),
     ("single-instance guard", _single_instance_guard),
     ("live typing logic", _live_typing_logic),
     ("icon render", _icon_render),
