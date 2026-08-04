@@ -9,6 +9,8 @@ import os
 import sys
 from pathlib import Path
 
+from .choices import default_mute_targets
+
 log = logging.getLogger(__name__)
 
 DEFAULT_ASSISTANT_PROMPT = """\
@@ -142,19 +144,14 @@ DEFAULTS: dict = {
         # Each target: name, whether it's enabled, the keybind (pynput format)
         # and the mode. "hold" = push-to-mute (key held while recording),
         # "toggle" = toggle-mute (tapped once at start and once at stop).
-        # The Discord preset is disabled by default — enable it and set a
-        # matching "Push to Mute" keybind in Discord to use it. The suggested
-        # <f9> deliberately shares no keys with the default recording hotkey
-        # (<ctrl>+<alt>+<space>): a hold-mode keybind that reused those modifiers
-        # would desync them when released while you still hold the record chord.
-        "targets": [
-            {
-                "name": "Discord",
-                "enabled": False,
-                "mode": "hold",
-                "hotkey": "<f9>",
-            },
-        ],
+        # The presets carry each app's documented mute keybind so it doesn't
+        # have to be looked up, and all ship disabled — see
+        # choices.MUTE_PRESETS, which is the single source of truth and also
+        # holds the per-app setup note the Settings page shows. A stored list
+        # replaces this one wholesale (_merge/_coerce), so an existing config
+        # keeps its targets on upgrade and reaches the presets through the
+        # Integrations page's "Add app" menu instead.
+        "targets": default_mute_targets(),
     },
 }
 

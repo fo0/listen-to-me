@@ -313,6 +313,7 @@ class MuteIntegrations:
                 self._undo()
 
             activated = 0
+            sent: list[set] = []
             for target in targets:
                 name = target.get("name") or "target"
                 try:
@@ -324,6 +325,17 @@ class MuteIntegrations:
                         target.get("hotkey"), name,
                     )
                     continue
+                if any(set(keys) == already for already in sent):
+                    # Several apps can listen for the same combination — Discord
+                    # and Teams both default to Ctrl+Shift+M. One press reaches
+                    # all of them, so sending it per target would toggle each app
+                    # twice and leave every one of them exactly as it was.
+                    log.info(
+                        "mute integration: %s shares its keybind with an earlier "
+                        "target — sending the combination once", name,
+                    )
+                    continue
+                sent.append(set(keys))
                 mode = "toggle" if target.get("mode") == "toggle" else "hold"
                 try:
                     if mode == "hold":

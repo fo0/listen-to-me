@@ -673,6 +673,60 @@ def _mute_keybind_survives_a_superseded_stop():
     assert not mute._lock.locked(), "the lock must be released either way"
 
 
+def _mute_presets_are_usable():
+    """The shipped mute presets must be sound without pynput on hand.
+
+    They are the whole point of the feature being usable without looking a
+    keybind up, so a typo (`<ctlr>`) or a preset that quietly enables itself
+    would be worse than shipping none. The real parser check lives in the full
+    run (`_hotkey_default_valid`); this pins shape, defaults and the notes.
+    """
+    from listen_to_me.choices import MUTE_PRESETS, default_mute_targets, mute_preset_note
+    from listen_to_me.config import DEFAULTS
+
+    known_names = {
+        "ctrl", "alt", "alt_gr", "shift", "cmd", "space", "enter", "tab", "esc",
+        "backspace", "delete", "insert", "home", "end", "page_up", "page_down",
+        "up", "down", "left", "right", "pause", "print_screen", "scroll_lock",
+        "num_lock", "caps_lock", "menu",
+    } | {f"f{n}" for n in range(1, 21)}
+
+    seen = set()
+    for preset in MUTE_PRESETS:
+        assert set(preset) >= {"name", "hotkey", "mode", "note"}, preset
+        assert preset["mode"] in ("hold", "toggle"), preset["name"]
+        assert preset["name"] not in seen, f"duplicate preset {preset['name']}"
+        seen.add(preset["name"])
+        # A key combination alone can't say "this app ignores it unless it has
+        # focus" — every preset owes the user that sentence.
+        assert preset["note"].strip(), preset["name"]
+        for token in filter(None, preset["hotkey"].split("+")):
+            if token.startswith("<") and token.endswith(">"):
+                assert token[1:-1] in known_names, f"{preset['name']}: {token}"
+            else:
+                assert len(token) == 1, f"{preset['name']}: {token}"
+
+    # Discord is the one preset that needs no setup in the target app, so it
+    # leads the list — and its keybind is Discord's Toggle Mute default, which
+    # only a toggle-mode target matches.
+    assert MUTE_PRESETS[0]["name"] == "Discord"
+    assert MUTE_PRESETS[0]["hotkey"] == "<ctrl>+<shift>+m"
+    assert MUTE_PRESETS[0]["mode"] == "toggle"
+
+    targets = default_mute_targets()
+    assert [t["name"] for t in targets] == [p["name"] for p in MUTE_PRESETS]
+    assert all(t["enabled"] is False for t in targets), "presets must ship disabled"
+    assert all(set(t) == {"name", "enabled", "mode", "hotkey"} for t in targets), (
+        "the note is display-only and must not leak into config.json"
+    )
+    assert DEFAULTS["integrations"]["targets"] == targets
+    # Fresh lists per call, or one Config would mutate the next one's defaults.
+    assert default_mute_targets()[0] is not targets[0]
+
+    assert mute_preset_note("discord"), "lookup must ignore case"
+    assert mute_preset_note("My Own App") == ""  # a custom row simply shows none
+
+
 def _single_instance_guard():
     """The OS-level guard (mutex on Windows, flock elsewhere) admits exactly
     one holder; a refused second acquire pings the winner's activation
@@ -742,6 +796,15 @@ def _hotkey_default_valid():
     assert Hotkeys.combo_flags("<f9>") == (False, False)
     assert Hotkeys.combo_flags("<ctrl>+<f9>") == (True, False)
     assert Hotkeys.combo_flags("<ctrl>+m") == (True, True)
+    # Every shipped mute preset must be a combination pynput can actually
+    # synthesize — a typo in one of these would ship a target that silently
+    # never fires. Checked against the real parser, so it runs in the exe's
+    # self-test; the light run only checks their shape.
+    from listen_to_me.choices import MUTE_PRESETS
+
+    for preset in MUTE_PRESETS:
+        if preset["hotkey"]:
+            assert Hotkeys.validate(preset["hotkey"]), preset["name"]
     assert Hotkeys.combo_flags("not a combo") == (True, True)  # unparseable → unsafe
 
 
@@ -2318,6 +2381,7 @@ _LIGHT_CHECKS = [
     ("mute keybind uses virtual keys", _mute_keybind_uses_virtual_keys),
     ("mute keybind waits for the hotkey", _mute_keybind_waits_for_the_hotkey),
     ("mute keybind survives a superseded stop", _mute_keybind_survives_a_superseded_stop),
+    ("mute presets are usable", _mute_presets_are_usable),
     ("single-instance guard", _single_instance_guard),
     ("live typing logic", _live_typing_logic),
     ("icon render", _icon_render),

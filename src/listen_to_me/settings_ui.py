@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -48,6 +49,7 @@ from .choices import (
     GERMAN_TURBO_CT2,
     LANGUAGES,
     MODEL_CHOICES,
+    MUTE_PRESETS,
     OPENVINO_DEVICES,
     OPENVINO_PRECISIONS,
     PARAKEET_QUANTIZATIONS,
@@ -61,6 +63,7 @@ from .choices import (
     language_from_label,
     language_label,
     model_from_label,
+    mute_preset_note,
     model_label,
 )
 from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
@@ -68,6 +71,7 @@ from .diagnostics import DiagnosticsEngine
 from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
+from .keymap import hotkey_label
 from .qtutil import copy_to_clipboard, elastic_combo, elastic_label, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
@@ -220,6 +224,17 @@ class MuteTargetRow(QGroupBox):
         kh.addWidget(change)
         form.addRow("Mute keybind:", key_row)
         outer.addLayout(form)
+
+        # What the key combination alone can't tell you: most of these apps
+        # only listen for their mute keybind while they have focus, which would
+        # make this target a silent no-op. Looked up by name, so a custom or
+        # renamed entry simply shows nothing.
+        note = mute_preset_note(str(data.get("name", "")))
+        if note:
+            hint = QLabel(note)
+            hint.setProperty("role", "hint")  # muted styling, see theme.py
+            hint.setWordWrap(True)
+            outer.addWidget(hint)
 
     def _change_hotkey(self) -> None:
         combo = self._capture_hotkey()
@@ -1197,12 +1212,13 @@ class SettingsWindow(QDialog):
         )
         layout.addWidget(self.chk_mute_enabled)
         layout.addWidget(self._hint(
-            "For each app, set the SAME key combination here and in that app.\n"
-            "Discord: User Settings → Keybinds → add a “Push to Mute” keybind "
-            "(use Push-to-mute mode) or a “Toggle Mute” keybind (use Toggle mode) "
-            "with the same combination as below.\n"
-            "Prefer a modifier chord or an F-key so the combo doesn't disturb the "
-            "app you're typing into, and don't reuse your recording hotkey's keys."
+            "For each app, the SAME key combination has to be set here and in "
+            "that app. “Add app” offers the common ones with their documented "
+            "mute keybind already filled in — each says underneath what it still "
+            "needs, because most apps listen for their keybind only while they "
+            "have focus and would otherwise do nothing at all here.\n"
+            "For a custom entry prefer a modifier chord or an F-key, so the combo "
+            "stays inert in the app you're dictating into."
         ))
 
         box = QGroupBox("Apps to mute")
@@ -1219,11 +1235,32 @@ class SettingsWindow(QDialog):
 
         add_row = QHBoxLayout()
         add_btn = QPushButton("Add app")
-        add_btn.setToolTip("Add another application to mute while recording.")
+        add_btn.setToolTip(
+            "Add an app to mute while recording. The presets come with that "
+            "app's documented mute keybind already filled in."
+        )
         add_btn.setAutoDefault(False)
-        add_btn.clicked.connect(
+        # A menu rather than a blank row: an existing config keeps its own
+        # target list on upgrade (a stored list replaces the defaults), so this
+        # is the only way the presets reach anyone who is not a fresh install.
+        add_menu = QMenu(add_btn)
+        for preset in MUTE_PRESETS:
+            keys = hotkey_label(preset["hotkey"]) or "no default key"
+            action = add_menu.addAction(f"{preset['name']} ({keys})")
+            action.triggered.connect(
+                lambda _checked=False, p=preset: self._add_target_row({
+                    "name": p["name"],
+                    "enabled": True,
+                    "mode": p["mode"],
+                    "hotkey": p["hotkey"],
+                })
+            )
+        add_menu.addSeparator()
+        custom = add_menu.addAction("Other app…")
+        custom.triggered.connect(
             lambda: self._add_target_row({"name": "", "enabled": True, "mode": "hold", "hotkey": ""})
         )
+        add_btn.setMenu(add_menu)
         add_row.addWidget(add_btn)
         add_row.addStretch(1)
         bv.addLayout(add_row)
