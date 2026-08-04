@@ -272,9 +272,23 @@ class MuteIntegrations:
         return self._generation
 
     def _spawn(self, work, *args) -> None:
-        threading.Thread(
-            target=work, args=args, name="mute-keybind", daemon=True
-        ).start()
+        """Run `work` on a short-lived daemon thread, under the log guard the
+        Qt main thread used to provide.
+
+        Moving the keys onto a worker moved them out of the try/except in
+        `App._set_state`, and a thread that dies of an unhandled exception only
+        reaches `threading.excepthook` — which writes to stderr, and a
+        `--windowed` build has none. The failure would leave no trace at all:
+        no log line, no notification, a target simply never muted.
+        """
+
+        def guarded() -> None:
+            try:
+                work(*args)
+            except Exception:
+                log.exception("mute integration: the keybind worker failed")
+
+        threading.Thread(target=guarded, name="mute-keybind", daemon=True).start()
 
     def _claim(self, generation: int):
         """Take the lock for `generation`, or return None if it was superseded.

@@ -673,6 +673,44 @@ def _mute_keybind_survives_a_superseded_stop():
     assert not mute._lock.locked(), "the lock must be released either way"
 
 
+def _mute_keybind_worker_failure_is_logged():
+    """A keybind worker that dies must leave a log line behind.
+
+    The keys go out on a worker, which took them out of the try/except in
+    `App._set_state`. An unhandled exception in a thread only reaches
+    `threading.excepthook` — it writes to stderr, and a --windowed build has
+    none (see app._ensure_std_streams), so the failure would be invisible:
+    no log line, no notification, a target simply never muted.
+    """
+    import logging
+    import threading
+
+    from listen_to_me import integrations
+
+    records, done = [], threading.Event()
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+            done.set()
+
+    mute = integrations.MuteIntegrations.__new__(integrations.MuteIntegrations)
+    handler = _Capture()
+    integrations.log.addHandler(handler)
+    try:
+        def boom():
+            raise RuntimeError("worker blew up")
+
+        mute._spawn(boom)
+        assert done.wait(5), "the worker produced no log record at all"
+    finally:
+        integrations.log.removeHandler(handler)
+
+    assert any(
+        r.levelno >= logging.ERROR and r.exc_info for r in records
+    ), [r.getMessage() for r in records]
+
+
 def _mute_presets_are_usable():
     """The shipped mute presets must be sound without pynput on hand.
 
@@ -2381,6 +2419,7 @@ _LIGHT_CHECKS = [
     ("mute keybind uses virtual keys", _mute_keybind_uses_virtual_keys),
     ("mute keybind waits for the hotkey", _mute_keybind_waits_for_the_hotkey),
     ("mute keybind survives a superseded stop", _mute_keybind_survives_a_superseded_stop),
+    ("mute keybind worker failure is logged", _mute_keybind_worker_failure_is_logged),
     ("mute presets are usable", _mute_presets_are_usable),
     ("single-instance guard", _single_instance_guard),
     ("live typing logic", _live_typing_logic),

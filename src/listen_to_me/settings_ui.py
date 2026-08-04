@@ -63,8 +63,8 @@ from .choices import (
     language_from_label,
     language_label,
     model_from_label,
-    mute_preset_note,
     model_label,
+    mute_preset_note,
 )
 from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
 from .diagnostics import DiagnosticsEngine
