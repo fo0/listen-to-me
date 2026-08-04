@@ -1,5 +1,7 @@
 """Render the application icon as a multi-size .ico (used by the CI build)."""
 
+from __future__ import annotations
+
 import sys
 from pathlib import Path
 
