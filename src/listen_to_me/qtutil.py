@@ -122,6 +122,13 @@ def copy_to_clipboard(text: str) -> bool:
     second when the first raises means a "Copy" only fails when both do — and
     then it says so (the caller reports it) instead of looking like it worked.
 
+    The pyperclip write is read back, exactly like its worker-thread twin
+    `Injector.copy_to_clipboard`: a returning `copy()` only means the call
+    returned, and another application can own or overwrite the clipboard in the
+    same moment. Every caller announces "Copied to the clipboard" on the
+    strength of this return value, so a write that silently took nothing must
+    not report True — it falls through to the Qt backend instead.
+
     Qt main thread only: the fallback touches QApplication.
     """
     if not text:
@@ -130,7 +137,11 @@ def copy_to_clipboard(text: str) -> bool:
         import pyperclip
 
         pyperclip.copy(text)
-        return True
+        stored = pyperclip.paste()
+        # Windows hands back \r\n for the \n that went in — compare normalized.
+        if (stored or "").replace("\r\n", "\n") == text.replace("\r\n", "\n"):
+            return True
+        log.warning("the clipboard did not take the text (%d chars) — trying Qt", len(text))
     except Exception:
         log.debug("pyperclip clipboard write failed — trying Qt", exc_info=True)
     try:

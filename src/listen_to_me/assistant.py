@@ -44,7 +44,12 @@ def refine(text: str, acfg: dict) -> str:
     data = response.json()
     try:
         result = data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, AttributeError) as exc:
+    except (KeyError, IndexError, TypeError, AttributeError) as exc:
+        # TypeError included on purpose: a body that is not an object at all
+        # (a bare list or string — an error page that happens to be JSON, a
+        # base_url pointing at something else entirely) fails on the very first
+        # subscript. Without it the user is shown "list indices must be
+        # integers" instead of the response that caused it.
         raise AssistantError(f"unexpected API response: {data!r:.200}") from exc
     if not result:
         raise AssistantError("assistant returned an empty response")

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 
 from listen_to_me.app import main
