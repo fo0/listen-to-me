@@ -552,7 +552,7 @@ class App:
 
                 winsound.Beep(frequency, 120)
             except Exception:
-                pass
+                log.debug("could not play the %d Hz beep", frequency, exc_info=True)
 
         threading.Thread(target=play, daemon=True).start()
 
@@ -712,7 +712,7 @@ class App:
             if self.recorder.active:
                 self.recorder.stop()
         except Exception:
-            pass
+            log.debug("error stopping the recorder during shutdown", exc_info=True)
         try:
             self.integrations.reset()  # never leave a target app stuck muted
         except Exception:
@@ -726,7 +726,7 @@ class App:
             try:
                 self._settings_window.force_close()
             except Exception:
-                pass
+                log.debug("error closing the settings window during shutdown", exc_info=True)
         self.hotkeys.stop()
         self.tray.stop()
         if self.overlay is not None:
@@ -757,6 +757,7 @@ def _ensure_std_streams() -> None:
 
 def _setup_logging() -> None:
     handlers: list[logging.Handler] = []
+    file_error: Exception | None = None
     try:
         log_dir = config_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -765,8 +766,11 @@ def _setup_logging() -> None:
                 log_dir / "listen-to-me.log", maxBytes=512 * 1024, backupCount=2, encoding="utf-8"
             )
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        # Remembered rather than logged: there is no logging yet. Reported below
+        # so a windowed build that lost its only log file says so somewhere
+        # instead of just going quiet.
+        file_error = exc
     if sys.stderr is not None:  # absent in --windowed PyInstaller builds
         handlers.append(logging.StreamHandler())
     logging.basicConfig(
@@ -774,6 +778,8 @@ def _setup_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=handlers or [logging.NullHandler()],
     )
+    if file_error is not None:
+        log.warning("could not open the log file — logging to stderr only (%s)", file_error)
 
 
 def main(argv=None) -> int:
