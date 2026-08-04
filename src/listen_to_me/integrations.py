@@ -33,9 +33,77 @@ is actually enabled and a recording starts.
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 
 log = logging.getLogger(__name__)
+
+
+def _char_vk(char: str) -> int | None:
+    """The virtual-key code that carries `char` on the active keyboard layout,
+    or None when it can't be determined (not Windows, or an unmappable char).
+
+    Only the key matters here, not the character it would type: which modifiers
+    the layout needs to reach `char` is deliberately ignored, because the
+    modifiers of a keybind come from the combination itself.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        scan = ctypes.windll.user32.VkKeyScanW
+        scan.argtypes = [ctypes.c_wchar]
+        scan.restype = ctypes.c_short
+        result = scan(char)
+    except Exception:
+        log.debug("could not map %r to a virtual key", char, exc_info=True)
+        return None
+    if result == -1:  # the character is not reachable on this layout
+        return None
+    return (result & 0xFF) or None
+
+
+def _synth_keys(keys: list, key_code_cls) -> list:
+    """`keys` (one parsed pynput combination) with every character key replaced
+    by its virtual-key equivalent, so the combination can be synthesized as
+    real key events.
+
+    `HotKey.parse` yields character keys as char-only `KeyCode`s — no vk — and
+    pressing one of those through a `Controller` that already holds Shift goes
+    wrong in two steps on Windows:
+
+    1. `Controller._resolve` uppercases the character while the controller's
+       own Shift is down ("m" → "M"), because that is what the key would type.
+    2. "M" is not reachable without a modifier, so the Windows backend stops
+       emitting a key event and injects the character as a Unicode packet
+       (`KEYBDINPUT.UNICODE`, `wVk=0`) instead.
+
+    A Unicode packet carries text, not a key: the low-level keyboard hook that
+    Discord/Teams/OBS use for their global keybinds never sees VK_M, so the
+    target is never muted — and because the packet bypasses the held modifiers
+    entirely, the character lands as literal text in whatever field has focus.
+    Discord's default mute keybind is Ctrl+Shift+M, so the most common setup of
+    all hit both halves at once, while the shipped `<f9>` preset (parsed to a
+    vk already) never did.
+
+    A vk-carrying KeyCode has no `char` for `_resolve` to uppercase and the
+    backend emits an ordinary key event, indistinguishable from the physical
+    key press the target application is waiting for. Only Windows needs the
+    substitution and only Windows offers the layout lookup; elsewhere pynput
+    maps the character through the layout itself when sending, so an
+    unsubstituted key is passed through unchanged rather than dropped.
+    """
+    prepared = []
+    for key in keys:
+        # Modifiers parse to Key members, which carry no .char at all.
+        char = getattr(key, "char", None)
+        if char and getattr(key, "vk", None) is None:
+            vk = _char_vk(char)
+            if vk is not None:
+                key = key_code_cls.from_vk(vk)
+        prepared.append(key)
+    return prepared
 
 
 class MuteIntegrations:
@@ -89,7 +157,7 @@ class MuteIntegrations:
             if self._active:
                 return
             try:
-                from pynput.keyboard import Controller, HotKey
+                from pynput.keyboard import Controller, HotKey, KeyCode
             except Exception:
                 log.exception("mute integration: pynput unavailable — skipping")
                 return
@@ -103,7 +171,8 @@ class MuteIntegrations:
             for target in targets:
                 name = target.get("name") or "target"
                 try:
-                    keys = HotKey.parse((target.get("hotkey") or "").strip())
+                    combo = (target.get("hotkey") or "").strip()
+                    keys = _synth_keys(HotKey.parse(combo), KeyCode)
                 except (ValueError, KeyError):
                     log.warning(
                         "mute integration: invalid keybind %r for %s — skipping",

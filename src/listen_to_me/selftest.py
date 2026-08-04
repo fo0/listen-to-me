@@ -546,6 +546,50 @@ def _integrations_noop():
         mute.reset()
 
 
+def _mute_keybind_uses_virtual_keys():
+    """A synthesized mute keybind must go out as real key events, never as a
+    character — otherwise the target's global keybind hook doesn't see it.
+
+    pynput parses the character part of a combination to a char-only KeyCode,
+    and a Controller that already holds Shift (Discord's default mute keybind
+    is Ctrl+Shift+M) uppercases it — which the Windows backend can only deliver
+    as a Unicode packet: invisible to the target's hook, and typed as literal
+    text into the focused field. `_synth_keys` substitutes the virtual-key code
+    so neither can happen; this pins the substitution. Stubs stand in for
+    pynput, which the headless CI runner has no X display to import.
+    """
+    from listen_to_me import integrations
+
+    class _KeyCode:
+        def __init__(self, vk=None, char=None):
+            self.vk, self.char = vk, char
+
+        @classmethod
+        def from_vk(cls, vk):
+            return cls(vk=vk)
+
+    ctrl, shift = object(), object()  # Key members carry no .char
+    m = _KeyCode(char="m")  # what HotKey.parse yields for "m"
+    f9 = _KeyCode(vk=120)  # ...and for "<f9>", already a virtual key
+
+    original = integrations._char_vk
+    try:
+        integrations._char_vk = lambda char: {"m": 0x4D}.get(char)
+        keys = integrations._synth_keys([ctrl, shift, m, f9], _KeyCode)
+        assert keys[0] is ctrl and keys[1] is shift, "modifiers must pass through"
+        assert keys[2].vk == 0x4D, "'m' must be pressed as VK_M"
+        assert keys[2].char is None, "a char would let pynput uppercase it again"
+        assert keys[3] is f9, "a key that already has a vk must be left alone"
+
+        # No layout mapping (not Windows, or an unmappable character): the
+        # parsed key survives unchanged — never dropped from the combination,
+        # which would silently send an incomplete chord.
+        integrations._char_vk = lambda char: None
+        assert integrations._synth_keys([ctrl, m], _KeyCode) == [ctrl, m]
+    finally:
+        integrations._char_vk = original
+
+
 def _single_instance_guard():
     """The OS-level guard (mutex on Windows, flock elsewhere) admits exactly
     one holder; a refused second acquire pings the winner's activation
@@ -2188,6 +2232,7 @@ _LIGHT_CHECKS = [
     ("clipboard copy is announced", _clipboard_copy_is_announced),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
     ("mute integrations no-op", _integrations_noop),
+    ("mute keybind uses virtual keys", _mute_keybind_uses_virtual_keys),
     ("single-instance guard", _single_instance_guard),
     ("live typing logic", _live_typing_logic),
     ("icon render", _icon_render),
