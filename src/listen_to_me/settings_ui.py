@@ -2046,7 +2046,15 @@ class SettingsWindow(QDialog):
 
         self.update_changelog = QTextBrowser()
         self.update_changelog.setAccessibleName("Changelog of the selected release")
-        self.update_changelog.setOpenExternalLinks(True)
+        # NOT setOpenExternalLinks(True): that hands every non-local URL to
+        # QDesktopServices, i.e. to the OS handler for whatever scheme it
+        # carries — and the changelog body is whatever the releases API
+        # returned, the same response updater.release_page_url() already
+        # refuses to trust blindly. Links are opened by _open_changelog_link
+        # instead, which only lets http(s) through.
+        self.update_changelog.setOpenExternalLinks(False)
+        self.update_changelog.setOpenLinks(False)
+        self.update_changelog.anchorClicked.connect(self._open_changelog_link)
         layout.addWidget(self.update_changelog, 1)
 
         self.update_progress = QProgressBar()
@@ -2161,6 +2169,23 @@ class SettingsWindow(QDialog):
             self.update_button.setText("Open release page")
             self.update_button.setToolTip("Open this release on GitHub to download it manually.")
         self.update_button.setEnabled(True)
+
+    def _open_changelog_link(self, url) -> None:
+        """Open a link the user clicked inside a release changelog.
+
+        Only http(s) is passed on. The changelog is markdown from the releases
+        API, so its links are network-supplied text — and an OS URL handler
+        takes far more than a web address (``file:``, ``mailto:``, vendor
+        schemes). Same reasoning as :func:`updater.release_page_url`, which
+        host-checks the release URL out of the very same API response; here the
+        scheme is the part worth pinning, since a changelog may legitimately
+        link anywhere on the web.
+        """
+        target = url.toString()
+        if url.scheme().lower() not in ("http", "https"):
+            log.warning("ignoring a changelog link with an unexpected scheme: %r", target)
+            return
+        webbrowser.open(target)
 
     def _install_selected_update(self) -> None:
         row = self.update_list.currentRow()
