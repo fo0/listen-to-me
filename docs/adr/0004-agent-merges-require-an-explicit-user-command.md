@@ -25,15 +25,18 @@ An unattended or scheduled session does the work, opens the PR, and stops there.
 ## Consequences
 
 ### Positive
+
 - One unconditional sentence replaces a four-file conditional; there is no longer a variant of the rule that can drift out of sync with the others.
 - The security property of ADR-0003 is preserved and strengthened — the safe outcome is now the only outcome, not the default branch of a check.
 - Less context spent per session on a rule that never fired.
 
 ### Negative / Trade-offs
+
 - Genuinely useful unattended maintenance (e.g. a dependency routine that could merge its own green patch bump) now always waits for a human. Accepted: the release workflow runs with `contents: write` and publishes the exe the in-app updater hands to users.
 - Re-enabling pre-approval later means designing it again from scratch rather than adding a row to a file.
 
 ### Neutral
+
 - Nothing else about agent scope changes: pushing to feature branches and opening/updating PRs stay unattended-friendly, as do the pre-approved Claude Code Remote trigger tools in `.claude/settings.json`.
 - ADR-0003 stays in the repo as history; its references to the deleted allowlist file are historical, not current.
 

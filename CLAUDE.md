@@ -15,31 +15,31 @@ When a session begins, read in this order. Stop early if a file is missing.
 
 ## Workflow Triggers
 
-| User says... | Skill to load |
-| --- | --- |
-| "done" / "fertig" / "finished" / "/done" | `.claude/skills/done/SKILL.md` |
-| "PR" / "create PR" / "/pr" | `.claude/skills/pr/SKILL.md` |
-| "review" / "/review" | `.claude/skills/review/SKILL.md` |
-| "security review" / "/security-review" | `.claude/skills/security-review/SKILL.md` |
-| "rollback" / "revert" / "undo" / "/rollback" | `.claude/skills/rollback/SKILL.md` |
-| "CI" / "fix CI" / "check the build" / "/ci" | `.claude/skills/ci/SKILL.md` |
-| "stuck" / "loop" / "going in circles" / "/stuck" | `.claude/skills/stuck/SKILL.md` |
-| "check dependencies" / "update deps" / "/beacon" | `.claude/skills/beacon/SKILL.md` |
-| Diagram request | `agent_docs/diagram_prompt.md` → `docs/ARCHITECTURE.mmd` |
+| User says...                                     | Skill to load                                            |
+| ------------------------------------------------ | -------------------------------------------------------- |
+| "done" / "fertig" / "finished" / "/done"         | `.claude/skills/done/SKILL.md`                           |
+| "PR" / "create PR" / "/pr"                       | `.claude/skills/pr/SKILL.md`                             |
+| "review" / "/review"                             | `.claude/skills/review/SKILL.md`                         |
+| "security review" / "/security-review"           | `.claude/skills/security-review/SKILL.md`                |
+| "rollback" / "revert" / "undo" / "/rollback"     | `.claude/skills/rollback/SKILL.md`                       |
+| "CI" / "fix CI" / "check the build" / "/ci"      | `.claude/skills/ci/SKILL.md`                             |
+| "stuck" / "loop" / "going in circles" / "/stuck" | `.claude/skills/stuck/SKILL.md`                          |
+| "check dependencies" / "update deps" / "/beacon" | `.claude/skills/beacon/SKILL.md`                         |
+| Diagram request                                  | `agent_docs/diagram_prompt.md` → `docs/ARCHITECTURE.mmd` |
 
 > Review runs on demand via the `review` skill — done-skill does NOT auto-run it. Unresolved findings → `BACKLOG.md` (`agent_docs/backlog_process.md`); long-term knowledge → `MEMORY.md`, temporary context → `SCRATCHPAD.md` (`agent_docs/memory_process.md`).
 > Reference GitHub issues in commit messages: `Fix crash on empty audio #42`.
 
 ## Output Languages
 
-| Surface | Language |
-| --- | --- |
-| Chat / status messages to user | User's language (default: German) |
-| Code, identifiers, comments; app log output | English |
-| Commit messages | English, imperative — **not** Conventional Commits (see Git Conventions) |
-| PR titles + bodies, GitHub issue comments | English |
-| Generated files (CLAUDE.md, agent_docs/\*, MEMORY/SCRATCHPAD/BACKLOG, skills) | English |
-| User-facing UI strings | English — inline literals, no i18n framework |
+| Surface                                                                       | Language                                                                 |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| Chat / status messages to user                                                | User's language (default: German)                                        |
+| Code, identifiers, comments; app log output                                   | English                                                                  |
+| Commit messages                                                               | English, imperative — **not** Conventional Commits (see Git Conventions) |
+| PR titles + bodies, GitHub issue comments                                     | English                                                                  |
+| Generated files (CLAUDE.md, agent_docs/\*, MEMORY/SCRATCHPAD/BACKLOG, skills) | English                                                                  |
+| User-facing UI strings                                                        | English — inline literals, no i18n framework                             |
 
 ## Performance / Modes
 
@@ -50,16 +50,16 @@ When a session begins, read in this order. Stop early if a file is missing.
 
 ## Tech Stack
 
-| Component | Technology | Version |
-| --- | --- | --- |
-| Language | Python | >=3.10 (CI + dev on 3.11/3.12) |
-| GUI Framework | PySide6 (Qt 6) | >=6.6 |
-| Speech-to-text | faster-whisper (CTranslate2); optional `[openvino]` / `[parakeet]` extras, both in the exe | >=1.2.1 |
-| Audio · hotkeys | sounddevice (PortAudio) · pynput | >=0.4.6 / >=1.7.7 |
-| Build · packaging | setuptools (`pyproject.toml`) · PyInstaller one-file (CI) | >=68 |
-| Package Manager | pip (`requirements.txt` + `pyproject.toml`) | — |
-| Test Framework | none configured | CI: `compileall` + Qt offscreen smoke |
-| Linter/Formatter | none configured | de-facto black-style, line length ~100 |
+| Component         | Technology                                                                                 | Version                                |
+| ----------------- | ------------------------------------------------------------------------------------------ | -------------------------------------- |
+| Language          | Python                                                                                     | >=3.10 (CI + dev on 3.11/3.12)         |
+| GUI Framework     | PySide6 (Qt 6)                                                                             | >=6.6                                  |
+| Speech-to-text    | faster-whisper (CTranslate2); optional `[openvino]` / `[parakeet]` extras, both in the exe | >=1.2.1                                |
+| Audio · hotkeys   | sounddevice (PortAudio) · pynput                                                           | >=0.4.6 / >=1.7.7                      |
+| Build · packaging | setuptools (`pyproject.toml`) · PyInstaller one-file (CI)                                  | >=68                                   |
+| Package Manager   | pip (`requirements.txt` + `pyproject.toml`)                                                | —                                      |
+| Test Framework    | none configured                                                                            | CI: `compileall` + Qt offscreen smoke  |
+| Linter/Formatter  | none for Python; Prettier (via npx) for Markdown only                                      | de-facto black-style, line length ~100 |
 
 Remaining runtime deps (numpy, Pillow, pyperclip, requests) and their bounds: `requirements.txt`.
 
@@ -91,7 +91,7 @@ PYTHONPATH=src python -m listen_to_me
 python -m listen_to_me --version     # print version, no Qt import
 python -m listen_to_me --selftest    # packaging self-test (needs all deps installed)
 
-# Automated Checks — the full gate (no linter/formatter/typecheck exists)
+# Automated Checks — the full gate (no Python linter/formatter/typecheck exists)
 python -m compileall -q src scripts   # syntax-check every source file (fast, no deps)
 QT_QPA_PLATFORM=offscreen PYTHONPATH=src \
   python -c "import sys; from listen_to_me.selftest import gui_smoke; sys.exit(gui_smoke())"
@@ -100,7 +100,8 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src \
 npx -y -p @mermaid-js/mermaid-cli mmdc -i docs/ARCHITECTURE.mmd -o docs/ARCHITECTURE.svg
 ```
 
-> **No lint/format/typecheck step exists.** Do not invent one — adding ruff/black/mypy/pytest is a dependency + config change requiring user sign-off.
+> **No lint/format/typecheck step exists for Python.** Do not invent one — adding ruff/black/mypy/pytest is a dependency + config change requiring user sign-off.
+> Markdown is the sole exception: `docs-format.yml` checks `**/*.md` with Prettier via `npx` (no `package.json`, no dependency). Run `npx --yes prettier@3.9.6 --write "**/*.md"` before committing docs; the version is pinned in the workflow and mirrored in `CONTRIBUTING.md`.
 > The Windows one-file build is CI's job; the local PyInstaller invocation lives in `agent_docs/development_notes.md`.
 
 ## Key Patterns
@@ -120,7 +121,7 @@ Broad `except Exception` at boundaries (a desktop app must never crash), logged 
 ## Coding Conventions
 
 - **`from __future__ import annotations`** at the top of every module.
-- **English** comments/docstrings explaining *why*; UI strings are inline English literals.
+- **English** comments/docstrings explaining _why_; UI strings are inline English literals.
 - **Naming:** modules/functions `snake_case`, classes `PascalCase`, private helpers `_`-prefixed.
 - **Imports:** stdlib → third-party → local; heavy/optional deps imported lazily inside functions.
 - **Formatting:** double quotes, 4-space indent, trailing commas, ~100 cols — by hand, no formatter.
@@ -158,11 +159,11 @@ Significant decisions are recorded as ADRs under `docs/adr/`. Triggers + format:
 
 No custom env vars for the app's own config — settings live in `config.json` (`config.py → config_dir()`); there is no `.env` file. The three that matter:
 
-| Variable | Description | Default |
-| --- | --- | --- |
-| `HF_HOME` / `HF_HUB_CACHE` | Where the STT backends cache downloaded models | `~/.cache/huggingface/hub` |
-| `QT_QPA_PLATFORM` | `offscreen` for headless Qt (CI smoke test) | (unset) |
-| `APPDATA` / `XDG_CONFIG_HOME` | Base for the app config dir | OS default |
+| Variable                      | Description                                    | Default                    |
+| ----------------------------- | ---------------------------------------------- | -------------------------- |
+| `HF_HOME` / `HF_HUB_CACHE`    | Where the STT backends cache downloaded models | `~/.cache/huggingface/hub` |
+| `QT_QPA_PLATFORM`             | `offscreen` for headless Qt (CI smoke test)    | (unset)                    |
+| `APPDATA` / `XDG_CONFIG_HOME` | Base for the app config dir                    | OS default                 |
 
 Full list + **Secrets Locations**: `agent_docs/env-vars.md`. The only user secret is the optional assistant API key in their local `config.json` — never log it, never commit one.
 
@@ -183,7 +184,7 @@ Full reference: `agent_docs/api-reference.md`.
 
 ## Testing
 
-- **Framework:** none (no pytest) — verification is the CI `check` job. **Run:** the two commands under *Automated Checks*; full packaging self-test `python -m listen_to_me --selftest` (needs all deps).
+- **Framework:** none (no pytest) — verification is the CI `check` job. **Run:** the two commands under _Automated Checks_; full packaging self-test `python -m listen_to_me --selftest` (needs all deps).
 - **Structure:** `selftest.py` holds the checks; `gui_smoke()` is the dependency-light subset CI runs from source.
 - **Constraints:** agent-runnable, zero-cost, deterministic — binding wording in `agent_docs/review_process.md → Test execution constraints`.
 
@@ -193,7 +194,7 @@ Regression guards + how to add a check: `agent_docs/testing.md`.
 
 Host MCP availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch` when one is absent, and never hard-require an MCP. One canonical file covers the rest: `agent_docs/mcp_catalog.md` — the project/common MCP tables, the `gh` → `mcp__github__*` equivalence the PR/CI/rollback skills rely on, and the trigger-tool allowlist in `.claude/settings.json`.
 
-**Allowlist shape:** keep **one `mcp__<server>__*` glob per server spelling**. A per-tool entry that a glob in the same list already matches grants nothing — it is redundant, and must not be (re-)added. **Self-heal** a tool that still prompts by *appending* the missing `mcp__<server>__*` glob, never the individual tool name. **Never write a `deny` or `ask` entry**, and never remove a glob.
+**Allowlist shape:** keep **one `mcp__<server>__*` glob per server spelling**. A per-tool entry that a glob in the same list already matches grants nothing — it is redundant, and must not be (re-)added. **Self-heal** a tool that still prompts by _appending_ the missing `mcp__<server>__*` glob, never the individual tool name. **Never write a `deny` or `ask` entry**, and never remove a glob.
 
 ## CI
 
@@ -220,16 +221,16 @@ Config paths, single-instance mechanics, frozen-build specifics, local build: `a
 
 After every code change, check and update:
 
-| File | Update when... |
-| --- | --- |
-| `CLAUDE.md` | New modules, config keys, patterns, technical details |
-| `README.md` | New features, settings, platform notes for users |
-| `BACKLOG.md` | Unfixed review findings (Accepted/Deferred) |
-| `MEMORY.md` | Decisions, gotchas, external-dep quirks, user preferences |
-| `SCRATCHPAD.md` | Working context, open questions, short-lived notes |
-| `docs/ARCHITECTURE.mmd` | Structural changes (new module, data flow, external dep) |
-| `docs/adr/` | New significant architecture decisions |
-| `config.py DEFAULTS` | New config options (reflect in Settings UI + README table) |
+| File                    | Update when...                                             |
+| ----------------------- | ---------------------------------------------------------- |
+| `CLAUDE.md`             | New modules, config keys, patterns, technical details      |
+| `README.md`             | New features, settings, platform notes for users           |
+| `BACKLOG.md`            | Unfixed review findings (Accepted/Deferred)                |
+| `MEMORY.md`             | Decisions, gotchas, external-dep quirks, user preferences  |
+| `SCRATCHPAD.md`         | Working context, open questions, short-lived notes         |
+| `docs/ARCHITECTURE.mmd` | Structural changes (new module, data flow, external dep)   |
+| `docs/adr/`             | New significant architecture decisions                     |
+| `config.py DEFAULTS`    | New config options (reflect in Settings UI + README table) |
 
 ### Context budget
 

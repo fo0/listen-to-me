@@ -7,6 +7,7 @@ Ready-to-paste hook snippets that enforce optimizer rules beyond the Tier-1 mini
 > **Tier-3** = optional, situational — copy only if you actively want the behavior.
 
 ## How to use
+
 1. Open `.claude/settings.json`.
 2. Find the matching trigger (`PostToolUse`, `PreToolUse`, `Stop`, `PreCompact`, `UserPromptSubmit`).
 3. Append the snippet's hook entry to the trigger's array. Don't duplicate matchers — merge into existing matcher's `hooks` list.
@@ -187,15 +188,16 @@ Trigger: `PreToolUse`. Forces the permission prompt instead of only mentioning t
 }
 ```
 
-Trigger: `UserPromptSubmit`. One of the three events where bare stdout *is* added to the agent's context — no JSON needed here.
+Trigger: `UserPromptSubmit`. One of the three events where bare stdout _is_ added to the agent's context — no JSON needed here.
 
 ---
 
 ## Notes
+
 - **Hook input arrives as a JSON payload on stdin**, not via environment variables. Relevant fields: `.tool_input.command` (Bash tool), `.tool_input.file_path` (Edit/Write), `.prompt` (UserPromptSubmit). The snippets parse stdin with `jq` — there are no `$CLAUDE_TOOL_INPUT` / `$CLAUDE_USER_PROMPT` env vars.
 - `$CLAUDE_PROJECT_DIR` IS a real environment variable (absolute project root), usable in any hook command.
 - **`jq` is required** for every snippet that reads stdin. Without `jq` the hook errors out and does NOT block — for reminder hooks that's harmless, but the two BLOCK hooks then provide no protection. Verify `jq` is installed wherever you rely on them.
-- **Exit-0 stdout reaches the agent only on `SessionStart` / `UserPromptSubmit` / `UserPromptExpansion`.** Everywhere else it lands in the debug log — see *Reaching the agent* above for the `additionalContext` / `permissionDecision` / `systemMessage` alternatives. An `echo 'WARNING…'` on `PreToolUse` or `PostToolUse` is a no-op.
+- **Exit-0 stdout reaches the agent only on `SessionStart` / `UserPromptSubmit` / `UserPromptExpansion`.** Everywhere else it lands in the debug log — see _Reaching the agent_ above for the `additionalContext` / `permissionDecision` / `systemMessage` alternatives. An `echo 'WARNING…'` on `PreToolUse` or `PostToolUse` is a no-op.
 - Exit code `2` from a `PreToolUse` hook blocks the tool call and feeds **stderr** back to Claude — block messages must go to stderr (`>&2`). On `PostToolUse` the tool already ran, so exit 2 cannot block; stderr is still shown to Claude. Other non-zero exits print stderr but don't block.
 - Hooks run in the user's shell. Quote paths, escape `$` carefully when copying.
 - After modifying `.claude/settings.json`, restart the Claude Code session (or review via `/hooks`) for changes to take effect.

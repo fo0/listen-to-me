@@ -1,6 +1,7 @@
 # Refactoring Guidelines
 
 Refactoring does NOT happen automatically. Only when:
+
 - Explicit user request
 - Repeated code smells across multiple files in review
 - Feature implementation is significantly hindered by code structure
@@ -13,7 +14,7 @@ Refactoring does NOT happen automatically. Only when:
    - Focused files — split around ~300 lines, strongly recommended by ~500 (Python convention here)
    - Descriptive names > clever abstractions
    - Consistent patterns across similar components (AI can pattern-match)
-   - Inline comments/docstrings for non-obvious decisions (AI has no project history context) — this codebase already documents *why* heavily; keep that up
+   - Inline comments/docstrings for non-obvious decisions (AI has no project history context) — this codebase already documents _why_ heavily; keep that up
 3. **Follow framework idioms** — Use PySide6/Qt best practices, no custom abstractions.
 4. **Incremental** — Small chunks, each goes through the full review cycle.
 5. **Extract, don't abstract** — Prefer extracting into focused modules over abstract base classes.

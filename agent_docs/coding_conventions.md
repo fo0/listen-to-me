@@ -4,7 +4,7 @@ Offloaded from `CLAUDE.md` (context budget). CLAUDE.md keeps the eight rules tha
 
 ## Language
 
-- Comments and docstrings in **English**. Docstrings explain *why*, not just *what* — this codebase leans heavily on them.
+- Comments and docstrings in **English**. Docstrings explain _why_, not just _what_ — this codebase leans heavily on them.
 - UI strings are inline English literals. There is **no i18n framework**; don't introduce one without user approval.
 - App log output is English.
 

@@ -22,14 +22,14 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src \
 Existing regression guards worth knowing about, because they lock in real bugs:
 
 - `updater forces TLS verification` — the updater must stay carved out of `insecure_ssl` (ADR-0002).
-- `disabled buttons look disabled` — renders each button variant and asserts the *surface* colour changes when disabled. A plain image `!=` passed on nothing but a vanishing focus ring, so the check compares the fill.
+- `disabled buttons look disabled` — renders each button variant and asserts the _surface_ colour changes when disabled. A plain image `!=` passed on nothing but a vanishing focus ring, so the check compares the fill.
 - History rows with a `1e300` timestamp — stored values are untrusted at render time.
 - Replaced History rows end up parentless — detach before `deleteLater`, or ghost widgets keep painting.
 - No settings page is wider than its scroll viewport — one long combo/label item otherwise clips every card at the right edge.
 
 ## Adding a check
 
-Prefer extending `selftest.py` over introducing a test framework. Adding pytest is a dependency + config change and needs explicit user approval (see *User Preferences* in `MEMORY.md`).
+Prefer extending `selftest.py` over introducing a test framework. Adding pytest is a dependency + config change and needs explicit user approval (see _User Preferences_ in `MEMORY.md`).
 
 Keep new pure logic Qt-free where practical — that is what makes it exercisable by `gui_smoke` on a headless machine.
 

@@ -16,14 +16,14 @@ fokussierten Feldes eingefügt.
 2. Cursor in ein beliebiges Textfeld setzen, `Strg+Alt+Leertaste` drücken,
    sprechen, nochmal drücken → der Text wird lokal transkribiert und an der
    Cursorposition eingefügt.
-3. Rechtsklick auf das Tray-Icon → **Settings…**: dort Sprache (z. B. *German*),
+3. Rechtsklick auf das Tray-Icon → **Settings…**: dort Sprache (z. B. _German_),
    Whisper-Modell, Hotkey, Mikrofon und **Autostart mit Windows** einstellen.
 4. Optional: unter **Assistant** die LLM-Nachbearbeitung aktivieren (z. B. mit
-   lokalem Ollama) und den System-Prompt frei anpassen — *Reset to default*
+   lokalem Ollama) und den System-Prompt frei anpassen — _Reset to default_
    stellt den Standard wieder her.
 5. Optional: unter **Integrations** andere Programme wie **Discord** während der
-   Aufnahme automatisch stummschalten. Dafür in Discord unter *Einstellungen →
-   Tastenkombinationen* eine Taste für **„Stummschaltung gedrückt halten"**
+   Aufnahme automatisch stummschalten. Dafür in Discord unter _Einstellungen →
+   Tastenkombinationen_ eine Taste für **„Stummschaltung gedrückt halten"**
    (Push-to-Mute) oder **„Stummschaltung umschalten"** vergeben und in Listen To
    Me dieselbe Kombination samt passendem Modus eintragen — so wird dein Diktat
    nicht in den Voice-Call übertragen und danach automatisch wieder aktiviert.

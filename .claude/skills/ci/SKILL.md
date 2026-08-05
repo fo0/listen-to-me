@@ -14,6 +14,7 @@ description: "Use when the user wants CI status, failed-job logs, or help fixing
 ## This project's CI
 
 Two separate workflows:
+
 - **`.github/workflows/ci.yml`** ("CI", runs on every PR): `python -m compileall -q src scripts` + a Qt **offscreen** UI smoke test (`selftest.gui_smoke`). This is the only workflow that gates PRs.
 - **`.github/workflows/release.yml`** ("Release", only on manual `workflow_dispatch`): guard job (fails off `main`) → CI checks (via `workflow_call`) → PyInstaller one-file build + `--selftest` on the exe + GitHub Release. **Never** triggered by PRs or pushes, so a PR being "green" only means the CI `check` job passed.
 
@@ -35,12 +36,12 @@ RUNS=$(gh run list --branch "$BRANCH" --limit 5 --json databaseId,status,conclus
 
 Decision matrix:
 
-| State                                            | Action                              |
-|--------------------------------------------------|--------------------------------------|
-| No runs found for branch                         | Phase A — report "no CI runs yet"   |
-| Latest run `in_progress` / `queued`              | Phase B — show running status       |
-| Latest run `success`                             | Phase C — green report              |
-| Latest run `failure` / `cancelled` / `timed_out` | Phase D — fetch logs + propose fix  |
+| State                                            | Action                                                  |
+| ------------------------------------------------ | ------------------------------------------------------- |
+| No runs found for branch                         | Phase A — report "no CI runs yet"                       |
+| Latest run `in_progress` / `queued`              | Phase B — show running status                           |
+| Latest run `success`                             | Phase C — green report                                  |
+| Latest run `failure` / `cancelled` / `timed_out` | Phase D — fetch logs + propose fix                      |
 | Latest run is for `headSha != HEAD_SHA` (stale)  | Phase E — note stale; `/ci logs` to inspect the old run |
 
 Print detected phase before acting.
@@ -113,12 +114,12 @@ Latest CI run was for <stale-sha> (now HEAD is <head-sha>). Push to trigger a fr
 
 ## Explicit Sub-Commands
 
-| Command      | Behavior                                                  |
-|--------------|-----------------------------------------------------------|
-| `/ci`        | Auto-route per matrix above                               |
-| `/ci status` | Force Phase B/C report, no log fetching, no fix proposal  |
-| `/ci logs`   | Force Phase D log fetch even if green                     |
-| `/ci fix`    | Force Phase D fix workflow                                |
+| Command      | Behavior                                                       |
+| ------------ | -------------------------------------------------------------- |
+| `/ci`        | Auto-route per matrix above                                    |
+| `/ci status` | Force Phase B/C report, no log fetching, no fix proposal       |
+| `/ci logs`   | Force Phase D log fetch even if green                          |
+| `/ci fix`    | Force Phase D fix workflow                                     |
 | `/ci rerun`  | Confirm-then-`gh run rerun --failed` for the latest failed run |
 
 ## Hard Rules

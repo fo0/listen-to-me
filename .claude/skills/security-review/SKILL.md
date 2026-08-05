@@ -31,38 +31,43 @@ Diff-based by default. Full-codebase only on explicit user request (`/security-r
 ## Checklist — OWASP-adapted + this app's real surfaces
 
 ### Secrets & Data
+
 - [ ] Assistant `api_key` never logged, never committed, never echoed in a notification
 - [ ] `history.json` stores text only — never audio, never secrets
 - [ ] No hardcoded credentials / tokens anywhere in the diff
 - [ ] Config written via `atomic_write_json` (no partial/truncated writes)
 
 ### Injection & Subprocess
+
 - [ ] `open_path` / `subprocess.Popen` / `os.startfile` receive only trusted, non-user-crafted paths; no shell string interpolation
 - [ ] The text injector (`pynput` type / clipboard paste) does not execute content — it only inserts; confirm no eval/exec of transcript or assistant output
 - [ ] No `shell=True`, no `eval`/`exec`, no `pickle.loads` of untrusted data
 
 ### Network (assistant + updater)
+
 - [ ] All external HTTP is opt-in and fail-soft (raw transcript on assistant failure; silent on updater failure)
 - [ ] Updater downloads over HTTPS; the downloaded executable is validated (size/URL from the GitHub Releases API, not an arbitrary user URL) before the self-swap
 - [ ] No SSRF: the assistant `base_url` is user-configured (local by default) — do not add code that fetches arbitrary URLs from transcript content
 - [ ] `requests` calls have timeouts (assistant uses `cfg["assistant"]["timeout"]`)
 
 ### Robustness (a must-never-crash tray app)
+
 - [ ] Every new external boundary has a fail-soft `except` + `log.exception` + user `notify`
 - [ ] No unhandled exception can reach the Qt main loop
 - [ ] Single-instance lock / autostart registry writes handle failure gracefully
 
 ### Dependencies
+
 - [ ] `pip-audit` clean (no known high/critical vulns) if run
 - [ ] New dep justified; `requirements.txt` and `pyproject.toml` kept in sync
 
 ## Tooling (run if available, never gate on availability)
 
-| Tool                     | Command                        | What it catches |
-|--------------------------|--------------------------------|-----------------|
-| `gitleaks` / `trufflehog`| `gitleaks detect --source .`   | Committed secrets |
-| `pip-audit`              | `pip-audit`                    | Vulnerable Python deps |
-| `bandit`                 | `bandit -r src`                | Python SAST (subprocess, eval, weak crypto) |
+| Tool                      | Command                      | What it catches                             |
+| ------------------------- | ---------------------------- | ------------------------------------------- |
+| `gitleaks` / `trufflehog` | `gitleaks detect --source .` | Committed secrets                           |
+| `pip-audit`               | `pip-audit`                  | Vulnerable Python deps                      |
+| `bandit`                  | `bandit -r src`              | Python SAST (subprocess, eval, weak crypto) |
 
 If a tool isn't available locally → note in report, do NOT block the review.
 
@@ -87,6 +92,7 @@ Summary: X findings | Y fixed | Z deferred (with explicit user override) → Bac
 ```
 
 Footer:
+
 ```
 🔐 security-review skill — independent of generic /review
 ```

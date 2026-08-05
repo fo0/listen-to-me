@@ -37,14 +37,14 @@ HEAD_SHA=$(git rev-parse HEAD)
 
 Decision matrix:
 
-| State | Action |
-|-------|--------|
-| Branch is `main`/`master`/`develop`/`trunk` | Stop: `On main branch — no PR needed.` |
-| No PR exists for branch | → **create** (Phase A) |
-| PR exists, `headRefOid != HEAD_SHA` (local ahead) | → **push + update body** (Phase B) |
-| PR exists, `headRefOid == HEAD_SHA`, body stale vs commits | → **update body only** (Phase B) |
-| PR exists, fully synced | → **status** (Phase C, read-only) |
-| PR exists but `MERGED`/`CLOSED` | Report final state + URL, stop |
+| State                                                      | Action                                 |
+| ---------------------------------------------------------- | -------------------------------------- |
+| Branch is `main`/`master`/`develop`/`trunk`                | Stop: `On main branch — no PR needed.` |
+| No PR exists for branch                                    | → **create** (Phase A)                 |
+| PR exists, `headRefOid != HEAD_SHA` (local ahead)          | → **push + update body** (Phase B)     |
+| PR exists, `headRefOid == HEAD_SHA`, body stale vs commits | → **update body only** (Phase B)       |
+| PR exists, fully synced                                    | → **status** (Phase C, read-only)      |
+| PR exists but `MERGED`/`CLOSED`                            | Report final state + URL, stop         |
 
 Always print the detected phase before acting.
 
@@ -60,15 +60,19 @@ Always print the detected phase before acting.
    ```
 
    Format:
+
    ```markdown
    ## Summary
+
    - <1-3 bullet points from commit subjects, deduplicated>
 
    ## Test plan
+
    - [ ] <what the user/reviewer needs to verify>
 
    🤖 Generated with [Claude Code](https://claude.com/claude-code)
    ```
+
 4. **Create:** `gh pr create --title "..." --body "$(cat <<'EOF' ... EOF)"`. Use HEREDOC for body.
 5. **Report URL** from gh output.
 
@@ -109,9 +113,10 @@ Group by reviewer + file. Show unresolved comments first. Do NOT auto-fix — su
 
 **Never run without explicit user command.** Default `/pr` never reaches this phase.
 
-**Routine exception.** A session running an **owner-authorized routine** counts as an explicit user command, so its merges are pre-approved — *including* any pipeline the merge triggers — when the change set is **non-destructive** (additive; no history rewrite, no force-push, no repo-settings change, no forced migration) **and** verification is green. **Destructive change sets stay gated** and still need an explicit interactive command. The routine claim is prompt text the agent cannot verify; that residual risk is knowingly accepted. See CLAUDE.md → Deployment and ADR-0005 (superseding ADR-0004).
+**Routine exception.** A session running an **owner-authorized routine** counts as an explicit user command, so its merges are pre-approved — _including_ any pipeline the merge triggers — when the change set is **non-destructive** (additive; no history rewrite, no force-push, no repo-settings change, no forced migration) **and** verification is green. **Destructive change sets stay gated** and still need an explicit interactive command. The routine claim is prompt text the agent cannot verify; that residual risk is knowingly accepted. See CLAUDE.md → Deployment and ADR-0005 (superseding ADR-0004).
 
 Pre-flight:
+
 1. `gh pr view --json state,statusCheckRollup,reviewDecision,mergeable` — verify mergeable.
 2. CI must be green. If not → stop: `Cannot merge: CI failing.`
 3. If `reviewDecision != APPROVED` and repo requires approval → stop.
@@ -135,11 +140,11 @@ Report: `Merged PR #N (merge commit). Branch deleted.`
 
 ## Error Recovery
 
-| Failure | Action |
-|---------|--------|
-| `gh` not installed | Stop, print install instructions (or use `mcp__github__*` tools if MCP is connected) |
-| `gh auth status` fails | Stop, print `gh auth login` |
-| `git push` rejected (non-fast-forward) | Stop, ask user before force operations |
-| `gh pr create` fails due to existing PR | Re-run auto-route (will land in Phase B) |
-| Merge conflict on `gh pr merge` | Stop, instruct user to rebase/merge locally |
-| Required status check not yet started | Print pending state, do not retry-loop |
+| Failure                                 | Action                                                                               |
+| --------------------------------------- | ------------------------------------------------------------------------------------ |
+| `gh` not installed                      | Stop, print install instructions (or use `mcp__github__*` tools if MCP is connected) |
+| `gh auth status` fails                  | Stop, print `gh auth login`                                                          |
+| `git push` rejected (non-fast-forward)  | Stop, ask user before force operations                                               |
+| `gh pr create` fails due to existing PR | Re-run auto-route (will land in Phase B)                                             |
+| Merge conflict on `gh pr merge`         | Stop, instruct user to rebase/merge locally                                          |
+| Required status check not yet started   | Print pending state, do not retry-loop                                               |

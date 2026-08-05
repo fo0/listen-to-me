@@ -16,15 +16,18 @@ We will record significant architecture decisions as ADRs in `docs/adr/`, using 
 ## Consequences
 
 ### Positive
+
 - Decisions outlive sessions and memory trims.
 - New agents (and humans) can grep `docs/adr/` to understand "why is it built this way".
 - Reversing a past decision becomes a deliberate act (writing a superseding ADR), not an accidental drift.
 
 ### Negative / Trade-offs
+
 - Slight overhead per non-trivial decision (~5–10 minutes to write a focused ADR).
 - Risk of ADR rot if the practice isn't followed — mitigated by including ADR adherence as a review consideration when relevant.
 
 ### Neutral
+
 - ADRs and `MEMORY.md` overlap on architecture decisions. Rule: structured architecture decisions go to ADRs; loose user preferences and gotchas stay in `MEMORY.md`.
 
 ## Alternatives Considered
