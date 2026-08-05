@@ -437,7 +437,12 @@ class SettingsWindow(QDialog):
         # "Close", not "Cancel": this is the app's main window, and the app
         # keeps running in the tray afterwards — "Cancel" reads like undoing
         # something. Unsaved edits are still confirmed (see reject()).
-        close = QPushButton("Close")
+        # "&" mnemonics: the footer is the one control row visible on every
+        # page, so it's the highest-value place for a keyboard user to jump
+        # straight to Close/Apply/Save with Alt+key instead of Tab-cycling
+        # through the whole page first. No other label in this window uses a
+        # mnemonic, so C/A/S can't collide with one.
+        close = QPushButton("&Close")
         close.setToolTip(
             "Close this window — the app keeps running in the tray. "
             "Unsaved changes ask for confirmation first."
@@ -445,12 +450,12 @@ class SettingsWindow(QDialog):
         close.setAutoDefault(False)
         close.clicked.connect(self.reject)
         footer.addWidget(close)
-        apply_btn = QPushButton("Apply")
+        apply_btn = QPushButton("&Apply")
         apply_btn.setToolTip("Save and apply all settings now — the window stays open.")
         apply_btn.setAutoDefault(False)
         apply_btn.clicked.connect(self._apply)
         footer.addWidget(apply_btn)
-        save = QPushButton("Save")
+        save = QPushButton("&Save")
         save.setProperty("accent", True)
         save.setToolTip("Save all settings, apply them immediately and close — no restart needed.")
         # Make Enter (e.g. from a text field) trigger Save, not the first
