@@ -43,11 +43,14 @@ DEFAULTS: dict = {
     # Where downloaded models are stored. null = the Hugging Face default
     # cache (~/.cache/huggingface/hub).
     "model_dir": None,
-    # Transcription backend: "faster-whisper" (NVIDIA CUDA / CPU, default) or
+    # Transcription backend: "faster-whisper" (NVIDIA CUDA / CPU, default),
     # "openvino" (Intel CPU / GPU / NPU — needs the optional openvino-genai
-    # package: pip install openvino-genai, or the [openvino] extra).
+    # package: pip install openvino-genai, or the [openvino] extra) or
+    # "parakeet" (NVIDIA Parakeet TDT via ONNX, fastest — needs the
+    # [parakeet] extra). See choices.BACKENDS / transcriber.create_transcriber.
     "backend": "faster-whisper",
-    # Whisper device (faster-whisper backend): auto / cpu / cuda.
+    # Device for the faster-whisper and parakeet backends: auto / cpu / cuda.
+    # (The openvino backend has its own openvino_device below.)
     "device": "auto",
     # CTranslate2 compute type: auto / int8 / int8_float16 / float16 / float32.
     "compute_type": "auto",
@@ -118,10 +121,12 @@ DEFAULTS: dict = {
     # In-app updater (checks the GitHub Releases of this repo).
     "update_check_on_start": True,
     "include_prereleases": False,
-    # Skip TLS certificate verification for ALL outbound HTTPS connections
-    # (Whisper model downloads, the update check, the assistant). Only for
-    # corporate proxies that intercept HTTPS with a self-signed certificate —
-    # insecure, leave off otherwise.
+    # Skip TLS certificate verification for the outbound HTTPS connections the
+    # switch covers: the Whisper model downloads and the assistant. The updater
+    # is deliberately carved out and always verifies — it replaces the running
+    # program file (ADR-0002; see netutil.py). Only for corporate proxies that
+    # intercept HTTPS with a self-signed certificate — insecure, leave off
+    # otherwise.
     "insecure_ssl": False,
     # Optional LLM post-processing via an OpenAI-compatible API (e.g. Ollama).
     "assistant": {
