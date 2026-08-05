@@ -1,22 +1,23 @@
 # API Reference
 
-Listen To Me is a desktop GUI app — it exposes **no served HTTP API**. This file documents the interfaces it *does* have: a small CLI, the config schema, and the two external HTTP services it *consumes*.
+Listen To Me is a desktop GUI app — it exposes **no served HTTP API**. This file documents the interfaces it _does_ have: a small CLI, the config schema, and the two external HTTP services it _consumes_.
 
 ## Command-Line Interface
 
 Entry point: `listen_to_me.app:main` (console scripts `listen-to-me` / `listen-to-me-gui`; also `python -m listen_to_me`).
 
-| Flag | Effect |
-|------|--------|
-| `--version` | Print `Listen To Me <version>` and exit `0`. Does **not** import Qt. |
-| `--selftest` | Run the packaging self-test (`selftest.run`); writes `<tempdir>/listen-to-me-selftest.log`, exits non-zero on failure. Used by CI after the PyInstaller build. |
-| _(none)_ | Launch the tray app. A single-instance guard (named mutex on Windows, `flock()`-ed `instance.lock` in the config dir on POSIX) makes a second launch exit quietly after pinging the running instance to show itself over loopback port `52697`. |
+| Flag         | Effect                                                                                                                                                                                                                                          |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--version`  | Print `Listen To Me <version>` and exit `0`. Does **not** import Qt.                                                                                                                                                                            |
+| `--selftest` | Run the packaging self-test (`selftest.run`); writes `<tempdir>/listen-to-me-selftest.log`, exits non-zero on failure. Used by CI after the PyInstaller build.                                                                                  |
+| _(none)_     | Launch the tray app. A single-instance guard (named mutex on Windows, `flock()`-ed `instance.lock` in the config dir on POSIX) makes a second launch exit quietly after pinging the running instance to show itself over loopback port `52697`. |
 
 Own flags are stripped before Qt sees `sys.argv` (`sys.argv[:1]`), so they never clash with Qt options.
 
 ## Configuration Schema
 
 Config is a JSON file in the platform config dir (`config.py → config_dir()`):
+
 - Windows: `%APPDATA%\ListenToMe\config.json`
 - Linux: `~/.config/listen-to-me/config.json`
 - macOS: `~/Library/Application Support/ListenToMe/config.json`
@@ -28,17 +29,20 @@ The authoritative schema is `DEFAULTS` in `src/listen_to_me/config.py` (deep-mer
 ## Consumed External Services
 
 ### Assistant — OpenAI-compatible Chat Completions (`assistant.py`, optional)
+
 - **Endpoint:** `POST {base_url}/chat/completions` (default `base_url` = `http://localhost:11434/v1`, i.e. local Ollama; works with LM Studio, llama.cpp, OpenWebUI, or a hosted API).
 - **Auth:** `Authorization: Bearer <api_key>` when `assistant.api_key` is set (stored in the user's local config).
 - **Request:** `model`, `messages` (system prompt + the raw transcript), `temperature`, `timeout` — all from `cfg["assistant"]`.
 - **Use:** post-processes the transcript (punctuation, filler removal, dictated formatting). On any failure the raw transcript is inserted instead (fail-soft).
 
 ### Updater — GitHub Releases API (`updater.py`)
+
 - **Endpoint:** GitHub Releases of `fo0/listen-to-me`.
 - **Use:** lists releases newer than the running build with changelogs; on a frozen Windows build, downloads the new `.exe` and swaps it in on restart.
 - **Failure mode:** best-effort — a network/API error is silent (startup check) or surfaced in the Updates page.
 
 ### Model download — Hugging Face Hub (via faster-whisper)
+
 - Whisper models are fetched from Hugging Face on first use into the HF hub cache (or `model_dir`). Later loads are fully offline (`local_files_only`). No direct HTTP code in this repo — handled inside faster-whisper.
 
 ## Internal Event Interface

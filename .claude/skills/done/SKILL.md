@@ -19,6 +19,7 @@ git rev-parse --abbrev-ref HEAD && git status --porcelain && git log origin/$(gi
 ```
 
 Classify:
+
 - `main` / `master` / `develop` / `trunk` → **main branch mode** (conservative)
 - anything else → **feature branch mode** (standard)
 
@@ -42,6 +43,7 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src python -c "import sys; from listen_to_m
 ```
 
 If any fail:
+
 - **Feature branch:** report failure, stop. Do not commit.
 - **Main branch:** hard stop. Never push to main on red.
 

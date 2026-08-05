@@ -22,17 +22,18 @@ runs — identical speed — but fine-tuned on 980k German samples (paper: arXiv
 
 German WER (primeline benchmark mix: Tuda-De + CommonVoice 19 + MLS):
 
-| Model | Tuda-De | CV 19 | MLS | All |
-|---|---|---|---|---|
-| openai/whisper-large-v3-turbo (current preset) | 8.30 | 3.85 | 3.20 | **3.65** |
-| openai/whisper-large-v3 | 7.88 | 3.48 | 2.83 | 3.28 |
-| **primeline/whisper-large-v3-turbo-german** | 6.44 | 3.20 | 2.07 | **2.63** |
+| Model                                          | Tuda-De | CV 19 | MLS  | All      |
+| ---------------------------------------------- | ------- | ----- | ---- | -------- |
+| openai/whisper-large-v3-turbo (current preset) | 8.30    | 3.85  | 3.20 | **3.65** |
+| openai/whisper-large-v3                        | 7.88    | 3.48  | 2.83 | 3.28     |
+| **primeline/whisper-large-v3-turbo-german**    | 6.44    | 3.20  | 2.07 | **2.63** |
 
 ≈ **28 % relative WER reduction vs the current turbo preset at the same speed** — even beats full
 large-v3. Trade-off: German-only (loses multilingual + auto-detect usefulness).
 
 Integration: faster-whisper accepts any CT2 repo id, so this is a **string-only preset addition** in
 `choices.py`. No official primeline CT2 conversion exists; options:
+
 - most-used community conversion: [`jimmymeister/whisper-large-v3-turbo-german-ct2`](https://huggingface.co/jimmymeister/whisper-large-v3-turbo-german-ct2) (Apache-2.0), or
 - self-convert once via `ct2-transformers-converter --model primeline/whisper-large-v3-turbo-german`
   and publish/point to our own copy (safer supply chain).
@@ -75,12 +76,12 @@ accuracy cost — worth a config key (`beam_size`) defaulting to current behavio
 The app's `create_transcriber()` backend abstraction makes a third engine feasible. German-capable
 finalists (Open ASR Leaderboard context: Whisper large-v3 ≈ RTFx 145):
 
-| Model | German WER (FLEURS) | RTFx | Size | License | Windows path |
-|---|---|---|---|---|---|
-| [NVIDIA parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) | 5.04 | **3,333** | 640 MB int8 ONNX | CC-BY-4.0 | [`onnx-asr`](https://github.com/istupakov/onnx-asr) pip pkg (numpy+onnxruntime only, no torch/NeMo); CUDA/DirectML |
-| [Qwen/Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) (Jan 2026) | **3.92** — best open German number | GPU-fast | ~2–4 GB | Apache-2.0 | `qwen-asr` (torch) — sherpa-onnx port only for 0.6B so far ([1.7B requested](https://github.com/k2-fsa/sherpa-onnx/issues/3535)) |
-| [Qwen/Qwen3-ASR-0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) | 6.48 | ~2000 (batch) | ~700 MB int8 | Apache-2.0 | sherpa-onnx int8 port available now |
-| [nvidia/canary-1b-v2](https://huggingface.co/nvidia/canary-1b-v2) | ~4.4 (card) / 8.4 FLEURS-25 avg | 749 | 978 M | CC-BY-4.0 | `onnx-asr` supports Canary v2 |
+| Model                                                                             | German WER (FLEURS)                | RTFx          | Size             | License    | Windows path                                                                                                                     |
+| --------------------------------------------------------------------------------- | ---------------------------------- | ------------- | ---------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| [NVIDIA parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) | 5.04                               | **3,333**     | 640 MB int8 ONNX | CC-BY-4.0  | [`onnx-asr`](https://github.com/istupakov/onnx-asr) pip pkg (numpy+onnxruntime only, no torch/NeMo); CUDA/DirectML               |
+| [Qwen/Qwen3-ASR-1.7B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) (Jan 2026)      | **3.92** — best open German number | GPU-fast      | ~2–4 GB          | Apache-2.0 | `qwen-asr` (torch) — sherpa-onnx port only for 0.6B so far ([1.7B requested](https://github.com/k2-fsa/sherpa-onnx/issues/3535)) |
+| [Qwen/Qwen3-ASR-0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B)                 | 6.48                               | ~2000 (batch) | ~700 MB int8     | Apache-2.0 | sherpa-onnx int8 port available now                                                                                              |
+| [nvidia/canary-1b-v2](https://huggingface.co/nvidia/canary-1b-v2)                 | ~4.4 (card) / 8.4 FLEURS-25 avg    | 749           | 978 M            | CC-BY-4.0  | `onnx-asr` supports Canary v2                                                                                                    |
 
 **Parakeet-TDT-0.6B-v3 is the standout speed pick**: ~20× faster than turbo-class, German accuracy at
 or above vanilla turbo, punctuation/caps/timestamps built in, and `onnx-asr` mirrors our existing
@@ -101,7 +102,7 @@ Phi-4-multimodal, Meta Omnilingual ASR (fairseq2 on Windows).
 ### 3.1 Whisper's built-in `task="translate"` — cheapest entry, with a trap
 
 Any-language → **English only**. Supported by faster-whisper (`task="translate"`) and OpenVINO
-GenAI (`WhisperGenerationConfig`). **Trap:** `large-v3-turbo` was *not trained* for translation —
+GenAI (`WhisperGenerationConfig`). **Trap:** `large-v3-turbo` was _not trained_ for translation —
 it silently returns source-language text ([openai/whisper #2363](https://github.com/openai/whisper/discussions/2363),
 [faster-whisper #1237](https://github.com/SYSTRAN/faster-whisper/issues/1237)); distil models are
 English-only anyway. A translate toggle must gate out turbo/distil presets (and the German fine-tune,
@@ -112,13 +113,13 @@ same turbo lineage) in the UI. Quality on large-v3 is decent gist-level; decode 
 CTranslate2 (already shipped!) natively runs MarianMT/Opus-MT, NLLB, M2M-100, T5/MADLAD, and newer
 Gemma/Qwen decoders. Only new dep: `sentencepiece` (small). Added latency per 1–2-sentence chunk:
 
-| MT model | DE↔EN quality | CPU added | Size | License |
-|---|---|---|---|---|
-| [Helsinki-NLP/opus-mt-de-en](https://huggingface.co/Helsinki-NLP/opus-mt-de-en) / en-de | good | **<0.15 s** (CT2 int8) | ~100 MB ×2 | Apache-2.0 ✅ |
-| [google/madlad400-3b-mt](https://huggingface.co/google/madlad400-3b-mt) | very good, any↔any 400 langs | 1–3 s | 1.65 GB int8 | Apache-2.0 ✅ |
-| [utter-project/EuroLLM-1.7B-Instruct](https://huggingface.co/utter-project/EuroLLM-1.7B-Instruct) | very good (COMET 86.9 FLORES avg) | 1–4 s | ~1–2 GB | Apache-2.0 ✅ |
-| [google/translategemma-4b-it](https://huggingface.co/google/translategemma-4b-it) (Jan 2026) | excellent (COMET 81.6 WMT24++) | 5–20 s ⚠️ (GPU: <1.5 s) | ~2.5 GB Q4 | Gemma ToU (commercial OK, gated) |
-| NLLB-200-distilled (any size) | good+ | 0.5–1.5 s | 0.6+ GB | **CC-BY-NC 🚫 do not ship** |
+| MT model                                                                                          | DE↔EN quality                     | CPU added               | Size         | License                          |
+| ------------------------------------------------------------------------------------------------- | --------------------------------- | ----------------------- | ------------ | -------------------------------- |
+| [Helsinki-NLP/opus-mt-de-en](https://huggingface.co/Helsinki-NLP/opus-mt-de-en) / en-de           | good                              | **<0.15 s** (CT2 int8)  | ~100 MB ×2   | Apache-2.0 ✅                    |
+| [google/madlad400-3b-mt](https://huggingface.co/google/madlad400-3b-mt)                           | very good, any↔any 400 langs      | 1–3 s                   | 1.65 GB int8 | Apache-2.0 ✅                    |
+| [utter-project/EuroLLM-1.7B-Instruct](https://huggingface.co/utter-project/EuroLLM-1.7B-Instruct) | very good (COMET 86.9 FLORES avg) | 1–4 s                   | ~1–2 GB      | Apache-2.0 ✅                    |
+| [google/translategemma-4b-it](https://huggingface.co/google/translategemma-4b-it) (Jan 2026)      | excellent (COMET 81.6 WMT24++)    | 5–20 s ⚠️ (GPU: <1.5 s) | ~2.5 GB Q4   | Gemma ToU (commercial OK, gated) |
+| NLLB-200-distilled (any size)                                                                     | good+                             | 0.5–1.5 s               | 0.6+ GB      | **CC-BY-NC 🚫 do not ship**      |
 
 **Opus-MT de-en/en-de is the sweet spot**: sub-150 ms on CPU — effectively free next to the Whisper
 decode, both directions, permissive. MADLAD/EuroLLM as an optional "high quality" tier.
@@ -155,16 +156,16 @@ weights (CC-BY-NC), Tower+ (CC-BY-NC), CrisperWhisper as a dictation preset (CC-
 
 ## 4. Recommended roadmap (ranked by value/effort)
 
-| # | Action | Effort | Win |
-|---|---|---|---|
-| 1 | Preset `large-v3-turbo-german` (primeline CT2) in `choices.py` | string-only | −28 % German WER at same speed |
-| 2 | Preset `distil-large-v3.5` (official CT2 repo id) for English mode; bump faster-whisper to ≥1.2.1 | string + req bump | 1.5× faster than turbo for EN |
-| 3 | `beam_size` config key (default 5) | tiny | up to ~2× decode speed opt-in |
-| 4 | Translate toggle: Whisper `task="translate"` (→EN only), UI-gated against turbo/distil/german presets | small | first real translation feature |
-| 5 | Cascade MT: Opus-MT de↔en on CT2 int8 (+`sentencepiece`), wired after transcribe + optional per-segment in live preview | medium | both directions, <150 ms added, fully local |
-| 6 | New backend: Parakeet-TDT-0.6B-v3 via `onnx-asr` | medium | ~20× faster processing phase, German ≥ turbo accuracy |
-| 7 | Optional: Canary-1b-v2 backend (ASR+AST) / assistant translate mode / MADLAD high-quality tier | medium | premium translation quality |
-| — | Watch: Qwen3-ASR-1.7B sherpa-onnx port (best open German WER 3.92), multilingual distil-whisper, Voxtral Realtime on llama.cpp | — | future backends |
+| #   | Action                                                                                                                         | Effort            | Win                                                   |
+| --- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------- | ----------------------------------------------------- |
+| 1   | Preset `large-v3-turbo-german` (primeline CT2) in `choices.py`                                                                 | string-only       | −28 % German WER at same speed                        |
+| 2   | Preset `distil-large-v3.5` (official CT2 repo id) for English mode; bump faster-whisper to ≥1.2.1                              | string + req bump | 1.5× faster than turbo for EN                         |
+| 3   | `beam_size` config key (default 5)                                                                                             | tiny              | up to ~2× decode speed opt-in                         |
+| 4   | Translate toggle: Whisper `task="translate"` (→EN only), UI-gated against turbo/distil/german presets                          | small             | first real translation feature                        |
+| 5   | Cascade MT: Opus-MT de↔en on CT2 int8 (+`sentencepiece`), wired after transcribe + optional per-segment in live preview        | medium            | both directions, <150 ms added, fully local           |
+| 6   | New backend: Parakeet-TDT-0.6B-v3 via `onnx-asr`                                                                               | medium            | ~20× faster processing phase, German ≥ turbo accuracy |
+| 7   | Optional: Canary-1b-v2 backend (ASR+AST) / assistant translate mode / MADLAD high-quality tier                                 | medium            | premium translation quality                           |
+| —   | Watch: Qwen3-ASR-1.7B sherpa-onnx port (best open German WER 3.92), multilingual distil-whisper, Voxtral Realtime on llama.cpp | —                 | future backends                                       |
 
 License red flags to keep in mind when shipping: CC-BY-NC (CrisperWhisper, NLLB/NLLW, SeamlessM4T,
 Tower+) is incompatible with a released exe for commercial users; CC-BY-4.0 (NVIDIA models) needs

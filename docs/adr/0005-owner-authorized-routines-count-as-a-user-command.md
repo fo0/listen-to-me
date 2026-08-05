@@ -15,7 +15,7 @@ The owner has decided to accept the routine exception here too, with the residua
 
 ## Decision
 
-We will reinstate the routine exception and align it with the sibling repositories. A session running an **owner-authorized routine** counts as an explicit user command for merging a PR and for dispatching the release build; its merges are pre-approved *including* any pipeline the merge triggers.
+We will reinstate the routine exception and align it with the sibling repositories. A session running an **owner-authorized routine** counts as an explicit user command for merging a PR and for dispatching the release build; its merges are pre-approved _including_ any pipeline the merge triggers.
 
 The exception applies only when **both** conditions hold:
 

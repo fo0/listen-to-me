@@ -25,6 +25,7 @@ git log --oneline -10
 ```
 
 Plus:
+
 - Last error message verbatim (no paraphrasing)
 - Last 3 commands run and their exit codes
 - Files touched in this loop
@@ -41,15 +42,15 @@ If you can't articulate the attempts as distinct approaches → that itself is t
 
 ### 3. Diagnose Loop Type
 
-| Pattern                                                    | Likely cause                          | Action                          |
-|------------------------------------------------------------|---------------------------------------|---------------------------------|
-| Same fix re-applied because the Qt smoke still fails        | Import order / cross-thread / lazy-import regression | Re-read the threading model in CLAUDE.md |
-| Import / module-not-found that "should work"                | A heavy import got hoisted to module scope | Move it back inside the function |
-| CUDA / GPU error surviving every attempt                    | Wrong fallback path, or a transient OOM misread as "GPU unavailable" | Re-read `transcriber.py` fallback logic |
-| Qt error only offscreen / only in CI                        | Widget touched off the main thread    | Route through `App.post`        |
-| Check flake (passes/fails non-deterministically)            | Race / shared state / timing          | Treat as flake → BACKLOG.md     |
-| Network / external-API error                                | Unmocked external dep                 | Apply zero-cost rule — mock     |
-| CI infra (apt install / timeout / OOM)                      | NOT a code defect                     | Surface to CI skill, do not "fix" code |
+| Pattern                                              | Likely cause                                                         | Action                                   |
+| ---------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------- |
+| Same fix re-applied because the Qt smoke still fails | Import order / cross-thread / lazy-import regression                 | Re-read the threading model in CLAUDE.md |
+| Import / module-not-found that "should work"         | A heavy import got hoisted to module scope                           | Move it back inside the function         |
+| CUDA / GPU error surviving every attempt             | Wrong fallback path, or a transient OOM misread as "GPU unavailable" | Re-read `transcriber.py` fallback logic  |
+| Qt error only offscreen / only in CI                 | Widget touched off the main thread                                   | Route through `App.post`                 |
+| Check flake (passes/fails non-deterministically)     | Race / shared state / timing                                         | Treat as flake → BACKLOG.md              |
+| Network / external-API error                         | Unmocked external dep                                                | Apply zero-cost rule — mock              |
+| CI infra (apt install / timeout / OOM)               | NOT a code defect                                                    | Surface to CI skill, do not "fix" code   |
 
 ### 4. Surface to User
 
@@ -89,6 +90,6 @@ Then **stop**. Do NOT take a 4th attempt without user input.
 
 ## After User Response
 
-- User picks a concrete option → execute, with attempt counter reset for the *new* approach (not for the underlying defect).
+- User picks a concrete option → execute, with attempt counter reset for the _new_ approach (not for the underlying defect).
 - User asks for more info → produce the requested data, do NOT take it as license to retry.
 - User says "keep trying" → ask once: "Same approach or a new angle? If same, I will stop after one more attempt." Then enforce that.

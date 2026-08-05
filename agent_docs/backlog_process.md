@@ -21,21 +21,23 @@ Review findings not immediately fixed. **Only work on these upon explicit reques
 
 ## Open
 
-| # | Date | Category | Sev | Location | Finding | Status | Source |
-|---|------|----------|-----|----------|---------|--------|--------|
-| 1 | YYYY-MM-DD | Code Smells | P2 | module.py → ClassOrFunction | What is wrong and what the fix would be | Deferred | Task/branch it was found in |
+| #   | Date       | Category    | Sev | Location                    | Finding                                 | Status   | Source                      |
+| --- | ---------- | ----------- | --- | --------------------------- | --------------------------------------- | -------- | --------------------------- |
+| 1   | YYYY-MM-DD | Code Smells | P2  | module.py → ClassOrFunction | What is wrong and what the fix would be | Deferred | Task/branch it was found in |
 
 ## Done
 
-| # | Date | Done | Category | Location | Finding |
-|---|------|------|----------|----------|---------|
-| 1 | 2026-07-01 | 2026-07-10 | Bugs & Logic | transcriber.py → _maybe_force_cpu | CPU fallback fired on transient OOM |
+| #   | Date       | Done       | Category     | Location                          | Finding                             |
+| --- | ---------- | ---------- | ------------ | --------------------------------- | ----------------------------------- |
+| 1   | 2026-07-01 | 2026-07-10 | Bugs & Logic | transcriber.py → _maybe_force_cpu | CPU fallback fired on transient OOM |
 ```
 
 ### Location Format
+
 Use `File → Function/Component` instead of line numbers. Line numbers go stale after every commit.
 
 ### Status Values
+
 - **Deferred** — Recognized as valid, postponed intentionally (reasoning in Finding or Source)
 - **Accepted** — Known limitation, accepted as-is for now
 - **Escalated** — Upgraded from P2 to P1 due to repeated impact

@@ -23,14 +23,17 @@ One paragraph stating the chosen path, in active voice. "We will X."
 ## Consequences
 
 ### Positive
+
 - Benefit 1
 - Benefit 2
 
 ### Negative / Trade-offs
+
 - Cost 1
 - Cost 2
 
 ### Neutral
+
 - Side effect that's neither good nor bad but worth noting
 
 ## Alternatives Considered

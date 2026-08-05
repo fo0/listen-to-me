@@ -4,7 +4,7 @@ This file defines the review process the `review` skill executes. It runs **on d
 
 ## Core Rules
 
-1. **Run it in full once invoked** — all categories below, no cherry-picking. Scope (diff / full-read / large-scale) is chosen per *Review Scope*, coverage is not.
+1. **Run it in full once invoked** — all categories below, no cherry-picking. Scope (diff / full-read / large-scale) is chosen per _Review Scope_, coverage is not.
 2. **A review that has started blocks the commit until it is finished** — every P0/P1 finding fixed, or explicitly deferred to `BACKLOG.md` with reasoning.
 3. **Deterministic checks run first** — the syntax check + Qt smoke test catch what they catch. The review covers what tools cannot (this project has no linter/typechecker).
 4. **Fix, don't list** — when a finding is actionable, fix it immediately. Don't just document it.
@@ -14,11 +14,11 @@ This file defines the review process the `review` skill executes. It runs **on d
 
 Severity is based on impact, not category:
 
-| Severity | Definition | Examples |
-|----------|-----------|---------|
-| **P0 — Critical** | Can cause data loss, security breach, or a hard crash of a must-never-crash tray app | Unhandled exception on the Qt main thread, cross-thread Qt access from a worker, clipboard/history data loss, secret leaked to logs |
-| **P1 — Important** | Functionally incorrect, poor UX, or fast-growing tech debt | Wrong CUDA/CPU fallback logic, missing edge case (empty audio, no mic), race on shared recorder/transcriber state, deprecated Qt API |
-| **P2 — Nice-to-have** | Code smells, minor perf, style | Duplicated code, magic numbers, an over-long method, a heavy import that could be lazier |
+| Severity              | Definition                                                                           | Examples                                                                                                                             |
+| --------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **P0 — Critical**     | Can cause data loss, security breach, or a hard crash of a must-never-crash tray app | Unhandled exception on the Qt main thread, cross-thread Qt access from a worker, clipboard/history data loss, secret leaked to logs  |
+| **P1 — Important**    | Functionally incorrect, poor UX, or fast-growing tech debt                           | Wrong CUDA/CPU fallback logic, missing edge case (empty audio, no mic), race on shared recorder/transcriber state, deprecated Qt API |
+| **P2 — Nice-to-have** | Code smells, minor perf, style                                                       | Duplicated code, magic numbers, an over-long method, a heavy import that could be lazier                                             |
 
 ## Workflow
 
@@ -33,6 +33,7 @@ Commit
 ```
 
 ### Error Recovery
+
 - **Automated checks fail and fix is unclear:** Document the failure, inform the user, do NOT commit. Suggest possible causes.
 - **Review finds issue outside current scope:** Log to BACKLOG.md with context, do not fix unless trivial.
 - **Circular fix loop (fix breaks something else):** After 2nd iteration → inform user. After 3rd → invoke `.claude/skills/stuck/SKILL.md` — the 4th attempt without user input is forbidden.
@@ -65,16 +66,19 @@ Real-service smoke/E2E tests only on explicit user request, never as a default a
 ## Review Scope
 
 ### Default: Diff-based review
+
 - Review is based on changed files (diff).
 - Only changed and directly affected files are read.
 
 ### Full-read review (when needed)
+
 - New files are always read completely.
 - Threading-sensitive changes (`app.py`, workers, `transcriber.py`, `hotkeys.py`, `integrations.py`): also check the callers/callees for main-thread vs worker-thread correctness.
 - Security-relevant changes (`injector.py`, `assistant.py`, `updater.py`, `config.py`): also check adjacent files.
 - On explicit user request.
 
 ### Large-scale changes (>30 changed files)
+
 - Group by change type (refactoring, feature, config etc.).
 - P0 categories for all files.
 - P1/P2 only for feature-relevant files, rest by sampling.
@@ -85,26 +89,26 @@ Ordered by priority.
 
 ### P0 — Critical (always fix immediately)
 
-| # | Category | What to check |
-|---|----------|---------------|
-| 1 | **Security** | Command/shell injection, unsafe `subprocess`, secrets in logs/commits, unsafe deserialization, untrusted input to the injector, updater download/verify integrity |
-| 2 | **Bugs & Logic Errors** | **Cross-thread Qt access from a worker thread** (must go through `App.post`), unhandled exception reaching the Qt main loop, null/None deref, race conditions on `Recorder`/`Transcriber`/`Hotkeys` shared state, wrong CUDA↔CPU fallback, unclosed audio stream, deadlock between `_lock`/`_use_lock` |
+| #   | Category                | What to check                                                                                                                                                                                                                                                                                          |
+| --- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | **Security**            | Command/shell injection, unsafe `subprocess`, secrets in logs/commits, unsafe deserialization, untrusted input to the injector, updater download/verify integrity                                                                                                                                      |
+| 2   | **Bugs & Logic Errors** | **Cross-thread Qt access from a worker thread** (must go through `App.post`), unhandled exception reaching the Qt main loop, null/None deref, race conditions on `Recorder`/`Transcriber`/`Hotkeys` shared state, wrong CUDA↔CPU fallback, unclosed audio stream, deadlock between `_lock`/`_use_lock` |
 
 ### P1 — Important (fix by default, defer only if disproportionate effort)
 
-| # | Category | What to check |
-|---|----------|---------------|
-| 3 | **Edge Cases** | Empty/too-short audio, no microphone, no GPU, no network (assistant/updater), clipboard access denied, missed hotkey release (hold mode), multi-monitor overlay placement, non-ASCII paths |
-| 4 | **Typing & Type Safety** | Correct type hints, `X \| None` handled, no silent `Any`, config value types match `DEFAULTS` |
-| 5 | **Modern Coding Standards** | Idiomatic PySide6/Qt, no deprecated Qt APIs, `from __future__ import annotations` present, lazy heavy imports preserved, Qt-free modules stay Qt-free, DRY/KISS/SRP |
+| #   | Category                    | What to check                                                                                                                                                                              |
+| --- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 3   | **Edge Cases**              | Empty/too-short audio, no microphone, no GPU, no network (assistant/updater), clipboard access denied, missed hotkey release (hold mode), multi-monitor overlay placement, non-ASCII paths |
+| 4   | **Typing & Type Safety**    | Correct type hints, `X \| None` handled, no silent `Any`, config value types match `DEFAULTS`                                                                                              |
+| 5   | **Modern Coding Standards** | Idiomatic PySide6/Qt, no deprecated Qt APIs, `from __future__ import annotations` present, lazy heavy imports preserved, Qt-free modules stay Qt-free, DRY/KISS/SRP                        |
 
 ### P2 — Contextual (review when relevant, defer freely)
 
-| # | Category | What to check |
-|---|----------|---------------|
-| 6 | **Code Smells** | Duplicated code, dead code, god methods (watch `settings_ui.py`/`app.py`), long parameter lists, magic numbers |
-| 7 | **Performance** | Redundant FFT/level work while overlay hidden, O(n²) buffer snapshots on long recordings, unnecessary model reloads, blocking work on the main thread |
-| 8 | **Readability & Maintainability** | Clear naming, docstrings explaining *why*, consistent style, logical organization |
+| #   | Category                          | What to check                                                                                                                                         |
+| --- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 6   | **Code Smells**                   | Duplicated code, dead code, god methods (watch `settings_ui.py`/`app.py`), long parameter lists, magic numbers                                        |
+| 7   | **Performance**                   | Redundant FFT/level work while overlay hidden, O(n²) buffer snapshots on long recordings, unnecessary model reloads, blocking work on the main thread |
+| 8   | **Readability & Maintainability** | Clear naming, docstrings explaining _why_, consistent style, logical organization                                                                     |
 
 ## Review Execution
 
@@ -129,23 +133,24 @@ Summary: X categories checked | Y fixed | Z deferred → Backlog
 
 ## Fixing Rules
 
-| Severity | Action |
-|----------|--------|
-| P0 findings | Fix immediately, always |
+| Severity    | Action                                                                                           |
+| ----------- | ------------------------------------------------------------------------------------------------ |
+| P0 findings | Fix immediately, always                                                                          |
 | P1 findings | Fix by default. Defer only if effort is clearly disproportionate — document reasoning in Backlog |
-| P2 findings | Fix if trivial (<5 min). Otherwise defer to Backlog |
+| P2 findings | Fix if trivial (<5 min). Otherwise defer to Backlog                                              |
 
 ## Regression & Complexity QA
 
 After all review fixes are applied, re-read the full implementation one more time:
 
-| Check | What to look for |
-|-------|-----------------|
-| **Regressions** | Did a fix break existing behavior? Changed return values, removed fallbacks, altered state transitions? |
-| **Unnecessary complexity** | Did the implementation add indirection or branching that isn't needed? |
-| **Consistency** | Do the changes fit the patterns in surrounding code (threading, lazy imports, config access)? |
+| Check                      | What to look for                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **Regressions**            | Did a fix break existing behavior? Changed return values, removed fallbacks, altered state transitions? |
+| **Unnecessary complexity** | Did the implementation add indirection or branching that isn't needed?                                  |
+| **Consistency**            | Do the changes fit the patterns in surrounding code (threading, lazy imports, config access)?           |
 
 Rules:
+
 - Re-read every changed file again (not from memory).
 - If this pass finds issues, fix them and re-run automated checks. Do NOT loop more than once.
 
@@ -161,15 +166,15 @@ Rules:
 
 For isolated, clearly bounded subtasks. Pick the matching `subagent_type` instead of always defaulting to `general-purpose`.
 
-| Task                              | When to delegate                | Recommended `subagent_type` |
-|-----------------------------------|--------------------------------|-----------------------------|
-| **Locate code / find symbols**    | Search across >3 paths or unknown location | `Explore` (read-only, fast) |
-| **Plan refactoring/feature**      | Non-trivial, >3 files affected, architectural choice | `Plan` |
-| **Write tests / selftest checks** | >3 checks for a feature        | `general-purpose` |
-| **Doc updates**                   | >2 documentation files         | `general-purpose` |
-| **Refactoring chunks**            | Independent subtasks of larger refactoring | `general-purpose` |
-| **Independent code review**       | Second-opinion on diff         | `general-purpose` |
-| **Q about Claude Code/SDK/API**   | "Can Claude do X?", hooks, MCP, SDK questions | `claude-code-guide` |
+| Task                              | When to delegate                                     | Recommended `subagent_type` |
+| --------------------------------- | ---------------------------------------------------- | --------------------------- |
+| **Locate code / find symbols**    | Search across >3 paths or unknown location           | `Explore` (read-only, fast) |
+| **Plan refactoring/feature**      | Non-trivial, >3 files affected, architectural choice | `Plan`                      |
+| **Write tests / selftest checks** | >3 checks for a feature                              | `general-purpose`           |
+| **Doc updates**                   | >2 documentation files                               | `general-purpose`           |
+| **Refactoring chunks**            | Independent subtasks of larger refactoring           | `general-purpose`           |
+| **Independent code review**       | Second-opinion on diff                               | `general-purpose`           |
+| **Q about Claude Code/SDK/API**   | "Can Claude do X?", hooks, MCP, SDK questions        | `claude-code-guide`         |
 
 ## Subagent Selection Rules
 
@@ -187,6 +192,7 @@ The main agent retains responsibility for the review process itself.
 ## Commit Gate
 
 Only commit when:
+
 - [ ] Automated checks pass (`compileall` + Qt smoke)
 - [ ] All P0/P1 findings are fixed (or explicitly deferred with reasoning)
 - [ ] Deferred findings are logged in BACKLOG.md

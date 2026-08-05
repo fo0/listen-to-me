@@ -2,11 +2,11 @@
 
 Three files load into context every session: `CLAUDE.md` on every turn, `MEMORY.md` and `SCRATCHPAD.md` at session start. Their size is paid by every task in this repo, forever. Everything under `agent_docs/`, `.claude/skills/` and `docs/adr/` is read on demand and has **no budget** — which is what makes offloading into them free.
 
-| File | Target | Offload at | Hard limit |
-|------|--------|------------|------------|
-| `CLAUDE.md` | ≤ 15,000 chars | 20,000 | 40,000 |
-| `MEMORY.md` | ≤ 8,000 chars | 16,000 | 24,000 |
-| `SCRATCHPAD.md` | ≤ 4,000 chars | 8,000 | 12,000 |
+| File            | Target         | Offload at | Hard limit |
+| --------------- | -------------- | ---------- | ---------- |
+| `CLAUDE.md`     | ≤ 15,000 chars | 20,000     | 40,000     |
+| `MEMORY.md`     | ≤ 8,000 chars  | 16,000     | 24,000     |
+| `SCRATCHPAD.md` | ≤ 4,000 chars  | 8,000      | 12,000     |
 
 Measure: `wc -c CLAUDE.md MEMORY.md SCRATCHPAD.md`. The `PostToolUse` budget guard in `.claude/settings.json` checks all three after every Edit/Write and reports which one is over.
 
@@ -20,22 +20,22 @@ The exception: content that duplicates what the code already states. That is del
 
 Work down this list, re-measuring after each step. Stop as soon as the file is back under target.
 
-| # | Move out of CLAUDE.md | To | Pointer left behind |
-|---|-----------------------|----|---------------------|
-| 1 | API/endpoint/event/protocol tables beyond a one-line style summary | `agent_docs/api-reference.md` | `Full API reference: agent_docs/api-reference.md` |
-| 2 | Env vars beyond the 3–5 the agent must know; secret-location tables | `agent_docs/env-vars.md` | `Full list: agent_docs/env-vars.md` |
-| 3 | Key Patterns beyond the top 5 | `agent_docs/key-patterns.md` | `More patterns: agent_docs/key-patterns.md` |
-| 4 | Deployment detail beyond trigger + pipeline path + agent scope | `agent_docs/deployment.md` | `Deployment detail: agent_docs/deployment.md` |
-| 5 | Project structure below the second directory level | `agent_docs/project_structure.md` | `Full tree: agent_docs/project_structure.md` |
-| 6 | Testing detail beyond framework + run command + layout | `agent_docs/testing.md` (constraints already live in `review_process.md`) | `Testing detail: agent_docs/testing.md` |
-| 7 | Architecture rationale / "why we chose X" prose | a new ADR in `docs/adr/` | `See ADR-NNNN` |
-| 8 | Development Notes: setup hints, quirks, history | `MEMORY.md` (stable) or `SCRATCHPAD.md` (temporary) | drop the section if it empties |
-| 9 | Coding conventions beyond ~8 bullets | `agent_docs/coding_conventions.md` | `Full conventions: agent_docs/coding_conventions.md` |
-| 10 | Still over → the largest remaining non-spine section | `agent_docs/{section-slug}.md` | one-line pointer |
+| #   | Move out of CLAUDE.md                                               | To                                                                        | Pointer left behind                                  |
+| --- | ------------------------------------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------- |
+| 1   | API/endpoint/event/protocol tables beyond a one-line style summary  | `agent_docs/api-reference.md`                                             | `Full API reference: agent_docs/api-reference.md`    |
+| 2   | Env vars beyond the 3–5 the agent must know; secret-location tables | `agent_docs/env-vars.md`                                                  | `Full list: agent_docs/env-vars.md`                  |
+| 3   | Key Patterns beyond the top 5                                       | `agent_docs/key-patterns.md`                                              | `More patterns: agent_docs/key-patterns.md`          |
+| 4   | Deployment detail beyond trigger + pipeline path + agent scope      | `agent_docs/deployment.md`                                                | `Deployment detail: agent_docs/deployment.md`        |
+| 5   | Project structure below the second directory level                  | `agent_docs/project_structure.md`                                         | `Full tree: agent_docs/project_structure.md`         |
+| 6   | Testing detail beyond framework + run command + layout              | `agent_docs/testing.md` (constraints already live in `review_process.md`) | `Testing detail: agent_docs/testing.md`              |
+| 7   | Architecture rationale / "why we chose X" prose                     | a new ADR in `docs/adr/`                                                  | `See ADR-NNNN`                                       |
+| 8   | Development Notes: setup hints, quirks, history                     | `MEMORY.md` (stable) or `SCRATCHPAD.md` (temporary)                       | drop the section if it empties                       |
+| 9   | Coding conventions beyond ~8 bullets                                | `agent_docs/coding_conventions.md`                                        | `Full conventions: agent_docs/coding_conventions.md` |
+| 10  | Still over → the largest remaining non-spine section                | `agent_docs/{section-slug}.md`                                            | one-line pointer                                     |
 
 **Never offload — the spine the agent needs every turn:** Session Start Read Order · Workflow Triggers · Output Languages · Commands · Git Conventions · Documentation Rules incl. this budget pointer · the `<!-- Generated by claude-code-optimizer -->` footer.
 
-**Feature documentation is not an offload candidate — it is a mistake.** CLAUDE.md says *how to work here*, not *what each feature does*. If a section documents behavior, delete it and let the agent read the code.
+**Feature documentation is not an offload candidate — it is a mistake.** CLAUDE.md says _how to work here_, not _what each feature does_. If a section documents behavior, delete it and let the agent read the code.
 
 ## MEMORY.md — archive, don't trim
 
@@ -62,9 +62,11 @@ Archived from MEMORY.md on {YYYY-MM-DD} because it exceeded its context budget.
 Still valid knowledge — grep here before concluding something was never tried.
 
 ## Architecture Decisions
+
 {moved entries, verbatim, original dates intact}
 
 ## Gotchas & Pitfalls
+
 {...}
 ```
 

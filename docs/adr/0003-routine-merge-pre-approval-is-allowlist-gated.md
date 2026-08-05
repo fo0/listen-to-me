@@ -24,15 +24,18 @@ The behavior is **fail closed**: an unlisted id, an unknown id, or an unreadable
 ## Consequences
 
 ### Positive
+
 - Prompt text alone can no longer mint merge rights; adding an authorization requires a reviewed change to `main`.
 - Revocation is a one-line commit.
 - The rule is written where an attacker-supplied prompt cannot reach it, and it is mirrored in `.claude/skills/pr/SKILL.md → /pr merge`.
 
 ### Negative / Trade-offs
+
 - Genuine routines do not merge until the owner registers them — the default state is more manual than before.
 - The check depends on the agent resolving a trigger id from session metadata; if that is unavailable the answer is "not authorized", which is the safe but occasionally inconvenient outcome.
 
 ### Neutral
+
 - Destructive change sets (data migration, history rewrite, repo-settings change) stay gated regardless of what the allowlist says.
 
 ## Alternatives Considered

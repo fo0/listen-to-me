@@ -14,7 +14,7 @@ Offloaded from `CLAUDE.md` (context budget). CLAUDE.md keeps trigger + pipeline 
 
 The agent may push to feature branches and open/update PRs. Merging a PR and dispatching the release build each require an explicit user command.
 
-**Routine exception.** A session running an **owner-authorized routine** counts as an explicit user command. Its merges are pre-approved — *including* any pipeline a merge triggers — provided **both** conditions hold:
+**Routine exception.** A session running an **owner-authorized routine** counts as an explicit user command. Its merges are pre-approved — _including_ any pipeline a merge triggers — provided **both** conditions hold:
 
 - the change set is **non-destructive**: additive; no history rewrite, no force-push, no repo-settings change, no migration forced on existing users; **and**
 - **verification passed**: the `ci.yml` `check` job, or its local equivalent (`python -m compileall -q src scripts` plus the offscreen `gui_smoke`), is green.

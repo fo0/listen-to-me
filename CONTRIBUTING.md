@@ -23,9 +23,9 @@ python -m listen_to_me --version   # prints the version, no Qt import
 
 ## Before you open a pull request
 
-There is **no linter, formatter, type-checker, or test framework** configured —
-and please don't add one without discussing it first. Verification is the same
-two checks CI runs on every pull request:
+There is **no linter, formatter, type-checker, or test framework** for the
+Python code — and please don't add one without discussing it first.
+Verification is the same two checks CI runs on every pull request:
 
 ```bash
 # 1. Syntax-compile every source file (fast, no dependencies)
@@ -39,6 +39,17 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src \
 Both must pass. The full packaging self-test (`python -m listen_to_me --selftest`)
 additionally needs all runtime dependencies installed.
 
+Markdown is the one exception to "no formatter": if your change touches any
+`.md` file, `docs-format.yml` checks it with Prettier. Format it before
+pushing — no install needed, and there is no `package.json` to add it to:
+
+```bash
+npx --yes prettier@3.9.6 --write "**/*.md"
+```
+
+Keep the version in sync with the one pinned in
+`.github/workflows/docs-format.yml`.
+
 ## Coding conventions
 
 - `from __future__ import annotations` at the top of every module.
@@ -48,8 +59,8 @@ additionally needs all runtime dependencies installed.
 - `snake_case` for modules/functions, `PascalCase` for classes, a leading `_`
   for private helpers.
 - Type hints on public signatures; use `X | None` unions (3.10+).
-- Comments and docstrings in **English**; docstrings explain *why*, not just
-  *what*.
+- Comments and docstrings in **English**; docstrings explain _why_, not just
+  _what_.
 - Use `logging` (one logger per module), not `print` — except CLI output in
   `main()`.
 - Keep heavy/optional imports (Qt, `sounddevice`, `pynput`, `faster_whisper`,
@@ -76,7 +87,7 @@ need a `--collect-all` entry in `.github/workflows/release.yml`.
 - Commit messages: imperative mood, capitalized subject (~50–72 chars), e.g.
   `Add in-app Help page`. This is **not** Conventional Commits — no `feat:` /
   `fix:` prefixes required. Reference issues/PRs with `#N`, and add a short body
-  explaining *why* for non-trivial changes.
+  explaining _why_ for non-trivial changes.
 - Open the pull request against `main`. CI (`ci.yml`) runs the fast check job
   (syntax + offscreen Qt smoke) automatically; the Windows build and GitHub
   Release live in a separate workflow (`release.yml`) that is dispatched
@@ -86,4 +97,4 @@ need a `--collect-all` entry in `.github/workflows/release.yml`.
 
 Open a GitHub issue with your OS, Python version, what you did, what you
 expected, and what actually happened. Logs are written to a rotating file in the
-config directory (tray icon → *Open config folder*) and can help a lot.
+config directory (tray icon → _Open config folder_) and can help a lot.

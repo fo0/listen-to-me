@@ -7,7 +7,7 @@ Push-to-talk voice typing for your desktop — fully local, open source.
 Press a hotkey, speak, press it again: your words are transcribed by a **local
 Whisper model** and inserted **at the cursor position of whatever field is
 focused** — like the recording button in Chrome or OpenWebUI, but as a
-standalone system-tray app that works in *every* application.
+standalone system-tray app that works in _every_ application.
 
 - **100 % local speech recognition** — [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
   (CTranslate2), no cloud, no account. Models are downloaded automatically on
@@ -21,7 +21,7 @@ standalone system-tray app that works in *every* application.
 - **Clipboard safety net** — when the text cannot be inserted into the focused
   window, it is put on the clipboard so one Ctrl+V recovers it. Optionally
   **always** (every transcript stays on the clipboard) or **never**
-  (Settings → General → *Copy the transcript to the clipboard*). Whenever a
+  (Settings → General → _Copy the transcript to the clipboard_). Whenever a
   transcript is left on the clipboard, a notification says so and shows the
   first few words — so a recording made with no text field focused (the paste
   lands nowhere and the app cannot tell) still ends with a visible
@@ -95,7 +95,7 @@ standalone system-tray app that works in *every* application.
   build, a rename, a move — the next start repairs the registered path instead
   of silently booting the old version. It also **reports back**: the settings
   page shows the command the system actually has on file, an entry Windows
-  switched off in *Task Manager → Startup apps* is named as such (and switched
+  switched off in _Task Manager → Startup apps_ is named as such (and switched
   back on when you save), and a registration that fails says so instead of
   looking fine until the next reboot.
 - **Cross-platform code base** — Windows first; Linux and macOS are prepared
@@ -108,7 +108,7 @@ Grab the latest `ListenToMe-<date>-<hhmm>-win64.exe` from the
 portable single file, no installation. The app appears in the system tray.
 
 > Windows SmartScreen may warn because the binary is not code-signed:
-> choose *More info → Run anyway*.
+> choose _More info → Run anyway_.
 
 ## How it works
 
@@ -130,18 +130,18 @@ here:
 
 Right-click the tray icon → **Settings…**
 
-| Tab | Options |
-| --- | --- |
-| **Home** | The entry hub: live recording state with **Start recording / Stop & insert** (and **Cancel**) buttons, the hotkey rendered as key caps, **at-a-glance cards** (engine & model, language, microphone — click one to jump to its settings page), **quick actions** (change hotkey, model & engine, test microphone, overlay, updates, help) and the **most recent transcripts** with a Copy button each |
-| **General** | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), **copy the transcript to the clipboard** (only when inserting fails / always / never), clipboard restore, notifications, beep, **autostart** (with a status line showing what the system actually has registered), **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
-| **Whisper** | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU, **Parakeet** = fastest engine, NVIDIA CUDA / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model/Parakeet precision, **beam size** (faster-whisper: 5 = best accuracy, 1 = greedy ≈ 1.5–2× faster), VAD silence filter (faster-whisper only), **Detected hardware & model status** card (NVIDIA GPU/CUDA found? OpenVINO installed and which Intel devices? Is the selected model already downloaded? — with a **Refresh status** button, updates automatically when you change model/backend), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), both cancellable with a **Cancel** button, initial prompt (domain vocabulary hint) |
-| **Audio** | Microphone selection, **Test microphone** (3-second check with a live level bar, a clear verdict — works / too quiet / no signal — and a **Cancel** button), maximum recording length |
-| **Overlay** | Floating always-on-top icon on/off, transcript bubble after each recording, experimental **live transcript preview while recording**, preview display time |
-| **Integrations** | **Mute other apps while recording** (Discord, …): master switch (off by default) plus a list of apps, each with an enabled toggle, name, **mute keybind** (with the same key picker) and **mode** (*push-to-mute* / *toggle mute*). Add or remove apps freely. |
-| **Assistant** | Enable/disable, API base URL, model, API key, temperature, **system prompt** (editable, with *Reset to default*) |
-| **History** | Recent **transcribed text** kept locally (never the audio), each with a **Copy** button so a lost transcript can be recovered; a **search field** narrows the list to the transcripts containing your words (any order, case-insensitive) and shows how many of them matched; toggle history on/off, how many entries to keep, and **Clear history** |
-| **Updates** | Installed version, **check on startup** toggle, include pre-releases, **Check now**, changelog per release and **Download & install** (frozen Windows build) with progress — **download size** next to each release and in the confirmation, and "42.0 MB of 198.0 MB" while it runs — and a **Cancel download** button. The new build is written over the running executable — same folder, same file name — so shortcuts, pinned taskbar entries and the autostart entry keep working; the dated `ListenToMe-…-win64.exe` name is only how the download is published |
-| **Help** | Built-in **troubleshooting** page (GPU/CUDA errors, Intel GPU/NPU setup, hotkey, text insertion, model storage, assistant setup) with clickable links — also on the tray menu |
+| Tab              | Options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Home**         | The entry hub: live recording state with **Start recording / Stop & insert** (and **Cancel**) buttons, the hotkey rendered as key caps, **at-a-glance cards** (engine & model, language, microphone — click one to jump to its settings page), **quick actions** (change hotkey, model & engine, test microphone, overlay, updates, help) and the **most recent transcripts** with a Copy button each                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **General**      | Hotkey (type it or use the **“Change…” key picker**), **Test hotkey** (confirms the combination actually arrives — recording stays paused), hotkey mode (**toggle** or **hold/push-to-talk**), spoken language, Whisper model (each preset annotated with its advantage), insert mode (paste/type), **live typing** (experimental — type stable parts of the transcript while you speak; append-only, plain text only, pauses while a modifier key is held; skips the assistant; faster-whisper backend only, and with a hold hotkey it needs a modifier-free key such as F9), **copy the transcript to the clipboard** (only when inserting fails / always / never), clipboard restore, notifications, beep, **autostart** (with a status line showing what the system actually has registered), **start minimized to tray** (off by default — normally the settings window opens on launch), **ignore SSL certificate errors** (off by default — only for corporate proxies with self-signed certificates, see Troubleshooting) |
+| **Whisper**      | **Backend** (faster-whisper = NVIDIA CUDA / CPU, OpenVINO = Intel GPU / NPU / CPU, **Parakeet** = fastest engine, NVIDIA CUDA / CPU), device (auto/CPU/CUDA resp. auto/CPU/GPU/NPU), compute type resp. model/Parakeet precision, **beam size** (faster-whisper: 5 = best accuracy, 1 = greedy ≈ 1.5–2× faster), VAD silence filter (faster-whisper only), **Detected hardware & model status** card (NVIDIA GPU/CUDA found? OpenVINO installed and which Intel devices? Is the selected model already downloaded? — with a **Refresh status** button, updates automatically when you change model/backend), **model download folder** (view, change, open — defaults to the Hugging Face cache), **Download / load model** (fetch the selected model now instead of on the first recording) and **Test transcription** (record 5 s and transcribe them with the current values — result shown inline, nothing inserted), both cancellable with a **Cancel** button, initial prompt (domain vocabulary hint)                      |
+| **Audio**        | Microphone selection, **Test microphone** (3-second check with a live level bar, a clear verdict — works / too quiet / no signal — and a **Cancel** button), maximum recording length                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **Overlay**      | Floating always-on-top icon on/off, transcript bubble after each recording, experimental **live transcript preview while recording**, preview display time                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Integrations** | **Mute other apps while recording** (Discord, …): master switch (off by default) plus a list of apps, each with an enabled toggle, name, **mute keybind** (with the same key picker) and **mode** (_push-to-mute_ / _toggle mute_). Add or remove apps freely.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| **Assistant**    | Enable/disable, API base URL, model, API key, temperature, **system prompt** (editable, with _Reset to default_)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **History**      | Recent **transcribed text** kept locally (never the audio), each with a **Copy** button so a lost transcript can be recovered; a **search field** narrows the list to the transcripts containing your words (any order, case-insensitive) and shows how many of them matched; toggle history on/off, how many entries to keep, and **Clear history**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Updates**      | Installed version, **check on startup** toggle, include pre-releases, **Check now**, changelog per release and **Download & install** (frozen Windows build) with progress — **download size** next to each release and in the confirmation, and "42.0 MB of 198.0 MB" while it runs — and a **Cancel download** button. The new build is written over the running executable — same folder, same file name — so shortcuts, pinned taskbar entries and the autostart entry keep working; the dated `ListenToMe-…-win64.exe` name is only how the download is published                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Help**         | Built-in **troubleshooting** page (GPU/CUDA errors, Intel GPU/NPU setup, hotkey, text insertion, model storage, assistant setup) with clickable links — also on the tray menu                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 Every option has a hover tooltip explaining what it does. The sidebar groups
 the pages into **Home**, **Settings** and **More** (History/Updates/Help).
@@ -160,16 +160,16 @@ worth knowing:
   least one modifier for printable keys (bare function keys like `F9` are also
   allowed). It also accepts **modifier-only chords** (e.g. `Ctrl+Alt`) — hold the
   modifiers and click **OK** to confirm, since there is no final key to auto-apply
-  them. While the combo is held it is *not* suppressed from the focused
+  them. While the combo is held it is _not_ suppressed from the focused
   application on Linux/macOS, so a plain printable key would type into your
   document — a modifier chord avoids that. (Toggle mode only taps the combo, so
   this doesn't apply there.)
 - **If a key release is missed** (some window managers/IMEs grab combos such as
   `Cmd+Space`, or focus changes mid-hold), the recording can't see that you let
-  go. It still stops when you click the floating icon or the tray *Stop
-  recording* entry, or automatically at the *maximum recording length*.
+  go. It still stops when you click the floating icon or the tray _Stop
+  recording_ entry, or automatically at the _maximum recording length_.
 
-Configuration is a plain JSON file (tray → *Open config folder*):
+Configuration is a plain JSON file (tray → _Open config folder_):
 `%APPDATA%\ListenToMe\config.json` on Windows,
 `~/.config/listen-to-me/config.json` on Linux,
 `~/Library/Application Support/ListenToMe/config.json` on macOS.
@@ -181,59 +181,59 @@ all defaults on first launch, and unknown/missing keys fall back to the default,
 so you only need to keep what you changed. Editing it by hand is optional — the
 settings window writes the same keys.
 
-| Key | Default | What it does |
-| --- | --- | --- |
-| `hotkey` | `"<ctrl>+<alt>+<space>"` | Global recording hotkey, pynput syntax |
-| `hotkey_mode` | `"toggle"` | `toggle` = press to start/stop, `hold` = push-to-talk |
-| `language` | `"auto"` | Spoken language code, `auto` = detect |
-| `model` | `"small"` | Whisper preset or any CTranslate2 model id |
-| `model_dir` | `null` | Model download folder; `null` = Hugging Face cache |
-| `backend` | `"faster-whisper"` | Engine: `faster-whisper`, `openvino` or `parakeet` |
-| `device` | `"auto"` | Device for faster-whisper/Parakeet: `auto`/`cpu`/`cuda` |
-| `compute_type` | `"auto"` | CTranslate2 precision: `auto`/`int8`/`int8_float16`/`float16`/`float32` |
-| `openvino_device` | `"auto"` | Intel device: `auto`/`cpu`/`gpu`/`npu` (`auto` prefers GPU → NPU → CPU) |
-| `openvino_precision` | `"int8"` | OpenVINO model precision: `int8`/`fp16`/`int4` |
-| `parakeet_quantization` | `"int8"` | Parakeet ONNX variant: `int8`/`fp32` |
-| `input_device` | `null` | Microphone index; `null` = system default |
-| `max_seconds` | `300` | Hard cap for a single recording, in seconds |
-| `injection_mode` | `"paste"` | Insert via `paste` (clipboard) or `type` (simulated typing) |
-| `live_typing` | `false` | Experimental live typing while recording (faster-whisper only) |
-| `clipboard_copy` | `"on_failure"` | Also copy the transcript to the clipboard: `on_failure` (only when inserting at the cursor fails), `always` (every transcript — suppresses `restore_clipboard`) or `off` |
-| `restore_clipboard` | `true` | Restore the previous clipboard content after a paste |
-| `notifications` / `beep` | `true` / `true` | Desktop notifications and the audible start/stop cue |
-| `autostart` | `false` | Start with the OS |
-| `start_in_tray` | `false` | Start silently into the tray instead of opening the window |
-| `initial_prompt` | `""` | Whisper initial prompt (domain vocabulary hint, not an instruction) |
-| `vad_filter` | `true` | VAD silence filter (faster-whisper only) |
-| `beam_size` | `5` | Decoding beam size; `1` = greedy, ≈1.5–2× faster (faster-whisper only) |
-| `history_enabled` / `history_max` | `true` / `200` | Keep a local transcript history (never audio), and how many entries |
-| `update_check_on_start` / `include_prereleases` | `true` / `false` | Check GitHub Releases on launch, and whether pre-releases count |
-| `insecure_ssl` | `false` | Skip TLS verification for model downloads and the assistant — corporate proxies only (updates always verify) |
-| `overlay.enabled` | `true` | The floating always-on-top status icon |
-| `overlay.show_preview` | `true` | Show the transcript in a bubble after a recording |
-| `overlay.live_preview` | `false` | Experimental rolling preview while you speak (costs CPU) |
-| `overlay.preview_seconds` | `6` | How long the finished transcript stays visible |
-| `overlay.x` / `overlay.y` | `null` | Saved icon position; `null` = bottom right |
-| `assistant.enabled` | `false` | Optional LLM post-processing of the transcript |
-| `assistant.base_url` | `"http://localhost:11434/v1"` | OpenAI-compatible endpoint |
-| `assistant.api_key` | `""` | API key — stays in this local file; empty for Ollama |
-| `assistant.model` | `"llama3.2"` | Model name sent to that endpoint |
-| `assistant.system_prompt` | *(built-in default)* | Cleanup prompt, editable in Settings (one click restores it) |
-| `assistant.temperature` / `assistant.timeout` | `0.2` / `120` | Sampling temperature and request timeout in seconds |
-| `integrations.mute_while_recording` | `false` | Master switch for muting other apps while recording |
-| `integrations.targets` | 5 presets, all disabled | Per-app entries: `name`, `enabled`, `mode` (`hold`/`toggle`), `hotkey` |
+| Key                                             | Default                       | What it does                                                                                                                                                             |
+| ----------------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `hotkey`                                        | `"<ctrl>+<alt>+<space>"`      | Global recording hotkey, pynput syntax                                                                                                                                   |
+| `hotkey_mode`                                   | `"toggle"`                    | `toggle` = press to start/stop, `hold` = push-to-talk                                                                                                                    |
+| `language`                                      | `"auto"`                      | Spoken language code, `auto` = detect                                                                                                                                    |
+| `model`                                         | `"small"`                     | Whisper preset or any CTranslate2 model id                                                                                                                               |
+| `model_dir`                                     | `null`                        | Model download folder; `null` = Hugging Face cache                                                                                                                       |
+| `backend`                                       | `"faster-whisper"`            | Engine: `faster-whisper`, `openvino` or `parakeet`                                                                                                                       |
+| `device`                                        | `"auto"`                      | Device for faster-whisper/Parakeet: `auto`/`cpu`/`cuda`                                                                                                                  |
+| `compute_type`                                  | `"auto"`                      | CTranslate2 precision: `auto`/`int8`/`int8_float16`/`float16`/`float32`                                                                                                  |
+| `openvino_device`                               | `"auto"`                      | Intel device: `auto`/`cpu`/`gpu`/`npu` (`auto` prefers GPU → NPU → CPU)                                                                                                  |
+| `openvino_precision`                            | `"int8"`                      | OpenVINO model precision: `int8`/`fp16`/`int4`                                                                                                                           |
+| `parakeet_quantization`                         | `"int8"`                      | Parakeet ONNX variant: `int8`/`fp32`                                                                                                                                     |
+| `input_device`                                  | `null`                        | Microphone index; `null` = system default                                                                                                                                |
+| `max_seconds`                                   | `300`                         | Hard cap for a single recording, in seconds                                                                                                                              |
+| `injection_mode`                                | `"paste"`                     | Insert via `paste` (clipboard) or `type` (simulated typing)                                                                                                              |
+| `live_typing`                                   | `false`                       | Experimental live typing while recording (faster-whisper only)                                                                                                           |
+| `clipboard_copy`                                | `"on_failure"`                | Also copy the transcript to the clipboard: `on_failure` (only when inserting at the cursor fails), `always` (every transcript — suppresses `restore_clipboard`) or `off` |
+| `restore_clipboard`                             | `true`                        | Restore the previous clipboard content after a paste                                                                                                                     |
+| `notifications` / `beep`                        | `true` / `true`               | Desktop notifications and the audible start/stop cue                                                                                                                     |
+| `autostart`                                     | `false`                       | Start with the OS                                                                                                                                                        |
+| `start_in_tray`                                 | `false`                       | Start silently into the tray instead of opening the window                                                                                                               |
+| `initial_prompt`                                | `""`                          | Whisper initial prompt (domain vocabulary hint, not an instruction)                                                                                                      |
+| `vad_filter`                                    | `true`                        | VAD silence filter (faster-whisper only)                                                                                                                                 |
+| `beam_size`                                     | `5`                           | Decoding beam size; `1` = greedy, ≈1.5–2× faster (faster-whisper only)                                                                                                   |
+| `history_enabled` / `history_max`               | `true` / `200`                | Keep a local transcript history (never audio), and how many entries                                                                                                      |
+| `update_check_on_start` / `include_prereleases` | `true` / `false`              | Check GitHub Releases on launch, and whether pre-releases count                                                                                                          |
+| `insecure_ssl`                                  | `false`                       | Skip TLS verification for model downloads and the assistant — corporate proxies only (updates always verify)                                                             |
+| `overlay.enabled`                               | `true`                        | The floating always-on-top status icon                                                                                                                                   |
+| `overlay.show_preview`                          | `true`                        | Show the transcript in a bubble after a recording                                                                                                                        |
+| `overlay.live_preview`                          | `false`                       | Experimental rolling preview while you speak (costs CPU)                                                                                                                 |
+| `overlay.preview_seconds`                       | `6`                           | How long the finished transcript stays visible                                                                                                                           |
+| `overlay.x` / `overlay.y`                       | `null`                        | Saved icon position; `null` = bottom right                                                                                                                               |
+| `assistant.enabled`                             | `false`                       | Optional LLM post-processing of the transcript                                                                                                                           |
+| `assistant.base_url`                            | `"http://localhost:11434/v1"` | OpenAI-compatible endpoint                                                                                                                                               |
+| `assistant.api_key`                             | `""`                          | API key — stays in this local file; empty for Ollama                                                                                                                     |
+| `assistant.model`                               | `"llama3.2"`                  | Model name sent to that endpoint                                                                                                                                         |
+| `assistant.system_prompt`                       | _(built-in default)_          | Cleanup prompt, editable in Settings (one click restores it)                                                                                                             |
+| `assistant.temperature` / `assistant.timeout`   | `0.2` / `120`                 | Sampling temperature and request timeout in seconds                                                                                                                      |
+| `integrations.mute_while_recording`             | `false`                       | Master switch for muting other apps while recording                                                                                                                      |
+| `integrations.targets`                          | 5 presets, all disabled       | Per-app entries: `name`, `enabled`, `mode` (`hold`/`toggle`), `hotkey`                                                                                                   |
 
 ### Choosing a Whisper model
 
-| Model | Size | Notes |
-| --- | --- | --- |
-| `tiny` / `base` | ~75–140 MB | fastest, okay for short commands |
-| `small` *(default)* | ~460 MB | good balance for dictation |
-| `medium` | ~1.5 GB | noticeably better, slower on CPU |
-| `large-v3` / `large-v3-turbo` | ~3 GB / ~1.6 GB | best quality; turbo is much faster |
-| `jimmymeister/whisper-large-v3-turbo-german-ct2` | ~1.6 GB | **German only** — turbo fine-tuned on German speech: noticeably better German accuracy at the same speed |
-| `distil-large-v3` | ~1.5 GB | near large quality, faster (English-focused) |
-| `distil-large-v3.5` | ~1.5 GB | English only — newer distil, faster than turbo |
+| Model                                            | Size            | Notes                                                                                                    |
+| ------------------------------------------------ | --------------- | -------------------------------------------------------------------------------------------------------- |
+| `tiny` / `base`                                  | ~75–140 MB      | fastest, okay for short commands                                                                         |
+| `small` _(default)_                              | ~460 MB         | good balance for dictation                                                                               |
+| `medium`                                         | ~1.5 GB         | noticeably better, slower on CPU                                                                         |
+| `large-v3` / `large-v3-turbo`                    | ~3 GB / ~1.6 GB | best quality; turbo is much faster                                                                       |
+| `jimmymeister/whisper-large-v3-turbo-german-ct2` | ~1.6 GB         | **German only** — turbo fine-tuned on German speech: noticeably better German accuracy at the same speed |
+| `distil-large-v3`                                | ~1.5 GB         | near large quality, faster (English-focused)                                                             |
+| `distil-large-v3.5`                              | ~1.5 GB         | English only — newer distil, faster than turbo                                                           |
 
 `.en` variants are English-only and slightly more accurate for English. The
 model dropdown itself is read-only; to use any other CTranslate2 model id from
@@ -244,7 +244,7 @@ both accuracy and speed.
 
 Models are downloaded on first use into the **Hugging Face cache**
 (`~/.cache/huggingface/hub`, on Windows `C:\Users\<you>\.cache\huggingface\hub`)
-— *not* into the config folder. The settings window (Whisper tab) shows the
+— _not_ into the config folder. The settings window (Whisper tab) shows the
 effective folder and lets you change it or open it in the file manager
 (`model_dir` in `config.json`).
 
@@ -256,7 +256,7 @@ used as-is, otherwise `HF_HOME` plus `/hub`, otherwise the default path above. A
 ### Assistant (optional LLM cleanup)
 
 Off by default. When enabled, the raw transcript is sent to an
-OpenAI-compatible `/chat/completions` endpoint and the *answer* is inserted
+OpenAI-compatible `/chat/completions` endpoint and the _answer_ is inserted
 instead. The default configuration targets a local [Ollama](https://ollama.com):
 
 ```jsonc
@@ -285,13 +285,13 @@ vendor approval is required, so it works with anything that exposes such a
 keybind. The **Add app** menu comes with the common ones ready-made, each with
 that app's documented mute keybind already filled in:
 
-| Preset | Keybind | Works from another window? |
-| --- | --- | --- |
-| **Discord** | `Ctrl+Shift+M` (Toggle Mute) | ✅ Yes, nothing to set up |
-| **Zoom** | `Alt+A` | Only after ticking *Settings → Keyboard Shortcuts → Enable Global Shortcut* |
-| **Slack** | `Ctrl+Shift+Space` (huddle) | Only after enabling *Preferences → Audio & video → allow keyboard shortcut to mute* |
-| **Microsoft Teams** | `Ctrl+Shift+M` | ❌ Teams reacts only while focused — no global keybind exists. On Windows 11 try `Win+Alt+K` (`<cmd>+<alt>+k`) |
-| **OBS Studio** | — | OBS ships no default; set one under *Settings → Hotkeys* at your Mic/Aux source, then copy it here |
+| Preset              | Keybind                      | Works from another window?                                                                                     |
+| ------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **Discord**         | `Ctrl+Shift+M` (Toggle Mute) | ✅ Yes, nothing to set up                                                                                      |
+| **Zoom**            | `Alt+A`                      | Only after ticking _Settings → Keyboard Shortcuts → Enable Global Shortcut_                                    |
+| **Slack**           | `Ctrl+Shift+Space` (huddle)  | Only after enabling _Preferences → Audio & video → allow keyboard shortcut to mute_                            |
+| **Microsoft Teams** | `Ctrl+Shift+M`               | ❌ Teams reacts only while focused — no global keybind exists. On Windows 11 try `Win+Alt+K` (`<cmd>+<alt>+k`) |
+| **OBS Studio**      | —                            | OBS ships no default; set one under _Settings → Hotkeys_ at your Mic/Aux source, then copy it here             |
 
 Every preset ships **disabled** and repeats its caveat in the app, right under
 the row — because a keybind an app only honours while it has focus would do
@@ -303,12 +303,12 @@ To set an app up manually, the same combination has to exist in both places:
    a Keybind** and choose either **Push to Mute** or **Toggle Mute**, then press
    your combination (e.g. `F9`).
 2. In Listen To Me, open **Settings → Integrations**, enable the app, set the
-   **same** combination (use the *Change…* picker) and pick the matching **mode**:
+   **same** combination (use the _Change…_ picker) and pick the matching **mode**:
    - **Push-to-mute (hold)** — the key is held down for the whole recording.
      Stateless and self-correcting, so it can never leave you stuck muted.
-     Recommended, and the natural match for Discord's *Push to Mute*.
+     Recommended, and the natural match for Discord's _Push to Mute_.
    - **Toggle mute** — the key is tapped once when recording starts and once
-     when it stops. Match this to a *Toggle Mute* keybind.
+     when it stops. Match this to a _Toggle Mute_ keybind.
 
 Prefer a modifier chord or a function key so the combination stays inert in the
 document you're dictating into. A mute keybind identical to your recording
@@ -425,16 +425,16 @@ instead.
 
 ### The app doesn't start with Windows
 
-**Start with the system** (*Settings → General → Startup*) registers the app in
+**Start with the system** (_Settings → General → Startup_) registers the app in
 your account's autostart. The line right below the checkbox shows what the
 system really has on file — `Registered with Windows: …` means the entry is in
 place; anything else names the problem and how to fix it.
 
-- **Windows can switch the entry off.** *Task Manager* (`Ctrl+Shift+Esc`) →
-  **Startup apps** shows it as *Disabled* then, and re-registering alone does
-  not change that — the switch lives outside the entry. Set it to *Enabled*
+- **Windows can switch the entry off.** _Task Manager_ (`Ctrl+Shift+Esc`) →
+  **Startup apps** shows it as _Disabled_ then, and re-registering alone does
+  not change that — the switch lives outside the entry. Set it to _Enabled_
   there, or press **Save** once in the settings with the checkbox ticked: that
-  switches it back on. (The same list is in *Windows Settings → Apps → Startup*.)
+  switches it back on. (The same list is in _Windows Settings → Apps → Startup_.)
 - **It may be running and just invisible.** Windows 11 hides new tray icons in
   the overflow (**^**) next to the clock — open it and drag the icon onto the
   taskbar to pin it. With **Start minimized to the system tray** ticked, no
@@ -445,7 +445,7 @@ place; anything else names the problem and how to fix it.
   without your `PYTHONPATH`. The app probes this and says so instead of
   registering something that would silently do nothing.
 - Every launch is logged to `listen-to-me.log` in the config folder (tray menu →
-  *Open config folder*) — if the app really didn't start, there is no new line.
+  _Open config folder_) — if the app really didn't start, there is no new line.
 
 The in-app Help page also covers the hotkey not firing, text not being inserted,
 where models are stored, and assistant/Ollama setup.
@@ -472,9 +472,9 @@ listen-to-me                     # or: listen-to-me-gui (same app, started witho
 
 The app is configured in its settings window, not by flags — there are only two:
 
-| Flag | What it does |
-| --- | --- |
-| `--version` | Prints the version and exits. Imports no Qt, so it works before the GUI dependencies are installed |
+| Flag         | What it does                                                                                                                                                 |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--version`  | Prints the version and exits. Imports no Qt, so it works before the GUI dependencies are installed                                                           |
 | `--selftest` | Runs the packaging self-test and exits with its result (`0` = pass). Needs all runtime dependencies; also used by the release pipeline against the built exe |
 
 Everything else — hotkey, model, backend, microphone — lives in `config.json`
@@ -496,14 +496,14 @@ The result is `dist/ListenToMe.exe`.
 
 ## Releases (CI)
 
-A manual *Run workflow* (`workflow_dispatch`) on
+A manual _Run workflow_ (`workflow_dispatch`) on
 [`release.yml`](.github/workflows/release.yml) runs the full release pipeline,
 which:
 
 1. builds `ListenToMe.exe` with PyInstaller on `windows-latest`,
 2. runs a packaging self-test (`ListenToMe.exe --selftest`),
 3. creates a GitHub release **named with the current date**
-   (e.g. *Listen To Me 2026-07-19 (build 42)*, tag `v2026.07.19.42`),
+   (e.g. _Listen To Me 2026-07-19 (build 42)_, tag `v2026.07.19.42`),
 4. writes the **changelog** (commits since the previous release) into the
    release notes, and
 5. attaches the **Windows exe** as a download.
@@ -517,11 +517,11 @@ test) — no Windows build and no release.
 
 ## Platform notes
 
-| Platform | Status |
-| --- | --- |
-| **Windows** | Primary target; exe built by CI. Autostart via registry `Run` key. |
-| **Linux** | Runs from source. Wants `xclip`/`xsel` for clipboard paste mode (without them paste falls back to simulated typing) and an X11 session for global hotkeys (Wayland restricts global key grabbing). Autostart via `~/.config/autostart`. |
-| **macOS** | Runs from source; grant Accessibility + Microphone permissions. Tray/hotkey main-thread quirks may need polish — contributions welcome. Autostart via LaunchAgent. |
+| Platform    | Status                                                                                                                                                                                                                                  |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Windows** | Primary target; exe built by CI. Autostart via registry `Run` key.                                                                                                                                                                      |
+| **Linux**   | Runs from source. Wants `xclip`/`xsel` for clipboard paste mode (without them paste falls back to simulated typing) and an X11 session for global hotkeys (Wayland restricts global key grabbing). Autostart via `~/.config/autostart`. |
+| **macOS**   | Runs from source; grant Accessibility + Microphone permissions. Tray/hotkey main-thread quirks may need polish — contributions welcome. Autostart via LaunchAgent.                                                                      |
 
 ## Contributing
 

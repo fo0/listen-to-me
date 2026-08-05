@@ -18,14 +18,17 @@ We will keep the updater outside the `insecure_ssl` switch. Every request in `up
 ## Consequences
 
 ### Positive
+
 - The one network path that can execute code on the user's machine is always authenticated.
 - The failure is explicit and explainable rather than silent, so a user behind a breaking proxy learns why updates do not work.
 
 ### Negative / Trade-offs
+
 - Users behind a TLS-inspecting proxy can use the model downloads and the assistant but **cannot** use the in-app updater; they have to download the release manually.
 - One HTTP helper in the codebase deliberately does not honor a global setting — a reader who does not know why could "fix" it. Locked in by the `updater forces TLS verification` gui_smoke check.
 
 ### Neutral
+
 - Model downloads and assistant traffic remain covered by the switch; the carve-out is narrow by design.
 
 ## Alternatives Considered

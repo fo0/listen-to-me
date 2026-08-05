@@ -25,14 +25,14 @@ gh pr list --head $(git rev-parse --abbrev-ref HEAD) --json number,state 2>/dev/
 
 Decision matrix:
 
-| State                                   | Action                                  |
-|-----------------------------------------|------------------------------------------|
-| Uncommitted local changes only          | Phase A (discard working tree, opt-in)   |
-| Local commits, not pushed               | Phase B (reset back N commits)           |
-| Pushed commits on feature branch        | Phase C (revert + push, or force-with-lease — explicit) |
-| Pushed to main + bad commit on top      | Phase D (revert + push)                  |
-| Merged PR causing breakage              | Phase E (revert PR via gh)               |
-| Branch deleted by mistake               | Phase F (restore from reflog / origin)   |
+| State                              | Action                                                  |
+| ---------------------------------- | ------------------------------------------------------- |
+| Uncommitted local changes only     | Phase A (discard working tree, opt-in)                  |
+| Local commits, not pushed          | Phase B (reset back N commits)                          |
+| Pushed commits on feature branch   | Phase C (revert + push, or force-with-lease — explicit) |
+| Pushed to main + bad commit on top | Phase D (revert + push)                                 |
+| Merged PR causing breakage         | Phase E (revert PR via gh)                              |
+| Branch deleted by mistake          | Phase F (restore from reflog / origin)                  |
 
 Always **print the detected state and proposed action before executing**, then wait for confirmation.
 

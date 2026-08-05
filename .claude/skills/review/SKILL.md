@@ -57,6 +57,7 @@ Summary: X categories checked | Y fixed | Z deferred → Backlog
 ```
 
 Append a one-line skill footer:
+
 ```
 🔍 review skill — full process: agent_docs/review_process.md
 ```
