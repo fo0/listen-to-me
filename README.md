@@ -248,6 +248,11 @@ Models are downloaded on first use into the **Hugging Face cache**
 effective folder and lets you change it or open it in the file manager
 (`model_dir` in `config.json`).
 
+If you already relocate the Hugging Face cache with the standard environment
+variables, the app follows them: `HF_HUB_CACHE` (or `HUGGINGFACE_HUB_CACHE`) is
+used as-is, otherwise `HF_HOME` plus `/hub`, otherwise the default path above. A
+`model_dir` set in `config.json` (or the settings window) overrides all of them.
+
 ### Assistant (optional LLM cleanup)
 
 Off by default. When enabled, the raw transcript is sent to an
