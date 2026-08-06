@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import time
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 from .choices import SYSTEM_DEFAULT_DEVICE, input_device_choices, language_label
 from .glyphs import glyph_icon
 from .keymap import pretty_keys
-from .qtutil import copy_to_clipboard
+from .qtutil import copy_with_feedback
 
 log = logging.getLogger(__name__)
 
@@ -415,18 +415,8 @@ class HomePage(QWidget):
         return row
 
     def _copy(self, text: str, button: QPushButton) -> None:
-        if not text:
-            return
-        if copy_to_clipboard(text):
-            button.setText("Copied ✓")
-
-            def restore():
-                try:  # the window (and this button) may be gone by now
-                    button.setText("Copy")
-                except RuntimeError:
-                    pass
-
-            QTimer.singleShot(1200, restore)
+        # Reports a failed clipboard write on the button — see copy_with_feedback.
+        copy_with_feedback(text, button)
 
     # ------------------------------------------------------------------ state
 

@@ -259,6 +259,153 @@ def _history_search_matching():
     assert filter_entries([{"text": None}], "x") == []
 
 
+def _cli_flags():
+    """`--help` documents the flags the app really has, and an unrecognized
+    argument is answered instead of ignored.
+
+    main() strips its own flags before Qt sees sys.argv, so an unknown one used
+    to be swallowed on the way and the tray app came up as if nothing had been
+    asked of it — a typo in `--selftest` looked like a hung self-test. Never
+    calls main() without arguments: that would start the app."""
+    import contextlib
+    import io
+
+    from listen_to_me import APP_NAME, __version__
+    from listen_to_me.app import main
+
+    def run(args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(args)
+        return code, out.getvalue(), err.getvalue()
+
+    for flag in ("--help", "-h"):
+        code, out, _err = run([flag])
+        assert code == 0, f"{flag} exited {code}"
+        # Every flag the app accepts has to appear, or the help lies by omission.
+        for documented in ("--version", "--selftest", "--help"):
+            assert documented in out, f"{flag} does not mention {documented}"
+
+    code, out, _err = run(["--version"])
+    assert code == 0 and __version__ in out and APP_NAME in out
+
+    for bad in (["--verison"], ["-x"], ["--selftest-", "--version"]):
+        code, _out, err = run(bad)
+        assert code == 2, f"{bad} exited {code} instead of refusing"
+        assert bad[0] in err and "--help" in err
+
+
+def _copy_button_reports_failure():
+    """An in-window "Copy" that could not reach the clipboard says so.
+
+    Success and failure used to be indistinguishable: only the success path
+    changed the label, so a failed copy looked exactly like a button that was
+    never clicked — for the one action whose entire purpose is that the text
+    is now somewhere else. The failure state also has to stay up longer than
+    the confirmation, because it has to be read rather than just noticed.
+
+    Real Qt is stubbed out: the point is the decision, and the check has to
+    hold on a headless runner without an event loop."""
+    from listen_to_me import qtutil
+
+    class _Size:
+        def __init__(self, width):
+            self._width = width
+
+        def width(self):
+            return self._width
+
+    class _Button:
+        def __init__(self):
+            self._text = "Copy"
+            self._props: dict = {}
+            self.min_width = 0
+
+        def text(self):
+            return self._text
+
+        def setText(self, text):
+            self._text = text
+
+        def property(self, name):
+            return self._props.get(name)
+
+        def setProperty(self, name, value):
+            self._props[name] = value
+
+        def sizeHint(self):
+            return _Size(len(self._text))
+
+        def setMinimumWidth(self, width):
+            self.min_width = width
+
+    class _Timer:
+        def __init__(self):
+            self.scheduled: list[tuple[int, object]] = []
+
+        def singleShot(self, msec, callback):
+            self.scheduled.append((msec, callback))
+
+    original_copy, original_timer = qtutil.copy_to_clipboard, qtutil.QTimer
+    try:
+        for succeeded in (True, False):
+            timer = _Timer()
+            qtutil.QTimer = timer
+            qtutil.copy_to_clipboard = lambda _text, ok=succeeded: ok
+            button = _Button()
+            assert qtutil.copy_with_feedback("some transcript", button) is succeeded
+            assert button.text() == ("Copied ✓" if succeeded else "Copy failed")
+            # Wide enough for the longest label, so the row doesn't reflow.
+            assert button.min_width >= len("Copy failed")
+            (delay, restore), = timer.scheduled
+            restore()
+            assert button.text() == "Copy"  # back to the original label
+            if succeeded:
+                confirmation_ms = delay
+            else:
+                assert delay > confirmation_ms, "a failure must stay up longer"
+        # Nothing to copy stays a no-op — no label flash promising anything.
+        timer = _Timer()
+        qtutil.QTimer = timer
+        qtutil.copy_to_clipboard = lambda _text: True
+        button = _Button()
+        assert qtutil.copy_with_feedback("", button) is False
+        assert button.text() == "Copy" and not timer.scheduled
+    finally:
+        qtutil.copy_to_clipboard, qtutil.QTimer = original_copy, original_timer
+
+
+def _assistant_config_is_checked():
+    """An enabled assistant with no usable endpoint is refused before a request
+    goes out — the settings window asks the same question at Save.
+
+    Without this the misconfiguration only surfaces on the worker thread after
+    a dictation, as requests' own "Invalid URL '/chat/completions': No scheme
+    supplied" attached to a transcript the user already spoke."""
+    from listen_to_me.assistant import AssistantError, config_problem, refine
+
+    good = {"base_url": "http://localhost:11434/v1", "model": "llama3.2"}
+    assert config_problem(good) is None
+    assert config_problem({**good, "base_url": ""})[0] == "base_url"
+    assert config_problem({**good, "base_url": "   "})[0] == "base_url"
+    assert config_problem({})[0] == "base_url"  # a truncated config section
+    # The scheme is what requests trips over — "localhost:11434" is not a URL.
+    assert config_problem({**good, "base_url": "localhost:11434/v1"})[0] == "base_url"
+    assert config_problem({**good, "base_url": "HTTPS://host/v1"}) is None  # case
+    assert config_problem({**good, "model": " "})[0] == "model"
+    # Every reason is a sentence fragment the UI/notification can embed.
+    for broken in ({**good, "base_url": ""}, {**good, "model": ""}):
+        reason = config_problem(broken)[1]
+        assert reason and reason[0].islower() and not reason.endswith(".")
+    # refine() must not reach requests with a broken config.
+    try:
+        refine("hello", {**good, "base_url": ""})
+    except AssistantError as exc:
+        assert "base URL" in str(exc)
+    else:
+        raise AssertionError("refine accepted an assistant config without a base URL")
+
+
 def _recorder_start_failure_resets():
     """A stream that opens but fails to start must leave the recorder idle.
     self._stream used to be assigned before start(), so `active` stayed True
@@ -2410,10 +2557,13 @@ _LIGHT_CHECKS = [
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
+    ("CLI flags", _cli_flags),
+    ("assistant config is checked", _assistant_config_is_checked),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),
     ("clipboard copy is announced", _clipboard_copy_is_announced),
+    ("copy button reports a failure", _copy_button_reports_failure),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
     ("mute integrations no-op", _integrations_noop),
     ("mute keybind uses virtual keys", _mute_keybind_uses_virtual_keys),

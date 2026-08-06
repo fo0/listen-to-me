@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 
-from . import APP_NAME, __version__
+from . import APP_NAME, REPO_URL, __version__
 from . import assistant, autostart, netutil, singleinstance
 from .audio import SAMPLE_RATE, Recorder
 from .config import Config, config_dir
@@ -782,8 +782,42 @@ def _setup_logging() -> None:
         log.warning("could not open the log file — logging to stderr only (%s)", file_error)
 
 
+_USAGE = f"""\
+{APP_NAME} — push-to-talk voice typing. Started without a flag it runs as a
+tray app; everything else is configured in its settings window, not here.
+
+Usage: listen-to-me [--version | --selftest | --help]
+
+  --version     Print the version and exit. Imports no Qt, so it works before
+                the GUI dependencies are installed.
+  --selftest    Run the packaging self-test and exit with its result (0 = pass).
+                Needs every runtime dependency.
+  -h, --help    Show this help and exit.
+
+Settings live in config.json in the platform config dir; the tray menu's
+"Open config folder" points at it. Full docs: {REPO_URL}"""
+
+_FLAGS = ("--version", "--selftest", "--help", "-h")
+
+
 def main(argv=None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    # Own flags only — they are stripped before Qt sees sys.argv (see App.run),
+    # so an unrecognized one is nobody's and would otherwise be swallowed: the
+    # app would come up as if nothing had been asked of it. A GUI launched from
+    # a shortcut or the autostart entry never passes arguments, so refusing the
+    # ones we don't know costs nothing and turns a typo into an answer.
+    unknown = [arg for arg in args if arg not in _FLAGS]
+    if unknown:
+        # Checked before the known flags, not after: `--verison --version`
+        # answering with the version would hide the typo it was asked about.
+        stream = sys.stderr or sys.stdout
+        print(f"{APP_NAME}: unknown option: {unknown[0]}", file=stream)
+        print("Try --help for the three flags this app has.", file=stream)
+        return 2
+    if "--help" in args or "-h" in args:
+        print(_USAGE)
+        return 0
     if "--version" in args:
         print(f"{APP_NAME} {__version__}")
         return 0

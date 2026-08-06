@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import APP_NAME, __version__
+from .assistant import config_problem as assistant_config_problem
 from .choices import (
     BACKENDS,
     CLIPBOARD_COPY_MODES,
@@ -72,7 +73,7 @@ from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
 from .keymap import hotkey_label
-from .qtutil import copy_to_clipboard, elastic_combo, elastic_label, guard_wheel
+from .qtutil import copy_with_feedback, elastic_combo, elastic_label, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -2503,19 +2504,8 @@ class SettingsWindow(QDialog):
         return row
 
     def _copy_history(self, text: str, button: QPushButton) -> None:
-        if not text:
-            return
-        if copy_to_clipboard(text):
-            button.setText("Copied ✓")
-
-            def restore():
-                # The dialog (and this button) may be gone 1.2 s later.
-                try:
-                    button.setText("Copy")
-                except RuntimeError:
-                    pass
-
-            QTimer.singleShot(1200, restore)
+        # Reports a failed clipboard write on the button — see copy_with_feedback.
+        copy_with_feedback(text, button)
 
     def _clear_history(self) -> None:
         if not self.app.history.entries():
@@ -2721,6 +2711,27 @@ class SettingsWindow(QDialog):
             )
             self.hotkey_edit.setFocus()
             return False
+
+        # An enabled assistant with no usable endpoint is the one setting that
+        # cannot report itself: it runs after a dictation, on a worker thread,
+        # and the user meets the problem as a raw requests error attached to a
+        # transcript they already spoke. Catch it here, where the fields are.
+        # A disabled assistant may stay half-configured, like a disabled mute row.
+        if values["assistant"]["enabled"]:
+            problem = assistant_config_problem(values["assistant"])
+            if problem is not None:
+                field, reason = problem
+                self._show_page("Assistant")
+                QMessageBox.critical(
+                    self,
+                    APP_NAME,
+                    f"Assistant post-processing is switched on, but {reason}.\n\n"
+                    "Fill the field in, or turn the assistant off — otherwise "
+                    "every dictation would fail on it after the fact.",
+                )
+                widget = self.a_url_edit if field == "base_url" else self.a_model_edit
+                widget.setFocus()
+                return False
 
         # Only enabled mute targets need a valid keybind; a disabled row may be
         # left half-configured without blocking Save.
