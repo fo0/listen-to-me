@@ -73,7 +73,7 @@ from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
 from .keymap import hotkey_label
-from .qtutil import copy_to_clipboard, elastic_combo, elastic_label, guard_wheel
+from .qtutil import copy_with_feedback, elastic_combo, elastic_label, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -2504,19 +2504,8 @@ class SettingsWindow(QDialog):
         return row
 
     def _copy_history(self, text: str, button: QPushButton) -> None:
-        if not text:
-            return
-        if copy_to_clipboard(text):
-            button.setText("Copied ✓")
-
-            def restore():
-                # The dialog (and this button) may be gone 1.2 s later.
-                try:
-                    button.setText("Copy")
-                except RuntimeError:
-                    pass
-
-            QTimer.singleShot(1200, restore)
+        # Reports a failed clipboard write on the button — see copy_with_feedback.
+        copy_with_feedback(text, button)
 
     def _clear_history(self) -> None:
         if not self.app.history.entries():

@@ -259,6 +259,86 @@ def _history_search_matching():
     assert filter_entries([{"text": None}], "x") == []
 
 
+def _copy_button_reports_failure():
+    """An in-window "Copy" that could not reach the clipboard says so.
+
+    Success and failure used to be indistinguishable: only the success path
+    changed the label, so a failed copy looked exactly like a button that was
+    never clicked — for the one action whose entire purpose is that the text
+    is now somewhere else. The failure state also has to stay up longer than
+    the confirmation, because it has to be read rather than just noticed.
+
+    Real Qt is stubbed out: the point is the decision, and the check has to
+    hold on a headless runner without an event loop."""
+    from listen_to_me import qtutil
+
+    class _Size:
+        def __init__(self, width):
+            self._width = width
+
+        def width(self):
+            return self._width
+
+    class _Button:
+        def __init__(self):
+            self._text = "Copy"
+            self._props: dict = {}
+            self.min_width = 0
+
+        def text(self):
+            return self._text
+
+        def setText(self, text):
+            self._text = text
+
+        def property(self, name):
+            return self._props.get(name)
+
+        def setProperty(self, name, value):
+            self._props[name] = value
+
+        def sizeHint(self):
+            return _Size(len(self._text))
+
+        def setMinimumWidth(self, width):
+            self.min_width = width
+
+    class _Timer:
+        def __init__(self):
+            self.scheduled: list[tuple[int, object]] = []
+
+        def singleShot(self, msec, callback):
+            self.scheduled.append((msec, callback))
+
+    original_copy, original_timer = qtutil.copy_to_clipboard, qtutil.QTimer
+    try:
+        for succeeded in (True, False):
+            timer = _Timer()
+            qtutil.QTimer = timer
+            qtutil.copy_to_clipboard = lambda _text, ok=succeeded: ok
+            button = _Button()
+            assert qtutil.copy_with_feedback("some transcript", button) is succeeded
+            assert button.text() == ("Copied ✓" if succeeded else "Copy failed")
+            # Wide enough for the longest label, so the row doesn't reflow.
+            assert button.min_width >= len("Copy failed")
+            (delay, restore), = timer.scheduled
+            restore()
+            assert button.text() == "Copy"  # back to the original label
+            if succeeded:
+                confirmation_ms = delay
+            else:
+                assert delay > confirmation_ms, "a failure must stay up longer"
+        # Nothing to copy stays a no-op — no label flash promising anything.
+        timer = _Timer()
+        qtutil.QTimer = timer
+        qtutil.copy_to_clipboard = lambda _text: True
+        button = _Button()
+        assert qtutil.copy_with_feedback("", button) is False
+        assert button.text() == "Copy" and not timer.scheduled
+    finally:
+        qtutil.copy_to_clipboard, qtutil.QTimer = original_copy, original_timer
+
+
 def _assistant_config_is_checked():
     """An enabled assistant with no usable endpoint is refused before a request
     goes out — the settings window asks the same question at Save.
@@ -2446,6 +2526,7 @@ _LIGHT_CHECKS = [
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),
     ("clipboard copy is announced", _clipboard_copy_is_announced),
+    ("copy button reports a failure", _copy_button_reports_failure),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
     ("mute integrations no-op", _integrations_noop),
     ("mute keybind uses virtual keys", _mute_keybind_uses_virtual_keys),

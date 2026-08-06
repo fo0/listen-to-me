@@ -1,7 +1,8 @@
 """Small Qt helpers: bridge the Pillow-drawn icons (icons.py) into Qt
 pixmaps/icons, the wheel guard for value widgets on scrollable pages, the
 width cap for combo boxes with unbounded item texts, and the one clipboard
-path every "Copy" in the app uses.
+path every "Copy" in the app uses — plus the button feedback that reports how
+that copy went.
 
 Kept separate from icons.py so that module stays Qt-free (the packaging
 self-test and make_icon.py import it without pulling in PySide6).
@@ -11,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QIcon, QImage, QPixmap
 
 from .icons import mic_image
@@ -152,6 +153,50 @@ def copy_to_clipboard(text: str) -> bool:
     except Exception:
         log.exception("could not copy text to the clipboard")
         return False
+
+
+def copy_with_feedback(text: str, button, *, label: str = "Copy") -> bool:
+    """Copy `text` and say **on the button** whether it got there.
+
+    Every in-window "Copy" used to flash "Copied ✓" on success and do nothing
+    at all on failure — visually identical to a button that was never clicked,
+    for the one action whose whole point is that the text is now somewhere
+    else. The tray's "Copy last transcript" has always reported the failure
+    (App._copy_last_transcript notifies); these buttons are where the user is
+    looking, so they report it here instead.
+
+    The failure state stays up longer than the confirmation: "Copied ✓" only
+    has to be noticed, "Copy failed" has to be read and acted on.
+
+    Qt main thread only — `copy_to_clipboard`'s fallback touches QApplication.
+    """
+    if not text:
+        return False
+    # Pin the width across every label this button can show, once. Without it
+    # the button (and in a transcript row, the text beside it) reflows as the
+    # label changes and again when it changes back — same trick as
+    # SettingsWindow._pin_width, applied where the labels are known.
+    if not button.property("copyWidthPinned"):
+        button.setProperty("copyWidthPinned", True)
+        widest = 0
+        for candidate in (label, "Copied ✓", "Copy failed"):
+            button.setText(candidate)
+            widest = max(widest, button.sizeHint().width())
+        button.setText(label)
+        button.setMinimumWidth(widest)
+    ok = copy_to_clipboard(text)
+    button.setText("Copied ✓" if ok else "Copy failed")
+
+    def restore():
+        # The window (and with it this button) may be gone by now — a deleted
+        # C++ object raises RuntimeError through the Python wrapper.
+        try:
+            button.setText(label)
+        except RuntimeError:
+            pass
+
+    QTimer.singleShot(1200 if ok else 3000, restore)
+    return ok
 
 
 def pil_to_pixmap(img) -> QPixmap:
