@@ -259,6 +259,42 @@ def _history_search_matching():
     assert filter_entries([{"text": None}], "x") == []
 
 
+def _cli_flags():
+    """`--help` documents the flags the app really has, and an unrecognized
+    argument is answered instead of ignored.
+
+    main() strips its own flags before Qt sees sys.argv, so an unknown one used
+    to be swallowed on the way and the tray app came up as if nothing had been
+    asked of it — a typo in `--selftest` looked like a hung self-test. Never
+    calls main() without arguments: that would start the app."""
+    import contextlib
+    import io
+
+    from listen_to_me import APP_NAME, __version__
+    from listen_to_me.app import main
+
+    def run(args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(args)
+        return code, out.getvalue(), err.getvalue()
+
+    for flag in ("--help", "-h"):
+        code, out, _err = run([flag])
+        assert code == 0, f"{flag} exited {code}"
+        # Every flag the app accepts has to appear, or the help lies by omission.
+        for documented in ("--version", "--selftest", "--help"):
+            assert documented in out, f"{flag} does not mention {documented}"
+
+    code, out, _err = run(["--version"])
+    assert code == 0 and __version__ in out and APP_NAME in out
+
+    for bad in (["--verison"], ["-x"], ["--selftest-", "--version"]):
+        code, _out, err = run(bad)
+        assert code == 2, f"{bad} exited {code} instead of refusing"
+        assert bad[0] in err and "--help" in err
+
+
 def _copy_button_reports_failure():
     """An in-window "Copy" that could not reach the clipboard says so.
 
@@ -2521,6 +2557,7 @@ _LIGHT_CHECKS = [
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
+    ("CLI flags", _cli_flags),
     ("assistant config is checked", _assistant_config_is_checked),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),

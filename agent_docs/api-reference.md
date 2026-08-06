@@ -6,11 +6,13 @@ Listen To Me is a desktop GUI app — it exposes **no served HTTP API**. This fi
 
 Entry point: `listen_to_me.app:main` (console scripts `listen-to-me` / `listen-to-me-gui`; also `python -m listen_to_me`).
 
-| Flag         | Effect                                                                                                                                                                                                                                          |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--version`  | Print `Listen To Me <version>` and exit `0`. Does **not** import Qt.                                                                                                                                                                            |
-| `--selftest` | Run the packaging self-test (`selftest.run`); writes `<tempdir>/listen-to-me-selftest.log`, exits non-zero on failure. Used by CI after the PyInstaller build.                                                                                  |
-| _(none)_     | Launch the tray app. A single-instance guard (named mutex on Windows, `flock()`-ed `instance.lock` in the config dir on POSIX) makes a second launch exit quietly after pinging the running instance to show itself over loopback port `52697`. |
+| Flag          | Effect                                                                                                                                                                                                                                          |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--version`   | Print `Listen To Me <version>` and exit `0`. Does **not** import Qt.                                                                                                                                                                            |
+| `--selftest`  | Run the packaging self-test (`selftest.run`); writes `<tempdir>/listen-to-me-selftest.log`, exits non-zero on failure. Used by CI after the PyInstaller build.                                                                                  |
+| `-h`/`--help` | Print `app._USAGE` (the flag list + where the config lives) and exit `0`. Imports no Qt.                                                                                                                                                        |
+| _(unknown)_   | Any argument that is not one of the above: names it on stderr, points at `--help` and exits `2`. Checked **before** the known flags, so a typo next to a valid flag is not masked. Guarded by the `CLI flags` self-test check.                  |
+| _(none)_      | Launch the tray app. A single-instance guard (named mutex on Windows, `flock()`-ed `instance.lock` in the config dir on POSIX) makes a second launch exit quietly after pinging the running instance to show itself over loopback port `52697`. |
 
 Own flags are stripped before Qt sees `sys.argv` (`sys.argv[:1]`), so they never clash with Qt options.
 

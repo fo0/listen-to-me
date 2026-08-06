@@ -470,12 +470,16 @@ listen-to-me                     # or: listen-to-me-gui (same app, started witho
 
 ### Command line
 
-The app is configured in its settings window, not by flags — there are only two:
+The app is configured in its settings window, not by flags — there are only three:
 
-| Flag         | What it does                                                                                                                                                 |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--version`  | Prints the version and exits. Imports no Qt, so it works before the GUI dependencies are installed                                                           |
-| `--selftest` | Runs the packaging self-test and exits with its result (`0` = pass). Needs all runtime dependencies; also used by the release pipeline against the built exe |
+| Flag           | What it does                                                                                                                                                 |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--version`    | Prints the version and exits. Imports no Qt, so it works before the GUI dependencies are installed                                                           |
+| `--selftest`   | Runs the packaging self-test and exits with its result (`0` = pass). Needs all runtime dependencies; also used by the release pipeline against the built exe |
+| `-h`, `--help` | Prints this list and exits                                                                                                                                   |
+
+Any other argument is refused with exit code `2` instead of quietly starting the
+tray app, so a mistyped flag says so.
 
 Everything else — hotkey, model, backend, microphone — lives in `config.json`
 (see [config.json reference](#configjson-reference)). Planning to contribute?
