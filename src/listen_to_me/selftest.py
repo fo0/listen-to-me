@@ -259,6 +259,37 @@ def _history_search_matching():
     assert filter_entries([{"text": None}], "x") == []
 
 
+def _assistant_config_is_checked():
+    """An enabled assistant with no usable endpoint is refused before a request
+    goes out — the settings window asks the same question at Save.
+
+    Without this the misconfiguration only surfaces on the worker thread after
+    a dictation, as requests' own "Invalid URL '/chat/completions': No scheme
+    supplied" attached to a transcript the user already spoke."""
+    from listen_to_me.assistant import AssistantError, config_problem, refine
+
+    good = {"base_url": "http://localhost:11434/v1", "model": "llama3.2"}
+    assert config_problem(good) is None
+    assert config_problem({**good, "base_url": ""})[0] == "base_url"
+    assert config_problem({**good, "base_url": "   "})[0] == "base_url"
+    assert config_problem({})[0] == "base_url"  # a truncated config section
+    # The scheme is what requests trips over — "localhost:11434" is not a URL.
+    assert config_problem({**good, "base_url": "localhost:11434/v1"})[0] == "base_url"
+    assert config_problem({**good, "base_url": "HTTPS://host/v1"}) is None  # case
+    assert config_problem({**good, "model": " "})[0] == "model"
+    # Every reason is a sentence fragment the UI/notification can embed.
+    for broken in ({**good, "base_url": ""}, {**good, "model": ""}):
+        reason = config_problem(broken)[1]
+        assert reason and reason[0].islower() and not reason.endswith(".")
+    # refine() must not reach requests with a broken config.
+    try:
+        refine("hello", {**good, "base_url": ""})
+    except AssistantError as exc:
+        assert "base URL" in str(exc)
+    else:
+        raise AssertionError("refine accepted an assistant config without a base URL")
+
+
 def _recorder_start_failure_resets():
     """A stream that opens but fails to start must leave the recorder idle.
     self._stream used to be assigned before start(), so `active` stayed True
@@ -2410,6 +2441,7 @@ _LIGHT_CHECKS = [
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
+    ("assistant config is checked", _assistant_config_is_checked),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),

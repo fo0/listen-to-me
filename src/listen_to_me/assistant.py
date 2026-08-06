@@ -18,7 +18,37 @@ class AssistantError(RuntimeError):
     pass
 
 
+def config_problem(acfg: dict) -> tuple[str, str] | None:
+    """Why `acfg` cannot produce a request, as `(config key, reason)` — or None.
+
+    The assistant is the one feature whose misconfiguration is invisible until
+    it is too late: it runs on the worker thread *after* a dictation, so an
+    empty or scheme-less `base_url` surfaces as "Assistant failed (Invalid URL
+    '/chat/completions': No scheme supplied)" once the recording is already
+    done. Naming the problem up front — at Save, and again before the request
+    goes out — turns that into something the user can act on.
+
+    Qt-free on purpose: the settings window and the worker thread both ask,
+    and the rule belongs to neither of them.
+    """
+    url = str(acfg.get("base_url") or "").strip()
+    if not url:
+        return ("base_url", "no API base URL is set")
+    if not url.lower().startswith(("http://", "https://")):
+        return ("base_url", "the API base URL must start with http:// or https://")
+    if not str(acfg.get("model") or "").strip():
+        return ("model", "no model name is set")
+    return None
+
+
 def refine(text: str, acfg: dict) -> str:
+    problem = config_problem(acfg)
+    if problem is not None:
+        # A hand-edited config never passed through the settings window's
+        # check — say what is missing instead of letting requests explain it.
+        # Before the import, so the reason survives a stripped-down install.
+        raise AssistantError(f"{problem[1]} (Settings → Assistant)")
+
     import requests
 
     url = acfg["base_url"].rstrip("/") + "/chat/completions"
