@@ -72,7 +72,8 @@ Remaining runtime deps (numpy, Pillow, pyperclip, requests) and their bounds: `r
 ```
 src/listen_to_me/     # The single application package — flat, no sub-packages
 scripts/              # Dev/build helpers (make_icon.py)
-.github/workflows/    # ci.yml (check job on PRs); release.yml (manual Windows build, main only)
+.github/workflows/    # ci.yml (check job on PRs); docs-format.yml (Prettier on **.md);
+                      # release.yml (manual Windows build, main only)
 docs/                 # ARCHITECTURE.mmd (+ .svg), adr/, research/
 agent_docs/           # Agent process docs (review, backlog, memory, budget, API ref, hooks, MCP)
 .claude/skills/       # done, pr, review, security-review, rollback, ci, stuck, beacon
