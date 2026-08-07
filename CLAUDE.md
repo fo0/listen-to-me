@@ -72,7 +72,8 @@ Remaining runtime deps (numpy, Pillow, pyperclip, requests) and their bounds: `r
 ```
 src/listen_to_me/     # The single application package — flat, no sub-packages
 scripts/              # Dev/build helpers (make_icon.py)
-.github/workflows/    # ci.yml (check job on PRs); release.yml (manual Windows build, main only)
+.github/workflows/    # ci.yml (check job on PRs); docs-format.yml (Prettier on **.md);
+                      # release.yml (manual Windows build, main only)
 docs/                 # ARCHITECTURE.mmd (+ .svg), adr/, research/
 agent_docs/           # Agent process docs (review, backlog, memory, budget, API ref, hooks, MCP)
 .claude/skills/       # done, pr, review, security-review, rollback, ci, stuck, beacon
@@ -90,6 +91,8 @@ pip install -e .            # or: pip install -r requirements.txt
 PYTHONPATH=src python -m listen_to_me
 python -m listen_to_me --version     # print version, no Qt import
 python -m listen_to_me --selftest    # packaging self-test (needs all deps installed)
+python -m listen_to_me --help        # flag list + config location, no Qt import
+# Any other argument is refused with exit code 2 instead of starting the tray app.
 
 # Automated Checks — the full gate (no Python linter/formatter/typecheck exists)
 python -m compileall -q src scripts   # syntax-check every source file (fast, no deps)
@@ -178,7 +181,7 @@ Detail (distribution, SHA-pin bump): `agent_docs/deployment.md`.
 
 ## API / Interfaces
 
-Desktop GUI app — it serves no HTTP API. It has a small **CLI** (`--version`, `--selftest`) and **consumes** two external HTTP interfaces: OpenAI-compatible chat/completions for the optional assistant, and the GitHub Releases API for the updater.
+Desktop GUI app — it serves no HTTP API. It has a small **CLI** (`--version`, `--selftest`, `-h`/`--help`; anything else exits `2`) and **consumes** two external HTTP interfaces: OpenAI-compatible chat/completions for the optional assistant, and the GitHub Releases API for the updater.
 
 Full reference: `agent_docs/api-reference.md`.
 
