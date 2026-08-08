@@ -439,6 +439,22 @@ def _qss(t: dict) -> str:
         background: {t["danger_hover"]};
         border-color: {t["danger"]};
     }}
+    /* Footer link: the GitHub button that opens the project page. Quiet text
+       rather than a raised button — it sits at the far end of the same row as
+       Close/Apply/Save and must not read as a fourth action there. The
+       transparent border reserves the focus ring's space, so focusing it never
+       nudges the footer. */
+    QPushButton[link="true"] {{
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        padding: 4px 8px;
+        min-height: 0;
+        color: {t["muted"]};
+    }}
+    QPushButton[link="true"]:hover {{ background: {t["hover"]}; color: {ACCENT}; }}
+    QPushButton[link="true"]:pressed {{ background: {t["alt"]}; }}
+    QPushButton[link="true"]:focus {{ border: 1px solid {ACCENT}; }}
     /* A disabled button MUST look disabled. This used to be a single
        `QPushButton:disabled {{ color: ... }}` placed ABOVE the variant rules —
        and `:disabled` and `[accent="true"]` carry the same CSS specificity, so
@@ -461,6 +477,7 @@ def _qss(t: dict) -> str:
     QPushButton:disabled,
     QPushButton[accent="true"]:disabled,
     QPushButton[destructive="true"]:disabled,
+    QPushButton[link="true"]:disabled,
     QPushButton[quick="true"]:disabled {{
         background: {t["disabled_bg"]};
         border: 1px solid {t["border"]};

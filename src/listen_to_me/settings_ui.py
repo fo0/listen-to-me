@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, __version__
+from . import APP_NAME, REPO_URL, __version__
 from .assistant import config_problem as assistant_config_problem
 from .choices import (
     BACKENDS,
@@ -430,6 +430,24 @@ class SettingsWindow(QDialog):
         version_label = QLabel(f"{APP_NAME} {__version__}")
         version_label.setProperty("role", "hint")
         footer.addWidget(version_label)
+        # Next to the version: the link to the GitHub project page — the same
+        # target as the tray's "Project page" entry, but reachable from the
+        # window the user is already in. A QPushButton, not a QLabel carrying
+        # an <a href>: a link label gives no hover, focus or keyboard
+        # affordance, and this row shows on every page. Named "GitHub" rather
+        # than hiding behind the version, so where it leads needs no hover.
+        self.repo_button = QPushButton("GitHub")
+        self.repo_button.setProperty("link", True)
+        self.repo_button.setIcon(glyph_icon("link", colors["muted"], ACCENT, size=14))
+        self.repo_button.setIconSize(QSize(14, 14))
+        self.repo_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.repo_button.setToolTip(f"Open the project page on GitHub — {REPO_URL}")
+        self.repo_button.setAccessibleName("Open the project page on GitHub")
+        # No mnemonic and no auto-default: Enter belongs to Save, and this is
+        # the one footer control that reaches outside the app.
+        self.repo_button.setAutoDefault(False)
+        self.repo_button.clicked.connect(self._open_repo)
+        footer.addWidget(self.repo_button)
         footer.addSpacing(10)
         self.footer_status = QLabel("")
         self.footer_status.setProperty("role", "hint")
@@ -1450,6 +1468,7 @@ class SettingsWindow(QDialog):
                 if glyph and item is not None:
                     item.setIcon(glyph_icon(glyph, colors["muted"], ACCENT, size=18))
             self.home.restyle_icons(colors["muted"], ACCENT)
+            self.repo_button.setIcon(glyph_icon("link", colors["muted"], ACCENT, size=14))
             self._render_help()
         except Exception:
             log.debug("could not restyle the theme-dependent visuals", exc_info=True)
@@ -2212,6 +2231,26 @@ class SettingsWindow(QDialog):
             self.update_button.setText("Open release page")
             self.update_button.setToolTip("Open this release on GitHub to download it manually.")
         self.update_button.setEnabled(True)
+
+    def _open_repo(self) -> None:
+        """Open the GitHub project page (footer button, bottom left).
+
+        REPO_URL is a package constant, not network-supplied text, so it needs
+        none of the scheme/host checks the changelog and release links get.
+        The launch itself can still fail (no browser registered, a broken
+        BROWSER env), and webbrowser.open() reports that as False instead of
+        raising — unreported, the button would just look dead.
+        """
+        opened = False
+        try:
+            opened = webbrowser.open(REPO_URL)
+        except Exception:
+            log.exception("could not open the project page")
+        if not opened:
+            # The URL itself stays in the tooltip; a full URL here would
+            # stretch the footer and push the action buttons around.
+            self.footer_status.setText("Could not open your browser")
+            self._footer_status_timer.start()
 
     def _open_changelog_link(self, url) -> None:
         """Open a link the user clicked inside a release changelog.

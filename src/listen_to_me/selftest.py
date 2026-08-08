@@ -2073,6 +2073,46 @@ def _gui_construction():
         window.home._toggle()  # the double-click's second click
         assert stub.posts[posts_before:] == [("toggle",)]
 
+        # Footer, bottom left: the GitHub button next to the version is a real
+        # control that opens the project page — before it, the only route to
+        # the repository was the tray menu. Clicked with the browser patched
+        # out; a check may never launch anything.
+        from listen_to_me import REPO_URL
+        from listen_to_me import settings_ui as settings_ui_module
+
+        assert window.repo_button.isEnabled()
+        assert REPO_URL in window.repo_button.toolTip()
+        assert window.repo_button.accessibleName(), "the footer link has no accessible name"
+
+        opened: list[str] = []
+
+        class _FakeBrowser:
+            @staticmethod
+            def open(url):
+                opened.append(url)
+                return True
+
+        class _DeadBrowser:
+            @staticmethod
+            def open(url):
+                return False  # no handler registered / BROWSER points nowhere
+
+        real_browser = settings_ui_module.webbrowser
+        try:
+            settings_ui_module.webbrowser = _FakeBrowser
+            window.repo_button.click()
+            assert opened == [REPO_URL], opened
+            # A browser that refuses to open must say so — an unreported
+            # failure leaves a button that looks alive and does nothing.
+            settings_ui_module.webbrowser = _DeadBrowser
+            window.footer_status.setText("")
+            window.repo_button.click()
+            assert window.footer_status.text(), "a failed browser launch reports nothing"
+        finally:
+            settings_ui_module.webbrowser = real_browser
+            window._footer_status_timer.stop()
+            window.footer_status.setText("")
+
         # The at-a-glance cards are controls, not decoration: they must take
         # keyboard focus and open their settings page on Space/Enter. Enter
         # especially — an unaccepted Return would fall through to the dialog's
