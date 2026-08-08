@@ -41,6 +41,53 @@ def config_problem(acfg: dict) -> tuple[str, str] | None:
     return None
 
 
+_plaintext_key_warned = False
+
+
+def _warn_if_key_travels_in_clear(url: str, api_key: str) -> None:
+    """Say so, once, when the API key would leave this machine unencrypted.
+
+    A plain-HTTP `base_url` is allowed on purpose — the documented default is a
+    local Ollama, and a loopback endpoint never puts anything on a wire. A
+    *remote* http:// endpoint does: the `Authorization: Bearer …` header and
+    the whole transcript then travel in the clear, readable by anyone on the
+    path. Refusing that would break legitimate internal gateways that are only
+    reachable over http, so this only reports it — the user's own network, the
+    user's call.
+
+    Once per process: refine() runs after every dictation and this must not
+    bury the log. Failing open (a URL urlparse cannot read is simply not
+    warned about) — config_problem() has already vetted the scheme, and a
+    warning helper must never be what breaks a dictation.
+    """
+    global _plaintext_key_warned
+    if _plaintext_key_warned or not api_key:
+        return
+    import ipaddress
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme.lower() != "http":
+            return
+        host = (parsed.hostname or "").lower()
+        if host == "localhost" or host.endswith(".localhost"):
+            return
+        try:
+            if ipaddress.ip_address(host).is_loopback:
+                return
+        except ValueError:
+            pass  # a hostname, not a literal address — not loopback
+    except ValueError:
+        return
+    _plaintext_key_warned = True
+    log.warning(
+        "the assistant API key is sent to %s over plain HTTP — the key and every "
+        "transcript travel unencrypted; use https:// for a remote endpoint",
+        host or url,
+    )
+
+
 def refine(text: str, acfg: dict) -> str:
     problem = config_problem(acfg)
     if problem is not None:
@@ -48,6 +95,8 @@ def refine(text: str, acfg: dict) -> str:
         # check — say what is missing instead of letting requests explain it.
         # Before the import, so the reason survives a stripped-down install.
         raise AssistantError(f"{problem[1]} (Settings → Assistant)")
+
+    _warn_if_key_travels_in_clear(acfg["base_url"], str(acfg.get("api_key") or ""))
 
     import requests
 

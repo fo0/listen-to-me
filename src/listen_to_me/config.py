@@ -274,6 +274,29 @@ def _merge(base: dict, override: dict) -> dict:
     return base
 
 
+def _restrict_to_owner(path: Path) -> None:
+    """Take group and other off a file's mode (0600 on POSIX), best effort.
+
+    Everything written through :func:`atomic_write_json` is private to the
+    user: config.json carries the assistant API key in clear text, and
+    history.json every transcript that was ever dictated. The default umask
+    leaves both world-readable (0644), so on a shared machine any other local
+    account can read the key and the dictation history straight out of the
+    config dir.
+
+    Applied to the temp file before the replace, so the target never exists
+    with the wider mode even briefly. On Windows os.chmod only toggles the
+    read-only bit — harmless here (0600 keeps the file writable), and access
+    control comes from the per-user profile directory instead. A filesystem
+    that cannot represent the mode (FAT, some network shares) must never cost
+    the write itself, hence the catch.
+    """
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        log.debug("could not restrict the permissions of %s", path, exc_info=True)
+
+
 def atomic_write_json(path: Path, data) -> None:
     """Write `data` as pretty JSON to `path` atomically: a sibling temp file is
     written and then `os.replace`d over the target, so a crash mid-write never
@@ -283,6 +306,9 @@ def atomic_write_json(path: Path, data) -> None:
     bytes to the OS cache; without the flush a power loss or OS crash can land
     the rename ahead of the data and leave a zero-length config.json /
     history.json — the very outcome this helper exists to prevent.
+
+    The file is restricted to its owner before the replace — see
+    :func:`_restrict_to_owner` for why that matters here.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,6 +318,7 @@ def atomic_write_json(path: Path, data) -> None:
         fh.write("\n")
         fh.flush()
         os.fsync(fh.fileno())
+    _restrict_to_owner(tmp)
     os.replace(tmp, path)
 
 
