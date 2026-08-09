@@ -131,6 +131,25 @@ _PRETTY_KEYS = {
     "backspace": "Backspace",
     "caps_lock": "Caps",
     "plus": "+",
+    # The remaining named-key tokens — the caps/underscore fallback below
+    # would render these as "UP", "Page_up" or "Print_screen", and the four
+    # standalone-safe PTT keys (Pause/PrtScr/ScrLk/Menu) are exactly the ones
+    # a user is most likely to see on the Home page, tray and overlay.
+    "up": "Up",
+    "down": "Down",
+    "left": "Left",
+    "right": "Right",
+    "home": "Home",
+    "end": "End",
+    "page_up": "PgUp",
+    "page_down": "PgDn",
+    "delete": "Del",
+    "insert": "Ins",
+    "print_screen": "PrtScr",
+    "scroll_lock": "ScrLk",
+    "num_lock": "NumLk",
+    "pause": "Pause",
+    "menu": "Menu",
 }
 
 

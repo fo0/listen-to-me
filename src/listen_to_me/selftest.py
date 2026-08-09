@@ -144,6 +144,46 @@ def _config_guards_scalar_types():
         assert cfg["beam_size"] == DEFAULTS["beam_size"]
         cfg.save()
         assert Config(path=path)["beam_size"] == DEFAULTS["beam_size"]
+        # json.load accepts the NaN/Infinity literals; int() of those raises,
+        # which once escaped _coerce and reset the WHOLE config to defaults.
+        # Each bad value must cost only its own key — the sibling survives.
+        path.write_text(
+            '{"max_seconds": NaN, "beam_size": Infinity, '
+            '"assistant": {"temperature": "nan"}, "language": "de"}',
+            encoding="utf-8",
+        )
+        cfg = Config(path=path)
+        assert cfg["max_seconds"] == DEFAULTS["max_seconds"]
+        assert cfg["beam_size"] == DEFAULTS["beam_size"]
+        assert cfg["assistant"]["temperature"] == DEFAULTS["assistant"]["temperature"]
+        assert cfg["language"] == "de"
+        assert cfg.load_failed is False
+
+
+def _config_read_failure_never_costs_the_file():
+    """A config that cannot be READ must not be overwritten by the next save:
+    the in-memory data is only the defaults then, and the file on disk may be
+    intact (a transient AV lock) or recoverable. save() moves it aside once
+    (config.json.bad) so the original stays available."""
+    import json
+
+    from listen_to_me.config import DEFAULTS, Config
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        broken = '{"language": "de", THIS IS NOT JSON'
+        path.write_text(broken, encoding="utf-8")
+        cfg = Config(path=path)
+        assert cfg.load_failed is True
+        assert cfg["language"] == DEFAULTS["language"]  # defaults, not a crash
+        assert path.read_text(encoding="utf-8") == broken  # load alone touches nothing
+        assert cfg.save() is True
+        bad = path.with_name(path.name + ".bad")
+        assert bad.read_text(encoding="utf-8") == broken  # original preserved
+        assert json.loads(path.read_text(encoding="utf-8"))  # fresh valid config
+        assert cfg.load_failed is False
+        assert cfg.save() is True  # later saves stay normal
+        assert bad.read_text(encoding="utf-8") == broken  # and never touch the backup
 
 
 def _history_normalizes_entries():
@@ -1213,6 +1253,9 @@ def _updater_logic():
 
     # The relaunch chain must not inherit PyInstaller's bootloader variables,
     # or the updated exe reuses (and misses) the dying process's unpack dir.
+    # Restore (not delete) afterwards: inside the packaged exe these variables
+    # carry real bootloader values that must survive the check.
+    saved = {key: os.environ.get(key) for key in ("_PYI_ARCHIVE_FILE", "_MEIPASS2")}
     os.environ["_PYI_ARCHIVE_FILE"] = "x"
     os.environ["_MEIPASS2"] = "y"
     try:
@@ -1220,7 +1263,11 @@ def _updater_logic():
         assert "_PYI_ARCHIVE_FILE" not in env and "_MEIPASS2" not in env
         assert env["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
     finally:
-        del os.environ["_PYI_ARCHIVE_FILE"], os.environ["_MEIPASS2"]
+        for key, value in saved.items():
+            if value is None:
+                del os.environ[key]
+            else:
+                os.environ[key] = value
 
     # Startup cleanup: stale downloads and old swap scripts go, fresh ones stay.
     with tempfile.TemporaryDirectory() as tmp:
@@ -1268,12 +1315,14 @@ def _updater_forces_tls_verification():
     asset_url = "https://github.com/fo0/listen-to-me/releases/download/v1/ListenToMe.exe"
     calls: list[dict] = []
     failing: list[bool] = []
+    redirect_to: list[str] = []
 
     class _SSLError(Exception):
         pass
 
     class _Response:
         headers: dict = {}
+        url = ""  # requests: the FINAL URL after redirects
 
         def __enter__(self):
             return self
@@ -1294,7 +1343,9 @@ def _updater_forces_tls_verification():
         calls.append(dict(kwargs, url=url))
         if failing:
             raise _SSLError("certificate verify failed")
-        return _Response()
+        resp = _Response()
+        resp.url = redirect_to[0] if redirect_to else url
+        return resp
 
     fake = types.ModuleType("requests")
     fake.get = _get
@@ -1309,6 +1360,17 @@ def _updater_forces_tls_verification():
             updater.download_asset(asset_url, Path(tmp) / "asset.exe")
             assert len(calls) == 2
             assert all(call["verify"] is True for call in calls)
+
+            # requests follows redirects cross-host and cross-scheme; the
+            # transfer's final URL must pass the same trust check as the
+            # starting one, or a redirect would sidestep the host allowlist.
+            redirect_to.append("http://evil.example/ListenToMe.exe")
+            try:
+                updater.download_asset(asset_url, Path(tmp) / "asset2.exe")
+                raise AssertionError("a cross-host redirect was followed")
+            except ValueError:
+                pass
+            redirect_to.clear()
 
             failing.append(True)
             for attempt in (
@@ -2594,6 +2656,7 @@ _LIGHT_CHECKS = [
     ("config defaults", _config_defaults),
     ("config survives corrupt sections", _config_survives_corrupt_sections),
     ("config guards scalar types", _config_guards_scalar_types),
+    ("config read failure never costs the file", _config_read_failure_never_costs_the_file),
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),

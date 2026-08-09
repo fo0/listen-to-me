@@ -5,8 +5,11 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import math
 import os
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 from .choices import default_mute_targets
@@ -161,7 +164,7 @@ DEFAULTS: dict = {
 }
 
 
-def open_path(path) -> None:
+def open_path(path: str | os.PathLike[str]) -> None:
     """Open a folder (or file) in the platform's file manager. User-invoked."""
     path = str(path)
     try:
@@ -189,13 +192,34 @@ def default_model_dir() -> Path:
 
 
 def config_dir() -> Path:
+    # `or`, not a .get() default: a set-but-empty variable must count as unset
+    # (the XDG spec says so explicitly) — Path("") is the current directory,
+    # which would scatter config/history/lock files across launch locations.
     if sys.platform == "win32":
-        base = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+        base = Path(os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming"))
         return base / "ListenToMe"
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "ListenToMe"
-    base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config"))
     return base / "listen-to-me"
+
+
+def _finite_number(default, value):
+    """``type(default)(value)``, or None when that is not a usable number.
+
+    ``json.load`` accepts the ``NaN``/``Infinity`` literals, and ``int()`` of
+    those raises (ValueError/OverflowError) — unguarded, one such hand-edited
+    key once cost the whole config, not just the broken value. Non-finite
+    floats are rejected too: a ``NaN`` max_seconds or temperature fails much
+    later, where nothing can report it.
+    """
+    try:
+        coerced = type(default)(value)
+    except (ValueError, OverflowError):
+        return None
+    if isinstance(coerced, float) and not math.isfinite(coerced):
+        return None
+    return coerced
 
 
 def _coerce(key: str, default, value):
@@ -228,18 +252,19 @@ def _coerce(key: str, default, value):
         if isinstance(value, bool):
             pass
         elif isinstance(value, (int, float)):
-            return type(default)(value)
+            coerced = _finite_number(default, value)
+            if coerced is not None:
+                return coerced
         elif isinstance(value, str):
             # "300" instead of 300 is the classic hand-edit; keep the value.
-            try:
-                return type(default)(value.strip())
-            except ValueError:
-                pass
+            coerced = _finite_number(default, value.strip())
+            if coerced is not None:
+                return coerced
     elif isinstance(value, type(default)):
         return value
     log.warning(
-        "config key %r is %s, expected %s — keeping the default %r",
-        key, type(value).__name__, type(default).__name__, default,
+        "config key %r holds unusable %s value %.60r, expected %s — keeping the default %r",
+        key, type(value).__name__, value, type(default).__name__, default,
     )
     return default
 
@@ -312,23 +337,63 @@ def atomic_write_json(path: Path, data) -> None:
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2, ensure_ascii=False)
-        fh.write("\n")
-        fh.flush()
-        os.fsync(fh.fileno())
-    _restrict_to_owner(tmp)
-    os.replace(tmp, path)
+    # A unique temp name per writer: two processes saving the same file (the
+    # accepted old-build/new-build coexistence, or an unguarded fallback run)
+    # would otherwise truncate each other's temp file mid-write and rename the
+    # mangled result into place — the exact corruption this helper prevents.
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        _restrict_to_owner(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def sweep_stale_tmp(directory: Path, max_age_s: float = 3600.0) -> None:
+    """Best-effort removal of orphaned atomic-write temp files.
+
+    mkstemp gives every writer a unique name, so a hard kill between write
+    and replace leaves ``<file>.<random>.tmp`` behind forever (the old fixed
+    temp name at least overwrote itself). Age-gated so a concurrent writer's
+    in-flight temp file is never touched.
+    """
+    cutoff = time.time() - max_age_s
+    try:
+        for tmp in Path(directory).glob("*.tmp"):
+            try:
+                if tmp.stat().st_mtime < cutoff:
+                    tmp.unlink()
+                    log.info("removed stale temp file %s", tmp)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 class Config:
     def __init__(self, path: Path | None = None):
         self.path = path if path is not None else config_dir() / "config.json"
+        # The config dir collects our own atomic-write leftovers (config and
+        # history share it); sweep them once per process start.
+        sweep_stale_tmp(self.path.parent)
         # Captured before load(), which writes the defaults when the file is
         # missing. True only on the very first launch — drives the one-time
         # onboarding wizard.
         self.first_run = not self.path.exists()
+        # True while the file on disk could not be read: the in-memory data is
+        # just the defaults then, and save() must not overwrite what may still
+        # be an intact config (e.g. an AV/indexer holding the file at logon).
+        self.load_failed = False
         self.data: dict = copy.deepcopy(DEFAULTS)
         self.load()
 
@@ -340,12 +405,50 @@ class Config:
                 self.data = _merge(copy.deepcopy(DEFAULTS), stored)
             else:
                 self.save()
+            self.load_failed = False
         except Exception:
             log.exception("could not read %s — using defaults", self.path)
             self.data = copy.deepcopy(DEFAULTS)
+            self.load_failed = True
 
-    def save(self) -> None:
-        atomic_write_json(self.path, self.data)
+    def save(self) -> bool:
+        """Write the config to disk; True when it arrived there.
+
+        Never raises: every caller sits at a UI or worker boundary where an
+        unhandled OSError (disk full, read-only dir) would either crash the
+        app or — in a --windowed build — vanish into a devnull stderr. The
+        False return is the caller's cue to tell the user.
+
+        A config whose *read* failed is preserved, not overwritten: the
+        in-memory data is only the defaults, so saving would turn a transient
+        read failure into permanent loss of every setting. The unreadable
+        file is moved aside once (config.json.bad, replacing any older .bad —
+        the newest casualty is the one worth keeping) so later saves work and
+        the original stays recoverable; if even that fails, the save is
+        refused.
+        """
+        if self.load_failed:
+            bad = self.path.with_name(self.path.name + ".bad")
+            try:
+                os.replace(self.path, bad)
+            except FileNotFoundError:
+                pass  # nothing left on disk to preserve
+            except OSError:
+                log.warning(
+                    "not saving %s — the file could not be read at startup and "
+                    "may still be intact",
+                    self.path,
+                )
+                return False
+            else:
+                log.warning("moved the unreadable config aside to %s", bad)
+            self.load_failed = False
+        try:
+            atomic_write_json(self.path, self.data)
+        except Exception:
+            log.exception("could not save %s", self.path)
+            return False
+        return True
 
     def __getitem__(self, key: str):
         return self.data[key]

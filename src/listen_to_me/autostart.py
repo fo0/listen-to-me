@@ -57,6 +57,33 @@ def _quote_join(args: list[str]) -> str:
     return " ".join(f'"{arg}"' if " " in arg else arg for arg in args)
 
 
+def _desktop_exec_value(args: list[str]) -> str:
+    """`args` as a Desktop Entry ``Exec=`` value, escaped per the spec.
+
+    ``%`` introduces field codes and must be doubled even inside quotes; an
+    argument containing a reserved character is double-quoted with ``"``,
+    ``` ` ```, ``$`` and ``\\`` backslash-escaped inside. Written unescaped, a
+    path like ``~/100%projects/venv`` produces an entry the session never
+    launches while reading it back compares healthy — the silent failure this
+    module exists to prevent. :func:`stored_command` inverts the ``%%`` so the
+    stored↔current compare keeps working.
+    """
+    reserved = " \t\n\"'\\><~|&;$*?#()`"
+    parts = []
+    for arg in args:
+        escaped = arg
+        if any(ch in escaped for ch in reserved):
+            inner = (
+                escaped.replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .replace("$", "\\$")
+                .replace("`", "\\`")
+            )
+            escaped = f'"{inner}"'
+        parts.append(escaped.replace("%", "%%"))
+    return " ".join(parts)
+
+
 def _launch_command() -> str:
     return _quote_join(_launch_args())
 
@@ -101,7 +128,7 @@ def enable(clear_block: bool = True) -> None:
             "[Desktop Entry]\n"
             "Type=Application\n"
             "Name=Listen To Me\n"
-            f"Exec={_launch_command()}\n"
+            f"Exec={_desktop_exec_value(_launch_args())}\n"
             "X-GNOME-Autostart-enabled=true\n",
             encoding="utf-8",
         )
@@ -125,10 +152,6 @@ def disable() -> None:
     else:
         _linux_desktop_path().unlink(missing_ok=True)
     log.info("autostart disabled")
-
-
-def is_enabled() -> bool:
-    return stored_command() is not None
 
 
 def stored_command() -> str | None:
@@ -166,16 +189,22 @@ def stored_command() -> str | None:
     try:
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.startswith("Exec="):
-                return line[len("Exec="):].strip()
+                # Undo the escapes of _desktop_exec_value that shlex will NOT
+                # undo: the %% field-code doubling, and \$ / \` — POSIX shlex
+                # only unescapes \\ and \" inside double quotes, so without
+                # this a $ in the launch path would compare "stale" forever
+                # and sync() would rewrite the identical entry on every start.
+                # (\\ stays for _split_command, which does resolve it.)
+                return (
+                    line[len("Exec="):]
+                    .strip()
+                    .replace("%%", "%")
+                    .replace("\\$", "$")
+                    .replace("\\`", "`")
+                )
     except OSError:
         log.warning("could not read the autostart entry %s", path, exc_info=True)
     return ""
-
-
-def needs_refresh() -> bool:
-    """True when an autostart entry exists but would start the wrong program."""
-    stored = stored_command()
-    return stored is not None and _refresh_reason(stored) is not None
 
 
 def sync(desired: bool, repair_block: bool = False) -> str | None:
@@ -437,7 +466,10 @@ def _refresh_reason(stored: str) -> str | None:
 
 
 def _linux_desktop_path() -> Path:
-    base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    # `or`, not a .get() default: a set-but-empty XDG_CONFIG_HOME counts as
+    # unset per the XDG spec — Path("") would target a CWD-relative autostart/
+    # directory that no session ever reads.
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config"))
     return base / "autostart" / "listen-to-me.desktop"
 
 

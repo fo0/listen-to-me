@@ -23,7 +23,9 @@ import os
 import socket
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import IO
 
 log = logging.getLogger(__name__)
 
@@ -41,13 +43,13 @@ class SingleInstance:
     """Holds the OS-level claim for the process lifetime and (optionally)
     serves activation pings from later launches."""
 
-    def __init__(self, port: int, mutex_handle=None, lock_file=None):
+    def __init__(self, port: int, mutex_handle: int | None = None, lock_file: IO | None = None):
         self._port = port
         self._mutex = mutex_handle  # Windows: kernel mutex HANDLE
         self._lock_file = lock_file  # POSIX: open + flock()-ed file object
         self._server: socket.socket | None = None
 
-    def start_server(self, on_activate) -> int | None:
+    def start_server(self, on_activate: Callable[[], None]) -> int | None:
         """Listen for activation pings from later launches.
 
         `on_activate` runs on the accept thread — pass something thread-safe

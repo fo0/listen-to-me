@@ -45,6 +45,10 @@ import logging
 import sys
 import threading
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .config import Config
 
 log = logging.getLogger(__name__)
 
@@ -185,7 +189,7 @@ class MuteIntegrations:
     check holds the lock all the way through its key sequence.
     """
 
-    def __init__(self, cfg):
+    def __init__(self, cfg: Config):
         self.cfg = cfg
         self._controller = None
         # pynput keys currently held down (hold-mode targets), in press order.

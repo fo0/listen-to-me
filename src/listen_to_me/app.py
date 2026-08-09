@@ -109,6 +109,16 @@ class App:
             self.overlay.set_visible(bool(self.cfg["overlay"]["enabled"]))
         except Exception:
             log.exception("could not create the floating overlay icon")
+        if self.cfg.load_failed:
+            # The settings exist but could not be read (locked/corrupt file):
+            # the app is running on defaults right now, which looks like every
+            # setting was reset — say so instead of letting the user discover
+            # it hotkey by hotkey. Save() preserves the file as config.json.bad.
+            self.notify(
+                "The settings file could not be read — running on defaults. "
+                "Saving any setting preserves the old file as config.json.bad.",
+                force=True,
+            )
         if self.cfg.first_run:
             # Very first launch (no config file existed): walk the user through
             # the essential choices instead of dropping them into full Settings.
@@ -156,6 +166,10 @@ class App:
                 # push-to-talk: start on press, stop on release
                 if self.state == STATE_IDLE:
                     self._start_recording()
+                elif self.state == STATE_PROCESSING:
+                    # Same feedback as the toggle branch: the user is already
+                    # speaking into a dead mic — silence here loses dictation.
+                    self.notify("Still transcribing the previous recording…")
             else:
                 self._handle("toggle", None)
         elif kind == "hotkey_release":
@@ -170,7 +184,8 @@ class App:
         elif kind == "toggle_overlay":
             ocfg = self.cfg["overlay"]
             ocfg["enabled"] = not ocfg["enabled"]
-            self.cfg.save()
+            if not self.cfg.save():
+                self.notify("Could not save the settings — see the log file.", force=True)
             if self.overlay is not None:
                 self.overlay.set_visible(bool(ocfg["enabled"]))
             self.tray.set_state(self.state)  # refresh the "Show floating icon" tick
@@ -181,6 +196,13 @@ class App:
         elif kind == "auto_stop":
             if self.state == STATE_RECORDING:
                 self.notify("Maximum recording length reached.")
+                self._finish_recording()
+        elif kind == "stream_died":
+            # The input stream ended on its own (device unplugged, PortAudio
+            # abort): finish with what was captured instead of showing a
+            # recording that silently stopped listening.
+            if self.state == STATE_RECORDING:
+                self.notify("The microphone stream ended unexpectedly.", force=True)
                 self._finish_recording()
         elif kind == "done":
             self._set_state(STATE_IDLE)
@@ -208,16 +230,19 @@ class App:
                 device=self.cfg["input_device"],
                 max_seconds=self.cfg["max_seconds"],
                 on_limit=lambda: self.post("auto_stop"),
+                on_ended=lambda: self.post("stream_died"),
             )
         except Exception as exc:
             log.exception("could not start recording")
             self.notify(f"Could not start recording: {exc}", force=True)
             return
+        # Bump on every take so a lingering worker from a previous recording
+        # sees a changed id and exits, even if this take has no worker. Before
+        # the state change: _set_state re-enters RECORDING first, and a stale
+        # worker that wakes in between must not mistake it for its own take.
+        self._recording_id += 1
         self._set_state(STATE_RECORDING)
         self._beep(880)
-        # Bump on every take so a lingering live-preview worker from a previous
-        # recording sees a changed id and exits, even if this take has no worker.
-        self._recording_id += 1
         ocfg = self.cfg["overlay"]
         want_preview = bool(ocfg["enabled"] and ocfg["live_preview"])
         self._live_typer = None
@@ -247,19 +272,25 @@ class App:
         anyway — and (b) contains no key our own typing could synthesize (a
         character key or Space), which the hold listener would misread as the
         hotkey being released, stopping the recording mid-sentence.
+
+        Toggle mode tolerates modifier chords (our plain typing never completes
+        them), but a bare typable key as the toggle hotkey would be pressed by
+        our own injected keystrokes and toggle-stop the take mid-sentence.
         """
         if not hasattr(self.transcriber, "preview_segments"):
             return "backend provides no live segments"
+        try:
+            has_modifier, has_typable = Hotkeys.combo_flags(self.cfg["hotkey"])
+        except Exception:
+            log.exception("could not analyze the hotkey combo")
+            return "hotkey combo could not be analyzed"
         if self.cfg["hotkey_mode"] == "hold":
-            try:
-                has_modifier, has_typable = Hotkeys.combo_flags(self.cfg["hotkey"])
-            except Exception:
-                log.exception("could not analyze the hotkey combo")
-                return "hotkey combo could not be analyzed"
             if has_modifier:
                 return "hold-mode hotkey contains a modifier key"
             if has_typable:
                 return "hold-mode hotkey contains a typable key"
+        elif has_typable and not has_modifier:
+            return "hotkey is a bare typable key our own typing would press"
         return None
 
     def _take_active(self, recording_id: int) -> bool:
@@ -272,6 +303,8 @@ class App:
         live, self._live_typer = self._live_typer, None
         self._beep(520)
         if len(audio) / SAMPLE_RATE < 0.3:
+            if live is not None:
+                live.hand_over()  # discarded: the worker must not type into idle
             self._set_state(STATE_IDLE)
             self.notify("Recording too short — nothing inserted.")
             return
@@ -285,8 +318,12 @@ class App:
             return
         self.recorder.stop()
         # Live-typed text stays where it is — append-only typing has no way to
-        # take it back; the worker exits on the state change below.
-        self._live_typer = None
+        # take it back. hand_over() (result discarded) disarms the worker for
+        # good: relying on the state change alone leaves a window where a
+        # worker mid-tick still types the cancelled take's pending text.
+        live, self._live_typer = self._live_typer, None
+        if live is not None:
+            live.hand_over()
         self._set_state(STATE_IDLE)
         self.notify("Recording cancelled.")
 
@@ -616,7 +653,8 @@ class App:
             # was broken out of — don't resurrect any UI mid-shutdown.
             return
         if accepted:
-            self.cfg.save()
+            if not self.cfg.save():
+                self.notify("Could not save the settings — see the log file.", force=True)
             self.apply_settings()
         else:
             self._open_settings()
@@ -713,6 +751,14 @@ class App:
                 self.recorder.stop()
         except Exception:
             log.debug("error stopping the recorder during shutdown", exc_info=True)
+        # The state stays RECORDING through teardown — disarm a live-typing
+        # worker explicitly or it may keep typing while the app shuts down.
+        live, self._live_typer = self._live_typer, None
+        if live is not None:
+            try:
+                live.hand_over()
+            except Exception:
+                log.debug("error disarming the live typer during shutdown", exc_info=True)
         try:
             self.integrations.reset()  # never leave a target app stuck muted
         except Exception:

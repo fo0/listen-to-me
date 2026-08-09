@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 from .choices import SYSTEM_DEFAULT_DEVICE, input_device_choices, language_label
 from .glyphs import glyph_icon
 from .keymap import pretty_keys
-from .qtutil import copy_with_feedback
+from .qtutil import copy_with_feedback, elastic_label
 
 log = logging.getLogger(__name__)
 
@@ -405,6 +405,10 @@ class HomePage(QWidget):
         text_label = QLabel(shown)
         text_label.setWordWrap(True)
         text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # A wrapping label demands its longest unbreakable word as minimum
+        # width — one long URL/token in a transcript would clip every card on
+        # the Home page (its scroll area has no horizontal scrollbar).
+        elastic_label(text_label)
         body.addWidget(text_label)
         rh.addLayout(body, 1)
         copy_btn = QPushButton("Copy")

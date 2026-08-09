@@ -5,8 +5,12 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from typing import TYPE_CHECKING
 
 from .choices import clipboard_copy_mode
+
+if TYPE_CHECKING:
+    from .config import Config
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +29,14 @@ def sanitize_typed_text(text: str) -> str:
     """
     cleaned = "".join(ch if ch.isprintable() else " " for ch in text)
     return " ".join(cleaned.split())
+
+
+def _clip_text_equal(stored: str | None, text: str) -> bool:
+    """Whether a clipboard read-back matches `text`.
+
+    Windows hands back \\r\\n for the \\n that went in — compare normalized.
+    """
+    return (stored or "").replace("\r\n", "\n") == text.replace("\r\n", "\n")
 
 
 def modifiers_down() -> bool:
@@ -49,7 +61,7 @@ def modifiers_down() -> bool:
 
 
 class Injector:
-    def __init__(self, cfg):
+    def __init__(self, cfg: Config):
         self.cfg = cfg
 
     def clipboard_mode(self) -> str:
@@ -116,8 +128,7 @@ class Injector:
         except Exception:
             log.exception("could not copy the transcript to the clipboard")
             return False
-        # Windows hands back \r\n for the \n that went in — compare normalized.
-        if (stored or "").replace("\r\n", "\n") != text.replace("\r\n", "\n"):
+        if not _clip_text_equal(stored, text):
             log.warning("the clipboard did not take the transcript (%d chars)", len(text))
             return False
         return True
@@ -125,7 +136,12 @@ class Injector:
     def _type(self, text: str) -> None:
         from pynput.keyboard import Controller
 
-        Controller().type(text)
+        # pynput maps \n and \t to real Enter/Tab presses — in a chat box or a
+        # terminal that submits instead of typing. Whisper output is flat, but
+        # assistant output arrives verbatim, so every simulated-typing path
+        # gets the sanitized text; pasting is unaffected (a pasted newline
+        # presses no key).
+        Controller().type(sanitize_typed_text(text))
 
     def type_plain(self, text: str) -> str:
         """Type already-sanitized plain text word by word, re-checking the
@@ -198,11 +214,51 @@ class Injector:
             keyboard.press("v")
             keyboard.release("v")
 
-        if previous is not None:
-            time.sleep(0.3)  # let the target application read the clipboard first
+        time.sleep(0.3)  # let the target application read the clipboard first
+        if previous:
             try:
+                still_ours = _clip_text_equal(pyperclip.paste(), text)
+            except Exception:
+                log.debug("clipboard read-back failed", exc_info=True)
+                return False
+            if not still_ours:
+                # Another application grabbed the clipboard meanwhile — it
+                # owns it now; restoring would clobber a copy the user made.
+                return False
+            try:
+                # Restore only while the clipboard still holds our transcript.
                 pyperclip.copy(previous)
                 return False
             except Exception:
+                # The read-back above proved the transcript IS still there —
+                # a failed restore must not hide that recovery from the user.
                 log.debug("could not restore clipboard", exc_info=True)
-        return True
+                return True
+        if previous == "" and self.clipboard_mode() == "off":
+            # Restore was configured but the old content was non-text
+            # (pyperclip reads images/files as ""), so there is nothing to put
+            # back — yet "off" is the explicit promise that dictated text
+            # never lingers on the clipboard, so scrub it like the restore
+            # would have. Only while the clipboard is still ours, same as the
+            # restore branch above.
+            try:
+                still_ours = _clip_text_equal(pyperclip.paste(), text)
+            except Exception:
+                log.debug("clipboard read-back failed", exc_info=True)
+                return False
+            if not still_ours:
+                return False
+            try:
+                pyperclip.copy("")
+            except Exception:
+                log.debug("could not clear the clipboard", exc_info=True)
+                return True  # scrub failed — the transcript is still there
+            return False
+        # No restore (keep requested, restoring disabled, or empty previous in
+        # a keep-friendly mode): read the write back before the caller
+        # promises a working Ctrl+V.
+        try:
+            return _clip_text_equal(pyperclip.paste(), text)
+        except Exception:
+            log.debug("clipboard read-back failed", exc_info=True)
+            return False

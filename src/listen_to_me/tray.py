@@ -95,6 +95,9 @@ class Tray:
         act_copy.setToolTip("Put the text of the most recent recording back on the clipboard.")
         act_copy.triggered.connect(lambda: app.post("copy_last"))
         menu.addAction(act_copy)
+        # QMenu ignores its actions' tooltips unless asked — without this the
+        # hint above would exist but never render on any platform.
+        menu.setToolTipsVisible(True)
         menu.addSeparator()
 
         self._act_overlay = QAction("Show floating icon", menu)
@@ -116,7 +119,7 @@ class Tray:
         menu.addAction(act_config)
 
         act_project = QAction("Project page", menu)
-        act_project.triggered.connect(lambda: webbrowser.open(REPO_URL))
+        act_project.triggered.connect(self._open_project_page)
         menu.addAction(act_project)
 
         act_help = QAction("Help / Troubleshooting", menu)
@@ -142,6 +145,13 @@ class Tray:
             self._retry_timer.timeout.connect(self._retry_show)
             self._retry_timer.start(_RETRY_MS)
 
+    def _open_project_page(self) -> None:
+        # The settings footer reports a failed browser launch — the tray entry
+        # must not stay a silent no-op either (no handler registered, or
+        # BROWSER pointing nowhere).
+        if not webbrowser.open(REPO_URL):
+            self.app.notify(f"Could not open the browser — visit {REPO_URL}", force=True)
+
     def _retry_show(self) -> None:
         """Re-add the icon once the notification area exists.
 
@@ -159,9 +169,12 @@ class Tray:
                 self._icon.hide()
                 self._icon.show()
                 self.set_state(self.app.state)
+                # Inside the try: logged after a *successful* re-add only — a
+                # success line next to the failure above would mislead exactly
+                # the "icon isn't there after reboot" diagnosis.
+                log.info("system tray became available — icon re-added")
             except Exception:
                 log.debug("re-adding the tray icon failed", exc_info=True)
-            log.info("system tray became available — icon re-added")
             return
         if self._retries >= _RETRY_LIMIT:
             self._stop_retry()

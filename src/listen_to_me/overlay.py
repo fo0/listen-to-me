@@ -194,11 +194,39 @@ class Overlay:
     def _place_initial(self) -> None:
         ocfg = self.app.cfg["overlay"]
         geo = QGuiApplication.primaryScreen().availableGeometry()
-        x = ocfg.get("x")
-        y = ocfg.get("y")
-        if x is None or y is None:
+        try:
+            x = None if ocfg.get("x") is None else int(ocfg.get("x"))
+            y = None if ocfg.get("y") is None else int(ocfg.get("y"))
+            for v in (x, y):
+                # Qt geometry is C-int: a huge hand-edited value would raise
+                # OverflowError from contains()/move() below, outside this try.
+                if v is not None and abs(v) >= 2**31:
+                    raise ValueError("coordinate out of C-int range")
+        except (TypeError, ValueError, OverflowError):
+            # overlay.x/y default to None, so _coerce passes hand-edited
+            # values through unvalidated (Infinity raises OverflowError in
+            # int()) — a broken pair must cost the saved position, never the
+            # whole floating icon.
+            log.warning(
+                "ignoring an unusable saved overlay position %r/%r",
+                ocfg.get("x"), ocfg.get("y"),
+            )
+            x = y = None
+        if x is not None and y is not None:
+            # Keep a position that lies on ANY screen: clamping against the
+            # primary would drag an icon parked on a secondary monitor back
+            # onto the primary's edge on every launch. Full geometry(), same
+            # criterion as the watchdog's _on_any_screen — the drag path lets
+            # the always-on-top icon park over a taskbar on purpose.
+            cx, cy = x + _ICON_SIZE // 2, y + _ICON_SIZE // 2
+            for screen in QGuiApplication.screens():
+                if screen.geometry().contains(cx, cy):
+                    self.win.move(x, y)
+                    return
+        else:
             x = geo.right() - _ICON_SIZE - 24
             y = geo.bottom() - _ICON_SIZE - 120
+        # Off every screen (monitor unplugged) or never saved: default corner.
         x = max(geo.left(), min(int(x), geo.right() - _ICON_SIZE))
         y = max(geo.top(), min(int(y), geo.bottom() - _ICON_SIZE))
         self.win.move(int(x), int(y))
@@ -311,8 +339,13 @@ class Overlay:
         """Show the final transcript briefly, then hide the bubble."""
         self._flash_timer.stop()
         self._show_bubble(text)
-        seconds = max(2, int(self.app.cfg["overlay"].get("preview_seconds", 6)))
-        self._flash_timer.start(seconds * 1000)
+        try:
+            seconds = int(self.app.cfg["overlay"].get("preview_seconds", 6))
+        except (TypeError, ValueError):
+            seconds = 6  # untrusted config: a non-numeric value costs the option
+        # Upper bound too: a hand-edited huge number would overflow
+        # QTimer.start's C int and the bubble would never auto-hide.
+        self._flash_timer.start(min(max(2, seconds), 600) * 1000)
 
     def _bubble_visible(self) -> bool:
         return self.bubble.isVisible()
@@ -352,10 +385,8 @@ class Overlay:
     def save_position(self) -> None:
         ocfg = self.app.cfg["overlay"]
         ocfg["x"], ocfg["y"] = self.win.x(), self.win.y()
-        try:
-            self.app.cfg.save()
-        except Exception:
-            log.exception("could not save overlay position")
+        if not self.app.cfg.save():  # logs its own reason
+            log.warning("the overlay position was not persisted")
 
     # ------------------------------------------------------------ cleanup
 

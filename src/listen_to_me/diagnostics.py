@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 
 from .audio import SAMPLE_RATE, Recorder
 
@@ -127,7 +128,12 @@ def hardware_status(snapshot: dict) -> dict:
     }
 
 
-def record_clip(device, seconds: float, on_level=None, is_cancelled=None):
+def record_clip(
+    device: int | str | None,
+    seconds: float,
+    on_level: Callable[[float], None] | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+):
     """Record ``seconds`` of audio and return it as a 1-D float32 numpy array.
 
     ``on_level`` (optional) receives the recent peak (0.0–1.0) every ~100 ms,
