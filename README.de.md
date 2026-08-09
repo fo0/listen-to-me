@@ -11,7 +11,7 @@ fokussierten Feldes eingefügt.
 
 ## Schnellstart
 
-1. `ListenToMe-<datum>-win64.exe` aus den [Releases](https://github.com/fo0/listen-to-me/releases)
+1. `ListenToMe-<datum>-<hhmm>-win64.exe` aus den [Releases](https://github.com/fo0/listen-to-me/releases)
    herunterladen und starten — die App liegt danach im System-Tray.
 2. Cursor in ein beliebiges Textfeld setzen, `Strg+Alt+Leertaste` drücken,
    sprechen, nochmal drücken → der Text wird lokal transkribiert und an der

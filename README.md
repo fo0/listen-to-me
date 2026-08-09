@@ -506,8 +506,8 @@ which:
 
 1. builds `ListenToMe.exe` with PyInstaller on `windows-latest`,
 2. runs a packaging self-test (`ListenToMe.exe --selftest`),
-3. creates a GitHub release **named with the current date**
-   (e.g. _Listen To Me 2026-07-19 (build 42)_, tag `v2026.07.19.42`),
+3. creates a GitHub release **named with the current UTC timestamp**
+   (e.g. _Listen To Me 2026-07-19 08:14 UTC (build 42)_, tag `v2026.07.19.42`),
 4. writes the **changelog** (commits since the previous release) into the
    release notes, and
 5. attaches the **Windows exe** as a download.
