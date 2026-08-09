@@ -216,8 +216,8 @@ Config paths, single-instance mechanics, frozen-build specifics, local build: `a
 
 ## Refactoring Notes
 
-- `settings_ui.py` (~2830 lines) and `selftest.py` (~2500) far exceed the size guideline; Settings is the split candidate (per-page modules), the Home page already lives in `home_page.py`.
-- `app.py` (~820) and `theme.py` (~560) are over the ~500 bar — keep new behavior in the component modules, not in `App`. Figures measured 2026-08-05; re-measure rather than trusting them.
+- `settings_ui.py` (~2880 lines) and `selftest.py` (~2690) far exceed the size guideline; Settings is the split candidate (per-page modules), the Home page already lives in `home_page.py`.
+- `app.py` (~850) and `theme.py` (~570) are over the ~500 bar — keep new behavior in the component modules, not in `App`. Figures measured 2026-08-09; re-measure rather than trusting them.
 - Refactor only when it blocks work. Principles: `agent_docs/refactoring_guidelines.md`.
 
 ## Documentation Rules
