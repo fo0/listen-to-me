@@ -109,6 +109,16 @@ class App:
             self.overlay.set_visible(bool(self.cfg["overlay"]["enabled"]))
         except Exception:
             log.exception("could not create the floating overlay icon")
+        if self.cfg.load_failed:
+            # The settings exist but could not be read (locked/corrupt file):
+            # the app is running on defaults right now, which looks like every
+            # setting was reset — say so instead of letting the user discover
+            # it hotkey by hotkey. Save() preserves the file as config.json.bad.
+            self.notify(
+                "The settings file could not be read — running on defaults. "
+                "Saving any setting preserves the old file as config.json.bad.",
+                force=True,
+            )
         if self.cfg.first_run:
             # Very first launch (no config file existed): walk the user through
             # the essential choices instead of dropping them into full Settings.

@@ -150,6 +150,12 @@ class Transcriber:
 
     def _ensure_loaded_locked(self, notify=None) -> None:
         """Load/reload the model. Caller must hold self._lock."""
+        if self._cpu_fallback_for is not None and not self._forced_cpu:
+            # The config moved away from the setup that failed: drop the
+            # marker so a later RETURN to that GPU setup retries it instead
+            # of silently re-forcing the CPU (an explicit re-selection is a
+            # retry request).
+            self._cpu_fallback_for = None
         key = self._current_key()
         if self._model is not None and key == self._key:
             return

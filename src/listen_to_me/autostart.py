@@ -189,9 +189,19 @@ def stored_command() -> str | None:
     try:
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.startswith("Exec="):
-                # Undo the field-code doubling of _desktop_exec_value; the
-                # quoting/backslashes are undone by _split_command (shlex).
-                return line[len("Exec="):].strip().replace("%%", "%")
+                # Undo the escapes of _desktop_exec_value that shlex will NOT
+                # undo: the %% field-code doubling, and \$ / \` — POSIX shlex
+                # only unescapes \\ and \" inside double quotes, so without
+                # this a $ in the launch path would compare "stale" forever
+                # and sync() would rewrite the identical entry on every start.
+                # (\\ stays for _split_command, which does resolve it.)
+                return (
+                    line[len("Exec="):]
+                    .strip()
+                    .replace("%%", "%")
+                    .replace("\\$", "$")
+                    .replace("\\`", "`")
+                )
     except OSError:
         log.warning("could not read the autostart entry %s", path, exc_info=True)
     return ""

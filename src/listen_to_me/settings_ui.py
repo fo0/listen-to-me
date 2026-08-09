@@ -322,6 +322,7 @@ class SettingsWindow(QDialog):
         self._diag_gen = 0
         self._diag_cancel_event: threading.Event | None = None
         self._hotkey_paused = False  # app listener paused for a mic-owning test
+        self._capturing = False  # the modal hotkey picker owns the listener
         # Hardware/model status probe (Whisper page status card).
         self._hw_gen = 0
         self._hw_busy = False
@@ -1556,16 +1557,22 @@ class SettingsWindow(QDialog):
         if self._app_busy():
             # Same guard as the tests: stopping the app's listener
             # mid-recording would lose a hold-mode release, leaving the
-            # recording running until the max-length cap.
-            self.app.notify("Finish the current recording first, then pick the hotkey.")
+            # recording running until the max-length cap. force: with
+            # notifications off this click must not be a silent no-op.
+            self.app.notify("Finish the current recording first, then pick the hotkey.", force=True)
             return None
         if self._hotkey_test is not None:
             # A running hotkey test would swallow the picker's key presses.
             self._finish_hotkey_test("")
         self.app.hotkeys.stop()
+        # Ownership flag for _set_hotkey_paused: a recording diagnostic that
+        # finishes while the modal picker is open must not re-register the
+        # live listener mid-capture — the finally below restores it instead.
+        self._capturing = True
         try:
             return HotkeyCaptureDialog.ask(self)
         finally:
+            self._capturing = False
             if not self._hotkey_paused:
                 # Still paused = a recording diagnostic owns the listener and
                 # re-registers it when it ends (same rule as the hotkey test) —
@@ -1663,6 +1670,11 @@ class SettingsWindow(QDialog):
         if self._hotkey_test is not None:
             # The hotkey test already borrowed the listener and re-registers it
             # itself when it ends — handing out a second one would double it.
+            return
+        if self._capturing:
+            # Same rule for the modal key picker: it stopped the listener and
+            # restores it when it closes — re-registering here would let the
+            # candidate combos the user is pressing start real recordings.
             return
         try:
             if paused:

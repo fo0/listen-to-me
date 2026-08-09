@@ -191,6 +191,11 @@ class OpenVinoTranscriber:
             self._ensure_loaded_locked(notify)
 
     def _ensure_loaded_locked(self, notify=None) -> None:
+        if self._cpu_fallback_for is not None and not self._forced_cpu:
+            # The config moved away from the setup that failed: drop the
+            # marker so a later RETURN to that device/precision retries it
+            # instead of silently re-forcing the CPU.
+            self._cpu_fallback_for = None
         key = self._current_key()
         if self._pipe is not None and key == self._key:
             return

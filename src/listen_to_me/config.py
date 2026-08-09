@@ -9,6 +9,7 @@ import math
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from .choices import default_mute_targets
@@ -262,8 +263,8 @@ def _coerce(key: str, default, value):
     elif isinstance(value, type(default)):
         return value
     log.warning(
-        "config key %r is %s, expected %s — keeping the default %r",
-        key, type(value).__name__, type(default).__name__, default,
+        "config key %r holds unusable %s value %.60r, expected %s — keeping the default %r",
+        key, type(value).__name__, value, type(default).__name__, default,
     )
     return default
 
@@ -358,9 +359,33 @@ def atomic_write_json(path: Path, data) -> None:
         raise
 
 
+def sweep_stale_tmp(directory: Path, max_age_s: float = 3600.0) -> None:
+    """Best-effort removal of orphaned atomic-write temp files.
+
+    mkstemp gives every writer a unique name, so a hard kill between write
+    and replace leaves ``<file>.<random>.tmp`` behind forever (the old fixed
+    temp name at least overwrote itself). Age-gated so a concurrent writer's
+    in-flight temp file is never touched.
+    """
+    cutoff = time.time() - max_age_s
+    try:
+        for tmp in Path(directory).glob("*.tmp"):
+            try:
+                if tmp.stat().st_mtime < cutoff:
+                    tmp.unlink()
+                    log.info("removed stale temp file %s", tmp)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 class Config:
     def __init__(self, path: Path | None = None):
         self.path = path if path is not None else config_dir() / "config.json"
+        # The config dir collects our own atomic-write leftovers (config and
+        # history share it); sweep them once per process start.
+        sweep_stale_tmp(self.path.parent)
         # Captured before load(), which writes the defaults when the file is
         # missing. True only on the very first launch — drives the one-time
         # onboarding wizard.
@@ -397,7 +422,8 @@ class Config:
         A config whose *read* failed is preserved, not overwritten: the
         in-memory data is only the defaults, so saving would turn a transient
         read failure into permanent loss of every setting. The unreadable
-        file is moved aside once (config.json.bad) so later saves work and
+        file is moved aside once (config.json.bad, replacing any older .bad —
+        the newest casualty is the one worth keeping) so later saves work and
         the original stays recoverable; if even that fails, the save is
         refused.
         """

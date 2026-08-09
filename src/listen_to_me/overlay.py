@@ -197,10 +197,16 @@ class Overlay:
         try:
             x = None if ocfg.get("x") is None else int(ocfg.get("x"))
             y = None if ocfg.get("y") is None else int(ocfg.get("y"))
-        except (TypeError, ValueError):
+            for v in (x, y):
+                # Qt geometry is C-int: a huge hand-edited value would raise
+                # OverflowError from contains()/move() below, outside this try.
+                if v is not None and abs(v) >= 2**31:
+                    raise ValueError("coordinate out of C-int range")
+        except (TypeError, ValueError, OverflowError):
             # overlay.x/y default to None, so _coerce passes hand-edited
-            # values through unvalidated — a broken pair must cost the saved
-            # position, never the whole floating icon.
+            # values through unvalidated (Infinity raises OverflowError in
+            # int()) — a broken pair must cost the saved position, never the
+            # whole floating icon.
             log.warning(
                 "ignoring an unusable saved overlay position %r/%r",
                 ocfg.get("x"), ocfg.get("y"),
@@ -209,10 +215,12 @@ class Overlay:
         if x is not None and y is not None:
             # Keep a position that lies on ANY screen: clamping against the
             # primary would drag an icon parked on a secondary monitor back
-            # onto the primary's edge on every launch.
+            # onto the primary's edge on every launch. Full geometry(), same
+            # criterion as the watchdog's _on_any_screen — the drag path lets
+            # the always-on-top icon park over a taskbar on purpose.
             cx, cy = x + _ICON_SIZE // 2, y + _ICON_SIZE // 2
             for screen in QGuiApplication.screens():
-                if screen.availableGeometry().contains(cx, cy):
+                if screen.geometry().contains(cx, cy):
                     self.win.move(x, y)
                     return
         else:

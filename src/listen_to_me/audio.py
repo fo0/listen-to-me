@@ -102,11 +102,15 @@ class Recorder:
                 cb()  # CallbackStop: the max recording length was reached
                 return
             ended = self._on_ended
-            if self._stream is not None and ended is not None:
-                # Not stop() (that nulls _stream first) and not the length
-                # cap: the stream died on its own. Without this signal the
-                # app would keep showing RECORDING while nothing is captured
-                # — silent loss of everything spoken from here on.
+            if ended is not None:
+                # Not stop() (that nulls the callback before stopping) and
+                # not the length cap: the stream died on its own. Without
+                # this signal the app would keep showing RECORDING while
+                # nothing is captured — silent loss of everything spoken
+                # from here on. Deliberately NOT gated on self._stream: a
+                # death during start() can fire before the stream is
+                # published, and the app-side RECORDING guard drops any
+                # ordering that no longer applies.
                 ended()
 
         # Published to self._stream only once it actually runs: a stream that

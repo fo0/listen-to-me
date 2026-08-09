@@ -214,23 +214,49 @@ class Injector:
             keyboard.press("v")
             keyboard.release("v")
 
+        time.sleep(0.3)  # let the target application read the clipboard first
         if previous:
-            time.sleep(0.3)  # let the target application read the clipboard first
             try:
-                # Restore only while the clipboard still holds our transcript:
-                # another application that grabbed it meanwhile owns it now,
-                # and overwriting its content would clobber a copy the user
-                # just made.
-                if _clip_text_equal(pyperclip.paste(), text):
-                    pyperclip.copy(previous)
+                still_ours = _clip_text_equal(pyperclip.paste(), text)
+            except Exception:
+                log.debug("clipboard read-back failed", exc_info=True)
+                return False
+            if not still_ours:
+                # Another application grabbed the clipboard meanwhile — it
+                # owns it now; restoring would clobber a copy the user made.
+                return False
+            try:
+                # Restore only while the clipboard still holds our transcript.
+                pyperclip.copy(previous)
                 return False
             except Exception:
+                # The read-back above proved the transcript IS still there —
+                # a failed restore must not hide that recovery from the user.
                 log.debug("could not restore clipboard", exc_info=True)
+                return True
+        if previous == "" and self.clipboard_mode() == "off":
+            # Restore was configured but the old content was non-text
+            # (pyperclip reads images/files as ""), so there is nothing to put
+            # back — yet "off" is the explicit promise that dictated text
+            # never lingers on the clipboard, so scrub it like the restore
+            # would have. Only while the clipboard is still ours, same as the
+            # restore branch above.
+            try:
+                still_ours = _clip_text_equal(pyperclip.paste(), text)
+            except Exception:
+                log.debug("clipboard read-back failed", exc_info=True)
                 return False
-        # No restore: `keep` was requested, restoring is disabled, or the old
-        # content was non-text (pyperclip reads images/files as "" — "restoring"
-        # that would wipe the transcript, the one recovery this path leaves).
-        # Read the write back before the caller promises a working Ctrl+V.
+            if not still_ours:
+                return False
+            try:
+                pyperclip.copy("")
+            except Exception:
+                log.debug("could not clear the clipboard", exc_info=True)
+                return True  # scrub failed — the transcript is still there
+            return False
+        # No restore (keep requested, restoring disabled, or empty previous in
+        # a keep-friendly mode): read the write back before the caller
+        # promises a working Ctrl+V.
         try:
             return _clip_text_equal(pyperclip.paste(), text)
         except Exception:

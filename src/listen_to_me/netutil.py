@@ -27,6 +27,10 @@ import logging
 log = logging.getLogger(__name__)
 
 _insecure = False
+# Whether the huggingface_hub client factory currently matches _insecure. A
+# failed reconfiguration leaves it False so the next apply_insecure_ssl call
+# (every settings save) retries instead of no-opping until restart.
+_hub_synced = True
 
 
 def verify() -> bool:
@@ -50,12 +54,13 @@ def apply_insecure_ssl(enabled: bool) -> None:
     InsecureRequestWarning is silenced while enabled — the switch itself is
     logged once instead.
     """
-    global _insecure
+    global _insecure, _hub_synced
     enabled = bool(enabled)
-    if enabled == _insecure:
+    if enabled == _insecure and _hub_synced:
         return
+    changed = enabled != _insecure
     _insecure = enabled
-    if enabled:
+    if enabled and changed:
         log.warning(
             "insecure_ssl enabled — TLS certificates are NOT verified "
             "(model downloads, assistant; the updater keeps verifying)"
@@ -73,7 +78,11 @@ def apply_insecure_ssl(enabled: bool) -> None:
         # requests call sites still honour the switch; nothing to reconfigure.
         # In the app it is always present (a faster-whisper dependency).
         log.debug("huggingface_hub not available — skipping its SSL reconfiguration")
+        _hub_synced = True
     except Exception:
+        # Marked out of sync so every later call retries — an unlucky first
+        # attempt must not pin the wrong client factory until restart.
+        _hub_synced = False
         if enabled:
             # Model downloads keep verifying certificates; the requests call
             # sites still honour the switch.
@@ -81,14 +90,16 @@ def apply_insecure_ssl(enabled: bool) -> None:
         else:
             # The insecure client factory installed earlier stays active: hub
             # model downloads may keep SKIPPING verification although the user
-            # just turned it back on — only a restart clears that for sure.
+            # just turned it back on. Retried on the next settings save.
             # (The assistant's requests calls verify again either way.)
             log.exception(
                 "insecure_ssl disabled, but huggingface_hub could not be "
                 "reconfigured — model downloads may keep skipping TLS "
-                "verification until the app is restarted"
+                "verification; retrying on the next settings save"
             )
         return
+    else:
+        _hub_synced = True
     if not enabled:
         # Logged only after the hub reconfiguration succeeded — before that
         # the line would assert a restoration that hasn't happened yet.
