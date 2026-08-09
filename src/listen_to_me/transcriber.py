@@ -214,14 +214,17 @@ class Transcriber:
         return True
 
     def _decode_segments(self, audio, *, beam_size: int, condition_on_previous_text: bool = True):
-        """Run the model on `audio` and return ([(end_seconds, text), …], info).
-        Caller holds _use_lock."""
+        """Run the model on `audio` and return ([(end_seconds, text), …], info),
+        or None when no model is loaded. Caller holds _use_lock."""
         # Snapshot the model: a concurrent CPU fallback (which holds only _lock,
         # not _use_lock) may null self._model between preview()'s loaded-check and
-        # here. Bind it once so we never dereference None mid-decode.
+        # here. Bind it once so we never dereference None mid-decode. Returning
+        # None instead of raising keeps that transient race a skipped preview
+        # tick — transcribe() turns it into an error, its only correct meaning
+        # there.
         model = self._model
         if model is None:
-            raise RuntimeError("Whisper model is not loaded")
+            return None
         language = self.cfg["language"]
         segments, info = model.transcribe(
             audio,
@@ -234,10 +237,14 @@ class Transcriber:
         return [(float(s.end), s.text.strip()) for s in segments], info
 
     def _decode(self, audio, *, beam_size: int, condition_on_previous_text: bool = True):
-        """Run the model on `audio` and return (text, info). Caller holds _use_lock."""
-        segments, info = self._decode_segments(
+        """Run the model on `audio` and return (text, info), or None when no
+        model is loaded. Caller holds _use_lock."""
+        decoded = self._decode_segments(
             audio, beam_size=beam_size, condition_on_previous_text=condition_on_previous_text
         )
+        if decoded is None:
+            return None
+        segments, info = decoded
         text = " ".join(part for _end, part in segments if part).strip()
         return text, info
 
@@ -248,7 +255,10 @@ class Transcriber:
         beam_size = max(1, int(self.cfg["beam_size"] or 5))
         try:
             with self._use_lock:
-                text, info = self._decode(audio, beam_size=beam_size)
+                decoded = self._decode(audio, beam_size=beam_size)
+            if decoded is None:
+                raise RuntimeError("Whisper model is not loaded")
+            text, info = decoded
         except Exception as exc:
             # The CUDA libraries are often only touched at inference time, so the
             # cuBLAS/cuDNN failure can surface here rather than at load. Fall back
@@ -256,7 +266,10 @@ class Transcriber:
             if not self._recover_on_cpu(exc, notify):
                 raise
             with self._use_lock:
-                text, info = self._decode(audio, beam_size=beam_size)
+                decoded = self._decode(audio, beam_size=beam_size)
+            if decoded is None:
+                raise RuntimeError("Whisper model is not loaded")
+            text, info = decoded
         log.info(
             "transcribed %.1fs -> %d chars (language=%s)",
             len(audio) / SAMPLE_RATE,
@@ -289,7 +302,10 @@ class Transcriber:
             return None
         try:
             audio = audio[-_PREVIEW_WINDOW_SECONDS * SAMPLE_RATE :]
-            text, _info = self._decode(audio, beam_size=1, condition_on_previous_text=False)
+            decoded = self._decode(audio, beam_size=1, condition_on_previous_text=False)
+            if decoded is None:
+                return None  # concurrent CPU fallback mid-reload — skip this tick
+            text, _info = decoded
             return text
         finally:
             self._use_lock.release()
@@ -307,9 +323,12 @@ class Transcriber:
         if not self._use_lock.acquire(blocking=False):
             return None
         try:
-            segments, _info = self._decode_segments(
+            decoded = self._decode_segments(
                 audio, beam_size=1, condition_on_previous_text=False
             )
+            if decoded is None:
+                return None  # concurrent CPU fallback mid-reload — skip this tick
+            segments, _info = decoded
             return [(end, text) for end, text in segments if text]
         finally:
             self._use_lock.release()

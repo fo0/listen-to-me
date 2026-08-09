@@ -1011,7 +1011,10 @@ class SettingsWindow(QDialog):
         dir_row = QWidget()
         dh = QHBoxLayout(dir_row)
         dh.setContentsMargins(0, 0, 0, 0)
-        self.model_dir_edit = QLineEdit(self.cfg["model_dir"] or "")
+        # str(): model_dir defaults to None, so _coerce passes any hand-edited
+        # value through unlaundered — a non-string here would fail the whole
+        # window construction, and Settings would silently never open again.
+        self.model_dir_edit = QLineEdit(str(self.cfg["model_dir"] or ""))
         # Empty is the deliberate default (= the Hugging Face cache). Show the
         # resolved cache path as a greyed-out placeholder so the empty field
         # reads as "using this" instead of looking unset — without persisting
@@ -1550,6 +1553,12 @@ class SettingsWindow(QDialog):
         """Open the key picker with the live global hotkey paused, otherwise
         pressing keys to pick a combo would trigger a real recording behind the
         dialog. Nothing is applied until Save, so the old hotkey is restored."""
+        if self._app_busy():
+            # Same guard as the tests: stopping the app's listener
+            # mid-recording would lose a hold-mode release, leaving the
+            # recording running until the max-length cap.
+            self.app.notify("Finish the current recording first, then pick the hotkey.")
+            return None
         if self._hotkey_test is not None:
             # A running hotkey test would swallow the picker's key presses.
             self._finish_hotkey_test("")
@@ -1557,7 +1566,11 @@ class SettingsWindow(QDialog):
         try:
             return HotkeyCaptureDialog.ask(self)
         finally:
-            self.app._register_hotkey()
+            if not self._hotkey_paused:
+                # Still paused = a recording diagnostic owns the listener and
+                # re-registers it when it ends (same rule as the hotkey test) —
+                # reviving the hotkey here would take the mic away from it.
+                self.app._register_hotkey()
 
     def _pick_hotkey(self) -> None:
         combo = self._capture_hotkey()
@@ -1574,11 +1587,24 @@ class SettingsWindow(QDialog):
         from pathlib import Path
 
         path = Path(self.model_dir_edit.text().strip() or default_model_dir())
-        path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            # A hand-typed path can be invalid (no such drive) or unwritable —
+            # a slot that raises leaves a button that looks alive and does
+            # nothing.
+            log.exception("could not create the model folder %s", path)
+            self.app.notify(f"Could not open the model folder: {exc}", force=True)
+            return
         open_path(path)
 
     def _load_devices(self) -> None:
-        values, current = input_device_choices(self.cfg["input_device"])
+        # Refresh keeps an unsaved on-screen choice: repopulating from the
+        # saved config would silently revert the device the user just picked.
+        stored = self.cfg["input_device"]
+        if self.input_combo.count():
+            stored = self._selected_input_device()
+        values, current = input_device_choices(stored)
         self.input_combo.clear()
         self.input_combo.addItems(values)
         self.input_combo.setCurrentText(current)
@@ -1670,11 +1696,16 @@ class SettingsWindow(QDialog):
     @staticmethod
     def _note_diag_wait(label: QLabel, waiting: bool, idle_text: str) -> None:
         """Show/clear the "another test is running" note without clobbering a
-        result message: only the note itself is ever replaced."""
+        result message: the text the note replaced is stashed on the label and
+        put back when the note clears, so a mic result survives a model
+        download on the other page."""
         if waiting:
-            label.setText(_DIAG_BUSY_NOTE)
+            if label.text() != _DIAG_BUSY_NOTE:
+                label.setProperty("_pre_note_text", label.text())
+                label.setText(_DIAG_BUSY_NOTE)
         elif label.text() == _DIAG_BUSY_NOTE:
-            label.setText(idle_text)
+            stashed = label.property("_pre_note_text")
+            label.setText(stashed if isinstance(stashed, str) and stashed else idle_text)
 
     def _begin_diag(self, kind: str) -> tuple[int, threading.Event]:
         """Mark a diagnostic as started; returns its (generation, cancel event).
@@ -2820,7 +2851,17 @@ class SettingsWindow(QDialog):
         cfg["overlay"].update(values["overlay"])
         cfg["assistant"].update(values["assistant"])
         cfg.setdefault("integrations", {}).update(values["integrations"])
-        self.cfg.save()
+        if not self.cfg.save():
+            # Disk full / read-only config dir: the values still apply to this
+            # session (they are in cfg.data), but silence here would let the
+            # user believe they survive a restart.
+            QMessageBox.warning(
+                self,
+                APP_NAME,
+                "The settings could not be written to disk — they apply to "
+                "this session but will be lost on quit. See the log file for "
+                "the reason.",
+            )
         self.app.apply_settings()
         self._saved_snapshot = self._collect()
         self._refresh_autostart_status()  # apply_settings just (re)wrote the entry

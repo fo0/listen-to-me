@@ -5,6 +5,11 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
 
 log = logging.getLogger(__name__)
 
@@ -19,7 +24,7 @@ _BAND_SPLIT_HZ = (300.0, 2000.0)
 _LEVEL_REF_RMS = 0.12
 
 
-def band_levels(samples, sample_rate: int = SAMPLE_RATE) -> tuple[float, float, float]:
+def band_levels(samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> tuple[float, float, float]:
     """Low/mid/high band levels (each 0.0-1.0) of a short mono sample block.
 
     Drives the overlay's animated microphone widget from the audio the
@@ -48,14 +53,25 @@ class Recorder:
         self._chunks: list = []
         self._frames = 0
         self._max_frames = 0
-        self._on_limit = None
+        self._on_limit: Callable[[], None] | None = None
+        self._on_ended: Callable[[], None] | None = None
         self._lock = threading.Lock()
 
     @property
     def active(self) -> bool:
         return self._stream is not None
 
-    def start(self, device=None, max_seconds: int = 300, on_limit=None) -> None:
+    def start(
+        self,
+        device: int | str | None = None,
+        max_seconds: int = 300,
+        on_limit: Callable[[], None] | None = None,
+        on_ended: Callable[[], None] | None = None,
+    ) -> None:
+        """Open the input stream. `on_limit` fires when max_seconds is reached;
+        `on_ended` fires when the stream dies on its own (device unplugged,
+        PortAudio abort) — never for stop() or the max-length case. Both are
+        invoked on PortAudio's callback thread."""
         import sounddevice as sd
 
         if self._stream is not None:
@@ -65,6 +81,7 @@ class Recorder:
         self._frames = 0
         self._max_frames = max(1, int(max_seconds)) * SAMPLE_RATE
         self._on_limit = on_limit
+        self._on_ended = on_ended
 
         def callback(indata, frames, time_info, status):
             if status:
@@ -76,9 +93,21 @@ class Recorder:
                     raise sd.CallbackStop
 
         def finished():
-            # Fires when CallbackStop ended the stream (max length reached).
-            if self._frames >= self._max_frames and self._on_limit is not None:
-                self._on_limit()
+            # Fires whenever the stream ends. Snapshot the callbacks:
+            # Recorder.stop() nulls the attributes from the main thread, and
+            # re-reading one between check and call would raise inside the
+            # PortAudio callback thread.
+            cb = self._on_limit
+            if self._frames >= self._max_frames and cb is not None:
+                cb()  # CallbackStop: the max recording length was reached
+                return
+            ended = self._on_ended
+            if self._stream is not None and ended is not None:
+                # Not stop() (that nulls _stream first) and not the length
+                # cap: the stream died on its own. Without this signal the
+                # app would keep showing RECORDING while nothing is captured
+                # — silent loss of everything spoken from here on.
+                ended()
 
         # Published to self._stream only once it actually runs: a stream that
         # opens but fails to start (device pulled between open and start) would
@@ -96,6 +125,7 @@ class Recorder:
             stream.start()
         except Exception:
             self._on_limit = None
+            self._on_ended = None
             try:
                 stream.close()
             except Exception:
@@ -104,7 +134,9 @@ class Recorder:
         self._stream = stream
         log.info("recording started (device=%s, max=%ss)", device, max_seconds)
 
-    def snapshot(self, max_frames: int | None = None, start_frame: int | None = None):
+    def snapshot(
+        self, max_frames: int | None = None, start_frame: int | None = None
+    ) -> np.ndarray:
         """Return the audio captured so far without stopping the recording.
 
         ``max_frames`` returns only the most recent ``max_frames`` samples;
@@ -146,16 +178,22 @@ class Recorder:
             audio = audio[-want:]
         return audio
 
-    def stop(self):
+    def stop(self) -> np.ndarray:
         """Stop recording and return the audio as a 1-D float32 numpy array."""
         import numpy as np
 
         stream, self._stream = self._stream, None
         self._on_limit = None
+        self._on_ended = None
         if stream is not None:
             try:
-                stream.stop()
-                stream.close()
+                try:
+                    stream.stop()
+                finally:
+                    # A failed stop() must still close: the stream object and
+                    # its device session would otherwise leak for the process
+                    # lifetime.
+                    stream.close()
             except Exception:
                 log.exception("error closing audio stream")
         with self._lock:

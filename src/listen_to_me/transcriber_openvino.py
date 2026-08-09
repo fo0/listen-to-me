@@ -204,7 +204,9 @@ class OpenVinoTranscriber:
         cached = _model_is_cached(repo, model_dir)
         # Only custom ids can carry the wrong format — the mapped presets are
         # known OpenVINO repos — and only the first (downloading) load pays for
-        # the check; a cached model is already known to have loaded once.
+        # the remote listing; "cached" only proves the files were downloaded
+        # (not that they ever loaded), so the pipeline failure path below
+        # re-checks the local copy before reporting a cryptic load error.
         custom = "/" in model_name or os.sep in model_name
         if custom and not cached and _looks_like_openvino_model(repo) is False:
             raise ValueError(
@@ -238,6 +240,19 @@ class OpenVinoTranscriber:
         try:
             self._pipe = openvino_genai.WhisperPipeline(path, device)
         except Exception as exc:
+            if custom and _looks_like_openvino_model(path) is False:
+                # A wrong-format custom model that slipped past the download
+                # check (hub unreachable then, cached now): name the actual
+                # problem instead of a cryptic load error — and don't let
+                # _maybe_force_cpu blame the device for it.
+                raise ValueError(
+                    f"'{repo}' is not an OpenVINO model — it has no "
+                    "openvino_*.xml files (a CTranslate2 or Transformers "
+                    "model cannot be loaded by this backend). Pick an "
+                    "OpenVINO IR repo such as OpenVINO/whisper-small-int8-ov, "
+                    "or switch Backend to faster-whisper in Settings → "
+                    "Whisper."
+                ) from exc
             if self._maybe_force_cpu(device, exc, notify):
                 self._ensure_loaded_locked(None)  # retry on the CPU, no re-notify
                 return
@@ -281,11 +296,13 @@ class OpenVinoTranscriber:
 
     # ----------------------------------------------------------- decoding
 
-    def _decode(self, audio) -> str:
-        """Run the pipeline on `audio` and return the text. Caller holds _use_lock."""
+    def _decode(self, audio) -> str | None:
+        """Run the pipeline on `audio` and return the text, or None when no
+        pipeline is loaded (a concurrent CPU fallback nulled it mid-reload).
+        Caller holds _use_lock."""
         pipe = self._pipe
         if pipe is None:
-            raise RuntimeError("Whisper model is not loaded")
+            return None
         config = pipe.get_generation_config()
         language = self.cfg["language"]
         if language not in ("", "auto"):
@@ -306,11 +323,15 @@ class OpenVinoTranscriber:
         try:
             with self._use_lock:
                 text = self._decode(audio)
+            if text is None:
+                raise RuntimeError("Whisper model is not loaded")
         except Exception as exc:
             if not self._recover_on_cpu(exc, notify):
                 raise
             with self._use_lock:
                 text = self._decode(audio)
+            if text is None:
+                raise RuntimeError("Whisper model is not loaded")
         log.info("transcribed %.1fs -> %d chars (openvino)", len(audio) / SAMPLE_RATE, len(text))
         return text
 
@@ -338,6 +359,6 @@ class OpenVinoTranscriber:
             return None
         try:
             audio = audio[-_PREVIEW_WINDOW_SECONDS * SAMPLE_RATE :]
-            return self._decode(audio)
+            return self._decode(audio)  # None (fallback mid-reload) = skipped tick
         finally:
             self._use_lock.release()

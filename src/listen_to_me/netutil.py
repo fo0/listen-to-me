@@ -66,8 +66,6 @@ def apply_insecure_ssl(enabled: bool) -> None:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         except Exception:
             log.debug("could not silence urllib3 InsecureRequestWarning", exc_info=True)
-    else:
-        log.info("insecure_ssl disabled — TLS certificate verification restored")
     try:
         _configure_huggingface(enabled)
     except ImportError:
@@ -76,9 +74,25 @@ def apply_insecure_ssl(enabled: bool) -> None:
         # In the app it is always present (a faster-whisper dependency).
         log.debug("huggingface_hub not available — skipping its SSL reconfiguration")
     except Exception:
-        # Unexpected (e.g. an API change): model downloads keep verifying
-        # certificates; the requests call sites still honour the switch.
-        log.exception("could not reconfigure huggingface_hub SSL verification")
+        if enabled:
+            # Model downloads keep verifying certificates; the requests call
+            # sites still honour the switch.
+            log.exception("could not reconfigure huggingface_hub SSL verification")
+        else:
+            # The insecure client factory installed earlier stays active: hub
+            # model downloads may keep SKIPPING verification although the user
+            # just turned it back on — only a restart clears that for sure.
+            # (The assistant's requests calls verify again either way.)
+            log.exception(
+                "insecure_ssl disabled, but huggingface_hub could not be "
+                "reconfigured — model downloads may keep skipping TLS "
+                "verification until the app is restarted"
+            )
+        return
+    if not enabled:
+        # Logged only after the hub reconfiguration succeeded — before that
+        # the line would assert a restoration that hasn't happened yet.
+        log.info("insecure_ssl disabled — TLS certificate verification restored")
 
 
 def _configure_huggingface(enabled: bool) -> None:

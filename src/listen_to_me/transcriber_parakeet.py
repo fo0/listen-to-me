@@ -12,10 +12,11 @@ Requires the optional ``onnx-asr`` package (``pip install "onnx-asr[cpu,hub]"``,
 or the ``[parakeet]`` extra); imported lazily so the app runs without it as
 long as the backend isn't selected. Mirrors the public surface of
 :class:`listen_to_me.transcriber.Transcriber` (``ensure_loaded`` /
-``transcribe`` / ``preview`` / ``loaded``). GPU degradation is simpler than
-the other backends: the ONNX Runtime provider list always ends with the CPU
-provider, so a missing/broken CUDA setup falls back per session load rather
-than needing an error-string contract.
+``transcribe`` / ``preview`` / ``loaded``) and its session CPU fallback: a
+GPU provider can fail at session creation *or* only at the first ``Run()``
+(broken cuDNN, device lost), and like the OpenVINO backend there is no
+stable error-string contract to distinguish causes — so any failure while a
+GPU provider is active forces the CPU for the session and retries once.
 """
 
 from __future__ import annotations
@@ -102,8 +103,17 @@ class ParakeetTranscriber:
         self.cfg = cfg
         self._model = None
         self._key = None
+        self._providers: list[str] | None = None  # providers of the loaded session
         self._lock = threading.Lock()  # protects model loading
         self._use_lock = threading.Lock()  # serializes transcription runs
+        # Like the other backends: a GPU failure forces the CPU for the rest
+        # of the session, but only while the config still asks for the same
+        # device — changing it in Settings retries the GPU.
+        self._cpu_fallback_for: str | None = None
+
+    @property
+    def _forced_cpu(self) -> bool:
+        return self._cpu_fallback_for == self.cfg["device"]
 
     def _current_key(self):
         return (
@@ -150,7 +160,20 @@ class ParakeetTranscriber:
                     "one-time setup, this can take a few minutes."
                 )
         path = os.path.join(str(model_dir), _MODEL_DIRNAME) if model_dir else None
-        providers = _resolve_providers(device)
+        providers = ["CPUExecutionProvider"] if self._forced_cpu else _resolve_providers(device)
+        if device == "cuda" and not self._forced_cpu and "CUDAExecutionProvider" not in providers:
+            # The default [parakeet] extra installs the CPU-only onnxruntime
+            # wheel — an explicit CUDA choice silently running on the CPU
+            # forever is exactly the failure mode this app must not have.
+            log.warning("CUDA requested, but this onnxruntime build offers no CUDA provider")
+            if notify is not None:
+                notify(
+                    "Device = CUDA is set, but the installed onnxruntime has "
+                    "no CUDA support — Parakeet runs on the CPU. Install "
+                    "onnxruntime-gpu, or set Device = CPU in Settings → "
+                    "Whisper.",
+                    True,  # force: important even when notifications are off
+                )
         try:
             model = onnx_asr.load_model(
                 MODEL_NAME,
@@ -188,14 +211,16 @@ class ParakeetTranscriber:
                     "libraries, or set Device = CPU in Settings → Whisper.",
                     True,  # force: important even when notifications are off
                 )
+            providers = ["CPUExecutionProvider"]
             model = onnx_asr.load_model(
                 MODEL_NAME,
                 path,
                 quantization=quantization,
-                providers=["CPUExecutionProvider"],
+                providers=providers,
             )
         self._model = model
         self._key = key
+        self._providers = providers
         log.info(
             "parakeet model %s: %s / %s / providers=%s (dir=%s)",
             "loaded from cache" if cached else "downloaded",
@@ -209,13 +234,51 @@ class ParakeetTranscriber:
 
     def transcribe(self, audio, notify=None) -> str:
         self.ensure_loaded(notify=notify)
+        try:
+            text = self._recognize(audio)
+        except Exception as exc:
+            # ONNX Runtime surfaces GPU failures (broken cuDNN, device lost)
+            # at Run(), not only at session creation — reload on the CPU and
+            # retry once, mirroring the other backends.
+            if not self._recover_on_cpu(exc, notify):
+                raise
+            text = self._recognize(audio)
+        log.info("transcribed %.1fs -> %d chars (parakeet)", len(audio) / SAMPLE_RATE, len(text))
+        return text
+
+    def _recognize(self, audio) -> str:
         with self._use_lock:
             model = self._model
             if model is None:
                 raise RuntimeError("Parakeet model is not loaded")
-            text = str(model.recognize(audio, sample_rate=SAMPLE_RATE)).strip()
-        log.info("transcribed %.1fs -> %d chars (parakeet)", len(audio) / SAMPLE_RATE, len(text))
-        return text
+            return str(model.recognize(audio, sample_rate=SAMPLE_RATE)).strip()
+
+    def _recover_on_cpu(self, exc: Exception, notify) -> bool:
+        """After an inference failure while a GPU provider was active, force
+        the CPU for this session and reload. Returns True when the caller
+        should retry, False (already CPU-only) when it should re-raise."""
+        with self._lock:
+            if self._forced_cpu or not self._providers or self._providers == [
+                "CPUExecutionProvider"
+            ]:
+                return False
+            log.warning(
+                "Parakeet inference failed on %s (%s) — using the CPU this session",
+                self._providers[0],
+                exc,
+            )
+            self._cpu_fallback_for = self.cfg["device"]
+            self._model = None
+            self._key = None
+            if notify is not None:
+                notify(
+                    "GPU acceleration unavailable for Parakeet — switched to "
+                    "CPU for this session. Check the NVIDIA driver/CUDA "
+                    "libraries, or set Device = CPU in Settings → Whisper.",
+                    True,  # force: important even when notifications are off
+                )
+            self._ensure_loaded_locked(None)
+        return True
 
     def preview(self, audio) -> str | None:
         """Fast transcription of the tail of an ongoing recording — same

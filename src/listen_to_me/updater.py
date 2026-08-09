@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -224,7 +225,7 @@ def _require_trusted_url(url: str) -> None:
         raise ValueError(f"refusing to download from an untrusted URL: {url!r}")
 
 
-def release_page_url(release) -> str:
+def release_page_url(release: Release) -> str:
     """The release's own page, or the project page when that URL isn't one we
     trust.
 
@@ -248,7 +249,11 @@ class DownloadCancelled(Exception):
 
 
 def download_asset(
-    url: str, dest: Path, progress_cb=None, timeout: float = 30.0, is_cancelled=None
+    url: str,
+    dest: Path,
+    progress_cb: Callable[[int, int], None] | None = None,
+    timeout: float = 30.0,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> Path:
     """Stream a release asset to `dest`. progress_cb(done, total) is called as it
     downloads (total is 0 when the server sends no Content-Length).
@@ -259,6 +264,10 @@ def download_asset(
 
     dest = Path(dest)
     with _verified_get(url, stream=True, timeout=timeout) as resp:
+        # requests follows redirects — including cross-host and https→http
+        # ones — so re-check the URL the transfer actually came from, not just
+        # the one we started at.
+        _require_trusted_url(resp.url)
         resp.raise_for_status()
         total = int(resp.headers.get("Content-Length") or 0)
         done = 0
@@ -357,14 +366,19 @@ def _swap_script(new_exe: Path, target: Path) -> str:
     - chcp 65001: embedded paths are written as UTF-8 and may be non-ASCII
       (e.g. C:\\Users\\Müller\\...); this makes cmd read them correctly.
     - ping (not timeout) for the sleep: timeout aborts without a console handle.
+    - %% escaping: % is legal in Windows paths and cmd expands %…% sequences
+      even inside double quotes — an unescaped path would mangle the move.
     """
+    new_q = str(new_exe).replace("%", "%%")
+    target_q = str(target).replace("%", "%%")
+    parent_q = str(target.parent).replace("%", "%%")
     return (
         "@echo off\r\n"
         "chcp 65001 >NUL\r\n"
         "setlocal\r\n"
         "set /a n=0\r\n"
         ":retry\r\n"
-        f'move /Y "{new_exe}" "{target}" >NUL 2>&1\r\n'
+        f'move /Y "{new_q}" "{target_q}" >NUL 2>&1\r\n'
         "if not errorlevel 1 goto done\r\n"
         "set /a n+=1\r\n"
         "if %n% GEQ 60 goto done\r\n"
@@ -373,7 +387,7 @@ def _swap_script(new_exe: Path, target: Path) -> str:
         ":done\r\n"
         # /D: give the new instance the exe's folder as cwd, same as a manual
         # start from Explorer (the batch itself runs wherever the old app was).
-        f'start "" /D "{target.parent}" "{target}"\r\n'
+        f'start "" /D "{parent_q}" "{target_q}"\r\n'
         'del "%~f0"\r\n'
     )
 

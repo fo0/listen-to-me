@@ -28,9 +28,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from typing import TYPE_CHECKING
 
 from .audio import SAMPLE_RATE
 from .injector import sanitize_typed_text
+
+if TYPE_CHECKING:
+    from .app import App
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +90,7 @@ class LiveTyper:
     `committed_frames` / `committed_text` and the handed-over state.
     """
 
-    def __init__(self, app, recording_id: int, post_preview: bool):
+    def __init__(self, app: App, recording_id: int, post_preview: bool):
         self.app = app
         self.recording_id = recording_id
         # Also feed the overlay's live-preview bubble (when enabled), so the
@@ -183,11 +187,17 @@ class LiveTyper:
                 continue
             # Book the commit BEFORE typing: app._process slices the final
             # audio at committed_frames, so the offset must already cover every
-            # chunk that is about to be handed to the keyboard.
-            self.committed_frames += int(end * SAMPLE_RATE)
-            self.committed_text = _join(self.committed_text, chunk)
-            self._prev = None  # the offset moved — the next pass isn't comparable
-            self.pending = _join(self.pending, chunk)
+            # chunk that is about to be handed to the keyboard. Booked under
+            # the hand-over lock: a hand_over() racing these four lines could
+            # otherwise observe the advanced offset without the chunk's text —
+            # audio excluded from the final decode, words silently dropped.
+            with self._hand_lock:
+                if self._handed_over:
+                    return  # app._process owns the state — book nothing more
+                self.committed_frames += int(end * SAMPLE_RATE)
+                self.committed_text = _join(self.committed_text, chunk)
+                self._prev = None  # the offset moved — the next pass isn't comparable
+                self.pending = _join(self.pending, chunk)
             self._flush_pending()
 
     def _flush_pending(self) -> None:

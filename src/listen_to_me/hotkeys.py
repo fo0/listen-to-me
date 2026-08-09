@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 
 log = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ _RELEASE_DEBOUNCE_S = 0.05
 
 
 class Hotkeys:
-    def __init__(self, on_press, on_release=None):
+    def __init__(self, on_press: Callable[[], None], on_release: Callable[[], None] | None = None):
         self._on_press = on_press
         self._on_release = on_release or (lambda: None)
         self._listener = None
