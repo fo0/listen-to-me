@@ -253,14 +253,14 @@ class App:
         elif kind == "copy_last":
             self._copy_last_transcript()
         elif kind == "auto_stop":
-            if self.state == STATE_RECORDING:
+            if self._owns_take(payload):
                 self.notify("Maximum recording length reached.")
                 self._finish_recording()
         elif kind == "stream_died":
             # The input stream ended on its own (device unplugged, PortAudio
             # abort): finish with what was captured instead of showing a
             # recording that silently stopped listening.
-            if self.state == STATE_RECORDING:
+            if self._owns_take(payload):
                 self.notify("The microphone stream ended unexpectedly.", force=True)
                 self._finish_recording()
         elif kind == "done":
@@ -283,13 +283,25 @@ class App:
 
     # ---------------------------------------------------------- recording
 
+    def _owns_take(self, recording_id) -> bool:
+        """Whether a recorder-originated event still belongs to the running take.
+        `auto_stop`/`stream_died` are posted from PortAudio's callback thread and
+        can sit up to 100 ms in the queue, so one from take A drained after a
+        stop-A/start-B pair would otherwise stop take B with A's message."""
+        if self.state != STATE_RECORDING:
+            return False
+        return recording_id is None or recording_id == self._recording_id
+
     def _start_recording(self) -> None:
+        # Reserved before start(): the callbacks are handed to the recorder
+        # here, and a stream that dies during start() already fires them.
+        take = self._recording_id + 1
         try:
             self.recorder.start(
                 device=self.cfg["input_device"],
                 max_seconds=self.cfg["max_seconds"],
-                on_limit=lambda: self.post("auto_stop"),
-                on_ended=lambda: self.post("stream_died"),
+                on_limit=lambda: self.post("auto_stop", take),
+                on_ended=lambda: self.post("stream_died", take),
             )
         except Exception as exc:
             log.exception("could not start recording")
@@ -299,7 +311,7 @@ class App:
         # sees a changed id and exits, even if this take has no worker. Before
         # the state change: _set_state re-enters RECORDING first, and a stale
         # worker that wakes in between must not mistake it for its own take.
-        self._recording_id += 1
+        self._recording_id = take
         self._recording_started = time.monotonic()
         self._length_warned = False
         self._set_state(STATE_RECORDING)

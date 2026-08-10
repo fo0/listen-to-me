@@ -392,6 +392,38 @@ def _recording_length_warning():
     assert length_warning_message(295.0, "300") is not None
 
 
+def _recorder_events_carry_their_take():
+    """`auto_stop` / `stream_died` may only stop the take they were posted for:
+    both come from PortAudio's callback thread and can wait up to 100 ms in the
+    event queue, so one from take A drained after a stop-A/start-B pair inside a
+    single poll tick used to stop take B with A's message."""
+    from listen_to_me.app import STATE_IDLE, STATE_RECORDING, App
+
+    class _App:
+        # Borrowed unbound: a real App needs a tray, a recorder, a transcriber.
+        _handle, _owns_take = App._handle, App._owns_take
+
+        def __init__(self, state=STATE_RECORDING):
+            self.state, self._recording_id = state, 2
+            self.messages: list[str] = []
+            self.finished = 0
+
+        def notify(self, message, force=False):
+            self.messages.append(message)
+
+        def _finish_recording(self):
+            self.finished += 1
+
+    for kind in ("auto_stop", "stream_died"):
+        running, stale, idle = _App(), _App(), _App(state=STATE_IDLE)
+        running._handle(kind, 2)  # the take that is running
+        assert running.finished == 1 and len(running.messages) == 1
+        stale._handle(kind, 1)  # a take that already ended
+        assert stale.finished == 0 and stale.messages == [], f"{kind} stopped the wrong take"
+        idle._handle(kind, 2)
+        assert idle.finished == 0, f"{kind} outside a recording must stop nothing"
+
+
 def _cli_flags():
     """`--help` documents the flags the app really has, and an unrecognized
     argument is answered instead of ignored.
@@ -2763,6 +2795,7 @@ _LIGHT_CHECKS = [
     ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
+    ("recorder events carry their take", _recorder_events_carry_their_take),
     ("assistant config is checked", _assistant_config_is_checked),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
