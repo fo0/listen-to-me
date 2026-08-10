@@ -1426,6 +1426,14 @@ class SettingsWindow(QDialog):
         refresh.setToolTip("Reload the list — useful if you recorded something while this window was open.")
         refresh.clicked.connect(self._refresh_history)
         bottom.addWidget(refresh)
+        # Exports exactly what the list shows, so the search field doubles as
+        # the filter for the export.
+        self.history_export_button = QPushButton("Export…")
+        self.history_export_button.clicked.connect(self._export_history)
+        # Disabled until the first render says there is something to write —
+        # the page builds before the list is rendered (it is lazy).
+        self._set_history_export([], "")
+        bottom.addWidget(self.history_export_button)
         bottom.addStretch(1)
         # Enabled state is set by _refresh_history, which always runs before this
         # page can be reached (lazy first render): clicking it on an empty
@@ -2512,6 +2520,7 @@ class SettingsWindow(QDialog):
         )
         query = self.history_filter_edit.text().strip()
         if not stored:
+            self._set_history_export([], query)
             self.history_count_label.setText("")
             # "No transcripts yet" promises the list will fill up — which is a
             # lie once history is switched off. Say which of the two empty
@@ -2524,6 +2533,10 @@ class SettingsWindow(QDialog):
             ))
             return
         entries = filter_entries(stored, query)
+        # Every match, not just the rendered ones: the render limit is a
+        # scrolling concern, an export that silently stopped at 300 of 5000
+        # transcripts would be a data-loss trap.
+        self._set_history_export(entries, query)
         self.history_count_label.setText(
             f"{len(entries)} of {len(stored)} match"
             if query
@@ -2532,6 +2545,7 @@ class SettingsWindow(QDialog):
         if not entries:
             # A filtered-to-empty list must not look like an empty history —
             # name the search term and how to get back to the full list.
+            # (The export set was already cleared above with these entries.)
             self._history_layout.insertWidget(0, self._hint(
                 f"No transcript contains “{query}”. Clear the search field above "
                 "to see all of them again."
@@ -2597,6 +2611,89 @@ class SettingsWindow(QDialog):
     def _copy_history(self, text: str, button: QPushButton) -> None:
         # Reports a failed clipboard write on the button — see copy_with_feedback.
         copy_with_feedback(text, button)
+
+    def _set_history_export(self, entries: list[dict], query: str) -> None:
+        """Remember what an export would write and label the button after it.
+
+        Kept in step with the rendered list from one place, so "Export…" can
+        never write a different set of transcripts than the one on screen —
+        including the filtered one, which is what makes the search field
+        useful for exporting a single project's dictations.
+        """
+        self._history_export_entries = list(entries)
+        self.history_export_button.setEnabled(bool(entries))
+        if not entries:
+            self.history_export_button.setToolTip(
+                "Nothing to export — no transcript is listed."
+            )
+        elif query:
+            self.history_export_button.setToolTip(
+                f"Save the {len(entries)} matching transcript"
+                f"{'s' if len(entries) != 1 else ''} to a text file. "
+                "Clear the search field to export all of them."
+            )
+        else:
+            self.history_export_button.setToolTip(
+                f"Save all {len(entries)} transcript"
+                f"{'s' if len(entries) != 1 else ''} to a text file, newest first."
+            )
+
+    def _export_history(self) -> None:
+        """Write the listed transcripts to a text file the user picks.
+
+        The history is the only copy of what was dictated, and until now it
+        could only leave the app one transcript at a time through the Copy
+        button. Failures are reported: an unwritable path (a full disk, a
+        read-only stick, a folder that vanished) must not look like a
+        successful save of everything the user has ever dictated.
+        """
+        entries = list(self._history_export_entries)
+        if not entries:
+            return
+        from .history import format_entries
+
+        suggested = time.strftime("listen-to-me-transcripts-%Y-%m-%d.txt")
+        path, _filter = QFileDialog.getSaveFileName(
+            self, "Export transcripts", suggested, "Text files (*.txt);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(format_entries(entries))
+        except Exception as exc:
+            log.exception("could not export the transcript history to %s", path)
+            QMessageBox.warning(
+                self, APP_NAME, f"Could not write the file:\n{path}\n\n{exc}"
+            )
+            return
+        log.info("exported %d transcripts to %s", len(entries), path)
+        self._flash_button(self.history_export_button, "Exported ✓", "Export…")
+
+    def _flash_button(self, button: QPushButton, message: str, label: str) -> None:
+        """Show `message` on `button` briefly, then put `label` back.
+
+        The confirmation belongs where the user is looking. A modal box would
+        have to be dismissed for an action whose result is already a file on
+        disk. The width is pinned first so the button (and the row beside it)
+        does not reflow twice — same reasoning as qtutil.copy_with_feedback.
+        """
+        widest = 0
+        for candidate in (label, message):
+            button.setText(candidate)
+            widest = max(widest, button.sizeHint().width())
+        button.setMinimumWidth(widest)
+        button.setText(message)
+
+        def restore():
+            # The window may be gone by now — a deleted C++ object raises
+            # RuntimeError through the Python wrapper.
+            try:
+                button.setText(label)
+            except RuntimeError:
+                pass
+
+        QTimer.singleShot(1500, restore)
 
     def _delete_history_entry(self, entry: dict) -> None:
         """Delete the one transcript this row shows.

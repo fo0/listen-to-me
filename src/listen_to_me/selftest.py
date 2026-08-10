@@ -246,6 +246,33 @@ def _history_latest_transcript():
         assert store.latest() == ""
 
 
+def _history_export_format():
+    """What Settings → History → "Export…" writes: one block per transcript,
+    the local timestamp above the text, blocks separated by a blank line. A
+    corrupt timestamp costs the stamp of that one line, never the export."""
+    from listen_to_me.history import entry_timestamp, format_entries
+
+    stamp = entry_timestamp({"time": 1_000_000_000.0})
+    assert len(stamp) == 16 and stamp[4] == "-" and stamp[10] == " "  # YYYY-MM-DD HH:MM
+    for broken in ({"time": "not a number"}, {"time": 10**30}, {"time": None}, {}):
+        assert entry_timestamp(broken) == ""
+
+    text = format_entries(
+        [
+            {"time": 1_000_000_000.0, "text": "second entry\nwith a line break"},
+            {"time": "broken", "text": "no stamp"},
+            {"time": 999_999_000.0, "text": ""},  # nothing to write
+            {"time": 999_999_000.0, "text": "first entry"},
+        ]
+    )
+    blocks = text.rstrip("\n").split("\n\n")
+    assert len(blocks) == 3  # the empty transcript is not a block
+    assert blocks[0] == f"{stamp}\nsecond entry\nwith a line break"  # order preserved
+    assert blocks[1] == "no stamp"  # unusable timestamp keeps the text
+    assert text.endswith("first entry\n")  # trailing newline, no trailing blank block
+    assert format_entries([]) == ""  # nothing listed → empty file, not a stray newline
+
+
 def _history_delete_one_entry():
     """Deleting a single transcript removes exactly that one and keeps the
     rest. The row is identified by its own values, never by position: a
@@ -2313,10 +2340,15 @@ def _gui_construction():
         window._refresh_history()
         assert "No transcript contains" in _history_text()
         assert window.history_clear_button.isEnabled()  # entries exist, only hidden
+        # "Export…" writes what is listed, so a filtered-to-empty list has
+        # nothing to write — an enabled button would produce an empty file.
+        assert not window.history_export_button.isEnabled()
         window.history_filter_edit.clear()
         window._refresh_history()
         assert "2 transcripts" in window.history_count_label.text()
         assert "A stored transcript" in _history_text()
+        assert window.history_export_button.isEnabled()
+        assert len(window._history_export_entries) == 2
 
         # "Clear history" on an empty history did nothing at all when clicked —
         # a greyed-out button says so instead.
@@ -2330,6 +2362,7 @@ def _gui_construction():
         try:
             window._refresh_history()
             assert not window.history_clear_button.isEnabled()
+            assert not window.history_export_button.isEnabled()
             assert "No transcripts yet" in _history_text()
         finally:
             stub.history = stored_history
@@ -2698,6 +2731,7 @@ _LIGHT_CHECKS = [
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
     ("history deletes one entry", _history_delete_one_entry),
+    ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
     ("assistant config is checked", _assistant_config_is_checked),
     ("recorder start failure resets", _recorder_start_failure_resets),

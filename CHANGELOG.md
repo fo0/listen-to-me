@@ -14,6 +14,9 @@ changes at a glance.
 
 ### Added
 
+- **Export transcripts** in Settings → History: an **Export…** button writes the
+  listed transcripts — the search field filters them — to a plain text file,
+  each with its timestamp.
 - **Delete a single transcript** in Settings → History: every entry now has its
   own **Delete** button next to **Copy**, so one dictation that should not stay
   on disk no longer costs the whole history.
