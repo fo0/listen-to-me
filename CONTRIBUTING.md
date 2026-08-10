@@ -6,11 +6,12 @@ reports, fixes, features, docs — are welcome.
 
 ## Getting started
 
-Requires **Python 3.10+**.
+Requires **Python 3.10+**. A virtual environment is recommended:
 
 ```bash
 git clone https://github.com/fo0/listen-to-me
 cd listen-to-me
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e .          # or: pip install -r requirements.txt
 python -m listen_to_me    # run from source (add src/ to PYTHONPATH if not installed)
 ```

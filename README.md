@@ -460,11 +460,13 @@ where models are stored, and assistant/Ollama setup.
 
 ## Run from source
 
-Requires Python 3.10+.
+Requires Python 3.10+. A virtual environment is recommended so the
+dependencies below don't land in your system Python:
 
 ```bash
 git clone https://github.com/fo0/listen-to-me
 cd listen-to-me
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 PYTHONPATH=src python -m listen_to_me   # Windows: set PYTHONPATH=src
 ```
