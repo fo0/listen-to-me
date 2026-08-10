@@ -40,6 +40,58 @@ def filter_entries(entries: list[dict], query: str) -> list[dict]:
     return matched
 
 
+def entry_timestamp(entry: dict) -> str:
+    """The entry's local ``YYYY-MM-DD HH:MM`` stamp, or "" when it has none
+    that can be rendered.
+
+    The stored value is untrusted input: ``float()`` raises TypeError on a
+    non-numeric one and ``localtime()`` OverflowError/OSError on an
+    out-of-range one, and an export must lose at most the stamp of a single
+    line — never the whole file."""
+    when = entry.get("time")
+    if not when:
+        return ""
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(float(when)))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return ""
+
+
+def format_entries(entries: list[dict]) -> str:
+    """The given transcripts as a plain-text document, in the order given.
+
+    One block per transcript — its local timestamp on its own line, then the
+    text verbatim with its line breaks intact — separated by a blank line, so
+    the result reads as notes and can be pasted into any editor. Qt-free and
+    deterministic (the caller supplies the entries and their order), which is
+    what makes the export rule testable headlessly.
+
+    Entries without a usable timestamp keep their text and simply lose the
+    stamp line: an export exists to get the words out, and dropping a
+    transcript because its metadata is odd would defeat that."""
+    blocks = []
+    for entry in entries:
+        text = str(entry.get("text", ""))
+        if not text:
+            continue
+        stamp = entry_timestamp(entry)
+        blocks.append(f"{stamp}\n{text}" if stamp else text)
+    return "\n\n".join(blocks) + "\n" if blocks else ""
+
+
+def _same_time(stored, wanted) -> bool:
+    """Whether two history timestamps denote the same entry.
+
+    Compared numerically with a sub-millisecond tolerance instead of `==` on
+    the raw values: the stored one came back through a JSON round-trip and an
+    older build (or a hand-edit) may have written it as an int or a string, so
+    a strict comparison would refuse to match the very row the user clicked."""
+    try:
+        return abs(float(stored) - float(wanted)) < 1e-6
+    except (TypeError, ValueError):
+        return False
+
+
 class TranscriptHistory:
     def __init__(self, path: Path, max_entries: int = DEFAULT_MAX_ENTRIES):
         self.path = Path(path)
@@ -76,6 +128,35 @@ class TranscriptHistory:
         with self._lock:
             entries = self._load()
         return entries[-1]["text"] if entries else ""
+
+    def remove(self, text: str, timestamp: float | None = None) -> bool:
+        """Delete a single stored transcript; True when one was removed.
+
+        "Clear history" used to be the only way out of the store, so a single
+        dictation that must not stay on disk (a password read aloud, a name,
+        a mis-heard sentence) cost every other transcript with it. Matching is
+        on the entry's own values rather than an index: the History page hands
+        back the row it rendered, while the recording worker may have appended
+        or trimmed entries in between — an index would then delete the wrong
+        transcript, which is the one mistake this must never make.
+
+        The newest match wins when the same text was dictated twice at the
+        same second: it is the row nearest the top of the list the user just
+        clicked in.
+        """
+        text = str(text or "")
+        with self._lock:
+            entries = self._load()
+            for index in range(len(entries) - 1, -1, -1):
+                entry = entries[index]
+                if entry.get("text") != text:
+                    continue
+                if timestamp is not None and not _same_time(entry.get("time"), timestamp):
+                    continue
+                del entries[index]
+                self._save(entries)
+                return True
+        return False
 
     def clear(self) -> None:
         with self._lock:

@@ -40,6 +40,42 @@ _instance_lock = None  # keeps the single-instance claim alive for the process l
 
 _LIVE_PREVIEW_INTERVAL = 2.5  # seconds between partial transcriptions
 
+# How long before the maximum recording length the heads-up goes out.
+_LENGTH_WARNING_SECONDS = 30
+
+
+def length_warning_message(
+    elapsed: float, max_seconds, warn_seconds: float = _LENGTH_WARNING_SECONDS
+) -> str | None:
+    """The heads-up for a take that has been running `elapsed` seconds, or
+    None when none is due.
+
+    The maximum recording length used to be invisible until it hit: the take
+    was cut off mid-sentence with "Maximum recording length reached." and
+    everything said past that point was never captured at all. One warning in
+    the closing seconds is enough to wrap the sentence up (or to stop and
+    continue in a second take).
+
+    Silent for a cap that is not comfortably longer than the warning window
+    itself — warning at 30 of 45 seconds is noise about a limit that short
+    because the user asked for it. NaN/None/garbage from a hand-edited config
+    falls through the `not (... > ...)` guards to None rather than raising
+    inside the 100 ms poll.
+    """
+    try:
+        cap = float(max_seconds)
+    except (TypeError, ValueError):
+        return None
+    if not cap > warn_seconds * 2:
+        return None
+    remaining = cap - float(elapsed)
+    if not 0 < remaining <= warn_seconds:
+        return None
+    return (
+        f"{int(round(remaining))} seconds left of the {int(cap)} s maximum "
+        "recording length — the recording stops by itself then."
+    )
+
 
 class App:
     def __init__(self):
@@ -69,6 +105,8 @@ class App:
         self._settings_window = None
         self._poll_timer = None
         self._recording_id = 0  # invalidates live-preview workers of old takes
+        self._recording_started = 0.0  # monotonic start of the running take
+        self._length_warned = False  # one max-length heads-up per take
         self._live_typer = None  # per-take live-typing worker (livetype.py)
         self._quitting = False  # set by _quit; guards UI opened after shutdown
 
@@ -152,6 +190,27 @@ class App:
                     log.exception("error handling event %r", kind)
         except queue.Empty:
             pass
+        self._check_length_warning()
+
+    def _check_length_warning(self) -> None:
+        """Warn once, shortly before the maximum length ends the running take.
+
+        Rides the 100 ms timer that already drains the event queue instead of
+        owning a timer that would have to be started and stopped with every
+        take: the check is two comparisons on the main thread, and it can
+        never outlive a recording it no longer belongs to.
+        """
+        if self._length_warned or self.state != STATE_RECORDING:
+            return
+        message = length_warning_message(
+            time.monotonic() - self._recording_started, self.cfg["max_seconds"]
+        )
+        if message is None:
+            return
+        # Latched before notifying, so a failure downstream cannot turn this
+        # into one notification per poll tick for the rest of the take.
+        self._length_warned = True
+        self.notify(message)
 
     def _handle(self, kind: str, payload) -> None:
         if kind == "toggle":
@@ -241,6 +300,8 @@ class App:
         # the state change: _set_state re-enters RECORDING first, and a stale
         # worker that wakes in between must not mistake it for its own take.
         self._recording_id += 1
+        self._recording_started = time.monotonic()
+        self._length_warned = False
         self._set_state(STATE_RECORDING)
         self._beep(880)
         ocfg = self.cfg["overlay"]

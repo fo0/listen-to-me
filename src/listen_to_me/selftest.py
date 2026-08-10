@@ -246,6 +246,70 @@ def _history_latest_transcript():
         assert store.latest() == ""
 
 
+def _history_export_format():
+    """What Settings → History → "Export…" writes: one block per transcript,
+    the local timestamp above the text, blocks separated by a blank line. A
+    corrupt timestamp costs the stamp of that one line, never the export."""
+    from listen_to_me.history import entry_timestamp, format_entries
+
+    stamp = entry_timestamp({"time": 1_000_000_000.0})
+    assert len(stamp) == 16 and stamp[4] == "-" and stamp[10] == " "  # YYYY-MM-DD HH:MM
+    for broken in ({"time": "not a number"}, {"time": 10**30}, {"time": None}, {}):
+        assert entry_timestamp(broken) == ""
+
+    text = format_entries(
+        [
+            {"time": 1_000_000_000.0, "text": "second entry\nwith a line break"},
+            {"time": "broken", "text": "no stamp"},
+            {"time": 999_999_000.0, "text": ""},  # nothing to write
+            {"time": 999_999_000.0, "text": "first entry"},
+        ]
+    )
+    blocks = text.rstrip("\n").split("\n\n")
+    assert len(blocks) == 3  # the empty transcript is not a block
+    assert blocks[0] == f"{stamp}\nsecond entry\nwith a line break"  # order preserved
+    assert blocks[1] == "no stamp"  # unusable timestamp keeps the text
+    assert text.endswith("first entry\n")  # trailing newline, no trailing blank block
+    assert format_entries([]) == ""  # nothing listed → empty file, not a stray newline
+
+
+def _history_delete_one_entry():
+    """Deleting a single transcript removes exactly that one and keeps the
+    rest. The row is identified by its own values, never by position: a
+    recording appended while the History page sat open must not shift the
+    delete onto a neighbouring transcript."""
+    from listen_to_me.history import TranscriptHistory
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TranscriptHistory(Path(tmp) / "history.json")
+        store.add("first", timestamp=1.0)
+        store.add("secret", timestamp=2.0)
+        store.add("third", timestamp=3.0)
+        # A newer recording lands between rendering the list and the click.
+        store.add("fourth", timestamp=4.0)
+        assert store.remove("secret", 2.0) is True
+        assert [e["text"] for e in store.entries()] == ["fourth", "third", "first"]
+        assert store.latest() == "fourth"  # the newest entry is untouched
+        assert store.remove("secret", 2.0) is False  # already gone → no silent success
+        # A stored timestamp an older build wrote as a string still matches.
+        store.add("stringly", timestamp=5.0)
+        assert store.remove("stringly", "5.0") is True
+        # Same text at a different second: only the named entry goes.
+        store.add("repeat", timestamp=6.0)
+        store.add("between", timestamp=7.0)
+        store.add("repeat", timestamp=8.0)
+        assert store.remove("repeat", 6.0) is True
+        assert [e["text"] for e in store.entries()] == [
+            "repeat", "between", "fourth", "third", "first",
+        ]
+        # Without a timestamp the newest match is the one the user clicked.
+        assert store.remove("repeat") is True
+        assert [e["text"] for e in store.entries()] == ["between", "fourth", "third", "first"]
+        # An entry with no usable timestamp is still deletable by text.
+        assert store.remove("between", None) is True
+        assert [e["text"] for e in store.entries()] == ["fourth", "third", "first"]
+
+
 def _clipboard_copy_falls_back_to_qt():
     """pyperclip raises without xclip/xsel on Linux — the Qt clipboard then has
     to take over, or every "Copy" button in the app silently does nothing on a
@@ -297,6 +361,35 @@ def _history_search_matching():
     assert texts("nothing here") == []
     # A non-string text must not raise: the store normalizes, the file is not.
     assert filter_entries([{"text": None}], "x") == []
+
+
+def _recording_length_warning():
+    """The heads-up before the maximum recording length: exactly once, only in
+    the closing seconds, never for a cap that is short on purpose, and never an
+    exception out of the 100 ms poll for a hand-edited config value."""
+    from listen_to_me.app import _LENGTH_WARNING_SECONDS, length_warning_message
+
+    warn = _LENGTH_WARNING_SECONDS
+    assert length_warning_message(0.0, 300) is None  # just started
+    assert length_warning_message(300 - warn - 1, 300) is None  # still a second early
+    message = length_warning_message(300 - warn, 300)  # first tick inside the window
+    assert message and str(warn) in message and "300" in message
+    assert "seconds left" in message
+    message = length_warning_message(295.0, 300)
+    assert message and message.startswith("5 seconds left")
+    # The cap itself is the auto-stop's business ("Maximum recording length
+    # reached"), not a warning about something still to come.
+    assert length_warning_message(300.0, 300) is None
+    assert length_warning_message(600.0, 300) is None
+    # A cap barely longer than the warning window is the user's choice, not a
+    # surprise worth interrupting for.
+    assert length_warning_message(warn, warn * 2) is None
+    assert length_warning_message(warn + 2, warn * 2 + 2) is not None  # cap just past it
+    # Untrusted config values must fall through, never raise into the poll.
+    for bad in (None, "many", float("nan"), float("inf"), 0, -5):
+        assert length_warning_message(10.0, bad) is None
+    # A string number is a plausible hand-edit and still works.
+    assert length_warning_message(295.0, "300") is not None
 
 
 def _cli_flags():
@@ -2276,10 +2369,15 @@ def _gui_construction():
         window._refresh_history()
         assert "No transcript contains" in _history_text()
         assert window.history_clear_button.isEnabled()  # entries exist, only hidden
+        # "Export…" writes what is listed, so a filtered-to-empty list has
+        # nothing to write — an enabled button would produce an empty file.
+        assert not window.history_export_button.isEnabled()
         window.history_filter_edit.clear()
         window._refresh_history()
         assert "2 transcripts" in window.history_count_label.text()
         assert "A stored transcript" in _history_text()
+        assert window.history_export_button.isEnabled()
+        assert len(window._history_export_entries) == 2
 
         # "Clear history" on an empty history did nothing at all when clicked —
         # a greyed-out button says so instead.
@@ -2293,6 +2391,7 @@ def _gui_construction():
         try:
             window._refresh_history()
             assert not window.history_clear_button.isEnabled()
+            assert not window.history_export_button.isEnabled()
             assert "No transcripts yet" in _history_text()
         finally:
             stub.history = stored_history
@@ -2660,7 +2759,10 @@ _LIGHT_CHECKS = [
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
+    ("history deletes one entry", _history_delete_one_entry),
+    ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
+    ("recording length warning", _recording_length_warning),
     ("assistant config is checked", _assistant_config_is_checked),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),

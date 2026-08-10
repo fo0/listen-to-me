@@ -14,6 +14,15 @@ changes at a glance.
 
 ### Added
 
+- **Heads-up before the maximum recording length** — a notification 30 seconds
+  before the cap ends a running take, instead of only "Maximum recording length
+  reached." once everything said after it was already lost.
+- **Export transcripts** in Settings → History: an **Export…** button writes the
+  listed transcripts — the search field filters them — to a plain text file,
+  each with its timestamp.
+- **Delete a single transcript** in Settings → History: every entry now has its
+  own **Delete** button next to **Copy**, so one dictation that should not stay
+  on disk no longer costs the whole history.
 - **Copy last transcript** in the tray menu and the floating icon's right-click
   menu — puts the text of the most recent recording back on the clipboard
   without opening Settings → History.
