@@ -363,6 +363,35 @@ def _history_search_matching():
     assert filter_entries([{"text": None}], "x") == []
 
 
+def _recording_length_warning():
+    """The heads-up before the maximum recording length: exactly once, only in
+    the closing seconds, never for a cap that is short on purpose, and never an
+    exception out of the 100 ms poll for a hand-edited config value."""
+    from listen_to_me.app import _LENGTH_WARNING_SECONDS, length_warning_message
+
+    warn = _LENGTH_WARNING_SECONDS
+    assert length_warning_message(0.0, 300) is None  # just started
+    assert length_warning_message(300 - warn - 1, 300) is None  # still a second early
+    message = length_warning_message(300 - warn, 300)  # first tick inside the window
+    assert message and str(warn) in message and "300" in message
+    assert "seconds left" in message
+    message = length_warning_message(295.0, 300)
+    assert message and message.startswith("5 seconds left")
+    # The cap itself is the auto-stop's business ("Maximum recording length
+    # reached"), not a warning about something still to come.
+    assert length_warning_message(300.0, 300) is None
+    assert length_warning_message(600.0, 300) is None
+    # A cap barely longer than the warning window is the user's choice, not a
+    # surprise worth interrupting for.
+    assert length_warning_message(warn, warn * 2) is None
+    assert length_warning_message(warn + 2, warn * 2 + 2) is not None  # cap just past it
+    # Untrusted config values must fall through, never raise into the poll.
+    for bad in (None, "many", float("nan"), float("inf"), 0, -5):
+        assert length_warning_message(10.0, bad) is None
+    # A string number is a plausible hand-edit and still works.
+    assert length_warning_message(295.0, "300") is not None
+
+
 def _cli_flags():
     """`--help` documents the flags the app really has, and an unrecognized
     argument is answered instead of ignored.
@@ -2733,6 +2762,7 @@ _LIGHT_CHECKS = [
     ("history deletes one entry", _history_delete_one_entry),
     ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
+    ("recording length warning", _recording_length_warning),
     ("assistant config is checked", _assistant_config_is_checked),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),

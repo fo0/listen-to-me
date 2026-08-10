@@ -14,6 +14,9 @@ changes at a glance.
 
 ### Added
 
+- **Heads-up before the maximum recording length** — a notification 30 seconds
+  before the cap ends a running take, instead of only "Maximum recording length
+  reached." once everything said after it was already lost.
 - **Export transcripts** in Settings → History: an **Export…** button writes the
   listed transcripts — the search field filters them — to a plain text file,
   each with its timestamp.

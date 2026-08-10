@@ -172,6 +172,10 @@ worth knowing:
   `Cmd+Space`, or focus changes mid-hold), the recording can't see that you let
   go. It still stops when you click the floating icon or the tray _Stop
   recording_ entry, or automatically at the _maximum recording length_.
+- **Before the maximum recording length ends a take**, a notification says how
+  many seconds are left, so a long dictation can be wrapped up instead of being
+  cut off mid-sentence. (Only when the configured cap is comfortably longer
+  than that warning — a deliberately short cap is not a surprise.)
 
 Configuration is a plain JSON file (tray → _Open config folder_):
 `%APPDATA%\ListenToMe\config.json` on Windows,
@@ -199,7 +203,7 @@ settings window writes the same keys.
 | `openvino_precision`                            | `"int8"`                      | OpenVINO model precision: `int8`/`fp16`/`int4`                                                                                                                           |
 | `parakeet_quantization`                         | `"int8"`                      | Parakeet ONNX variant: `int8`/`fp32`                                                                                                                                     |
 | `input_device`                                  | `null`                        | Microphone index; `null` = system default                                                                                                                                |
-| `max_seconds`                                   | `300`                         | Hard cap for a single recording, in seconds                                                                                                                              |
+| `max_seconds`                                   | `300`                         | Hard cap for a single recording, in seconds (a notification warns 30 s before it ends the take)                                                                          |
 | `injection_mode`                                | `"paste"`                     | Insert via `paste` (clipboard) or `type` (simulated typing)                                                                                                              |
 | `live_typing`                                   | `false`                       | Experimental live typing while recording (faster-whisper only)                                                                                                           |
 | `clipboard_copy`                                | `"on_failure"`                | Also copy the transcript to the clipboard: `on_failure` (only when inserting at the cursor fails), `always` (every transcript — suppresses `restore_clipboard`) or `off` |
