@@ -14,6 +14,9 @@ changes at a glance.
 
 ### Added
 
+- **Delete a single transcript** in Settings → History: every entry now has its
+  own **Delete** button next to **Copy**, so one dictation that should not stay
+  on disk no longer costs the whole history.
 - **Copy last transcript** in the tray menu and the floating icon's right-click
   menu — puts the text of the most recent recording back on the clipboard
   without opening Settings → History.

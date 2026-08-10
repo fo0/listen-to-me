@@ -246,6 +246,43 @@ def _history_latest_transcript():
         assert store.latest() == ""
 
 
+def _history_delete_one_entry():
+    """Deleting a single transcript removes exactly that one and keeps the
+    rest. The row is identified by its own values, never by position: a
+    recording appended while the History page sat open must not shift the
+    delete onto a neighbouring transcript."""
+    from listen_to_me.history import TranscriptHistory
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TranscriptHistory(Path(tmp) / "history.json")
+        store.add("first", timestamp=1.0)
+        store.add("secret", timestamp=2.0)
+        store.add("third", timestamp=3.0)
+        # A newer recording lands between rendering the list and the click.
+        store.add("fourth", timestamp=4.0)
+        assert store.remove("secret", 2.0) is True
+        assert [e["text"] for e in store.entries()] == ["fourth", "third", "first"]
+        assert store.latest() == "fourth"  # the newest entry is untouched
+        assert store.remove("secret", 2.0) is False  # already gone → no silent success
+        # A stored timestamp an older build wrote as a string still matches.
+        store.add("stringly", timestamp=5.0)
+        assert store.remove("stringly", "5.0") is True
+        # Same text at a different second: only the named entry goes.
+        store.add("repeat", timestamp=6.0)
+        store.add("between", timestamp=7.0)
+        store.add("repeat", timestamp=8.0)
+        assert store.remove("repeat", 6.0) is True
+        assert [e["text"] for e in store.entries()] == [
+            "repeat", "between", "fourth", "third", "first",
+        ]
+        # Without a timestamp the newest match is the one the user clicked.
+        assert store.remove("repeat") is True
+        assert [e["text"] for e in store.entries()] == ["between", "fourth", "third", "first"]
+        # An entry with no usable timestamp is still deletable by text.
+        assert store.remove("between", None) is True
+        assert [e["text"] for e in store.entries()] == ["fourth", "third", "first"]
+
+
 def _clipboard_copy_falls_back_to_qt():
     """pyperclip raises without xclip/xsel on Linux — the Qt clipboard then has
     to take over, or every "Copy" button in the app silently does nothing on a
@@ -2660,6 +2697,7 @@ _LIGHT_CHECKS = [
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
+    ("history deletes one entry", _history_delete_one_entry),
     ("CLI flags", _cli_flags),
     ("assistant config is checked", _assistant_config_is_checked),
     ("recorder start failure resets", _recorder_start_failure_resets),

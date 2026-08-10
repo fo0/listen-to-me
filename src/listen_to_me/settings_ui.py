@@ -2577,6 +2577,15 @@ class SettingsWindow(QDialog):
         copy_btn = QPushButton("Copy")
         copy_btn.clicked.connect(lambda _checked=False, t=text, b=copy_btn: self._copy_history(t, b))
         header.addWidget(copy_btn)
+        delete_btn = QPushButton("Delete")
+        delete_btn.setProperty("destructive", True)
+        delete_btn.setToolTip(
+            "Permanently delete this one transcript. The rest of the history is kept."
+        )
+        delete_btn.clicked.connect(
+            lambda _checked=False, e=entry: self._delete_history_entry(e)
+        )
+        header.addWidget(delete_btn)
         rv.addLayout(header)
 
         body = QLabel(text)
@@ -2588,6 +2597,40 @@ class SettingsWindow(QDialog):
     def _copy_history(self, text: str, button: QPushButton) -> None:
         # Reports a failed clipboard write on the button — see copy_with_feedback.
         copy_with_feedback(text, button)
+
+    def _delete_history_entry(self, entry: dict) -> None:
+        """Delete the one transcript this row shows.
+
+        Confirmed, like "Clear history": the store keeps no undo, and the text
+        is gone the moment the file is rewritten. The row's own values are
+        handed to the store rather than its position — see
+        TranscriptHistory.remove for why an index would be the wrong handle.
+        A delete that matched nothing (the entry was trimmed away by a
+        recording made while this page sat open) must not look like it worked:
+        the list is re-rendered either way and says so.
+        """
+        text = str(entry.get("text", ""))
+        preview = text.replace("\n", " ")
+        if len(preview) > 80:
+            preview = preview[:80].rstrip() + "…"
+        confirm = QMessageBox.question(
+            self, APP_NAME, f"Delete this transcript?\n\n{preview}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        removed = False
+        try:
+            removed = self.app.history.remove(text, entry.get("time"))
+        except Exception:
+            log.exception("could not delete the transcript")
+        self._refresh_history()
+        if not removed:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "That transcript is no longer in the history — the list has been refreshed.",
+            )
 
     def _clear_history(self) -> None:
         if not self.app.history.entries():

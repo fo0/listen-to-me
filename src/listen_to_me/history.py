@@ -40,6 +40,19 @@ def filter_entries(entries: list[dict], query: str) -> list[dict]:
     return matched
 
 
+def _same_time(stored, wanted) -> bool:
+    """Whether two history timestamps denote the same entry.
+
+    Compared numerically with a sub-millisecond tolerance instead of `==` on
+    the raw values: the stored one came back through a JSON round-trip and an
+    older build (or a hand-edit) may have written it as an int or a string, so
+    a strict comparison would refuse to match the very row the user clicked."""
+    try:
+        return abs(float(stored) - float(wanted)) < 1e-6
+    except (TypeError, ValueError):
+        return False
+
+
 class TranscriptHistory:
     def __init__(self, path: Path, max_entries: int = DEFAULT_MAX_ENTRIES):
         self.path = Path(path)
@@ -76,6 +89,35 @@ class TranscriptHistory:
         with self._lock:
             entries = self._load()
         return entries[-1]["text"] if entries else ""
+
+    def remove(self, text: str, timestamp: float | None = None) -> bool:
+        """Delete a single stored transcript; True when one was removed.
+
+        "Clear history" used to be the only way out of the store, so a single
+        dictation that must not stay on disk (a password read aloud, a name,
+        a mis-heard sentence) cost every other transcript with it. Matching is
+        on the entry's own values rather than an index: the History page hands
+        back the row it rendered, while the recording worker may have appended
+        or trimmed entries in between — an index would then delete the wrong
+        transcript, which is the one mistake this must never make.
+
+        The newest match wins when the same text was dictated twice at the
+        same second: it is the row nearest the top of the list the user just
+        clicked in.
+        """
+        text = str(text or "")
+        with self._lock:
+            entries = self._load()
+            for index in range(len(entries) - 1, -1, -1):
+                entry = entries[index]
+                if entry.get("text") != text:
+                    continue
+                if timestamp is not None and not _same_time(entry.get("time"), timestamp):
+                    continue
+                del entries[index]
+                self._save(entries)
+                return True
+        return False
 
     def clear(self) -> None:
         with self._lock:
