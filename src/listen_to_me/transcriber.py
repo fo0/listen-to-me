@@ -274,7 +274,10 @@ class Transcriber:
             with self._use_lock:
                 decoded = self._decode(audio, beam_size=beam_size)
             if decoded is None:
-                raise RuntimeError("Whisper model is not loaded")
+                # `from exc`: without it the traceback reads as if this retry
+                # were an error raised while handling the GPU failure, which
+                # buries the cause the user actually needs to see in the log.
+                raise RuntimeError("Whisper model is not loaded") from exc
             text, info = decoded
         log.info(
             "transcribed %.1fs -> %d chars (language=%s)",

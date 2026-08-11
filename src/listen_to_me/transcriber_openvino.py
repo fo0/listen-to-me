@@ -336,7 +336,10 @@ class OpenVinoTranscriber:
             with self._use_lock:
                 text = self._decode(audio)
             if text is None:
-                raise RuntimeError("Whisper model is not loaded")
+                # `from exc`: keeps the GPU/NPU failure that triggered the CPU
+                # retry as the reported cause instead of a second, unrelated
+                # error raised while handling it (same as transcriber.py).
+                raise RuntimeError("Whisper model is not loaded") from exc
         log.info("transcribed %.1fs -> %d chars (openvino)", len(audio) / SAMPLE_RATE, len(text))
         return text
 
