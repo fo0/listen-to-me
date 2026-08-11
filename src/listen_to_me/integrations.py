@@ -211,7 +211,11 @@ class MuteIntegrations:
         switch is off. Read fresh each time so Settings changes take effect on
         the next recording without any reload step."""
         settings = self._settings()
-        if not settings.get("mute_while_recording", True):
+        # Default False, matching config.DEFAULTS: this feature synthesizes
+        # keystrokes into other applications and is opt-in for that reason, so
+        # a settings section that lost the key (an older build, a hand-edit, a
+        # truncated file) must leave it off rather than switch it on.
+        if not settings.get("mute_while_recording", False):
             return []
         targets = []
         for target in settings.get("targets") or []:
