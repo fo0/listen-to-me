@@ -208,9 +208,11 @@ this inside a network you trust, and leave it off otherwise.</li>
 <li><b>This includes updates</b>, which replace {APP_NAME}&rsquo;s own program
 file: with the option on, the downloaded exe is no longer proven to come from
 GitHub. It must still arrive over HTTPS from a GitHub host and match the
-release&rsquo;s size and SHA256, and the install dialog says so before the
-download starts &mdash; but if you would rather not take that trade, leave the
-option off and download releases manually.</li>
+release&rsquo;s size and SHA256 &mdash; but those come from the same response as
+the download link, so they prove the file arrived intact, not that it is
+genuine. The install dialog says so before the download starts; if you would
+rather not take that trade, leave the option off and download releases
+manually.</li>
 </ul>
 """,
     },

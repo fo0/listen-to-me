@@ -124,36 +124,36 @@ def _pick_asset(assets: list[dict]) -> dict:
 
 
 class UpdateTrustError(Exception):
-    """A request on the update path could not be authenticated.
+    """A TLS failure stopped a request on the update path.
 
-    Raised when the TLS certificate check fails — which, with
-    ``cfg["insecure_ssl"]`` off, is every certificate problem on the way to
-    GitHub. It carries a ready-to-show explanation so the UI can say why
-    instead of failing silently, and it names the insecure-SSL switch as the
-    escape hatch for an intercepting corporate proxy (ADR-0006).
-
-    With that switch on the update path no longer verifies certificates at all,
-    so this error then only reports a TLS failure that verification was not the
-    cause of.
+    With ``cfg["insecure_ssl"]`` off that is a certificate GitHub's chain could
+    not be verified against, and the error names the switch as the escape hatch
+    for an intercepting corporate proxy (ADR-0006). With the switch on there is
+    no certificate check left to fail, so it reports a TLS failure of a
+    different kind. Either way it carries a ready-to-show explanation, so the
+    UI can say why instead of failing silently.
     """
 
 
 def _trust_error() -> UpdateTrustError:
-    """The message shown when the update path's certificate check fails.
+    """The message shown when a TLS failure stops the update path.
 
-    Names the insecure-SSL switch only while it is actually off — that is the
-    case it exists for. With it already on, verification is not what failed
-    here, so pointing at the option would send the user in circles.
+    Two different messages, because with the insecure-SSL switch on there is no
+    certificate check left to fail: telling that user their certificate could
+    not be verified would read as "the option I enabled did not apply" and send
+    them looking for a switch they already flipped.
     """
-    hint = ""
-    if netutil.verify():
-        hint = (
-            ' Behind a corporate proxy that intercepts HTTPS, "Ignore SSL certificate'
-            ' errors" (Settings → General) covers updates too — but an update replaces'
-            " the program file, so only enable it in a network you trust."
+    if not netutil.verify():
+        return UpdateTrustError(
+            "the TLS connection to GitHub failed — certificate verification is"
+            " already off, so this is not a rejected certificate."
+            " Download the release manually from the release page instead."
         )
     return UpdateTrustError(
-        f"could not verify GitHub's TLS certificate.{hint}"
+        "could not verify GitHub's TLS certificate."
+        ' Behind a corporate proxy that intercepts HTTPS, "Ignore SSL certificate'
+        ' errors" (Settings → General) covers updates too — but an update replaces'
+        " the program file, so only enable it in a network you trust."
         " Download the release manually from the release page instead."
     )
 
@@ -164,8 +164,8 @@ def _get(url: str, **kwargs):
     Every network call in this module goes through here. Certificate
     verification is on by default and off while ``cfg["insecure_ssl"]`` is
     enabled — the switch covers every outbound connection the app makes, this
-    one included (ADR-0006). Running it unverified is logged every time: it is
-    the one path that replaces the program file, and a log line is the only
+    one included (ADR-0006). Running it unverified is logged every time: this is
+    the path that ends in a replaced program file, and a log line is the only
     trace left once the swap has happened.
 
     A timeout is guaranteed regardless: ``requests`` has no default one, and
@@ -179,15 +179,19 @@ def _get(url: str, **kwargs):
 
     verify = netutil.verify()
     if not verify:
+        # The URL is in the line because this covers both requests: the releases
+        # API call and the exe download itself.
         log.warning(
-            "update request without TLS certificate verification (insecure_ssl is on) "
-            "— the downloaded program file is encrypted in transit but NOT authenticated"
+            "update request to %s without TLS certificate verification "
+            "(insecure_ssl is on) — the response is encrypted in transit but NOT "
+            "authenticated",
+            url,
         )
     kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
     try:
         return requests.get(url, verify=verify, **kwargs)
     except requests.exceptions.SSLError as exc:
-        log.warning("update aborted — GitHub's TLS certificate could not be verified")
+        log.warning("update aborted — the TLS connection to GitHub failed")
         raise _trust_error() from exc
 
 

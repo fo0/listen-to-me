@@ -1513,10 +1513,13 @@ def _updater_follows_insecure_ssl_switch():
                         raise AssertionError("a certificate failure was not surfaced")
                     except updater.UpdateTrustError as exc:
                         # Explains itself instead of failing silently, and names
-                        # the switch only while it is off — with it on,
-                        # verification is not what failed here.
+                        # the switch only while it is off. With it on there is
+                        # no certificate check left to fail, so the message must
+                        # not claim one did — that would read as "the option I
+                        # enabled did not apply".
                         assert "release page" in str(exc)
                         assert ("Ignore SSL certificate" in str(exc)) is not insecure
+                        assert ("could not verify" in str(exc)) is not insecure
                 failing.clear()
     finally:
         netutil.apply_insecure_ssl(False)

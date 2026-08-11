@@ -883,8 +883,8 @@ class SettingsWindow(QDialog):
         nv.addWidget(self._hint(
             "⚠ Only for corporate proxies that intercept HTTPS with their own certificate. "
             "Connections stay encrypted but are no longer authenticated. This includes "
-            "updates: the downloaded program file is then no longer proven to come from "
-            "GitHub — only its size and SHA256 from the release are still checked."
+            "updates: the downloaded program file that replaces this one is then no "
+            "longer proven to come from GitHub."
         ))
         layout.addWidget(network)
 
