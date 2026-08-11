@@ -30,6 +30,8 @@ log = logging.getLogger(__name__)
 
 _API_URL = "https://api.github.com/repos/{owner_repo}/releases"
 _DOWNLOAD_CHUNK = 256 * 1024
+# Fallback for a request that names no timeout of its own (see _verified_get).
+_DEFAULT_TIMEOUT = 30.0
 
 
 def _owner_repo() -> str:
@@ -154,9 +156,17 @@ def _verified_get(url: str, **kwargs):
 
     Every network call in this module goes through here, so the update path
     stays authenticated regardless of the app-wide insecure-SSL switch.
+
+    A timeout is guaranteed for the same reason: ``requests`` has no default
+    one, and these calls run on daemon threads (the startup check, the Settings
+    download worker) where a server that accepts the connection and then never
+    answers would hang the thread for the process lifetime with nothing to
+    report. Callers still pass their own — this only makes the absence of one
+    impossible.
     """
     import requests
 
+    kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
     try:
         return requests.get(url, verify=True, **kwargs)
     except requests.exceptions.SSLError as exc:
