@@ -124,10 +124,10 @@ DEFAULTS: dict = {
     # In-app updater (checks the GitHub Releases of this repo).
     "update_check_on_start": True,
     "include_prereleases": False,
-    # Skip TLS certificate verification for the outbound HTTPS connections the
-    # switch covers: the Whisper model downloads and the assistant. The updater
-    # is deliberately carved out and always verifies — it replaces the running
-    # program file (ADR-0002; see netutil.py). Only for corporate proxies that
+    # Skip TLS certificate verification for every outbound HTTPS connection:
+    # the Whisper model downloads, the assistant and the updater — including
+    # the exe download that replaces the running program file (ADR-0006,
+    # superseding ADR-0002; see netutil.py). Only for corporate proxies that
     # intercept HTTPS with a self-signed certificate — insecure, leave off
     # otherwise.
     "insecure_ssl": False,

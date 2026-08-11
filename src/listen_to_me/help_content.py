@@ -205,6 +205,12 @@ restart needed.</li>
 <li><b>Security note:</b> connections stay encrypted but are no longer
 authenticated &mdash; a man-in-the-middle would not be detected. Only enable
 this inside a network you trust, and leave it off otherwise.</li>
+<li><b>This includes updates</b>, which replace {APP_NAME}&rsquo;s own program
+file: with the option on, the downloaded exe is no longer proven to come from
+GitHub. It must still arrive over HTTPS from a GitHub host and match the
+release&rsquo;s size and SHA256, and the install dialog says so before the
+download starts &mdash; but if you would rather not take that trade, leave the
+option off and download releases manually.</li>
 </ul>
 """,
     },

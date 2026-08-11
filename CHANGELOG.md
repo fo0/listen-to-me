@@ -39,6 +39,14 @@ changes at a glance.
 
 ### Changed
 
+- **"Ignore SSL certificate errors" now covers updates too.** The option
+  previously applied to the model downloads and the assistant only, so behind
+  the very corporate proxy it exists for, the update check kept failing. It now
+  covers every connection the app makes. Updates are the risky part of that —
+  they replace the program file — so the download still has to come over HTTPS
+  from a GitHub host and match the release's size and SHA256, every unverified
+  request is logged, and the install dialog says the download is not
+  authenticated before it starts. The option remains off by default.
 - Documentation and repository housekeeping in preparation for the public
   release (English-only main README with a separate German quick-start,
   contributor guide, hardened `.gitignore`).

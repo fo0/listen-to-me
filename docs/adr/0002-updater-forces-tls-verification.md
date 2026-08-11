@@ -1,9 +1,15 @@
 # ADR-0002: The updater is carved out of the `insecure_ssl` switch
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0006
 - **Date:** 2026-07-27
 - **Decider(s):** user + agent
 - **Tags:** security, network, updater
+
+> Superseded on 2026-08-11 by [ADR-0006](0006-insecure-ssl-covers-every-connection-including-updates.md):
+> the switch now covers every connection, updates included, because a carve-out makes the option useless
+> behind exactly the intercepting proxy it exists for. The text below is kept as history — the update path
+> no longer forces `verify=True`; the host allowlist, the size/digest check and a warning in the install
+> dialog are what remains.
 
 ## Context
 

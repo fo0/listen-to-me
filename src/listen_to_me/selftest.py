@@ -1426,13 +1426,16 @@ def _updater_logic():
                 pass
 
 
-def _updater_forces_tls_verification():
-    """The update path never honours the insecure-SSL switch: the releases API
-    call and the asset download must both pass verify=True even while it is on,
-    and a certificate failure must surface as an explaining UpdateTrustError
+def _updater_follows_insecure_ssl_switch():
+    """The update path honours the insecure-SSL switch like every other
+    connection (ADR-0006, superseding ADR-0002): the releases API call and the
+    asset download verify by default and stop verifying while the switch is on
+    — a hardcoded verify= on either side is the regression this guards against.
+    Independent of the switch: the HTTPS/GitHub check on the URL the transfer
+    really came from (the only structural guard left once verification is off),
+    and a certificate failure surfacing as an explaining UpdateTrustError
     instead of a bare SSLError. requests is faked at the module boundary — it is
-    absent in the light CI env, and silently inheriting netutil.verify() here is
-    exactly the regression this guards against."""
+    absent in the light CI env."""
     import types
 
     from listen_to_me import netutil, updater
@@ -1478,38 +1481,43 @@ def _updater_forces_tls_verification():
     saved = sys.modules.get("requests")
     sys.modules["requests"] = fake
     try:
-        netutil.apply_insecure_ssl(True)
-        assert netutil.verify() is False  # the switch really is on for everyone else
         with tempfile.TemporaryDirectory() as tmp:
-            updater.fetch_releases()
-            updater.download_asset(asset_url, Path(tmp) / "asset.exe")
-            assert len(calls) == 2
-            assert all(call["verify"] is True for call in calls)
+            for insecure in (False, True):
+                netutil.apply_insecure_ssl(insecure)
+                assert netutil.verify() is not insecure
+                calls.clear()
+                updater.fetch_releases()
+                updater.download_asset(asset_url, Path(tmp) / "asset.exe")
+                assert len(calls) == 2
+                # Both requests take the switch's value — neither pins its own.
+                assert all(call["verify"] is not insecure for call in calls)
 
-            # requests follows redirects cross-host and cross-scheme; the
-            # transfer's final URL must pass the same trust check as the
-            # starting one, or a redirect would sidestep the host allowlist.
-            redirect_to.append("http://evil.example/ListenToMe.exe")
-            try:
-                updater.download_asset(asset_url, Path(tmp) / "asset2.exe")
-                raise AssertionError("a cross-host redirect was followed")
-            except ValueError:
-                pass
-            redirect_to.clear()
-
-            failing.append(True)
-            for attempt in (
-                lambda: updater.fetch_releases(),
-                lambda: updater.download_asset(asset_url, Path(tmp) / "asset.exe"),
-            ):
+                # requests follows redirects cross-host and cross-scheme; the
+                # transfer's final URL must pass the same trust check as the
+                # starting one, or a redirect would sidestep the host allowlist.
+                redirect_to.append("http://evil.example/ListenToMe.exe")
                 try:
-                    attempt()
-                    raise AssertionError("a certificate failure was not surfaced")
-                except updater.UpdateTrustError as exc:
-                    # Explains itself instead of failing silently, and says so
-                    # while the switch that would "have covered this" is on.
-                    assert "does not cover updates" in str(exc)
-                    assert "release page" in str(exc)
+                    updater.download_asset(asset_url, Path(tmp) / "asset2.exe")
+                    raise AssertionError("a cross-host redirect was followed")
+                except ValueError:
+                    pass
+                redirect_to.clear()
+
+                failing.append(True)
+                for attempt in (
+                    lambda: updater.fetch_releases(),
+                    lambda: updater.download_asset(asset_url, Path(tmp) / "asset.exe"),
+                ):
+                    try:
+                        attempt()
+                        raise AssertionError("a certificate failure was not surfaced")
+                    except updater.UpdateTrustError as exc:
+                        # Explains itself instead of failing silently, and names
+                        # the switch only while it is off — with it on,
+                        # verification is not what failed here.
+                        assert "release page" in str(exc)
+                        assert ("Ignore SSL certificate" in str(exc)) is not insecure
+                failing.clear()
     finally:
         netutil.apply_insecure_ssl(False)
         if saved is None:
@@ -2816,7 +2824,7 @@ _LIGHT_CHECKS = [
     ("autostart entry refresh", _autostart_refresh),
     ("autostart reports a failed registration", _autostart_reporting),
     ("updater version logic", _updater_logic),
-    ("updater forces TLS verification", _updater_forces_tls_verification),
+    ("updater follows the insecure-SSL switch", _updater_follows_insecure_ssl_switch),
     ("insecure SSL switch", _insecure_ssl_switch),
     ("insecure SSL huggingface httpx API", _insecure_ssl_hub_httpx),
     ("std stream stub (windowed build)", _std_stream_stub),

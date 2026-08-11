@@ -873,18 +873,18 @@ class SettingsWindow(QDialog):
         self.chk_insecure_ssl = self._checkbox(
             "Ignore SSL certificate errors (corporate proxy) — insecure",
             self.cfg["insecure_ssl"],
-            "Skip TLS certificate verification for model downloads and the assistant. "
-            "Only enable behind a corporate proxy that intercepts HTTPS with its own "
-            "(self-signed) certificate — connections are then encrypted but no longer "
-            "authenticated. Updates are excluded: they always verify the certificate, "
-            "because an update replaces the program file.",
+            "Skip TLS certificate verification for every connection: model downloads, "
+            "the assistant and updates. Only enable behind a corporate proxy that "
+            "intercepts HTTPS with its own (self-signed) certificate — connections are "
+            "then encrypted but no longer authenticated. Updates are included, and an "
+            "update replaces the program file, so only enable this in a network you trust.",
         )
         nv.addWidget(self.chk_insecure_ssl)
         nv.addWidget(self._hint(
             "⚠ Only for corporate proxies that intercept HTTPS with their own certificate. "
-            "Connections stay encrypted but are no longer authenticated. Updates are "
-            "excluded and keep verifying — behind such a proxy, download them manually "
-            "from the release page."
+            "Connections stay encrypted but are no longer authenticated. This includes "
+            "updates: the downloaded program file is then no longer proven to come from "
+            "GitHub — only its size and SHA256 from the release are still checked."
         ))
         layout.addWidget(network)
 
@@ -2333,13 +2333,26 @@ class SettingsWindow(QDialog):
             webbrowser.open(updater.release_page_url(release))
             return
         size = updater.format_size(release.asset_size)
+        # The switch covers updates too (ADR-0006), and this dialog is the last
+        # point where the user can still decide against an unauthenticated
+        # program file — the checkbox on the General page was a different day.
+        # netutil, not self.cfg: it holds the state the download will run with.
+        from . import netutil
+
+        insecure = ""
+        if not netutil.verify():
+            insecure = (
+                '\n\n⚠ "Ignore SSL certificate errors" is on, so this download is not '
+                "authenticated: whatever intercepts the connection could supply the "
+                "program file that replaces this one. Only continue in a network you trust."
+            )
         confirm = QMessageBox.question(
             self,
             APP_NAME,
             f"Download {release.tag}{f' ({size})' if size else ''} and restart "
             f"{APP_NAME} to update?\n\n"
             f"{APP_NAME} will close, replace its program file and reopen automatically.\n\n"
-            "The download is not code-signed (Windows SmartScreen may warn).",
+            f"The download is not code-signed (Windows SmartScreen may warn).{insecure}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
