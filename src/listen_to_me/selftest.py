@@ -1350,7 +1350,7 @@ def _autostart_reporting():
 
 
 def _updater_logic():
-    from listen_to_me import updater
+    from listen_to_me import RELEASES_URL, updater
 
     assert updater.parse_version("v2026.07.19.11") == (2026, 7, 19, 11)
     assert updater.parse_version("0.0.0.dev0") == (0, 0, 0, 0)
@@ -1374,6 +1374,18 @@ def _updater_logic():
     rels = [mk("v2026.07.19.11"), mk("v2026.07.19.7"), mk("v2026.07.19.3")]
     newer = updater.newer_releases(rels, current=(2026, 7, 19, 5))
     assert [r.tag for r in newer] == ["v2026.07.19.11", "v2026.07.19.7"]
+
+    # "Open release page" hands its result to webbrowser.open, so a page URL
+    # the API response invented must never reach the OS URL handler. The
+    # fallback is the releases list — whoever clicked wants a download, not a
+    # repository root to navigate out of.
+    trusted = "https://github.com/fo0/listen-to-me/releases/tag/v1"
+    good, bad = mk("v1"), mk("v1")
+    good.html_url = trusted
+    assert updater.release_page_url(good) == trusted
+    for hostile in ("file:///etc/passwd", "http://evil.example/x", "", "javascript:alert(1)"):
+        bad.html_url = hostile
+        assert updater.release_page_url(bad) == RELEASES_URL, hostile
     assert updater.download_path_for(Path("/x/ListenToMe.exe")).name == "ListenToMe.update.exe"
 
     # The relaunch chain must not inherit PyInstaller's bootloader variables,

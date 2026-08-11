@@ -28,7 +28,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import REPO_URL, __version__, netutil
+from . import RELEASES_URL, REPO_URL, __version__, netutil
 
 log = logging.getLogger(__name__)
 
@@ -261,20 +261,24 @@ def _require_trusted_url(url: str) -> None:
 
 
 def release_page_url(release: Release) -> str:
-    """The release's own page, or the project page when that URL isn't one we
+    """The release's own page, or the releases list when that URL isn't one we
     trust.
 
     ``html_url`` is whatever the GitHub API response carried, and the UI hands
     it to ``webbrowser.open`` — which passes anything with a scheme on to the
     OS URL handler, so a non-HTTPS or non-GitHub value there would be a launch
     vector rather than a broken link. Same host check the download path uses.
+
+    The fallback is the releases list, not the project page: whoever got here
+    clicked "Open release page" to download something, and the list is one
+    click from every release rather than a repository root to navigate out of.
     """
     url = getattr(release, "html_url", "") or ""
     try:
         _require_trusted_url(url)
     except ValueError:
-        log.warning("ignoring an untrusted release page URL %r — opening %s", url, REPO_URL)
-        return REPO_URL
+        log.warning("ignoring an untrusted release page URL %r — opening %s", url, RELEASES_URL)
+        return RELEASES_URL
     return url
 
 
