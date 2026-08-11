@@ -403,6 +403,12 @@ class HomePage(QWidget):
         flat = raw.replace("\n", " ")
         shown = flat if len(flat) <= _RECENT_CHARS else flat[:_RECENT_CHARS].rstrip() + "…"
         text_label = QLabel(shown)
+        # Plain text, never Qt's AutoText guess — the transcript is untrusted
+        # input (history.json is hand-editable, and an assistant response
+        # arrives verbatim). A first line that looks like markup would be
+        # rendered as HTML instead of shown, so the row would display something
+        # other than the text its Copy button hands back.
+        text_label.setTextFormat(Qt.TextFormat.PlainText)
         text_label.setWordWrap(True)
         text_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         # A wrapping label demands its longest unbreakable word as minimum

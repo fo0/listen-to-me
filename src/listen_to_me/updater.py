@@ -30,6 +30,8 @@ log = logging.getLogger(__name__)
 
 _API_URL = "https://api.github.com/repos/{owner_repo}/releases"
 _DOWNLOAD_CHUNK = 256 * 1024
+# Fallback for a request that names no timeout of its own (see _verified_get).
+_DEFAULT_TIMEOUT = 30.0
 
 
 def _owner_repo() -> str:
@@ -154,9 +156,17 @@ def _verified_get(url: str, **kwargs):
 
     Every network call in this module goes through here, so the update path
     stays authenticated regardless of the app-wide insecure-SSL switch.
+
+    A timeout is guaranteed for the same reason: ``requests`` has no default
+    one, and these calls run on daemon threads (the startup check, the Settings
+    download worker) where a server that accepts the connection and then never
+    answers would hang the thread for the process lifetime with nothing to
+    report. Callers still pass their own — this only makes the absence of one
+    impossible.
     """
     import requests
 
+    kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
     try:
         return requests.get(url, verify=True, **kwargs)
     except requests.exceptions.SSLError as exc:
@@ -409,6 +419,29 @@ def _swap_env() -> dict[str, str]:
     return env
 
 
+def _cmd_exe() -> str:
+    """Absolute path of the command interpreter that runs the swap batch.
+
+    A bare ``"cmd"`` is resolved through ``PATH``, and ``PATH`` is not a trust
+    boundary: a ``cmd.exe`` dropped into any directory that precedes System32
+    would be the process started here — on the one code path whose whole job is
+    to replace the running program, which makes a search-path hijack the same
+    kind of code execution the forced certificate check exists to prevent.
+    ``%COMSPEC%`` is where Windows itself keeps the interpreter;
+    ``%SystemRoot%\\System32\\cmd.exe`` covers an empty or relative COMSPEC, and
+    the bare name stays as the last resort so a stripped environment can still
+    update rather than not at all.
+    """
+    comspec = os.environ.get("COMSPEC") or ""
+    if os.path.isabs(comspec):
+        return comspec
+    system_root = os.environ.get("SystemRoot") or ""
+    if os.path.isabs(system_root):
+        return str(Path(system_root) / "System32" / "cmd.exe")
+    log.warning("neither COMSPEC nor SystemRoot is usable — falling back to PATH for cmd.exe")
+    return "cmd"
+
+
 def apply_update_windows(new_exe: Path, target: Path | None = None) -> None:
     """Swap the running exe with `new_exe` and relaunch it (Windows only). The
     caller MUST quit the app right after, so the detached batch's retrying move
@@ -422,6 +455,6 @@ def apply_update_windows(new_exe: Path, target: Path | None = None) -> None:
     # CREATE_NO_WINDOW: hidden console (no flashing window, console tools work);
     # the child still outlives this process.
     subprocess.Popen(
-        ["cmd", "/c", str(bat)], creationflags=0x08000000, close_fds=True, env=_swap_env()
+        [_cmd_exe(), "/c", str(bat)], creationflags=0x08000000, close_fds=True, env=_swap_env()
     )
     log.info("update swap scheduled: %s -> %s", new_exe, target)
