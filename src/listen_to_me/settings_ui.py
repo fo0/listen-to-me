@@ -2603,6 +2603,11 @@ class SettingsWindow(QDialog):
         rv.addLayout(header)
 
         body = QLabel(text)
+        # Plain text, never Qt's AutoText guess — same reasoning as
+        # HomePage._recent_row: a stored transcript whose first line looks like
+        # markup would be rendered as HTML, so the History page would show
+        # something other than the text Copy/Export hand back.
+        body.setTextFormat(Qt.TextFormat.PlainText)
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         rv.addWidget(body)

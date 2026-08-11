@@ -130,6 +130,13 @@ class _Bubble(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self._label = QLabel("")
+        # Plain text, never Qt's AutoText guess: what lands here is a Whisper
+        # transcript or an assistant response, and Qt renders a label as HTML as
+        # soon as its first line looks like markup ("<b>", "&lt;"). The bubble
+        # would then show something other than what was dictated — tags eaten,
+        # entities decoded, and a rich-text label resolving whatever resource an
+        # <img> names.
+        self._label.setTextFormat(Qt.TextFormat.PlainText)
         self._label.setWordWrap(True)
         self._label.setMaximumWidth(_BUBBLE_MAX_W)
         self._label.setStyleSheet(
