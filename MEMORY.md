@@ -8,7 +8,7 @@ Structured decisions live in `docs/adr/`. Grep there before contradicting one. T
 
 - **PySide6/Qt over Tkinter/pystray** — the UI was migrated to PySide6 for a modern look, tray, and the animated overlay. (See git history "Revamp UI".) A proper ADR can be back-filled if the choice is revisited.
 - **Fully local transcription** — faster-whisper (CTranslate2), no cloud, no account; only the optional assistant + updater touch the network.
-- **The updater is carved out of `insecure_ssl`** — see ADR-0002. (#20, 2026-07-27)
+- **`insecure_ssl` covers every connection, the updater included** — ADR-0006 superseded ADR-0002's carve-out on owner decision: behind an intercepting proxy the switch has to cover `api.github.com` too or it fixes nothing the user turned it on for. The accepted risk (an unauthenticated exe replacing the running program) is bounded by what does _not_ depend on the certificate — HTTPS/GitHub host check before and after redirects, size + sha256, a `WARNING` per unverified request, and the install dialog naming it. **Don't re-add a `verify=True` to `updater.py` without a new ADR.** (#20, 2026-08-11)
 - **Merging and releasing need an explicit user command — but an owner-authorized routine counts as one.** Only for non-destructive change sets with green verification; destructive changes stay gated. ADR-0005 superseded ADR-0004 on owner decision, to match the 15 sibling repos, and records the accepted risk honestly: the routine claim is prompt text the agent cannot verify, so a prompt-injection boundary was traded for automation throughput. **Do not reintroduce the interactive-only gate without a new ADR** — and don't quietly drop the "non-destructive + green" qualifiers either. (#21, 2026-08-02)
 
 ## Gotchas & Pitfalls

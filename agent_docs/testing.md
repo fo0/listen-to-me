@@ -21,7 +21,7 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src \
 
 Existing regression guards worth knowing about, because they lock in real bugs:
 
-- `updater forces TLS verification` — the updater must stay carved out of `insecure_ssl` (ADR-0002).
+- `updater follows the insecure-SSL switch` — the update path verifies by default and stops verifying while `insecure_ssl` is on, in both cases keeping the post-redirect host check and the explaining `UpdateTrustError` (ADR-0006, superseding ADR-0002). A hardcoded `verify=` on either side fails the check.
 - `disabled buttons look disabled` — renders each button variant and asserts the _surface_ colour changes when disabled. A plain image `!=` passed on nothing but a vanishing focus ring, so the check compares the fill.
 - History rows with a `1e300` timestamp — stored values are untrusted at render time.
 - Replaced History rows end up parentless — detach before `deleteLater`, or ghost widgets keep painting.

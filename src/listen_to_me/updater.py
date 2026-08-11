@@ -7,8 +7,12 @@ frozen Windows build — downloads the new executable and swaps it in on restart
 No Qt here: the settings page drives this from a worker thread and marshals the
 results back to the UI.
 
-Every request in this module forces TLS certificate verification on, even while
-``cfg["insecure_ssl"]`` is enabled — see :class:`UpdateTrustError`.
+Every request in this module honours the app-wide ``cfg["insecure_ssl"]``
+switch (ADR-0006): with it off — the default — GitHub's certificate is verified
+as usual and a failure surfaces as :class:`UpdateTrustError`; with it on, the
+update path is unauthenticated like every other connection the app makes. The
+host allowlist (:func:`_require_trusted_url`) and the size/digest check
+(:func:`verify_download`) apply either way.
 """
 
 from __future__ import annotations
@@ -24,13 +28,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import REPO_URL, __version__, netutil
+from . import RELEASES_URL, REPO_URL, __version__, netutil
 
 log = logging.getLogger(__name__)
 
 _API_URL = "https://api.github.com/repos/{owner_repo}/releases"
 _DOWNLOAD_CHUNK = 256 * 1024
-# Fallback for a request that names no timeout of its own (see _verified_get).
+# Fallback for a request that names no timeout of its own (see _get).
 _DEFAULT_TIMEOUT = 30.0
 
 
@@ -120,57 +124,74 @@ def _pick_asset(assets: list[dict]) -> dict:
 
 
 class UpdateTrustError(Exception):
-    """A request on the update path could not be authenticated.
+    """A TLS failure stopped a request on the update path.
 
-    Unlike the model downloads and the assistant, the updater never honours
-    ``cfg["insecure_ssl"]``: what it fetches replaces the running program, so an
-    unauthenticated response would let whoever intercepts the connection execute
-    code on this machine — and the asset digest is no defence, because it comes
-    from the very same API response. The corporate-proxy escape hatch therefore
-    stops here, and this error carries a ready-to-show explanation so the UI can
-    say why instead of failing silently.
+    With ``cfg["insecure_ssl"]`` off that is a certificate GitHub's chain could
+    not be verified against, and the error names the switch as the escape hatch
+    for an intercepting corporate proxy (ADR-0006). With the switch on there is
+    no certificate check left to fail, so it reports a TLS failure of a
+    different kind. Either way it carries a ready-to-show explanation, so the
+    UI can say why instead of failing silently.
     """
 
 
 def _trust_error() -> UpdateTrustError:
-    """The message shown when the update path's certificate check fails.
+    """The message shown when a TLS failure stops the update path.
 
-    Names the insecure-SSL switch only while it is actually on — that is the
-    case where the user would otherwise expect it to have covered this too.
+    Two different messages, because with the insecure-SSL switch on there is no
+    certificate check left to fail: telling that user their certificate could
+    not be verified would read as "the option I enabled did not apply" and send
+    them looking for a switch they already flipped.
     """
-    hint = ""
     if not netutil.verify():
-        hint = (
-            ' "Ignore SSL certificate errors" deliberately does not cover updates:'
-            " an update replaces the program file, so it has to come from a"
-            " connection that is authenticated, not just encrypted."
+        return UpdateTrustError(
+            "the TLS connection to GitHub failed — certificate verification is"
+            " already off, so this is not a rejected certificate."
+            " Download the release manually from the release page instead."
         )
     return UpdateTrustError(
-        f"could not verify GitHub's TLS certificate.{hint}"
+        "could not verify GitHub's TLS certificate."
+        ' Behind a corporate proxy that intercepts HTTPS, "Ignore SSL certificate'
+        ' errors" (Settings → General) covers updates too — but an update replaces'
+        " the program file, so only enable it in a network you trust."
         " Download the release manually from the release page instead."
     )
 
 
-def _verified_get(url: str, **kwargs):
-    """``requests.get`` with certificate verification forced on.
+def _get(url: str, **kwargs):
+    """``requests.get`` for the update path, following the insecure-SSL switch.
 
-    Every network call in this module goes through here, so the update path
-    stays authenticated regardless of the app-wide insecure-SSL switch.
+    Every network call in this module goes through here. Certificate
+    verification is on by default and off while ``cfg["insecure_ssl"]`` is
+    enabled — the switch covers every outbound connection the app makes, this
+    one included (ADR-0006). Running it unverified is logged every time: this is
+    the path that ends in a replaced program file, and a log line is the only
+    trace left once the swap has happened.
 
-    A timeout is guaranteed for the same reason: ``requests`` has no default
-    one, and these calls run on daemon threads (the startup check, the Settings
-    download worker) where a server that accepts the connection and then never
-    answers would hang the thread for the process lifetime with nothing to
-    report. Callers still pass their own — this only makes the absence of one
+    A timeout is guaranteed regardless: ``requests`` has no default one, and
+    these calls run on daemon threads (the startup check, the Settings download
+    worker) where a server that accepts the connection and then never answers
+    would hang the thread for the process lifetime with nothing to report.
+    Callers still pass their own — this only makes the absence of one
     impossible.
     """
     import requests
 
+    verify = netutil.verify()
+    if not verify:
+        # The URL is in the line because this covers both requests: the releases
+        # API call and the exe download itself.
+        log.warning(
+            "update request to %s without TLS certificate verification "
+            "(insecure_ssl is on) — the response is encrypted in transit but NOT "
+            "authenticated",
+            url,
+        )
     kwargs.setdefault("timeout", _DEFAULT_TIMEOUT)
     try:
-        return requests.get(url, verify=True, **kwargs)
+        return requests.get(url, verify=verify, **kwargs)
     except requests.exceptions.SSLError as exc:
-        log.warning("update aborted — GitHub's TLS certificate could not be verified")
+        log.warning("update aborted — the TLS connection to GitHub failed")
         raise _trust_error() from exc
 
 
@@ -178,7 +199,7 @@ def fetch_releases(timeout: float = 10.0, include_prerelease: bool = False) -> l
     """All published releases, newest first. Raises on network/HTTP errors, and
     ``UpdateTrustError`` when the certificate could not be verified."""
     url = _API_URL.format(owner_repo=_owner_repo())
-    resp = _verified_get(
+    resp = _get(
         url,
         timeout=timeout,
         headers={"Accept": "application/vnd.github+json"},
@@ -221,9 +242,13 @@ def latest_release(releases: list[Release]) -> Release | None:
 
 
 def _require_trusted_url(url: str) -> None:
-    """Defence in depth: only ever download over HTTPS from GitHub hosts. The URL
-    already comes from the TLS-authenticated API of the pinned repo, so this just
-    guards against a surprising redirect target being handed in."""
+    """Defence in depth: only ever download over HTTPS from GitHub hosts.
+
+    With verification on, the URL comes from the TLS-authenticated API of the
+    pinned repo and this just guards against a surprising redirect target being
+    handed in. While ``cfg["insecure_ssl"]`` is on it is the last structural
+    check left — it cannot authenticate anything, but it keeps the transfer on
+    HTTPS and on a GitHub host instead of wherever a response points."""
     from urllib.parse import urlparse
 
     parsed = urlparse(url or "")
@@ -236,20 +261,24 @@ def _require_trusted_url(url: str) -> None:
 
 
 def release_page_url(release: Release) -> str:
-    """The release's own page, or the project page when that URL isn't one we
+    """The release's own page, or the releases list when that URL isn't one we
     trust.
 
     ``html_url`` is whatever the GitHub API response carried, and the UI hands
     it to ``webbrowser.open`` — which passes anything with a scheme on to the
     OS URL handler, so a non-HTTPS or non-GitHub value there would be a launch
     vector rather than a broken link. Same host check the download path uses.
+
+    The fallback is the releases list, not the project page: whoever got here
+    clicked "Open release page" to download something, and the list is one
+    click from every release rather than a repository root to navigate out of.
     """
     url = getattr(release, "html_url", "") or ""
     try:
         _require_trusted_url(url)
     except ValueError:
-        log.warning("ignoring an untrusted release page URL %r — opening %s", url, REPO_URL)
-        return REPO_URL
+        log.warning("ignoring an untrusted release page URL %r — opening %s", url, RELEASES_URL)
+        return RELEASES_URL
     return url
 
 
@@ -273,7 +302,7 @@ def download_asset(
     _require_trusted_url(url)
 
     dest = Path(dest)
-    with _verified_get(url, stream=True, timeout=timeout) as resp:
+    with _get(url, stream=True, timeout=timeout) as resp:
         # requests follows redirects — including cross-host and https→http
         # ones — so re-check the URL the transfer actually came from, not just
         # the one we started at.
@@ -305,8 +334,8 @@ def verify_download(
 
     This proves integrity, not authenticity: the expected digest arrives in the
     same API response as the download URL, so both move together if that
-    response is forged. Authenticity comes from :func:`_verified_get` keeping
-    the certificate check on for both requests."""
+    response is forged. Authenticity comes from the certificate check in
+    :func:`_get` — and only while ``cfg["insecure_ssl"]`` is off (ADR-0006)."""
     path = Path(path)
     actual_size = path.stat().st_size
     if expected_size and actual_size != expected_size:

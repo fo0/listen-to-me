@@ -132,7 +132,7 @@ class Tray:
         menu.addAction(act_quit)
 
         self._icon.setContextMenu(menu)
-        # Left click / double click the tray icon: start/stop like the default item.
+        # Left click / double click the tray icon: open the main window.
         self._icon.activated.connect(self._on_activated)
         self._icon.show()
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -194,10 +194,32 @@ class Tray:
             self._retry_timer = None
 
     def _on_activated(self, reason) -> None:
-        # Double-click only (matches the original tray default action) so a
-        # stray single left-click doesn't start a recording.
-        if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
-            self.app.post("toggle")
+        """Left-click or double-click the icon: open the main window.
+
+        Both reasons, not one of them — Windows delivers a double-click as
+        Trigger followed by DoubleClick, and someone who "clicks the icon"
+        means the same thing either way. `_open_settings` raises an already
+        open window instead of building a second one, so the duplicate event
+        costs nothing.
+
+        This used to toggle a recording. Starting one is what the hotkey is
+        for: it fires from whatever field the text should land in, whereas
+        reaching for the tray has already moved the focus away from it. A stray
+        click that silently starts a take is the worse of the two failure
+        modes, so the click opens the window and the menu's "Start recording"
+        stays the explicit route.
+
+        The floating icon (`overlay.py`) deliberately keeps the toggle on its
+        left click, and that is not an inconsistency to iron out: it is built
+        not to accept focus, so clicking it leaves the caret in the field the
+        transcript is meant for. The tray icon has no such guarantee — the
+        shell's notification area takes the activation.
+        """
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self.app.post("settings")
 
     def set_state(self, state: str) -> None:
         if self._icon is None:

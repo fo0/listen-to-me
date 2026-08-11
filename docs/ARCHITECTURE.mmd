@@ -98,6 +98,8 @@ flowchart TD
     TranscriberPK -->|"first-use download (ONNX)"| HF
     Assistant -->|"chat/completions"| LLM
     Updater -->|"check/download"| GH
+    Updater -->|"verify="| Net
+    Assistant -->|"verify="| Net
     App --> Updater
     App -->|"record text"| History
     App --> Autostart

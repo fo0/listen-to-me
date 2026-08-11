@@ -123,7 +123,8 @@ portable single file, no installation. The app appears in the system tray.
    model transcribes (and the assistant cleans up, if enabled).
 5. The text is inserted at the cursor. Done.
 
-Double-clicking the tray icon toggles recording too.
+Clicking the tray icon (once or twice) opens the app window — recording is
+started by the hotkey, or from the tray menu's **Start recording**.
 
 ## Settings
 
@@ -132,7 +133,11 @@ recording hotkey, spoken language, Whisper model, backend + device, microphone
 and startup behaviour. Everything it sets (and much more) can be changed later
 here:
 
-Right-click the tray icon → **Settings…**
+Click the tray icon, or right-click it → **Settings…**
+
+The window footer shows the installed version next to a **GitHub** and a
+**Releases** link — the latter goes straight to the download page, which is
+what you need when a build can't update itself.
 
 | Tab              | Options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -216,7 +221,7 @@ settings window writes the same keys.
 | `beam_size`                                     | `5`                           | Decoding beam size; `1` = greedy, ≈1.5–2× faster (faster-whisper only)                                                                                                   |
 | `history_enabled` / `history_max`               | `true` / `200`                | Keep a local transcript history (never audio), and how many entries                                                                                                      |
 | `update_check_on_start` / `include_prereleases` | `true` / `false`              | Check GitHub Releases on launch, and whether pre-releases count                                                                                                          |
-| `insecure_ssl`                                  | `false`                       | Skip TLS verification for model downloads and the assistant — corporate proxies only (updates always verify)                                                             |
+| `insecure_ssl`                                  | `false`                       | Skip TLS verification for every connection — model downloads, assistant **and updates**; corporate proxies only                                                          |
 | `overlay.enabled`                               | `true`                        | The floating always-on-top status icon                                                                                                                                   |
 | `overlay.show_preview`                          | `true`                        | Show the transcript in a bubble after a recording                                                                                                                        |
 | `overlay.live_preview`                          | `false`                       | Experimental rolling preview while you speak (costs CPU)                                                                                                                 |
@@ -416,20 +421,23 @@ certificate. Python does not trust it, so the model download, the update check
 and the assistant fail with errors like `CERTIFICATE_VERIFY_FAILED` or
 `SSLError`. If that hits you, enable **Settings → General → Ignore SSL
 certificate errors (corporate proxy)** — it disables TLS certificate
-verification for the model downloads from Hugging Face and the assistant API.
+verification for **every** connection the app makes: the model downloads from
+Hugging Face, the assistant API and the updater.
 
 **Security note:** with the option enabled, those connections are still
 encrypted but no longer authenticated — a man-in-the-middle would not be
 detected. Only enable it inside a network you trust, and leave it off otherwise.
 
-**Updates are excluded from the option** and always verify the certificate: an
-update replaces the app's own program file, so accepting an unauthenticated
-download would let whoever intercepts the connection run code on your machine.
-The asset's SHA256 digest does not close that gap either — it arrives in the
-same API response as the download URL. Behind an intercepting proxy the updater
-therefore reports that it could not verify GitHub's certificate; download the
-release manually from the [releases page](https://github.com/fo0/listen-to-me/releases)
-instead.
+**Updates are included, and that is the part to think about.** An update
+replaces the app's own program file, so with the option enabled you are trusting
+whatever the connection delivers to run on your machine — the asset's SHA256
+digest does not close that gap, because it arrives in the same API response as
+the download URL. What still applies either way: the download must come over
+HTTPS from a GitHub host (before and after redirects), its size and SHA256 must
+match the release, every unverified request is written to the log, and the
+install dialog says so before the download starts. If you would rather not take
+that trade, leave the option off and fetch the release manually from the
+[releases page](https://github.com/fo0/listen-to-me/releases).
 
 ### The app doesn't start with Windows
 

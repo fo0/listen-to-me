@@ -1350,7 +1350,7 @@ def _autostart_reporting():
 
 
 def _updater_logic():
-    from listen_to_me import updater
+    from listen_to_me import RELEASES_URL, updater
 
     assert updater.parse_version("v2026.07.19.11") == (2026, 7, 19, 11)
     assert updater.parse_version("0.0.0.dev0") == (0, 0, 0, 0)
@@ -1374,6 +1374,18 @@ def _updater_logic():
     rels = [mk("v2026.07.19.11"), mk("v2026.07.19.7"), mk("v2026.07.19.3")]
     newer = updater.newer_releases(rels, current=(2026, 7, 19, 5))
     assert [r.tag for r in newer] == ["v2026.07.19.11", "v2026.07.19.7"]
+
+    # "Open release page" hands its result to webbrowser.open, so a page URL
+    # the API response invented must never reach the OS URL handler. The
+    # fallback is the releases list — whoever clicked wants a download, not a
+    # repository root to navigate out of.
+    trusted = "https://github.com/fo0/listen-to-me/releases/tag/v1"
+    good, bad = mk("v1"), mk("v1")
+    good.html_url = trusted
+    assert updater.release_page_url(good) == trusted
+    for hostile in ("file:///etc/passwd", "http://evil.example/x", "", "javascript:alert(1)"):
+        bad.html_url = hostile
+        assert updater.release_page_url(bad) == RELEASES_URL, hostile
     assert updater.download_path_for(Path("/x/ListenToMe.exe")).name == "ListenToMe.update.exe"
 
     # The relaunch chain must not inherit PyInstaller's bootloader variables,
@@ -1426,13 +1438,16 @@ def _updater_logic():
                 pass
 
 
-def _updater_forces_tls_verification():
-    """The update path never honours the insecure-SSL switch: the releases API
-    call and the asset download must both pass verify=True even while it is on,
-    and a certificate failure must surface as an explaining UpdateTrustError
+def _updater_follows_insecure_ssl_switch():
+    """The update path honours the insecure-SSL switch like every other
+    connection (ADR-0006, superseding ADR-0002): the releases API call and the
+    asset download verify by default and stop verifying while the switch is on
+    — a hardcoded verify= on either side is the regression this guards against.
+    Independent of the switch: the HTTPS/GitHub check on the URL the transfer
+    really came from (the only structural guard left once verification is off),
+    and a certificate failure surfacing as an explaining UpdateTrustError
     instead of a bare SSLError. requests is faked at the module boundary — it is
-    absent in the light CI env, and silently inheriting netutil.verify() here is
-    exactly the regression this guards against."""
+    absent in the light CI env."""
     import types
 
     from listen_to_me import netutil, updater
@@ -1478,38 +1493,46 @@ def _updater_forces_tls_verification():
     saved = sys.modules.get("requests")
     sys.modules["requests"] = fake
     try:
-        netutil.apply_insecure_ssl(True)
-        assert netutil.verify() is False  # the switch really is on for everyone else
         with tempfile.TemporaryDirectory() as tmp:
-            updater.fetch_releases()
-            updater.download_asset(asset_url, Path(tmp) / "asset.exe")
-            assert len(calls) == 2
-            assert all(call["verify"] is True for call in calls)
+            for insecure in (False, True):
+                netutil.apply_insecure_ssl(insecure)
+                assert netutil.verify() is not insecure
+                calls.clear()
+                updater.fetch_releases()
+                updater.download_asset(asset_url, Path(tmp) / "asset.exe")
+                assert len(calls) == 2
+                # Both requests take the switch's value — neither pins its own.
+                assert all(call["verify"] is not insecure for call in calls)
 
-            # requests follows redirects cross-host and cross-scheme; the
-            # transfer's final URL must pass the same trust check as the
-            # starting one, or a redirect would sidestep the host allowlist.
-            redirect_to.append("http://evil.example/ListenToMe.exe")
-            try:
-                updater.download_asset(asset_url, Path(tmp) / "asset2.exe")
-                raise AssertionError("a cross-host redirect was followed")
-            except ValueError:
-                pass
-            redirect_to.clear()
-
-            failing.append(True)
-            for attempt in (
-                lambda: updater.fetch_releases(),
-                lambda: updater.download_asset(asset_url, Path(tmp) / "asset.exe"),
-            ):
+                # requests follows redirects cross-host and cross-scheme; the
+                # transfer's final URL must pass the same trust check as the
+                # starting one, or a redirect would sidestep the host allowlist.
+                redirect_to.append("http://evil.example/ListenToMe.exe")
                 try:
-                    attempt()
-                    raise AssertionError("a certificate failure was not surfaced")
-                except updater.UpdateTrustError as exc:
-                    # Explains itself instead of failing silently, and says so
-                    # while the switch that would "have covered this" is on.
-                    assert "does not cover updates" in str(exc)
-                    assert "release page" in str(exc)
+                    updater.download_asset(asset_url, Path(tmp) / "asset2.exe")
+                    raise AssertionError("a cross-host redirect was followed")
+                except ValueError:
+                    pass
+                redirect_to.clear()
+
+                failing.append(True)
+                for attempt in (
+                    lambda: updater.fetch_releases(),
+                    lambda: updater.download_asset(asset_url, Path(tmp) / "asset.exe"),
+                ):
+                    try:
+                        attempt()
+                        raise AssertionError("a certificate failure was not surfaced")
+                    except updater.UpdateTrustError as exc:
+                        # Explains itself instead of failing silently, and names
+                        # the switch only while it is off. With it on there is
+                        # no certificate check left to fail, so the message must
+                        # not claim one did — that would read as "the option I
+                        # enabled did not apply".
+                        assert "release page" in str(exc)
+                        assert ("Ignore SSL certificate" in str(exc)) is not insecure
+                        assert ("could not verify" in str(exc)) is not insecure
+                failing.clear()
     finally:
         netutil.apply_insecure_ssl(False)
         if saved is None:
@@ -2167,6 +2190,28 @@ def _tray_names_the_hotkey():
         assert state_label("nonsense", stub.cfg) == "nonsense"
 
 
+def _tray_click_opens_the_window():
+    """Clicking the tray icon opens the main window — it must never start a
+    recording again. Single click and double click both count (Windows sends a
+    double click as Trigger + DoubleClick), while the right-click that only
+    opens the context menu must post nothing at all: a menu that also opened a
+    window behind itself would be its own bug."""
+    from listen_to_me import tray as tray_module
+
+    reasons = tray_module.QSystemTrayIcon.ActivationReason
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        tray = tray_module.Tray(stub)
+        for reason in (reasons.Trigger, reasons.DoubleClick):
+            stub.posts.clear()
+            tray._on_activated(reason)
+            assert stub.posts == [("settings",)], f"{reason} posted {stub.posts}"
+        for reason in (reasons.Context, reasons.MiddleClick, reasons.Unknown):
+            stub.posts.clear()
+            tray._on_activated(reason)
+            assert not stub.posts, f"{reason} posted {stub.posts}"
+
+
 def _tray_survives_a_missing_notification_area():
     """Started by the OS autostart, the app can be up before the shell is: the
     tray icon is dropped and Qt still reports it visible. Tray.start() must keep
@@ -2260,16 +2305,20 @@ def _gui_construction():
         window.home._toggle()  # the double-click's second click
         assert stub.posts[posts_before:] == [("toggle",)]
 
-        # Footer, bottom left: the GitHub button next to the version is a real
-        # control that opens the project page — before it, the only route to
-        # the repository was the tray menu. Clicked with the browser patched
-        # out; a check may never launch anything.
-        from listen_to_me import REPO_URL
+        # Footer, bottom left: the GitHub and Releases buttons next to the
+        # version are real controls that open the project and the download page
+        # — before them, the only route to either was the tray menu. Clicked
+        # with the browser patched out; a check may never launch anything.
+        from listen_to_me import RELEASES_URL, REPO_URL
         from listen_to_me import settings_ui as settings_ui_module
 
-        assert window.repo_button.isEnabled()
-        assert REPO_URL in window.repo_button.toolTip()
-        assert window.repo_button.accessibleName(), "the footer link has no accessible name"
+        for button, url in (
+            (window.repo_button, REPO_URL),
+            (window.releases_button, RELEASES_URL),
+        ):
+            assert button.isEnabled()
+            assert url in button.toolTip()
+            assert button.accessibleName(), "a footer link has no accessible name"
 
         opened: list[str] = []
 
@@ -2288,13 +2337,17 @@ def _gui_construction():
         try:
             settings_ui_module.webbrowser = _FakeBrowser
             window.repo_button.click()
-            assert opened == [REPO_URL], opened
+            window.releases_button.click()
+            # Distinct targets: a Releases link that lands on the project page
+            # is the one thing this button must not do.
+            assert opened == [REPO_URL, RELEASES_URL], opened
             # A browser that refuses to open must say so — an unreported
             # failure leaves a button that looks alive and does nothing.
             settings_ui_module.webbrowser = _DeadBrowser
-            window.footer_status.setText("")
-            window.repo_button.click()
-            assert window.footer_status.text(), "a failed browser launch reports nothing"
+            for button in (window.repo_button, window.releases_button):
+                window.footer_status.setText("")
+                button.click()
+                assert window.footer_status.text(), "a failed browser launch reports nothing"
         finally:
             settings_ui_module.webbrowser = real_browser
             window._footer_status_timer.stop()
@@ -2816,7 +2869,7 @@ _LIGHT_CHECKS = [
     ("autostart entry refresh", _autostart_refresh),
     ("autostart reports a failed registration", _autostart_reporting),
     ("updater version logic", _updater_logic),
-    ("updater forces TLS verification", _updater_forces_tls_verification),
+    ("updater follows the insecure-SSL switch", _updater_follows_insecure_ssl_switch),
     ("insecure SSL switch", _insecure_ssl_switch),
     ("insecure SSL huggingface httpx API", _insecure_ssl_hub_httpx),
     ("std stream stub (windowed build)", _std_stream_stub),
@@ -2835,6 +2888,7 @@ _LIGHT_CHECKS = [
     ("disabled buttons look disabled", _theme_disabled_visible),
     ("voice mic widget", _voice_mic_widget),
     ("tray names the hotkey", _tray_names_the_hotkey),
+    ("tray click opens the window", _tray_click_opens_the_window),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("Qt UI construction", _gui_construction),
 ]

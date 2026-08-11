@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, REPO_URL, __version__
+from . import APP_NAME, RELEASES_URL, REPO_URL, __version__
 from .assistant import config_problem as assistant_config_problem
 from .choices import (
     BACKENDS,
@@ -431,6 +431,9 @@ class SettingsWindow(QDialog):
         version_label = QLabel(f"{APP_NAME} {__version__}")
         version_label.setProperty("role", "hint")
         footer.addWidget(version_label)
+        # A released version string is a good deal longer than the dev one, and
+        # without this the two link buttons sit flush against it.
+        footer.addSpacing(8)
         # Next to the version: the link to the GitHub project page — the same
         # target as the tray's "Project page" entry, but reachable from the
         # window the user is already in. A QPushButton, not a QLabel carrying
@@ -449,6 +452,22 @@ class SettingsWindow(QDialog):
         self.repo_button.setAutoDefault(False)
         self.repo_button.clicked.connect(self._open_repo)
         footer.addWidget(self.repo_button)
+        # And next to it the releases page. Same reasoning as the version label
+        # standing right here: someone reading which version they run is one
+        # question away from "is there a newer one, and what changed?" — the
+        # Updates page answers that in-app, this is the way out for when it
+        # can't (no self-update on this build, an update that won't download,
+        # an older release worth a look).
+        self.releases_button = QPushButton("Releases")
+        self.releases_button.setProperty("link", True)
+        self.releases_button.setIcon(glyph_icon("download", colors["muted"], ACCENT, size=14))
+        self.releases_button.setIconSize(QSize(14, 14))
+        self.releases_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.releases_button.setToolTip(f"Open the releases page on GitHub — {RELEASES_URL}")
+        self.releases_button.setAccessibleName("Open the releases page on GitHub")
+        self.releases_button.setAutoDefault(False)
+        self.releases_button.clicked.connect(self._open_releases)
+        footer.addWidget(self.releases_button)
         footer.addSpacing(10)
         self.footer_status = QLabel("")
         self.footer_status.setProperty("role", "hint")
@@ -873,18 +892,18 @@ class SettingsWindow(QDialog):
         self.chk_insecure_ssl = self._checkbox(
             "Ignore SSL certificate errors (corporate proxy) — insecure",
             self.cfg["insecure_ssl"],
-            "Skip TLS certificate verification for model downloads and the assistant. "
-            "Only enable behind a corporate proxy that intercepts HTTPS with its own "
-            "(self-signed) certificate — connections are then encrypted but no longer "
-            "authenticated. Updates are excluded: they always verify the certificate, "
-            "because an update replaces the program file.",
+            "Skip TLS certificate verification for every connection: model downloads, "
+            "the assistant and updates. Only enable behind a corporate proxy that "
+            "intercepts HTTPS with its own (self-signed) certificate — connections are "
+            "then encrypted but no longer authenticated. Updates are included, and an "
+            "update replaces the program file, so only enable this in a network you trust.",
         )
         nv.addWidget(self.chk_insecure_ssl)
         nv.addWidget(self._hint(
             "⚠ Only for corporate proxies that intercept HTTPS with their own certificate. "
-            "Connections stay encrypted but are no longer authenticated. Updates are "
-            "excluded and keep verifying — behind such a proxy, download them manually "
-            "from the release page."
+            "Connections stay encrypted but are no longer authenticated. This includes "
+            "updates: the downloaded program file that replaces this one is then no "
+            "longer proven to come from GitHub."
         ))
         layout.addWidget(network)
 
@@ -1481,6 +1500,7 @@ class SettingsWindow(QDialog):
                     item.setIcon(glyph_icon(glyph, colors["muted"], ACCENT, size=18))
             self.home.restyle_icons(colors["muted"], ACCENT)
             self.repo_button.setIcon(glyph_icon("link", colors["muted"], ACCENT, size=14))
+            self.releases_button.setIcon(glyph_icon("download", colors["muted"], ACCENT, size=14))
             self._render_help()
         except Exception:
             log.debug("could not restyle the theme-dependent visuals", exc_info=True)
@@ -2284,19 +2304,28 @@ class SettingsWindow(QDialog):
         self.update_button.setEnabled(True)
 
     def _open_repo(self) -> None:
-        """Open the GitHub project page (footer button, bottom left).
+        """Open the GitHub project page (footer button, bottom left)."""
+        self._open_project_url(REPO_URL, "project page")
 
-        REPO_URL is a package constant, not network-supplied text, so it needs
-        none of the scheme/host checks the changelog and release links get.
-        The launch itself can still fail (no browser registered, a broken
-        BROWSER env), and webbrowser.open() reports that as False instead of
-        raising — unreported, the button would just look dead.
+    def _open_releases(self) -> None:
+        """Open the GitHub releases page (footer button, bottom left)."""
+        self._open_project_url(RELEASES_URL, "releases page")
+
+    def _open_project_url(self, url: str, what: str) -> None:
+        """Hand one of the project's own URLs to the browser.
+
+        Both are built from the REPO_URL package constant, not from
+        network-supplied text, so they need none of the scheme/host checks the
+        changelog and release links get. The launch itself can still fail (no
+        browser registered, a broken BROWSER env), and webbrowser.open()
+        reports that as False instead of raising — unreported, the button would
+        just look dead.
         """
         opened = False
         try:
-            opened = webbrowser.open(REPO_URL)
+            opened = webbrowser.open(url)
         except Exception:
-            log.exception("could not open the project page")
+            log.exception("could not open the %s", what)
         if not opened:
             # The URL itself stays in the tooltip; a full URL here would
             # stretch the footer and push the action buttons around.
@@ -2333,13 +2362,26 @@ class SettingsWindow(QDialog):
             webbrowser.open(updater.release_page_url(release))
             return
         size = updater.format_size(release.asset_size)
+        # The switch covers updates too (ADR-0006), and this dialog is the last
+        # point where the user can still decide against an unauthenticated
+        # program file — the checkbox on the General page was a different day.
+        # netutil, not self.cfg: it holds the state the download will run with.
+        from . import netutil
+
+        insecure = ""
+        if not netutil.verify():
+            insecure = (
+                '\n\n⚠ "Ignore SSL certificate errors" is on, so this download is not '
+                "authenticated: whatever intercepts the connection could supply the "
+                "program file that replaces this one. Only continue in a network you trust."
+            )
         confirm = QMessageBox.question(
             self,
             APP_NAME,
             f"Download {release.tag}{f' ({size})' if size else ''} and restart "
             f"{APP_NAME} to update?\n\n"
             f"{APP_NAME} will close, replace its program file and reopen automatically.\n\n"
-            "The download is not code-signed (Windows SmartScreen may warn).",
+            f"The download is not code-signed (Windows SmartScreen may warn).{insecure}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

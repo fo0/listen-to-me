@@ -126,8 +126,9 @@ icons in the overflow (<b>^</b>) next to the clock: open it and drag the
 {APP_NAME} icon onto the taskbar to pin it. With
 <b>Start minimized to the system tray</b> ticked, no window opens at logon by
 design &mdash; the floating icon (<b>Settings → Overlay</b>) or the tray icon is
-then the only sign of life. Starting the app a second time never opens a second
-copy; it brings the running one to the front.</p>
+then the only sign of life. Clicking the tray icon brings the window back.
+Starting the app a second time never opens a second copy; it brings the running
+one to the front.</p>
 
 <p><b>Running from a source checkout?</b> Autostart needs the package to be
 installed in the environment (<code>pip install -e .</code>), because the system
@@ -205,6 +206,14 @@ restart needed.</li>
 <li><b>Security note:</b> connections stay encrypted but are no longer
 authenticated &mdash; a man-in-the-middle would not be detected. Only enable
 this inside a network you trust, and leave it off otherwise.</li>
+<li><b>This includes updates</b>, which replace {APP_NAME}&rsquo;s own program
+file: with the option on, the downloaded exe is no longer proven to come from
+GitHub. It must still arrive over HTTPS from a GitHub host and match the
+release&rsquo;s size and SHA256 &mdash; but those come from the same response as
+the download link, so they prove the file arrived intact, not that it is
+genuine. The install dialog says so before the download starts; if you would
+rather not take that trade, leave the option off and download releases
+manually.</li>
 </ul>
 """,
     },
