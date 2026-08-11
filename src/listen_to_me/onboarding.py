@@ -259,9 +259,10 @@ class OnboardingWizard(QWizard):
         )
         layout.addWidget(self.chk_start_in_tray)
         layout.addWidget(_hint(
-            f"{APP_NAME} lives in the system tray — right-click the tray icon "
-            "for Settings, Help and Quit. Every choice made here (and much "
-            "more) can be changed there at any time."
+            f"{APP_NAME} lives in the system tray — click the tray icon to open "
+            "this window again, right-click it for Settings, Help and Quit. "
+            "Every choice made here (and much more) can be changed there at "
+            "any time."
         ))
         layout.addStretch(1)
         return page

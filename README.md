@@ -123,7 +123,8 @@ portable single file, no installation. The app appears in the system tray.
    model transcribes (and the assistant cleans up, if enabled).
 5. The text is inserted at the cursor. Done.
 
-Double-clicking the tray icon toggles recording too.
+Clicking the tray icon (once or twice) opens the app window — recording is
+started by the hotkey, or from the tray menu's **Start recording**.
 
 ## Settings
 
@@ -132,7 +133,11 @@ recording hotkey, spoken language, Whisper model, backend + device, microphone
 and startup behaviour. Everything it sets (and much more) can be changed later
 here:
 
-Right-click the tray icon → **Settings…**
+Click the tray icon, or right-click it → **Settings…**
+
+The window footer shows the installed version next to a **GitHub** and a
+**Releases** link — the latter goes straight to the download page, which is
+what you need when a build can't update itself.
 
 | Tab              | Options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import APP_NAME, REPO_URL, __version__
+from . import APP_NAME, RELEASES_URL, REPO_URL, __version__
 from .assistant import config_problem as assistant_config_problem
 from .choices import (
     BACKENDS,
@@ -431,6 +431,9 @@ class SettingsWindow(QDialog):
         version_label = QLabel(f"{APP_NAME} {__version__}")
         version_label.setProperty("role", "hint")
         footer.addWidget(version_label)
+        # A released version string is a good deal longer than the dev one, and
+        # without this the two link buttons sit flush against it.
+        footer.addSpacing(8)
         # Next to the version: the link to the GitHub project page — the same
         # target as the tray's "Project page" entry, but reachable from the
         # window the user is already in. A QPushButton, not a QLabel carrying
@@ -449,6 +452,22 @@ class SettingsWindow(QDialog):
         self.repo_button.setAutoDefault(False)
         self.repo_button.clicked.connect(self._open_repo)
         footer.addWidget(self.repo_button)
+        # And next to it the releases page. Same reasoning as the version label
+        # standing right here: someone reading which version they run is one
+        # question away from "is there a newer one, and what changed?" — the
+        # Updates page answers that in-app, this is the way out for when it
+        # can't (no self-update on this build, an update that won't download,
+        # an older release worth a look).
+        self.releases_button = QPushButton("Releases")
+        self.releases_button.setProperty("link", True)
+        self.releases_button.setIcon(glyph_icon("download", colors["muted"], ACCENT, size=14))
+        self.releases_button.setIconSize(QSize(14, 14))
+        self.releases_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.releases_button.setToolTip(f"Open the releases page on GitHub — {RELEASES_URL}")
+        self.releases_button.setAccessibleName("Open the releases page on GitHub")
+        self.releases_button.setAutoDefault(False)
+        self.releases_button.clicked.connect(self._open_releases)
+        footer.addWidget(self.releases_button)
         footer.addSpacing(10)
         self.footer_status = QLabel("")
         self.footer_status.setProperty("role", "hint")
@@ -1481,6 +1500,7 @@ class SettingsWindow(QDialog):
                     item.setIcon(glyph_icon(glyph, colors["muted"], ACCENT, size=18))
             self.home.restyle_icons(colors["muted"], ACCENT)
             self.repo_button.setIcon(glyph_icon("link", colors["muted"], ACCENT, size=14))
+            self.releases_button.setIcon(glyph_icon("download", colors["muted"], ACCENT, size=14))
             self._render_help()
         except Exception:
             log.debug("could not restyle the theme-dependent visuals", exc_info=True)
@@ -2284,19 +2304,28 @@ class SettingsWindow(QDialog):
         self.update_button.setEnabled(True)
 
     def _open_repo(self) -> None:
-        """Open the GitHub project page (footer button, bottom left).
+        """Open the GitHub project page (footer button, bottom left)."""
+        self._open_project_url(REPO_URL, "project page")
 
-        REPO_URL is a package constant, not network-supplied text, so it needs
-        none of the scheme/host checks the changelog and release links get.
-        The launch itself can still fail (no browser registered, a broken
-        BROWSER env), and webbrowser.open() reports that as False instead of
-        raising — unreported, the button would just look dead.
+    def _open_releases(self) -> None:
+        """Open the GitHub releases page (footer button, bottom left)."""
+        self._open_project_url(RELEASES_URL, "releases page")
+
+    def _open_project_url(self, url: str, what: str) -> None:
+        """Hand one of the project's own URLs to the browser.
+
+        Both are built from the REPO_URL package constant, not from
+        network-supplied text, so they need none of the scheme/host checks the
+        changelog and release links get. The launch itself can still fail (no
+        browser registered, a broken BROWSER env), and webbrowser.open()
+        reports that as False instead of raising — unreported, the button would
+        just look dead.
         """
         opened = False
         try:
-            opened = webbrowser.open(REPO_URL)
+            opened = webbrowser.open(url)
         except Exception:
-            log.exception("could not open the project page")
+            log.exception("could not open the %s", what)
         if not opened:
             # The URL itself stays in the tooltip; a full URL here would
             # stretch the footer and push the action buttons around.

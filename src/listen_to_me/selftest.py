@@ -2178,6 +2178,28 @@ def _tray_names_the_hotkey():
         assert state_label("nonsense", stub.cfg) == "nonsense"
 
 
+def _tray_click_opens_the_window():
+    """Clicking the tray icon opens the main window — it must never start a
+    recording again. Single click and double click both count (Windows sends a
+    double click as Trigger + DoubleClick), while the right-click that only
+    opens the context menu must post nothing at all: a menu that also opened a
+    window behind itself would be its own bug."""
+    from listen_to_me import tray as tray_module
+
+    reasons = tray_module.QSystemTrayIcon.ActivationReason
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        tray = tray_module.Tray(stub)
+        for reason in (reasons.Trigger, reasons.DoubleClick):
+            stub.posts.clear()
+            tray._on_activated(reason)
+            assert stub.posts == [("settings",)], f"{reason} posted {stub.posts}"
+        for reason in (reasons.Context, reasons.MiddleClick, reasons.Unknown):
+            stub.posts.clear()
+            tray._on_activated(reason)
+            assert not stub.posts, f"{reason} posted {stub.posts}"
+
+
 def _tray_survives_a_missing_notification_area():
     """Started by the OS autostart, the app can be up before the shell is: the
     tray icon is dropped and Qt still reports it visible. Tray.start() must keep
@@ -2271,16 +2293,20 @@ def _gui_construction():
         window.home._toggle()  # the double-click's second click
         assert stub.posts[posts_before:] == [("toggle",)]
 
-        # Footer, bottom left: the GitHub button next to the version is a real
-        # control that opens the project page — before it, the only route to
-        # the repository was the tray menu. Clicked with the browser patched
-        # out; a check may never launch anything.
-        from listen_to_me import REPO_URL
+        # Footer, bottom left: the GitHub and Releases buttons next to the
+        # version are real controls that open the project and the download page
+        # — before them, the only route to either was the tray menu. Clicked
+        # with the browser patched out; a check may never launch anything.
+        from listen_to_me import RELEASES_URL, REPO_URL
         from listen_to_me import settings_ui as settings_ui_module
 
-        assert window.repo_button.isEnabled()
-        assert REPO_URL in window.repo_button.toolTip()
-        assert window.repo_button.accessibleName(), "the footer link has no accessible name"
+        for button, url in (
+            (window.repo_button, REPO_URL),
+            (window.releases_button, RELEASES_URL),
+        ):
+            assert button.isEnabled()
+            assert url in button.toolTip()
+            assert button.accessibleName(), "a footer link has no accessible name"
 
         opened: list[str] = []
 
@@ -2299,13 +2325,17 @@ def _gui_construction():
         try:
             settings_ui_module.webbrowser = _FakeBrowser
             window.repo_button.click()
-            assert opened == [REPO_URL], opened
+            window.releases_button.click()
+            # Distinct targets: a Releases link that lands on the project page
+            # is the one thing this button must not do.
+            assert opened == [REPO_URL, RELEASES_URL], opened
             # A browser that refuses to open must say so — an unreported
             # failure leaves a button that looks alive and does nothing.
             settings_ui_module.webbrowser = _DeadBrowser
-            window.footer_status.setText("")
-            window.repo_button.click()
-            assert window.footer_status.text(), "a failed browser launch reports nothing"
+            for button in (window.repo_button, window.releases_button):
+                window.footer_status.setText("")
+                button.click()
+                assert window.footer_status.text(), "a failed browser launch reports nothing"
         finally:
             settings_ui_module.webbrowser = real_browser
             window._footer_status_timer.stop()
@@ -2846,6 +2876,7 @@ _LIGHT_CHECKS = [
     ("disabled buttons look disabled", _theme_disabled_visible),
     ("voice mic widget", _voice_mic_widget),
     ("tray names the hotkey", _tray_names_the_hotkey),
+    ("tray click opens the window", _tray_click_opens_the_window),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("Qt UI construction", _gui_construction),
 ]

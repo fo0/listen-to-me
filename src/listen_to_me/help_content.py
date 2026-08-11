@@ -126,8 +126,9 @@ icons in the overflow (<b>^</b>) next to the clock: open it and drag the
 {APP_NAME} icon onto the taskbar to pin it. With
 <b>Start minimized to the system tray</b> ticked, no window opens at logon by
 design &mdash; the floating icon (<b>Settings → Overlay</b>) or the tray icon is
-then the only sign of life. Starting the app a second time never opens a second
-copy; it brings the running one to the front.</p>
+then the only sign of life. Clicking the tray icon brings the window back.
+Starting the app a second time never opens a second copy; it brings the running
+one to the front.</p>
 
 <p><b>Running from a source checkout?</b> Autostart needs the package to be
 installed in the environment (<code>pip install -e .</code>), because the system
