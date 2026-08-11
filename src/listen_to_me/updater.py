@@ -409,6 +409,29 @@ def _swap_env() -> dict[str, str]:
     return env
 
 
+def _cmd_exe() -> str:
+    """Absolute path of the command interpreter that runs the swap batch.
+
+    A bare ``"cmd"`` is resolved through ``PATH``, and ``PATH`` is not a trust
+    boundary: a ``cmd.exe`` dropped into any directory that precedes System32
+    would be the process started here — on the one code path whose whole job is
+    to replace the running program, which makes a search-path hijack the same
+    kind of code execution the forced certificate check exists to prevent.
+    ``%COMSPEC%`` is where Windows itself keeps the interpreter;
+    ``%SystemRoot%\\System32\\cmd.exe`` covers an empty or relative COMSPEC, and
+    the bare name stays as the last resort so a stripped environment can still
+    update rather than not at all.
+    """
+    comspec = os.environ.get("COMSPEC") or ""
+    if os.path.isabs(comspec):
+        return comspec
+    system_root = os.environ.get("SystemRoot") or ""
+    if os.path.isabs(system_root):
+        return str(Path(system_root) / "System32" / "cmd.exe")
+    log.warning("neither COMSPEC nor SystemRoot is usable — falling back to PATH for cmd.exe")
+    return "cmd"
+
+
 def apply_update_windows(new_exe: Path, target: Path | None = None) -> None:
     """Swap the running exe with `new_exe` and relaunch it (Windows only). The
     caller MUST quit the app right after, so the detached batch's retrying move
@@ -422,6 +445,6 @@ def apply_update_windows(new_exe: Path, target: Path | None = None) -> None:
     # CREATE_NO_WINDOW: hidden console (no flashing window, console tools work);
     # the child still outlives this process.
     subprocess.Popen(
-        ["cmd", "/c", str(bat)], creationflags=0x08000000, close_fds=True, env=_swap_env()
+        [_cmd_exe(), "/c", str(bat)], creationflags=0x08000000, close_fds=True, env=_swap_env()
     )
     log.info("update swap scheduled: %s -> %s", new_exe, target)
