@@ -294,7 +294,10 @@ def input_device_choices(current_index: int | None = None) -> tuple[list[str], s
             values.append(entry)
             if current_index == idx:
                 current = entry
-    except Exception as exc:
+    except Exception:
+        # The exception text belongs in the log, not in a dropdown: a user
+        # picking a microphone gets no use out of "PortAudioError: ..." or a
+        # missing-module traceback line, and it is already logged in full.
         log.exception("could not list audio devices")
-        values.append(f"(error listing devices: {exc})")
+        values.append("(could not read the microphone list — see the log file)")
     return values, current
