@@ -122,6 +122,9 @@ class OnboardingWizard(QWizard):
         rh.addWidget(pick)
         layout.addWidget(row)
         self._hotkey_error = _hint("")
+        # Styled as an error, not as one more grey hint — it sits directly
+        # above the explanatory hint below and is the reason Next refused.
+        self._hotkey_error.setProperty("role", "error")
         layout.addWidget(self._hotkey_error)
         layout.addWidget(_hint(
             "Pick a combination that no other application uses. The default "

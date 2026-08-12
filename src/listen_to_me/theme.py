@@ -285,6 +285,10 @@ def _qss(t: dict) -> str:
     QStackedWidget > QWidget {{ background: {t["window"]}; }}
 
     QLabel[role="hint"] {{ color: {t["muted"]}; }}
+    /* An inline validation error must not look like the help text next to it:
+       in muted grey the two are indistinguishable, so the message reads as one
+       more hint rather than as the reason the wizard refused to continue. */
+    QLabel[role="error"] {{ color: {t["danger"]}; font-weight: 600; }}
     QLabel[role="title"] {{ font-size: 15pt; font-weight: 600; }}
 
     /* Home page ------------------------------------------------------- */
