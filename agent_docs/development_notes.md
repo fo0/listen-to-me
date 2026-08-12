@@ -34,3 +34,7 @@ pyinstaller --noconfirm --clean --onefile --windowed --name ListenToMe \
   --collect-all faster_whisper --collect-all ctranslate2 \
   --collect-all onnxruntime --collect-all av src/listen_to_me/__main__.py
 ```
+
+That is the faster-whisper-only subset. `release.yml` additionally installs
+`openvino-genai>=2025.2`, `huggingface_hub>=0.23` and `onnx-asr[cpu,hub]>=0.12`
+and passes `--collect-all openvino --collect-all openvino_genai --collect-all openvino_tokenizers --collect-all onnx_asr`, which is why the published exe offers the OpenVINO and Parakeet backends and a local build of the command above does not. Reproduce the release exactly when debugging a backend-specific packaging problem.

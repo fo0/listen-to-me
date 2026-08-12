@@ -516,6 +516,23 @@ pyinstaller --noconfirm --onefile --windowed --name ListenToMe --icon build/icon
 
 The result is `dist/ListenToMe.exe`.
 
+That build ships the **faster-whisper backend only**. The released exe also
+contains the optional OpenVINO and Parakeet backends — selecting one of them in
+a build without them fails with a "needs the optional package" message instead.
+To match the release, install their packages and collect them too (this is
+exactly what [`release.yml`](.github/workflows/release.yml) does):
+
+```bash
+pip install "openvino-genai>=2025.2" "huggingface_hub>=0.23" "onnx-asr[cpu,hub]>=0.12"
+```
+
+and add these four flags to the `pyinstaller` call above:
+
+```
+--collect-all openvino --collect-all openvino_genai \
+--collect-all openvino_tokenizers --collect-all onnx_asr
+```
+
 ## Releases (CI)
 
 A manual _Run workflow_ (`workflow_dispatch`) on
