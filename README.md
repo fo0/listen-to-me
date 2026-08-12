@@ -486,6 +486,14 @@ pip install -e .                 # optional backends: pip install -e ".[openvino
 listen-to-me                     # or: listen-to-me-gui (same app, started without a console window)
 ```
 
+On a minimal Linux install PySide6 also needs the Qt runtime libraries, or the
+app aborts with `could not load the Qt platform plugin`. On Debian/Ubuntu that
+is the same set CI installs:
+
+```bash
+sudo apt-get install libgl1 libegl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libfreetype6
+```
+
 ### Command line
 
 The app is configured in its settings window, not by flags — there are only three:
@@ -515,6 +523,23 @@ pyinstaller --noconfirm --onefile --windowed --name ListenToMe --icon build/icon
 ```
 
 The result is `dist/ListenToMe.exe`.
+
+That build ships the **faster-whisper backend only**. The released exe also
+contains the optional OpenVINO and Parakeet backends — selecting one of them in
+a build without them fails with a "needs the optional package" message instead.
+To match the release, install their packages and collect them too (this is
+exactly what [`release.yml`](.github/workflows/release.yml) does):
+
+```bash
+pip install "openvino-genai>=2025.2" "huggingface_hub>=0.23" "onnx-asr[cpu,hub]>=0.12"
+```
+
+and add these four flags to the `pyinstaller` call above:
+
+```
+--collect-all openvino --collect-all openvino_genai \
+--collect-all openvino_tokenizers --collect-all onnx_asr
+```
 
 ## Releases (CI)
 
