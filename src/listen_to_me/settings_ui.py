@@ -1174,8 +1174,13 @@ class SettingsWindow(QDialog):
         elastic_combo(self.input_combo)
         dh.addWidget(self.input_combo, 1)
         refresh = QPushButton("Refresh")
+        refresh.setAutoDefault(False)
         refresh.setToolTip("Re-scan the audio devices, e.g. after plugging in a headset.")
-        refresh.clicked.connect(self._load_devices)
+        # Not _load_devices directly: a re-scan that finds the same devices
+        # changes nothing on screen, so the button looked dead exactly in the
+        # normal case. _rescan_devices confirms on the button itself.
+        self._devices_refresh_button = refresh
+        refresh.clicked.connect(self._rescan_devices)
         dh.addWidget(refresh)
         form.addRow("Input device:", device_row)
         self._load_devices()
@@ -1664,6 +1669,28 @@ class SettingsWindow(QDialog):
         self.input_combo.clear()
         self.input_combo.addItems(values)
         self.input_combo.setCurrentText(current)
+
+    def _rescan_devices(self) -> None:
+        """Re-scan on the Refresh button and confirm that it happened.
+
+        Re-plugging a headset is the reason to press this, and the usual
+        outcome is the very same list — with no confirmation the button reads
+        as doing nothing at all. The count says what the scan actually found.
+        """
+        self._load_devices()
+        # Counted by the "<index>: <name>" shape, not by row count: the list
+        # also carries "System default" and, when enumeration failed, an
+        # inline error entry — neither is a microphone that was found.
+        found = sum(
+            1
+            for row in range(self.input_combo.count())
+            if input_device_from_label(self.input_combo.itemText(row)) is not None
+        )
+        self._flash_button(
+            self._devices_refresh_button,
+            f"{found} found ✓" if found else "None found",
+            "Refresh",
+        )
 
     def _reset_prompt(self) -> None:
         self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
