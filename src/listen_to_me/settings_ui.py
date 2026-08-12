@@ -180,6 +180,10 @@ class MuteTargetRow(QGroupBox):
         self.name_edit = QLineEdit(str(data.get("name", "")))
         self.name_edit.setPlaceholderText("App name (e.g. Discord)")
         self.name_edit.setToolTip("A label for this app — shown here only.")
+        # No form-row label to borrow a name from (the row is a free layout),
+        # so a screen reader would announce a bare "edit" here. Placeholder
+        # text is not an accessible name.
+        self.name_edit.setAccessibleName("App name")
         header.addWidget(self.name_edit, 1)
         remove = QPushButton("Remove")
         remove.setProperty("destructive", True)
@@ -213,6 +217,8 @@ class MuteTargetRow(QGroupBox):
         kh.setContentsMargins(0, 0, 0, 0)
         self.hotkey_edit = QLineEdit(str(data.get("hotkey", "")))
         self.hotkey_edit.setPlaceholderText("e.g. <ctrl>+<alt>+m")
+        # The form row's label buddies the containing widget, not this field.
+        self.hotkey_edit.setAccessibleName("Mute keybind")
         self.hotkey_edit.setToolTip(
             "The exact combination this app has bound to mute / push-to-mute. "
             "Set the SAME combination in the app's own keybind settings."
@@ -571,6 +577,7 @@ class SettingsWindow(QDialog):
 
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
+        self.nav.setAccessibleName("Settings sections")
         sv.addWidget(self.nav, 1)
         return sidebar
 
@@ -705,6 +712,7 @@ class SettingsWindow(QDialog):
             "The key combination that starts/stops recording from any application. "
             "pynput format, e.g. <ctrl>+<alt>+<space>. Easiest: click “Change…” and press the keys."
         )
+        self.hotkey_edit.setAccessibleName("Global hotkey")
         hk.addWidget(self.hotkey_edit, 1)
         pick = QPushButton("Change…")
         pick.setToolTip("Records the next key combination you press — no typing needed.")
@@ -817,7 +825,8 @@ class SettingsWindow(QDialog):
         cr = QHBoxLayout(clipboard_row)
         cr.setContentsMargins(0, 0, 0, 0)
         cr.setSpacing(8)
-        cr.addWidget(QLabel("Copy the transcript to the clipboard:"))
+        clipboard_label = QLabel("Copy the transcript to the clipboard:")
+        cr.addWidget(clipboard_label)
         self.clipboard_combo = QComboBox()
         self.clipboard_combo.addItems([label for _, label in CLIPBOARD_COPY_MODES])
         # Normalized, not raw: a hand-edited value must show the mode that will
@@ -834,6 +843,9 @@ class SettingsWindow(QDialog):
             "A notification confirms every transcript that stays on the clipboard."
         )
         elastic_combo(self.clipboard_combo)
+        # The visible label sits beside the combo in a plain row, so make the
+        # relation explicit — otherwise the dropdown is announced unnamed.
+        clipboard_label.setBuddy(self.clipboard_combo)
         cr.addWidget(self.clipboard_combo, 1)
         bv.addWidget(clipboard_row)
         self.chk_restore = self._checkbox(
@@ -1044,6 +1056,8 @@ class SettingsWindow(QDialog):
             "Where Whisper models are downloaded to and loaded from. "
             "Leave empty to use the Hugging Face cache shown below."
         )
+        # Only a group-box title above it — that is not an accessible name.
+        self.model_dir_edit.setAccessibleName("Model download folder")
         dh.addWidget(self.model_dir_edit, 1)
         browse = QPushButton("Browse…")
         browse.setToolTip("Pick the folder models are downloaded to and loaded from.")
@@ -1123,6 +1137,7 @@ class SettingsWindow(QDialog):
             "Names, acronyms and spellings Whisper should prefer (e.g. “Kubernetes, PostgreSQL, Jira”). "
             "It biases recognition — it is NOT an instruction prompt."
         )
+        self.initial_prompt_edit.setAccessibleName("Initial prompt (domain vocabulary hint)")
         self.initial_prompt_edit.setFixedHeight(80)
         pv.addWidget(self.initial_prompt_edit)
         pv.addWidget(self._hint(
@@ -1151,6 +1166,7 @@ class SettingsWindow(QDialog):
         self.input_combo.setToolTip(
             "The microphone used for recording. “System default” follows the OS sound settings."
         )
+        self.input_combo.setAccessibleName("Input device")
         # Device names come from the OS and can be arbitrarily long.
         elastic_combo(self.input_combo)
         dh.addWidget(self.input_combo, 1)
@@ -1377,6 +1393,7 @@ class SettingsWindow(QDialog):
             "Instructions for the assistant. The transcript is sent as the user message; "
             "whatever the model returns is inserted instead of the raw transcript."
         )
+        self.a_prompt_edit.setAccessibleName("Assistant system prompt")
         self.a_prompt_edit.setMinimumHeight(160)
         pv.addWidget(self.a_prompt_edit)
         layout.addWidget(prompt, 1)
@@ -1472,6 +1489,7 @@ class SettingsWindow(QDialog):
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)  # http(s) links → default browser
         browser.setToolTip("Common problems and fixes. Links open in your web browser.")
+        browser.setAccessibleName("Help and troubleshooting")
         self._help_browser = browser
         self._render_help()
         layout.addWidget(browser, 1)

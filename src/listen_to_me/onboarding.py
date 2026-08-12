@@ -112,6 +112,9 @@ class OnboardingWizard(QWizard):
         self.hotkey_edit.setToolTip(
             "pynput format, e.g. <ctrl>+<alt>+<space>. Easiest: click “Change…” and press the keys."
         )
+        # The field sits in a plain row with no label of its own, so name it
+        # explicitly — a screen reader would announce a bare "edit" otherwise.
+        self.hotkey_edit.setAccessibleName("Recording hotkey")
         rh.addWidget(self.hotkey_edit, 1)
         pick = QPushButton("Change…")
         pick.setToolTip("Records the next key combination you press — no typing needed.")
@@ -224,6 +227,8 @@ class OnboardingWizard(QWizard):
         self.input_combo.setToolTip(
             "“System default” follows the OS sound settings — usually the right choice."
         )
+        # The form row's label buddies the containing widget, not this combo.
+        self.input_combo.setAccessibleName("Input device")
         # Device names come from the OS and can be arbitrarily long.
         elastic_combo(self.input_combo)
         rh.addWidget(self.input_combo, 1)
