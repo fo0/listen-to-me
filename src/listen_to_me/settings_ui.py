@@ -143,6 +143,9 @@ _DIAG_COOLDOWN_MS = 400
 # the button is pinned to the wider of the two — see _pin_width.
 _CHECK_LABEL = "Check now"
 _CHECKING_LABEL = "Checking…"
+# Why the install button is greyed out. A disabled control with no explanation
+# reads as broken — the same reason the export and test buttons carry one.
+_INSTALL_DISABLED_TIP = "Pick a release from the list above first — run “Check now” if it is empty."
 
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
@@ -180,6 +183,10 @@ class MuteTargetRow(QGroupBox):
         self.name_edit = QLineEdit(str(data.get("name", "")))
         self.name_edit.setPlaceholderText("App name (e.g. Discord)")
         self.name_edit.setToolTip("A label for this app — shown here only.")
+        # No form-row label to borrow a name from (the row is a free layout),
+        # so a screen reader would announce a bare "edit" here. Placeholder
+        # text is not an accessible name.
+        self.name_edit.setAccessibleName("App name")
         header.addWidget(self.name_edit, 1)
         remove = QPushButton("Remove")
         remove.setProperty("destructive", True)
@@ -213,6 +220,8 @@ class MuteTargetRow(QGroupBox):
         kh.setContentsMargins(0, 0, 0, 0)
         self.hotkey_edit = QLineEdit(str(data.get("hotkey", "")))
         self.hotkey_edit.setPlaceholderText("e.g. <ctrl>+<alt>+m")
+        # The form row's label buddies the containing widget, not this field.
+        self.hotkey_edit.setAccessibleName("Mute keybind")
         self.hotkey_edit.setToolTip(
             "The exact combination this app has bound to mute / push-to-mute. "
             "Set the SAME combination in the app's own keybind settings."
@@ -571,6 +580,7 @@ class SettingsWindow(QDialog):
 
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
+        self.nav.setAccessibleName("Settings sections")
         sv.addWidget(self.nav, 1)
         return sidebar
 
@@ -705,6 +715,7 @@ class SettingsWindow(QDialog):
             "The key combination that starts/stops recording from any application. "
             "pynput format, e.g. <ctrl>+<alt>+<space>. Easiest: click “Change…” and press the keys."
         )
+        self.hotkey_edit.setAccessibleName("Global hotkey")
         hk.addWidget(self.hotkey_edit, 1)
         pick = QPushButton("Change…")
         pick.setToolTip("Records the next key combination you press — no typing needed.")
@@ -817,7 +828,8 @@ class SettingsWindow(QDialog):
         cr = QHBoxLayout(clipboard_row)
         cr.setContentsMargins(0, 0, 0, 0)
         cr.setSpacing(8)
-        cr.addWidget(QLabel("Copy the transcript to the clipboard:"))
+        clipboard_label = QLabel("Copy the transcript to the clipboard:")
+        cr.addWidget(clipboard_label)
         self.clipboard_combo = QComboBox()
         self.clipboard_combo.addItems([label for _, label in CLIPBOARD_COPY_MODES])
         # Normalized, not raw: a hand-edited value must show the mode that will
@@ -834,6 +846,9 @@ class SettingsWindow(QDialog):
             "A notification confirms every transcript that stays on the clipboard."
         )
         elastic_combo(self.clipboard_combo)
+        # The visible label sits beside the combo in a plain row, so make the
+        # relation explicit — otherwise the dropdown is announced unnamed.
+        clipboard_label.setBuddy(self.clipboard_combo)
         cr.addWidget(self.clipboard_combo, 1)
         bv.addWidget(clipboard_row)
         self.chk_restore = self._checkbox(
@@ -1044,6 +1059,8 @@ class SettingsWindow(QDialog):
             "Where Whisper models are downloaded to and loaded from. "
             "Leave empty to use the Hugging Face cache shown below."
         )
+        # Only a group-box title above it — that is not an accessible name.
+        self.model_dir_edit.setAccessibleName("Model download folder")
         dh.addWidget(self.model_dir_edit, 1)
         browse = QPushButton("Browse…")
         browse.setToolTip("Pick the folder models are downloaded to and loaded from.")
@@ -1123,6 +1140,7 @@ class SettingsWindow(QDialog):
             "Names, acronyms and spellings Whisper should prefer (e.g. “Kubernetes, PostgreSQL, Jira”). "
             "It biases recognition — it is NOT an instruction prompt."
         )
+        self.initial_prompt_edit.setAccessibleName("Initial prompt (domain vocabulary hint)")
         self.initial_prompt_edit.setFixedHeight(80)
         pv.addWidget(self.initial_prompt_edit)
         pv.addWidget(self._hint(
@@ -1151,12 +1169,18 @@ class SettingsWindow(QDialog):
         self.input_combo.setToolTip(
             "The microphone used for recording. “System default” follows the OS sound settings."
         )
+        self.input_combo.setAccessibleName("Input device")
         # Device names come from the OS and can be arbitrarily long.
         elastic_combo(self.input_combo)
         dh.addWidget(self.input_combo, 1)
         refresh = QPushButton("Refresh")
+        refresh.setAutoDefault(False)
         refresh.setToolTip("Re-scan the audio devices, e.g. after plugging in a headset.")
-        refresh.clicked.connect(self._load_devices)
+        # Not _load_devices directly: a re-scan that finds the same devices
+        # changes nothing on screen, so the button looked dead exactly in the
+        # normal case. _rescan_devices confirms on the button itself.
+        self._devices_refresh_button = refresh
+        refresh.clicked.connect(self._rescan_devices)
         dh.addWidget(refresh)
         form.addRow("Input device:", device_row)
         self._load_devices()
@@ -1377,6 +1401,7 @@ class SettingsWindow(QDialog):
             "Instructions for the assistant. The transcript is sent as the user message; "
             "whatever the model returns is inserted instead of the raw transcript."
         )
+        self.a_prompt_edit.setAccessibleName("Assistant system prompt")
         self.a_prompt_edit.setMinimumHeight(160)
         pv.addWidget(self.a_prompt_edit)
         layout.addWidget(prompt, 1)
@@ -1472,6 +1497,7 @@ class SettingsWindow(QDialog):
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)  # http(s) links → default browser
         browser.setToolTip("Common problems and fixes. Links open in your web browser.")
+        browser.setAccessibleName("Help and troubleshooting")
         self._help_browser = browser
         self._render_help()
         layout.addWidget(browser, 1)
@@ -1643,6 +1669,28 @@ class SettingsWindow(QDialog):
         self.input_combo.clear()
         self.input_combo.addItems(values)
         self.input_combo.setCurrentText(current)
+
+    def _rescan_devices(self) -> None:
+        """Re-scan on the Refresh button and confirm that it happened.
+
+        Re-plugging a headset is the reason to press this, and the usual
+        outcome is the very same list — with no confirmation the button reads
+        as doing nothing at all. The count says what the scan actually found.
+        """
+        self._load_devices()
+        # Counted by the "<index>: <name>" shape, not by row count: the list
+        # also carries "System default" and, when enumeration failed, an
+        # inline error entry — neither is a microphone that was found.
+        found = sum(
+            1
+            for row in range(self.input_combo.count())
+            if input_device_from_label(self.input_combo.itemText(row)) is not None
+        )
+        self._flash_button(
+            self._devices_refresh_button,
+            f"{found} found ✓" if found else "None found",
+            "Refresh",
+        )
 
     def _reset_prompt(self) -> None:
         self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
@@ -2209,7 +2257,7 @@ class SettingsWindow(QDialog):
         self.update_button = QPushButton("Install selected")
         self.update_button.setProperty("accent", True)
         self.update_button.setAutoDefault(False)
-        self.update_button.setEnabled(False)
+        self._disable_install_button(_INSTALL_DISABLED_TIP)
         self.update_button.clicked.connect(self._install_selected_update)
         actions.addWidget(self.update_button)
         layout.addLayout(actions)
@@ -2258,7 +2306,7 @@ class SettingsWindow(QDialog):
         if not newer:
             self.update_status.setText("You're on the latest version.")
             self.update_changelog.clear()
-            self.update_button.setEnabled(False)
+            self._disable_install_button("You're on the latest version — there is nothing to install.")
             return
         self.update_status.setText(
             f"{len(newer)} newer release{'s' if len(newer) != 1 else ''} available."
@@ -2278,7 +2326,7 @@ class SettingsWindow(QDialog):
     def _on_update_check_failed(self, message: str) -> None:
         self._update_busy = False
         self._end_update_check()
-        self.update_button.setEnabled(False)
+        self._disable_install_button("The update check failed — run “Check now” again.")
         self.update_status.setText(f"Update check failed: {message}")
 
     def _end_update_check(self) -> None:
@@ -2286,10 +2334,21 @@ class SettingsWindow(QDialog):
         self.update_check_button.setEnabled(True)
         self.update_check_button.setText(_CHECK_LABEL)
 
+    def _disable_install_button(self, reason: str) -> None:
+        """Grey the install button out and say why, right where it is clicked.
+
+        It starts disabled and is disabled again on every outcome that offers
+        nothing to install. Without a reason on the control itself a greyed-out
+        accent button just reads as broken — same contract as the History
+        page's export button.
+        """
+        self.update_button.setEnabled(False)
+        self.update_button.setToolTip(reason)
+
     def _on_release_selected(self, row: int) -> None:
         if row < 0 or row >= len(self._releases_newer):
             self.update_changelog.clear()
-            self.update_button.setEnabled(False)
+            self._disable_install_button(_INSTALL_DISABLED_TIP)
             return
         release = self._releases_newer[row]
         self.update_changelog.setMarkdown(release.body or "_No changelog provided._")
