@@ -143,6 +143,9 @@ _DIAG_COOLDOWN_MS = 400
 # the button is pinned to the wider of the two — see _pin_width.
 _CHECK_LABEL = "Check now"
 _CHECKING_LABEL = "Checking…"
+# Why the install button is greyed out. A disabled control with no explanation
+# reads as broken — the same reason the export and test buttons carry one.
+_INSTALL_DISABLED_TIP = "Pick a release from the list above first — run “Check now” if it is empty."
 
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
@@ -2227,7 +2230,7 @@ class SettingsWindow(QDialog):
         self.update_button = QPushButton("Install selected")
         self.update_button.setProperty("accent", True)
         self.update_button.setAutoDefault(False)
-        self.update_button.setEnabled(False)
+        self._disable_install_button(_INSTALL_DISABLED_TIP)
         self.update_button.clicked.connect(self._install_selected_update)
         actions.addWidget(self.update_button)
         layout.addLayout(actions)
@@ -2276,7 +2279,7 @@ class SettingsWindow(QDialog):
         if not newer:
             self.update_status.setText("You're on the latest version.")
             self.update_changelog.clear()
-            self.update_button.setEnabled(False)
+            self._disable_install_button("You're on the latest version — there is nothing to install.")
             return
         self.update_status.setText(
             f"{len(newer)} newer release{'s' if len(newer) != 1 else ''} available."
@@ -2296,7 +2299,7 @@ class SettingsWindow(QDialog):
     def _on_update_check_failed(self, message: str) -> None:
         self._update_busy = False
         self._end_update_check()
-        self.update_button.setEnabled(False)
+        self._disable_install_button("The update check failed — run “Check now” again.")
         self.update_status.setText(f"Update check failed: {message}")
 
     def _end_update_check(self) -> None:
@@ -2304,10 +2307,21 @@ class SettingsWindow(QDialog):
         self.update_check_button.setEnabled(True)
         self.update_check_button.setText(_CHECK_LABEL)
 
+    def _disable_install_button(self, reason: str) -> None:
+        """Grey the install button out and say why, right where it is clicked.
+
+        It starts disabled and is disabled again on every outcome that offers
+        nothing to install. Without a reason on the control itself a greyed-out
+        accent button just reads as broken — same contract as the History
+        page's export button.
+        """
+        self.update_button.setEnabled(False)
+        self.update_button.setToolTip(reason)
+
     def _on_release_selected(self, row: int) -> None:
         if row < 0 or row >= len(self._releases_newer):
             self.update_changelog.clear()
-            self.update_button.setEnabled(False)
+            self._disable_install_button(_INSTALL_DISABLED_TIP)
             return
         release = self._releases_newer[row]
         self.update_changelog.setMarkdown(release.body or "_No changelog provided._")
