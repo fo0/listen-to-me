@@ -486,6 +486,14 @@ pip install -e .                 # optional backends: pip install -e ".[openvino
 listen-to-me                     # or: listen-to-me-gui (same app, started without a console window)
 ```
 
+On a minimal Linux install PySide6 also needs the Qt runtime libraries, or the
+app aborts with `could not load the Qt platform plugin`. On Debian/Ubuntu that
+is the same set CI installs:
+
+```bash
+sudo apt-get install libgl1 libegl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libfreetype6
+```
+
 ### Command line
 
 The app is configured in its settings window, not by flags — there are only three:
