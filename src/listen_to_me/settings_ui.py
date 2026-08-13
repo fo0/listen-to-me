@@ -104,6 +104,14 @@ class _UpdateSignals(QObject):
     download_cancelled = Signal()
 
 
+class _AssistantSignals(QObject):
+    """Marshals the assistant connection test's outcome from its worker thread
+    back to the Qt main thread."""
+
+    tested = Signal(str)  # what the endpoint returned for the sample sentence
+    test_failed = Signal(str)
+
+
 class _DiagSignals(QObject):
     """Marshals diagnostics results (model download, microphone/transcription
     test, hotkey test, hardware probe) from worker threads back to the Qt main
@@ -146,6 +154,21 @@ _CHECKING_LABEL = "Checking…"
 # Why the install button is greyed out. A disabled control with no explanation
 # reads as broken — the same reason the export and test buttons carry one.
 _INSTALL_DISABLED_TIP = "Pick a release from the list above first — run “Check now” if it is empty."
+
+# Assistant page: the connection-test button's idle and running labels. Pinned
+# to the wider of the two for the same reason as the update check button.
+_A_TEST_LABEL = "Test connection"
+_A_TESTING_LABEL = "Testing…"
+# Status line under the button while nothing runs — the same promise the
+# Whisper page's diagnostics make.
+_A_TEST_IDLE = "Uses the values entered above — no Save needed."
+# What the test sends. Deliberately shaped like raw dictation (no punctuation,
+# a filler word), so the reply shows not just that the endpoint answers but
+# whether the prompt and model actually clean text up.
+_A_TEST_SAMPLE = "so um this is a test of the assistant does it work"
+# How much of the reply the status line shows. Long enough to recognize the
+# sample sentence coming back, short enough not to reflow the page.
+_A_TEST_PREVIEW_CHARS = 160
 
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
@@ -306,6 +329,16 @@ class SettingsWindow(QDialog):
         self._update_busy = False
         self._updates_auto_checked = False
         self._update_download_label = ""  # version named in the progress lines
+
+        # Assistant connection test, wired before the Assistant page is built
+        # below. Kept out of the diagnostics machinery on purpose: it borrows
+        # neither the microphone nor the model, so it needs no generation, no
+        # cancel event and no hotkey pause — only a busy flag, like the update
+        # check it is modelled on.
+        self._asig = _AssistantSignals()
+        self._asig.tested.connect(self._on_assistant_tested)
+        self._asig.test_failed.connect(self._on_assistant_test_failed)
+        self._assistant_busy = False
 
         # Diagnostics state (Download model / Test transcription on the Whisper
         # page, Test microphone on the Audio page, Test hotkey on General),
@@ -1385,6 +1418,27 @@ class SettingsWindow(QDialog):
         self.a_temp_spin.setValue(self._to_float(acfg["temperature"], 0.2))
         self.a_temp_spin.setToolTip("Keep low (0.0–0.3) for faithful cleanup; higher values rewrite more freely.")
         form.addRow("Temperature:", self.a_temp_spin)
+
+        test_row = QWidget()
+        th = QHBoxLayout(test_row)
+        th.setContentsMargins(0, 0, 0, 0)
+        th.setSpacing(8)
+        self.a_test_button = QPushButton(_A_TEST_LABEL)
+        self.a_test_button.setAutoDefault(False)
+        self._pin_width(self.a_test_button, _A_TEST_LABEL, _A_TESTING_LABEL)
+        self.a_test_button.setToolTip(
+            "Send one short sample sentence to the endpoint above and show what "
+            "comes back. Uses the values currently entered — no Save needed. "
+            "Nothing is recorded, inserted or written to the history."
+        )
+        self.a_test_button.clicked.connect(self._test_assistant)
+        th.addWidget(self.a_test_button)
+        th.addStretch(1)
+        form.addRow("", test_row)
+        # elastic: the line carries a URL, an endpoint reply or an exception —
+        # all of them unbreakable words that would widen the whole page.
+        self.a_test_status = self._hint(_A_TEST_IDLE, elastic=True)
+        form.addRow("", self.a_test_status)
         layout.addWidget(conn)
 
         prompt = QGroupBox("System prompt")
@@ -1694,6 +1748,98 @@ class SettingsWindow(QDialog):
 
     def _reset_prompt(self) -> None:
         self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
+
+    # ---------------------------------------------------- assistant test
+
+    def _assistant_values(self) -> dict:
+        """The assistant config exactly as entered right now, in the shape
+        `refine()` reads.
+
+        Enabled unconditionally: the checkbox says whether dictations go
+        through the assistant, not whether the fields below may be tried. Being
+        able to verify an endpoint *before* switching it on is the point.
+        The timeout comes from the stored config — it has no field on this page.
+        """
+        stored = self.cfg["assistant"] if isinstance(self.cfg.data.get("assistant"), dict) else {}
+        return {
+            "enabled": True,
+            "base_url": self.a_url_edit.text().strip(),
+            "model": self.a_model_edit.text().strip(),
+            "api_key": self.a_key_edit.text().strip(),
+            "temperature": float(self.a_temp_spin.value()),
+            "system_prompt": (
+                self.a_prompt_edit.toPlainText().strip() or DEFAULT_ASSISTANT_PROMPT
+            ),
+            "timeout": self._to_float(stored.get("timeout"), 120.0),
+        }
+
+    def _test_assistant(self) -> None:
+        """Send one sample sentence through the assistant as configured here.
+
+        The assistant is the last configurable part of the app with no way to
+        try it: the hotkey, the microphone, the model and the updater each have
+        a button on their own page, but a wrong base URL, an unknown model name
+        or a stopped Ollama only surfaces *after* a dictation — on a worker
+        thread, as a forced notification attached to a transcript the user is
+        already waiting for. `_validate` catches the statically wrong values at
+        Save; only a real request catches the rest.
+
+        Runs off the main thread and reports through `_asig`: it is a network
+        call with the configured timeout behind it, and blocking here would
+        freeze the window (never touch Qt from the worker).
+        """
+        if self._assistant_busy:
+            return
+        values = self._assistant_values()
+        problem = assistant_config_problem(values)
+        if problem is not None:
+            # Answerable without the network: say it instantly and put the
+            # caret in the offending field, exactly as Save does.
+            field, reason = problem
+            self.a_test_status.setText(f"Cannot test — {reason}.")
+            (self.a_url_edit if field == "base_url" else self.a_model_edit).setFocus()
+            return
+        self._assistant_busy = True
+        self.a_test_button.setEnabled(False)
+        self.a_test_button.setText(_A_TESTING_LABEL)
+        timeout = values["timeout"]
+        # Name the wait: a cold local model can take a while to answer, and a
+        # button that just sits there reads as a hang rather than as patience.
+        self.a_test_status.setText(
+            f"Sending a sample sentence to {values['base_url']} — "
+            f"waiting up to {timeout:.0f} s…"
+        )
+
+        def work():
+            try:
+                from . import assistant
+
+                self._asig.tested.emit(assistant.refine(_A_TEST_SAMPLE, values))
+            except Exception as exc:  # surfaced in the UI, never raised at the user
+                self._asig.test_failed.emit(str(exc))
+
+        threading.Thread(target=work, name="assistant-test", daemon=True).start()
+
+    def _on_assistant_tested(self, reply: str) -> None:
+        self._end_assistant_test()
+        # What came back, not just "OK": an endpoint can answer perfectly while
+        # the model or the prompt turns the sentence into a translation, a
+        # commentary or an empty pleasantry — and that is precisely what would
+        # then be inserted instead of the dictation.
+        preview = " ".join(reply.split())
+        if len(preview) > _A_TEST_PREVIEW_CHARS:
+            preview = preview[:_A_TEST_PREVIEW_CHARS].rstrip() + "…"
+        self.a_test_status.setText(f"Connection works ✓ — the endpoint returned: “{preview}”")
+
+    def _on_assistant_test_failed(self, message: str) -> None:
+        self._end_assistant_test()
+        self.a_test_status.setText(f"Test failed: {message}")
+
+    def _end_assistant_test(self) -> None:
+        """Hand the button back to the user (both outcomes)."""
+        self._assistant_busy = False
+        self.a_test_button.setEnabled(True)
+        self.a_test_button.setText(_A_TEST_LABEL)
 
     # --------------------------------------------------------- diagnostics
 

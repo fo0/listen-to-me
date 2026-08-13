@@ -2413,6 +2413,57 @@ def _gui_construction():
         assert not window._update_busy
         assert "Could not apply update" in window.update_status.text()
 
+        # Assistant connection test. It is the only subsystem whose
+        # misconfiguration used to surface after the fact — on a worker thread,
+        # attached to a dictation already spoken — so the button must (a) not
+        # resize mid-click, (b) refuse a statically broken config instantly
+        # without touching the network, and (c) report BOTH outcomes and hand
+        # the button back either way. Driven through the slots, never through
+        # the worker: a check may not make a request or wait on a thread.
+        from listen_to_me.settings_ui import _A_TEST_LABEL, _A_TESTING_LABEL
+
+        idle_width = _laid_out_width(window.a_test_button)
+        window.a_test_button.setText(_A_TESTING_LABEL)
+        assert _laid_out_width(window.a_test_button) == idle_width, (
+            "the assistant test button resizes when it switches to the busy label"
+        )
+        window.a_test_button.setText(_A_TEST_LABEL)
+
+        # The values a test uses are the ones on screen, saved or not — and the
+        # enabled checkbox must not gate it: verifying an endpoint BEFORE
+        # switching the assistant on is the point of the button.
+        window.chk_a_enabled.setChecked(False)
+        window.a_url_edit.setText("http://localhost:11434/v1")
+        window.a_model_edit.setText("llama3.2")
+        values = window._assistant_values()
+        assert values["enabled"] and values["model"] == "llama3.2", values
+        assert values["base_url"] == "http://localhost:11434/v1", values
+
+        # A URL without a scheme is answerable without any request: it must be
+        # refused on the spot, not by starting a thread that fails later.
+        window.a_url_edit.setText("localhost:11434/v1")
+        window._test_assistant()
+        assert not window._assistant_busy, "a statically invalid config started a request"
+        assert window.a_test_button.isEnabled()
+        assert "Cannot test" in window.a_test_status.text(), window.a_test_status.text()
+
+        # Both outcomes: the reply is shown (an endpoint can answer and still
+        # return something unusable — that is what would be inserted), the
+        # error is shown verbatim, and the button comes back in either case.
+        window.a_url_edit.setText("http://localhost:11434/v1")
+        for drive, expected in (
+            (lambda: window._on_assistant_tested("This is a test of the assistant."), "test of the assistant"),
+            (lambda: window._on_assistant_test_failed("Connection refused"), "Connection refused"),
+        ):
+            window._assistant_busy = True
+            window.a_test_button.setEnabled(False)
+            window.a_test_button.setText(_A_TESTING_LABEL)
+            drive()
+            assert not window._assistant_busy
+            assert window.a_test_button.isEnabled()
+            assert window.a_test_button.text() == _A_TEST_LABEL
+            assert expected in window.a_test_status.text(), window.a_test_status.text()
+
         window._show_page("History")  # force History render (lazy on first view)
         assert window.stack.currentIndex() == window._history_index
         window._refresh_history()
