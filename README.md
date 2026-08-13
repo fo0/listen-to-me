@@ -38,11 +38,14 @@ standalone system-tray app that works in _every_ application.
   your live microphone levels while recording, and shows an orange mic glyph
   while transcribing. Click it to start/stop, right-click for a menu.
   Optionally shows the transcript in a bubble — after each recording and/or
-  as an experimental **live preview while you speak**. A built-in watchdog
-  brings the icon back automatically if Windows drops it (display sleep,
-  monitor changes, explorer restarts), and **Reset icon position** — in its
-  right-click menu and on the Overlay settings page — brings it back from
-  wherever a drag or a rearranged monitor left it.
+  as an experimental **live preview while you speak**. It remembers the
+  **monitor** you drag it to, not just a screen coordinate, so it comes back
+  there after a restart, after a reboot that brings the second screen up late,
+  and after a monitor is unplugged and reconnected. A built-in watchdog brings
+  the icon back automatically if Windows drops it (display sleep, monitor
+  changes, explorer restarts), and **Reset icon position** — in its right-click
+  menu and on the Overlay settings page — brings it back from wherever a drag
+  or a rearranged monitor left it.
 - **System tray app** — runs quietly in the background; icon shows
   idle / recording / transcribing state and names your configured hotkey
   ("Idle — press Ctrl+Alt+Space to record"), so a forgotten combination is a
@@ -228,7 +231,9 @@ settings window writes the same keys.
 | `overlay.show_preview`                          | `true`                        | Show the transcript in a bubble after a recording                                                                                                                        |
 | `overlay.live_preview`                          | `false`                       | Experimental rolling preview while you speak (costs CPU)                                                                                                                 |
 | `overlay.preview_seconds`                       | `6`                           | How long the finished transcript stays visible                                                                                                                           |
-| `overlay.x` / `overlay.y`                       | `null`                        | Saved icon position; `null` = bottom right                                                                                                                               |
+| `overlay.x` / `overlay.y`                       | `null`                        | Saved icon position as desktop coordinates; `null` = bottom right                                                                                                        |
+| `overlay.screen`                                | `null`                        | The monitor the icon was left on (EDID identity, else the device name)                                                                                                   |
+| `overlay.rel_x` / `overlay.rel_y`               | `null`                        | Saved icon position within that monitor — what brings it back to the right screen after a restart                                                                        |
 | `assistant.enabled`                             | `false`                       | Optional LLM post-processing of the transcript                                                                                                                           |
 | `assistant.base_url`                            | `"http://localhost:11434/v1"` | OpenAI-compatible endpoint                                                                                                                                               |
 | `assistant.api_key`                             | `""`                          | API key — stays in this local file; empty for Ollama                                                                                                                     |

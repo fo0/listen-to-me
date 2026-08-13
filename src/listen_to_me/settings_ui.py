@@ -1312,9 +1312,9 @@ class SettingsWindow(QDialog):
         # some screen — so an icon dragged almost off screen, or stranded by a
         # monitor rearrangement, had no way back except editing config.json.
         pform.addRow(self._hint(
-            "The icon remembers where you drag it. Use this if it ended up "
-            "somewhere you cannot reach — e.g. half off the screen, or on a "
-            "monitor you have since rearranged."
+            "The icon remembers the monitor you drag it to and returns there "
+            "after a restart. Use this if it ended up somewhere you cannot "
+            "reach — e.g. half off the screen, or on a monitor you no longer have."
         ))
         self._refresh_overlay_reset_button()
         layout.addWidget(position)

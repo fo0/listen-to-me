@@ -48,6 +48,12 @@ def _config_defaults():
     assert DEFAULTS["parakeet_quantization"] in ("int8", "fp32")
     assert isinstance(DEFAULTS["beam_size"], int) and DEFAULTS["beam_size"] >= 1
     assert set(DEFAULTS["overlay"]) >= {"enabled", "show_preview", "live_preview", "preview_seconds"}
+    # The monitor anchor of the floating icon's position — without these the
+    # icon can only be remembered by desktop coordinates, which is what put it
+    # back on the main screen after every reboot.
+    assert set(DEFAULTS["overlay"]) >= {"x", "y", "screen", "rel_x", "rel_y"}
+    for key in ("x", "y", "screen", "rel_x", "rel_y"):
+        assert DEFAULTS["overlay"][key] is None
     assert {"update_check_on_start", "include_prereleases"} <= set(DEFAULTS)
     integrations = DEFAULTS["integrations"]
     assert set(integrations) >= {"mute_while_recording", "targets"}
@@ -2165,6 +2171,159 @@ class _StubHotkeys:
         self.running = False
 
 
+def _overlay_position_is_anchored_to_its_monitor():
+    """The floating icon comes back to the monitor it was dragged onto.
+
+    Desktop coordinates alone cannot express that. They move whenever the
+    arrangement, a resolution or the primary screen changes, and at logon the
+    app is up before Windows has finished bringing up the secondary displays —
+    the saved spot then lands on no screen and the icon falls back to the
+    primary. That fallback used to be permanent (nothing ever looked again),
+    which is exactly why the icon was back on the main screen after every
+    reboot. So: the position is anchored to a monitor identity, and a saved
+    position that cannot be honoured yet is retried, not given up on.
+
+    The offscreen platform has a single screen that reports no identity at all,
+    so `_screen_key` is stubbed to give it one; the multi-monitor situations are
+    then reproduced through the config — a saved identity that matches no
+    connected screen is exactly what a monitor that is not up yet looks like.
+    """
+    _ensure_qapp()
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QGuiApplication
+
+    from listen_to_me import overlay as overlay_module
+    from listen_to_me.overlay import Overlay
+
+    # The identity itself: EDID fields when the driver reports them, the device
+    # name as a fallback, and nothing at all when neither exists — an empty key
+    # must stay empty, because a key that every screen shares would "match" the
+    # wrong monitor instead of falling back to the coordinates.
+    class _FakeScreen:
+        def __init__(self, maker="", model="", serial="", name=""):
+            self._v = (maker, model, serial, name)
+
+        def manufacturer(self):
+            return self._v[0]
+
+        def model(self):
+            return self._v[1]
+
+        def serialNumber(self):
+            return self._v[2]
+
+        def name(self):
+            return self._v[3]
+
+    key = overlay_module._screen_key
+    assert key(_FakeScreen("DEL", "U2723QE", "ABC123", r"\\.\DISPLAY2")) == "DEL|U2723QE|ABC123"
+    assert key(_FakeScreen(name=r"\\.\DISPLAY2")) == r"\\.\DISPLAY2"
+    assert key(_FakeScreen()) == ""
+
+    screen = QGuiApplication.primaryScreen()
+    geo = screen.geometry()
+    home = (geo.left() + 40, geo.top() + 60)
+    overlay_module._screen_key = lambda _s: "TEST-MONITOR"
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = _StubApp(Path(tmp))
+            overlay = Overlay(stub)
+            ocfg = stub.cfg["overlay"]
+            try:
+                # A drag records the monitor and the offset inside it, not just
+                # the desktop coordinates.
+                overlay.win.move(*home)
+                overlay.save_position()
+                assert ocfg["screen"] == "TEST-MONITOR"
+                assert (ocfg["rel_x"], ocfg["rel_y"]) == (40, 60)
+                assert (ocfg["x"], ocfg["y"]) == home
+
+                # Restart: the icon is where it was left.
+                restarted = Overlay(stub)
+                assert (restarted.win.x(), restarted.win.y()) == home
+                restarted.destroy()
+
+                # That monitor now sits at different desktop coordinates
+                # (rearranged / new primary / resolution change): the stale
+                # absolute position is off every screen, the anchor still finds
+                # the monitor and the icon lands where the user put it.
+                ocfg["x"], ocfg["y"] = -4000, -4000
+                assert overlay._apply_saved_position()
+                assert (overlay.win.x(), overlay.win.y()) == home
+
+                # The monitor is not there (yet) — the logon race. The icon is
+                # parked where it can be seen, but the saved position is NOT
+                # given up on: the retry picks it up as soon as that monitor
+                # answers.
+                ocfg["screen"] = "not-connected"
+                assert not overlay._apply_saved_position()
+                overlay._restore_position()
+                assert overlay._on_any_screen(), "the icon was parked off screen"
+                assert overlay._place_timer.isActive(), "the saved position was given up on"
+                ocfg["screen"] = "TEST-MONITOR"  # …the monitor comes up
+                overlay._retry_place()
+                assert (overlay.win.x(), overlay.win.y()) == home
+                assert not overlay._place_timer.isActive()
+
+                # A monitor that never returns must not leave a timer running:
+                # the retry is bounded, and later hot-plug arrives as a screen
+                # signal instead.
+                ocfg["screen"] = "not-connected"
+                overlay._restore_position()
+                for _ in range(overlay_module._PLACE_RETRY_LIMIT):
+                    overlay._retry_place()
+                assert not overlay._place_timer.isActive()
+
+                # Dragging settles it: what the user just chose must not be
+                # overwritten by a pending restore of the older position.
+                overlay._restore_position()
+                assert overlay._place_timer.isActive()
+                overlay.win.move(geo.left() + 10, geo.top() + 10)
+                overlay.save_position()
+                assert not overlay._place_timer.isActive()
+                assert ocfg["screen"] == "TEST-MONITOR"
+
+                # A position saved before the anchor existed (upgrade): it is
+                # honoured as before AND anchored once, so the very next
+                # monitor rearrangement does not misplace the icon again.
+                ocfg["screen"] = ocfg["rel_x"] = ocfg["rel_y"] = None
+                ocfg["x"], ocfg["y"] = geo.left() + 24, geo.top() + 32
+                Overlay(stub).destroy()
+                assert ocfg["screen"] == "TEST-MONITOR", "an old position was not anchored"
+                assert (ocfg["rel_x"], ocfg["rel_y"]) == (24, 32)
+                assert (ocfg["x"], ocfg["y"]) == (geo.left() + 24, geo.top() + 32)
+
+                # Nothing saved at all stays unsaved: the first-run corner is
+                # not a position anyone chose, so it must not be recorded as one.
+                for k in ("x", "y", "screen", "rel_x", "rel_y"):
+                    ocfg[k] = None
+                Overlay(stub).destroy()
+                assert ocfg["x"] is None and ocfg["screen"] is None
+
+                # A restore must never fight a drag in progress — the drop
+                # decides where the icon goes, and saves it.
+                ocfg["x"], ocfg["y"] = -4000, -4000
+                ocfg["screen"] = "not-connected"
+                overlay.win.move(*home)
+                overlay.win._drag_start = (QPoint(0, 0), QPoint(*home))
+                overlay._restore_position()
+                overlay._retry_place()
+                assert (overlay.win.x(), overlay.win.y()) == home, "the drag was overruled"
+                overlay.win._drag_start = None
+
+                # Hand-edited junk costs the saved position, never the icon
+                # (config.json is untrusted input; these keys default to null,
+                # so nothing type-checks them on load).
+                ocfg["x"], ocfg["y"] = "left", None
+                ocfg["screen"], ocfg["rel_x"], ocfg["rel_y"] = 17, float("inf"), 2**40
+                overlay._restore_position()
+                assert overlay._on_any_screen()
+            finally:
+                overlay.destroy()
+    finally:
+        overlay_module._screen_key = key
+
+
 def _tray_names_the_hotkey():
     """The tray status spells the configured combination out instead of saying
     "the hotkey" — including after it was changed in the settings, and with the
@@ -2989,6 +3148,7 @@ _LIGHT_CHECKS = [
     ("keyboard focus stays visible", _theme_focus_visible),
     ("disabled buttons look disabled", _theme_disabled_visible),
     ("voice mic widget", _voice_mic_widget),
+    ("overlay position is anchored to its monitor", _overlay_position_is_anchored_to_its_monitor),
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray click opens the window", _tray_click_opens_the_window),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),

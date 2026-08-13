@@ -5,7 +5,8 @@ through the animated VoiceMicWidget (idle = gently shimmering ring, recording
 = ring pulsing with the live microphone band levels + red mic glyph,
 transcribing = orange mic glyph):
 - left click (without dragging): start/stop recording
-- drag: move the icon; the position is saved
+- drag: move the icon; the position is saved, anchored to the monitor it was
+  dropped on, so it comes back there across restarts and monitor changes
 - right click: context menu
 
 Next to the icon a "bubble" window can show text: a rolling live preview while
@@ -21,7 +22,7 @@ from __future__ import annotations
 import logging
 import time
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QLabel, QMenu, QVBoxLayout, QWidget
 
@@ -40,6 +41,8 @@ _BUBBLE_MAX_W = 320
 _LEVEL_POLL_MS = 50  # feed mic band levels to the widget ~20x/s while recording
 _LEVEL_WINDOW_FRAMES = SAMPLE_RATE // 10  # analyze the most recent 100 ms
 _WATCHDOG_MS = 30_000  # re-assert the icon every 30 s while it should be visible
+_PLACE_RETRY_MS = 2_000  # look again while the saved monitor is still missing
+_PLACE_RETRY_LIMIT = 15  # …for ~30 s after start; later hot-plug arrives as a signal
 
 _STATE_LABELS = {
     "idle": "Idle — click or press the hotkey to record",
@@ -58,6 +61,29 @@ def _idle_label(cfg) -> str:
         log.debug("could not render the hotkey for the overlay tooltip", exc_info=True)
         return _STATE_LABELS["idle"]
     return f"Idle — click or press {combo} to record" if combo else _STATE_LABELS["idle"]
+
+
+def _screen_key(screen) -> str:
+    """A stable identity for one physical monitor.
+
+    Desktop coordinates are not one: a monitor's geometry moves whenever the
+    arrangement, a resolution or the primary screen changes, and Windows hands
+    out the device names (``\\\\.\\DISPLAY1``, …) in whatever order it
+    enumerates the adapters, which is not guaranteed to survive a reboot. The
+    EDID identity does survive all of that, so the saved position is anchored
+    to it. Falls back to the device name for screens that report no EDID at all
+    (virtual displays, the offscreen platform), and to nothing when even that is
+    empty — a key every screen shares would "match" the wrong monitor, so an
+    empty one has to disable the anchor and leave the coordinates in charge.
+    """
+    parts = [
+        (screen.manufacturer() or "").strip(),
+        (screen.model() or "").strip(),
+        (screen.serialNumber() or "").strip(),
+    ]
+    key = "|".join(parts)
+    return key if key.strip("|") else (screen.name() or "").strip()
+
 
 _WIN_FLAGS = (
     Qt.WindowType.FramelessWindowHint
@@ -86,6 +112,13 @@ class _FloatingIcon(QWidget):
         self.mic.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._drag_start = None  # (global QPoint at press, window QPoint at press)
         self._dragged = False
+
+    @property
+    def dragging(self) -> bool:
+        """Whether a mouse button is currently held on the icon. The Overlay
+        asks before re-placing it: a restore firing mid-drag would move the
+        window out from under the pointer."""
+        return self._drag_start is not None
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -165,6 +198,12 @@ class Overlay:
         self._flash_timer = QTimer(self.win)
         self._flash_timer.setSingleShot(True)
         self._flash_timer.timeout.connect(self._hide_bubble)
+        # Retries the saved position while the monitor it names is still coming
+        # up — see _restore_position.
+        self._alive = True
+        self._place_retries = 0
+        self._place_timer = QTimer(self.win)
+        self._place_timer.timeout.connect(self._retry_place)
 
         # Watchdog: Windows drops the icon in ways Qt never notices (see
         # _reassert), so as long as the icon should be visible it is checked
@@ -194,9 +233,9 @@ class Overlay:
         self._menu.addSeparator()
         self._menu.addAction("Quit", lambda: app.post("quit"))
 
-        self._place_initial()
+        self._restore_position()
 
-    # --------------------------------------------------------- visibility
+    # ---------------------------------------------------------- placement
 
     def _screen_geometry(self):
         screen = self.win.screen() or QGuiApplication.primaryScreen()
@@ -228,44 +267,145 @@ class Overlay:
         self.reposition_bubble()
         self.save_position()
 
-    def _place_initial(self) -> None:
-        ocfg = self.app.cfg["overlay"]
-        geo = QGuiApplication.primaryScreen().availableGeometry()
+    def _saved_int(self, key: str) -> int | None:
+        """One saved coordinate, or None when it is missing or unusable.
+
+        The overlay coordinates all default to None, so `_coerce` passes
+        hand-edited values through unvalidated (Infinity raises OverflowError
+        in int()), and Qt geometry is C-int — an out-of-range value would raise
+        from move()/contains() far from here. A broken value must cost the
+        saved position, never the whole floating icon.
+        """
+        value = self.app.cfg["overlay"].get(key)
+        if value is None:
+            return None
         try:
-            x = None if ocfg.get("x") is None else int(ocfg.get("x"))
-            y = None if ocfg.get("y") is None else int(ocfg.get("y"))
-            for v in (x, y):
-                # Qt geometry is C-int: a huge hand-edited value would raise
-                # OverflowError from contains()/move() below, outside this try.
-                if v is not None and abs(v) >= 2**31:
-                    raise ValueError("coordinate out of C-int range")
+            coord = int(value)
+            if abs(coord) >= 2**31:
+                raise ValueError("coordinate out of C-int range")
         except (TypeError, ValueError, OverflowError):
-            # overlay.x/y default to None, so _coerce passes hand-edited
-            # values through unvalidated (Infinity raises OverflowError in
-            # int()) — a broken pair must cost the saved position, never the
-            # whole floating icon.
-            log.warning(
-                "ignoring an unusable saved overlay position %r/%r",
-                ocfg.get("x"), ocfg.get("y"),
+            log.warning("ignoring an unusable saved overlay %s %r", key, value)
+            return None
+        return coord
+
+    def _saved_screen(self, x: int | None, y: int | None):
+        """The monitor the icon was last left on, matched by identity — or None
+        when none was saved or that monitor is not connected right now."""
+        key = self.app.cfg["overlay"].get("screen")
+        if not isinstance(key, str) or not key.strip():
+            return None
+        matches = [s for s in QGuiApplication.screens() if _screen_key(s) == key]
+        if len(matches) > 1 and x is not None and y is not None:
+            # Two monitors of the same model without an EDID serial share an
+            # identity; the saved desktop coordinates break the tie.
+            center = QPoint(x + _ICON_SIZE // 2, y + _ICON_SIZE // 2)
+            for screen in matches:
+                if screen.geometry().contains(center):
+                    return screen
+        return matches[0] if matches else None
+
+    def _apply_saved_position(self) -> bool:
+        """Move the icon where the user last left it. Returns whether that
+        position could be honoured — False means the monitor it names is not
+        there (yet) and the icon had to be parked somewhere else meanwhile.
+
+        The saved monitor identity wins over the saved desktop coordinates: the
+        coordinates of a screen move whenever the arrangement, a resolution or
+        the primary screen changes, while the monitor someone dragged the icon
+        onto is what they actually chose.
+        """
+        x, y = self._saved_int("x"), self._saved_int("y")
+        rel_x, rel_y = self._saved_int("rel_x"), self._saved_int("rel_y")
+        screen = self._saved_screen(x, y)
+        if screen is not None and rel_x is not None and rel_y is not None:
+            geo = screen.geometry()
+            # Clamped to that monitor: a resolution smaller than at save time
+            # would otherwise put the icon outside the screen it belongs on.
+            self.win.move(
+                max(geo.left(), min(geo.left() + rel_x, geo.right() - _ICON_SIZE)),
+                max(geo.top(), min(geo.top() + rel_y, geo.bottom() - _ICON_SIZE)),
             )
-            x = y = None
-        if x is not None and y is not None:
-            # Keep a position that lies on ANY screen: clamping against the
-            # primary would drag an icon parked on a secondary monitor back
-            # onto the primary's edge on every launch. Full geometry(), same
-            # criterion as the watchdog's _on_any_screen — the drag path lets
+            return True
+        if x is None or y is None:
+            geo = QGuiApplication.primaryScreen().availableGeometry()
+            self.win.move(*self._default_corner(geo))  # never saved: first-run corner
+            return True
+        if self._on_any_screen(x, y):
+            # No usable identity (a position saved by an older build) but the
+            # coordinates still land on a screen: keep them verbatim. Clamping
+            # against the primary would drag an icon parked on a secondary
+            # monitor back onto the primary's edge on every launch. Full
+            # geometry(), same criterion as the watchdog — the drag path lets
             # the always-on-top icon park over a taskbar on purpose.
-            cx, cy = x + _ICON_SIZE // 2, y + _ICON_SIZE // 2
-            for screen in QGuiApplication.screens():
-                if screen.geometry().contains(cx, cy):
-                    self.win.move(x, y)
-                    return
+            self.win.move(x, y)
+            return True
+        # The saved spot is on no screen at the moment: a monitor unplugged,
+        # asleep, or simply not up yet. Park it on the primary for now and
+        # report the position as unhonoured so the caller looks again.
+        geo = QGuiApplication.primaryScreen().availableGeometry()
+        self.win.move(
+            max(geo.left(), min(x, geo.right() - _ICON_SIZE)),
+            max(geo.top(), min(y, geo.bottom() - _ICON_SIZE)),
+        )
+        return False
+
+    def _restore_position(self) -> None:
+        """Put the icon where the user left it, and keep looking for a while if
+        the monitor it belongs on is not up yet.
+
+        At logon the app is running before Windows has finished bringing up the
+        secondary displays, so a position on one of them lands on no screen and
+        falls back to the primary. Without the retry that fallback is permanent
+        — which is why the icon used to be back on the main screen after every
+        reboot even though the position had been saved correctly.
+        """
+        if self.win.dragging:
+            # Whatever the drag ends on is saved on release; moving the window
+            # now would only fight the pointer.
+            return
+        if self._apply_saved_position():
+            self._place_timer.stop()
+            self._anchor_a_legacy_position()
         else:
-            x, y = self._default_corner(geo)
-        # Off every screen (monitor unplugged) or never saved: default corner.
-        x = max(geo.left(), min(int(x), geo.right() - _ICON_SIZE))
-        y = max(geo.top(), min(int(y), geo.bottom() - _ICON_SIZE))
-        self.win.move(int(x), int(y))
+            self._place_retries = 0
+            self._place_timer.start(_PLACE_RETRY_MS)
+        # Only while it is up: the bubble is positioned right before it is
+        # shown anyway, and moving that never-shown translucent window during
+        # startup upsets Qt (it segfaults the offscreen platform outright).
+        if self.bubble.isVisible():
+            self.reposition_bubble()
+
+    def _retry_place(self) -> None:
+        if self.win.dragging:
+            return  # try again on the next tick, once the pointer is free
+        self._place_retries += 1
+        placed = self._apply_saved_position()
+        if placed and self.bubble.isVisible():
+            self.reposition_bubble()
+        if placed or self._place_retries >= _PLACE_RETRY_LIMIT:
+            # Give up quietly: a monitor that returns later still arrives as a
+            # screenAdded / primaryScreenChanged signal, which restores the
+            # position from scratch.
+            self._place_timer.stop()
+
+    def _anchor_a_legacy_position(self) -> None:
+        """Record which monitor a position saved before this anchor existed
+        belongs to — once, on the first launch that can place it correctly.
+
+        Without it an upgraded config keeps relying on desktop coordinates
+        alone, and the icon would still be misplaced the first time the
+        monitors are rearranged. Only for a position the user actually chose:
+        with nothing saved the first-run corner stays unsaved, exactly as
+        before. Runs after a *successful* placement, so the icon is provably
+        where the saved position wanted it and this cannot overwrite it with a
+        fallback spot.
+        """
+        ocfg = self.app.cfg["overlay"]
+        if ocfg.get("screen") is not None or ocfg.get("x") is None or ocfg.get("y") is None:
+            return
+        self.save_position()
+
+    # --------------------------------------------------------- visibility
 
     def set_visible(self, visible: bool) -> None:
         self._visible_wanted = bool(visible)
@@ -288,8 +428,19 @@ class Overlay:
 
     def _on_screens_changed(self, *_args) -> None:
         # Monitor plugged/unplugged or primary changed: give the window
-        # system a moment to settle the new geometry, then re-assert.
-        QTimer.singleShot(1000, lambda: self._reassert(hard=True))
+        # system a moment to settle the new geometry, then re-place and
+        # re-assert.
+        QTimer.singleShot(1000, self._on_screens_settled)
+
+    def _on_screens_settled(self) -> None:
+        if not self._alive:
+            return  # a queued single-shot must not touch a destroyed overlay
+        # The saved position is re-applied on every topology change, not only
+        # while one is still pending: Windows moves windows off a monitor that
+        # goes away — a DisplayPort monitor dropping out on standby is enough —
+        # and never moves them back when it returns.
+        self._restore_position()
+        self._reassert(hard=True)
 
     def _reassert(self, hard: bool = False) -> None:
         """Keep the icon truly on screen.
@@ -307,7 +458,7 @@ class Overlay:
         try:
             if hard:
                 if not self._on_any_screen():
-                    self._place_initial()
+                    self._restore_position()
                 self.win.hide()
                 self.win.show()
             elif not self.win.isVisible():
@@ -316,8 +467,13 @@ class Overlay:
         except Exception:
             log.debug("overlay re-assert failed", exc_info=True)
 
-    def _on_any_screen(self) -> bool:
-        center = self.win.frameGeometry().center()
+    def _on_any_screen(self, x: int | None = None, y: int | None = None) -> bool:
+        """Whether the icon's centre lands on a screen — for the position at
+        `x`/`y` when given, for where the icon is now otherwise."""
+        if x is None or y is None:
+            center = self.win.frameGeometry().center()
+        else:
+            center = QPoint(x + _ICON_SIZE // 2, y + _ICON_SIZE // 2)
         return any(s.geometry().contains(center) for s in QGuiApplication.screens())
 
     # -------------------------------------------------------------- state
@@ -419,17 +575,38 @@ class Overlay:
         self._menu.popup(global_pos)
 
     def save_position(self) -> None:
+        """Persist where the icon is — as desktop coordinates *and* as the
+        monitor it sits on plus the offset inside it, so the next start finds
+        that monitor again even when its desktop coordinates have changed."""
         ocfg = self.app.cfg["overlay"]
-        ocfg["x"], ocfg["y"] = self.win.x(), self.win.y()
+        x, y = self.win.x(), self.win.y()
+        ocfg["x"], ocfg["y"] = x, y
+        center = QPoint(x + _ICON_SIZE // 2, y + _ICON_SIZE // 2)
+        screen = QGuiApplication.screenAt(center) or self.win.screen()
+        key = _screen_key(screen) if screen is not None else ""
+        if key:
+            geo = screen.geometry()
+            ocfg["screen"] = key
+            ocfg["rel_x"], ocfg["rel_y"] = x - geo.left(), y - geo.top()
+        else:
+            # Nothing to anchor to (no screen there, or one that reports no
+            # identity at all): drop a stale anchor rather than keep one that
+            # now points somewhere else.
+            ocfg["screen"] = ocfg["rel_x"] = ocfg["rel_y"] = None
+        # Wherever the icon is now is what the user chose: a pending restore of
+        # the older position must not move it away again.
+        self._place_timer.stop()
         if not self.app.cfg.save():  # logs its own reason
             log.warning("the overlay position was not persisted")
 
     # ------------------------------------------------------------ cleanup
 
     def destroy(self) -> None:
+        self._alive = False
         self._level_timer.stop()
         self._flash_timer.stop()
         self._watchdog.stop()
+        self._place_timer.stop()
         self._visible_wanted = False
         gui_app = QGuiApplication.instance()
         if gui_app is not None:
