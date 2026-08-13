@@ -186,6 +186,10 @@ class Overlay:
         self._menu.addAction("Copy last transcript", lambda: app.post("copy_last"))
         self._menu.addSeparator()
         self._menu.addAction("Settings…", lambda: app.post("settings"))
+        # Right here as well as on the Overlay settings page: the icon you want
+        # to move back is the one you are already right-clicking, and reaching
+        # the settings page means finding the icon or the tray first.
+        self._menu.addAction("Reset icon position", lambda: app.post("reset_overlay_position"))
         self._menu.addAction("Hide floating icon", lambda: app.post("toggle_overlay"))
         self._menu.addSeparator()
         self._menu.addAction("Quit", lambda: app.post("quit"))
@@ -197,6 +201,32 @@ class Overlay:
     def _screen_geometry(self):
         screen = self.win.screen() or QGuiApplication.primaryScreen()
         return screen.availableGeometry()
+
+    @staticmethod
+    def _default_corner(geo) -> tuple[int, int]:
+        """The icon's home position for `geo`: bottom right, clear of the
+        taskbar. Shared by the first-run placement and "Reset position", so the
+        two can never drift apart."""
+        return geo.right() - _ICON_SIZE - 24, geo.bottom() - _ICON_SIZE - 120
+
+    def reset_position(self) -> None:
+        """Put the icon back in the default corner of the primary screen and
+        persist that.
+
+        Dragging is deliberately unconstrained — the always-on-top icon is
+        allowed to park over a taskbar — and a saved position is kept as long
+        as the icon's *centre* lands on any screen. Together that leaves the
+        icon strandable: dragged until only a sliver is on screen it becomes
+        hard to grab again, and a position on a monitor that is later
+        rearranged can put it somewhere awkward on every launch. Until now the
+        only ways out were dragging it back (if you can hit it) or hand-editing
+        overlay.x/y in config.json.
+        """
+        geo = QGuiApplication.primaryScreen().availableGeometry()
+        x, y = self._default_corner(geo)
+        self.win.move(int(x), int(y))
+        self.reposition_bubble()
+        self.save_position()
 
     def _place_initial(self) -> None:
         ocfg = self.app.cfg["overlay"]
@@ -231,8 +261,7 @@ class Overlay:
                     self.win.move(x, y)
                     return
         else:
-            x = geo.right() - _ICON_SIZE - 24
-            y = geo.bottom() - _ICON_SIZE - 120
+            x, y = self._default_corner(geo)
         # Off every screen (monitor unplugged) or never saved: default corner.
         x = max(geo.left(), min(int(x), geo.right() - _ICON_SIZE))
         y = max(geo.top(), min(int(y), geo.bottom() - _ICON_SIZE))

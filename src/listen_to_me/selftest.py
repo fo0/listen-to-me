@@ -2413,6 +2413,87 @@ def _gui_construction():
         assert not window._update_busy
         assert "Could not apply update" in window.update_status.text()
 
+        # Assistant connection test. It is the only subsystem whose
+        # misconfiguration used to surface after the fact — on a worker thread,
+        # attached to a dictation already spoken — so the button must (a) not
+        # resize mid-click, (b) refuse a statically broken config instantly
+        # without touching the network, and (c) report BOTH outcomes and hand
+        # the button back either way. Driven through the slots, never through
+        # the worker: a check may not make a request or wait on a thread.
+        from listen_to_me.settings_ui import _A_TEST_LABEL, _A_TESTING_LABEL
+
+        idle_width = _laid_out_width(window.a_test_button)
+        window.a_test_button.setText(_A_TESTING_LABEL)
+        assert _laid_out_width(window.a_test_button) == idle_width, (
+            "the assistant test button resizes when it switches to the busy label"
+        )
+        window.a_test_button.setText(_A_TEST_LABEL)
+
+        # The values a test uses are the ones on screen, saved or not — and the
+        # enabled checkbox must not gate it: verifying an endpoint BEFORE
+        # switching the assistant on is the point of the button.
+        window.chk_a_enabled.setChecked(False)
+        window.a_url_edit.setText("http://localhost:11434/v1")
+        window.a_model_edit.setText("llama3.2")
+        values = window._assistant_values()
+        assert values["enabled"] and values["model"] == "llama3.2", values
+        assert values["base_url"] == "http://localhost:11434/v1", values
+
+        # assistant.timeout was the one DEFAULTS key with no field on any page,
+        # so the only way to change it was hand-editing config.json — while it
+        # decides how long every dictation is held back by a hung endpoint. It
+        # must reach _collect() (Save writes it) and the connection test alike,
+        # or the field would silently do nothing.
+        window.a_timeout_spin.setValue(45)
+        assert window._collect()["assistant"]["timeout"] == 45
+        assert window._assistant_values()["timeout"] == 45
+        window.a_timeout_spin.setValue(
+            SettingsWindow._to_int(stub.cfg["assistant"].get("timeout"), 120)
+        )
+
+        # A URL without a scheme is answerable without any request: it must be
+        # refused on the spot, not by starting a thread that fails later.
+        window.a_url_edit.setText("localhost:11434/v1")
+        window._test_assistant()
+        assert not window._assistant_busy, "a statically invalid config started a request"
+        assert window.a_test_button.isEnabled()
+        assert "Cannot test" in window.a_test_status.text(), window.a_test_status.text()
+
+        # Both outcomes: the reply is shown (an endpoint can answer and still
+        # return something unusable — that is what would be inserted), the
+        # error is shown verbatim, and the button comes back in either case.
+        window.a_url_edit.setText("http://localhost:11434/v1")
+        for drive, expected in (
+            (lambda: window._on_assistant_tested("This is a test of the assistant."), "test of the assistant"),
+            (lambda: window._on_assistant_test_failed("Connection refused"), "Connection refused"),
+        ):
+            window._assistant_busy = True
+            window.a_test_button.setEnabled(False)
+            window.a_test_button.setText(_A_TESTING_LABEL)
+            drive()
+            assert not window._assistant_busy
+            assert window.a_test_button.isEnabled()
+            assert window.a_test_button.text() == _A_TEST_LABEL
+            assert expected in window.a_test_status.text(), window.a_test_status.text()
+
+        # "Reset position" for the floating icon. It exists because dragging is
+        # unconstrained and a saved position survives as long as its centre is
+        # on some screen, so a stranded icon had no way back but config.json.
+        # It must post the action (App owns the overlay) and must be greyed out
+        # WITH a reason while the icon is off — there is nothing to move then.
+        assert window.overlay_reset_button.isEnabled()  # default config: icon on
+        posts_before = len(stub.posts)
+        window.overlay_reset_button.click()
+        assert stub.posts[posts_before:] == [("reset_overlay_position",)], stub.posts
+        stub.cfg.data["overlay"]["enabled"] = False
+        window._refresh_overlay_reset_button()
+        assert not window.overlay_reset_button.isEnabled()
+        assert "switched off" in window.overlay_reset_button.toolTip()
+        stub.cfg.data["overlay"]["enabled"] = True
+        window._refresh_overlay_reset_button()
+        assert window.overlay_reset_button.isEnabled()
+        assert "bottom right" in window.overlay_reset_button.toolTip()
+
         window._show_page("History")  # force History render (lazy on first view)
         assert window.stack.currentIndex() == window._history_index
         window._refresh_history()
@@ -2757,6 +2838,27 @@ def _gui_construction():
         assert not overlay._watchdog.isActive()
         overlay._reassert()  # disabled → must stay hidden
         assert not overlay.win.isVisible()
+
+        # Reset position: an icon dragged almost off screen (drag is
+        # unconstrained by design) must be recoverable without editing
+        # config.json. It has to move AND persist — a reset that is not written
+        # back would be undone by the next launch, which is exactly when the
+        # stranded position hurts.
+        stranded = (-4000, -4000)
+        overlay.win.move(*stranded)
+        overlay.reset_position()
+        assert (overlay.win.x(), overlay.win.y()) != stranded, "the icon was not moved"
+        assert (stub.cfg["overlay"]["x"], stub.cfg["overlay"]["y"]) == (
+            overlay.win.x(),
+            overlay.win.y(),
+        ), "the reset position was not persisted"
+        # …and it lands where a first run would have put it, so "reset" and
+        # "never moved" cannot drift apart.
+        from PySide6.QtGui import QGuiApplication as _QGuiApp
+
+        assert (overlay.win.x(), overlay.win.y()) == overlay._default_corner(
+            _QGuiApp.primaryScreen().availableGeometry()
+        )
 
         dialog = HotkeyCaptureDialog(None)
 
