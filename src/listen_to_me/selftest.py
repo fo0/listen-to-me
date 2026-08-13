@@ -2439,6 +2439,18 @@ def _gui_construction():
         assert values["enabled"] and values["model"] == "llama3.2", values
         assert values["base_url"] == "http://localhost:11434/v1", values
 
+        # assistant.timeout was the one DEFAULTS key with no field on any page,
+        # so the only way to change it was hand-editing config.json — while it
+        # decides how long every dictation is held back by a hung endpoint. It
+        # must reach _collect() (Save writes it) and the connection test alike,
+        # or the field would silently do nothing.
+        window.a_timeout_spin.setValue(45)
+        assert window._collect()["assistant"]["timeout"] == 45
+        assert window._assistant_values()["timeout"] == 45
+        window.a_timeout_spin.setValue(
+            SettingsWindow._to_int(stub.cfg["assistant"].get("timeout"), 120)
+        )
+
         # A URL without a scheme is answerable without any request: it must be
         # refused on the spot, not by starting a thread that fails later.
         window.a_url_edit.setText("localhost:11434/v1")

@@ -1445,6 +1445,18 @@ class SettingsWindow(QDialog):
         self.a_temp_spin.setValue(self._to_float(acfg["temperature"], 0.2))
         self.a_temp_spin.setToolTip("Keep low (0.0–0.3) for faithful cleanup; higher values rewrite more freely.")
         form.addRow("Temperature:", self.a_temp_spin)
+        self.a_timeout_spin = QSpinBox()
+        self.a_timeout_spin.setRange(5, 600)
+        self.a_timeout_spin.setSingleStep(10)
+        self.a_timeout_spin.setValue(self._to_int(acfg.get("timeout"), 120))
+        self.a_timeout_spin.setToolTip(
+            "How long to wait for the endpoint's answer before giving up. The "
+            "wait happens after you stop speaking, with the transcript held "
+            "back — so a hung endpoint delays every dictation by this much "
+            "before the raw text is inserted instead. Raise it for a slow local "
+            "model, lower it to fail fast."
+        )
+        form.addRow("Request timeout (s):", self.a_timeout_spin)
 
         test_row = QWidget()
         th = QHBoxLayout(test_row)
@@ -1810,9 +1822,7 @@ class SettingsWindow(QDialog):
         Enabled unconditionally: the checkbox says whether dictations go
         through the assistant, not whether the fields below may be tried. Being
         able to verify an endpoint *before* switching it on is the point.
-        The timeout comes from the stored config — it has no field on this page.
         """
-        stored = self.cfg["assistant"] if isinstance(self.cfg.data.get("assistant"), dict) else {}
         return {
             "enabled": True,
             "base_url": self.a_url_edit.text().strip(),
@@ -1822,7 +1832,7 @@ class SettingsWindow(QDialog):
             "system_prompt": (
                 self.a_prompt_edit.toPlainText().strip() or DEFAULT_ASSISTANT_PROMPT
             ),
-            "timeout": self._to_float(stored.get("timeout"), 120.0),
+            "timeout": int(self.a_timeout_spin.value()),
         }
 
     def _test_assistant(self) -> None:
@@ -3213,6 +3223,7 @@ class SettingsWindow(QDialog):
                 "model": self.a_model_edit.text().strip(),
                 "api_key": self.a_key_edit.text().strip(),
                 "temperature": float(self.a_temp_spin.value()),
+                "timeout": int(self.a_timeout_spin.value()),
                 "system_prompt": (
                     self.a_prompt_edit.toPlainText().strip() or DEFAULT_ASSISTANT_PROMPT
                 ),
