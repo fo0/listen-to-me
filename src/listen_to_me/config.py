@@ -105,9 +105,17 @@ DEFAULTS: dict = {
         "live_preview": False,
         # How long the finished transcript stays visible (seconds).
         "preview_seconds": 6,
-        # Saved position of the floating icon (null = bottom right).
+        # Saved position of the floating icon (null = bottom right). "x"/"y"
+        # are desktop coordinates; "screen" identifies the monitor the icon was
+        # left on (EDID identity, else the device name) and "rel_x"/"rel_y" are
+        # the position inside that monitor. The monitor anchor is what survives
+        # a reboot: desktop coordinates move whenever the arrangement, a
+        # resolution or the primary screen changes — see overlay._screen_key.
         "x": None,
         "y": None,
+        "screen": None,
+        "rel_x": None,
+        "rel_y": None,
     },
     # Optional Whisper initial prompt (domain vocabulary hint, not an instruction).
     "initial_prompt": "",
