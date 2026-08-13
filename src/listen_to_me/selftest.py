@@ -2464,6 +2464,24 @@ def _gui_construction():
             assert window.a_test_button.text() == _A_TEST_LABEL
             assert expected in window.a_test_status.text(), window.a_test_status.text()
 
+        # "Reset position" for the floating icon. It exists because dragging is
+        # unconstrained and a saved position survives as long as its centre is
+        # on some screen, so a stranded icon had no way back but config.json.
+        # It must post the action (App owns the overlay) and must be greyed out
+        # WITH a reason while the icon is off — there is nothing to move then.
+        assert window.overlay_reset_button.isEnabled()  # default config: icon on
+        posts_before = len(stub.posts)
+        window.overlay_reset_button.click()
+        assert stub.posts[posts_before:] == [("reset_overlay_position",)], stub.posts
+        stub.cfg.data["overlay"]["enabled"] = False
+        window._refresh_overlay_reset_button()
+        assert not window.overlay_reset_button.isEnabled()
+        assert "switched off" in window.overlay_reset_button.toolTip()
+        stub.cfg.data["overlay"]["enabled"] = True
+        window._refresh_overlay_reset_button()
+        assert window.overlay_reset_button.isEnabled()
+        assert "bottom right" in window.overlay_reset_button.toolTip()
+
         window._show_page("History")  # force History render (lazy on first view)
         assert window.stack.currentIndex() == window._history_index
         window._refresh_history()
@@ -2808,6 +2826,27 @@ def _gui_construction():
         assert not overlay._watchdog.isActive()
         overlay._reassert()  # disabled → must stay hidden
         assert not overlay.win.isVisible()
+
+        # Reset position: an icon dragged almost off screen (drag is
+        # unconstrained by design) must be recoverable without editing
+        # config.json. It has to move AND persist — a reset that is not written
+        # back would be undone by the next launch, which is exactly when the
+        # stranded position hurts.
+        stranded = (-4000, -4000)
+        overlay.win.move(*stranded)
+        overlay.reset_position()
+        assert (overlay.win.x(), overlay.win.y()) != stranded, "the icon was not moved"
+        assert (stub.cfg["overlay"]["x"], stub.cfg["overlay"]["y"]) == (
+            overlay.win.x(),
+            overlay.win.y(),
+        ), "the reset position was not persisted"
+        # …and it lands where a first run would have put it, so "reset" and
+        # "never moved" cannot drift apart.
+        from PySide6.QtGui import QGuiApplication as _QGuiApp
+
+        assert (overlay.win.x(), overlay.win.y()) == overlay._default_corner(
+            _QGuiApp.primaryScreen().availableGeometry()
+        )
 
         dialog = HotkeyCaptureDialog(None)
 

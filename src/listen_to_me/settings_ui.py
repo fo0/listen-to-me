@@ -1292,6 +1292,33 @@ class SettingsWindow(QDialog):
         ))
         layout.addWidget(card)
 
+        position, pform = self._card("Position")
+        reset_row = QWidget()
+        rh = QHBoxLayout(reset_row)
+        rh.setContentsMargins(0, 0, 0, 0)
+        rh.setSpacing(8)
+        self.overlay_reset_button = QPushButton("Reset position")
+        self.overlay_reset_button.setAutoDefault(False)
+        self.overlay_reset_button.setToolTip(
+            "Move the floating icon back to the bottom right of the main screen. "
+            "Applies immediately — no Save needed."
+        )
+        self.overlay_reset_button.clicked.connect(self._reset_overlay_position)
+        rh.addWidget(self.overlay_reset_button)
+        rh.addStretch(1)
+        pform.addRow("", reset_row)
+        # Dragging is unconstrained on purpose (the icon may sit over a
+        # taskbar) and a saved position survives as long as its centre is on
+        # some screen — so an icon dragged almost off screen, or stranded by a
+        # monitor rearrangement, had no way back except editing config.json.
+        pform.addRow(self._hint(
+            "The icon remembers where you drag it. Use this if it ended up "
+            "somewhere you cannot reach — e.g. half off the screen, or on a "
+            "monitor you have since rearranged."
+        ))
+        self._refresh_overlay_reset_button()
+        layout.addWidget(position)
+
         timing, form = self._card("Timing")
         self.preview_seconds_spin = QSpinBox()
         self.preview_seconds_spin.setRange(2, 60)
@@ -1745,6 +1772,31 @@ class SettingsWindow(QDialog):
             f"{found} found ✓" if found else "None found",
             "Refresh",
         )
+
+    def _refresh_overlay_reset_button(self) -> None:
+        """Enable "Reset position" only while there is an icon to move, and say
+        why when there isn't — a greyed-out button with no reason reads as
+        broken (same contract as the history export and update install buttons).
+
+        Driven by the *applied* config, not by the checkbox above it: an
+        unsaved tick has not created the icon yet, so the button would promise
+        to move something that does not exist.
+        """
+        enabled = bool(self.cfg["overlay"]["enabled"])
+        self.overlay_reset_button.setEnabled(enabled)
+        self.overlay_reset_button.setToolTip(
+            "Move the floating icon back to the bottom right of the main screen. "
+            "Applies immediately — no Save needed."
+            if enabled
+            else "The floating icon is switched off — turn it on above and "
+            "apply, then there is a position to reset."
+        )
+
+    def _reset_overlay_position(self) -> None:
+        # App owns the overlay (and the Qt main thread it lives on), so this
+        # goes through the event queue like every other overlay action.
+        self.app.post("reset_overlay_position")
+        self._flash_button(self.overlay_reset_button, "Moved ✓", "Reset position")
 
     def _reset_prompt(self) -> None:
         self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
@@ -3269,6 +3321,9 @@ class SettingsWindow(QDialog):
         self.app.apply_settings()
         self._saved_snapshot = self._collect()
         self._refresh_autostart_status()  # apply_settings just (re)wrote the entry
+        # The floating icon was just created or destroyed by apply_settings, so
+        # whether there is a position to reset has changed with it.
+        self._refresh_overlay_reset_button()
         self.home.refresh()  # hotkey chips / stat cards may show old values
         if self._history_rendered:
             # The empty-list note names the applied on/off state, so it goes

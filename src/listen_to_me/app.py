@@ -248,6 +248,8 @@ class App:
             if self.overlay is not None:
                 self.overlay.set_visible(bool(ocfg["enabled"]))
             self.tray.set_state(self.state)  # refresh the "Show floating icon" tick
+        elif kind == "reset_overlay_position":
+            self._reset_overlay_position()
         elif kind == "cancel":
             self._cancel_recording()
         elif kind == "copy_last":
@@ -806,6 +808,29 @@ class App:
             self.notify(
                 f"Update available: {newer[0].tag}. Open the tray menu → Check for updates."
             )
+
+    def _reset_overlay_position(self) -> None:
+        """Move the floating icon back to its default corner.
+
+        Reported either way. The icon may be switched off (nothing to move) or
+        the move may fail, and a menu entry that silently does nothing is the
+        one outcome this must not have — the user is reaching for it precisely
+        because the icon is not where they can see it.
+        """
+        if self.overlay is None or not self.cfg["overlay"]["enabled"]:
+            self.notify(
+                "The floating icon is switched off — turn it on first "
+                "(tray menu → Show floating icon).",
+                force=True,
+            )
+            return
+        try:
+            self.overlay.reset_position()
+        except Exception:
+            log.exception("could not reset the overlay position")
+            self.notify("Could not move the floating icon — see the log file.", force=True)
+            return
+        self.notify("Floating icon moved back to the bottom right.")
 
     def _open_config_folder(self) -> None:
         folder = self.cfg.path.parent
