@@ -15,53 +15,58 @@ When a session begins, read in this order. Stop early if a file is missing.
 
 ## Workflow Triggers
 
-| User says...                                     | Skill to load                                            |
-| ------------------------------------------------ | -------------------------------------------------------- |
-| "done" / "fertig" / "finished" / "/done"         | `.claude/skills/done/SKILL.md`                           |
-| "PR" / "create PR" / "/pr"                       | `.claude/skills/pr/SKILL.md`                             |
-| "review" / "/review"                             | `.claude/skills/review/SKILL.md`                         |
-| "security review" / "/security-review"           | `.claude/skills/security-review/SKILL.md`                |
-| "rollback" / "revert" / "undo" / "/rollback"     | `.claude/skills/rollback/SKILL.md`                       |
-| "CI" / "fix CI" / "check the build" / "/ci"      | `.claude/skills/ci/SKILL.md`                             |
-| "stuck" / "loop" / "going in circles" / "/stuck" | `.claude/skills/stuck/SKILL.md`                          |
-| "check dependencies" / "update deps" / "/beacon" | `.claude/skills/beacon/SKILL.md`                         |
-| Diagram request                                  | `agent_docs/diagram_prompt.md` → `docs/ARCHITECTURE.mmd` |
+Skills live at `.claude/skills/<name>/SKILL.md` — load the one whose trigger fires.
 
+| User says...                                     | Skill             |
+| ------------------------------------------------ | ----------------- |
+| "done" / "fertig" / "finished" / "/done"         | `done`            |
+| "PR" / "create PR" / "/pr"                       | `pr`              |
+| "review" / "/review"                             | `review`          |
+| "security review" / "/security-review"           | `security-review` |
+| "rollback" / "revert" / "undo" / "/rollback"     | `rollback`        |
+| "CI" / "fix CI" / "check the build" / "/ci"      | `ci`              |
+| "stuck" / "loop" / "going in circles" / "/stuck" | `stuck`           |
+| "check dependencies" / "update deps" / "/beacon" | `beacon`          |
+| "schedule" / "nightly" / "later" / "/scheduler"  | `scheduler`       |
+| "orca" / "orchestrator mode" / "/orca"           | `orca`            |
+
+> Diagram request → `agent_docs/diagram_prompt.md` → `docs/ARCHITECTURE.mmd`.
 > Review runs on demand via the `review` skill — done-skill does NOT auto-run it. Unresolved findings → `BACKLOG.md` (`agent_docs/backlog_process.md`); long-term knowledge → `MEMORY.md`, temporary context → `SCRATCHPAD.md` (`agent_docs/memory_process.md`).
 > Reference GitHub issues in commit messages: `Fix crash on empty audio #42`.
 
 ## Output Languages
 
-| Surface                                                                       | Language                                                                 |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| Chat / status messages to user                                                | User's language (default: German)                                        |
-| Code, identifiers, comments; app log output                                   | English                                                                  |
-| Commit messages                                                               | English, imperative — **not** Conventional Commits (see Git Conventions) |
-| PR titles + bodies, GitHub issue comments                                     | English                                                                  |
-| Generated files (CLAUDE.md, agent_docs/\*, MEMORY/SCRATCHPAD/BACKLOG, skills) | English                                                                  |
-| User-facing UI strings                                                        | English — inline literals, no i18n framework                             |
+- **Chat / status messages to the user:** the user's language (default: German).
+- **Everything else is English** — code, identifiers, comments, app log output; commit messages (imperative, **not** Conventional Commits — see Git Conventions); PR titles + bodies; GitHub issue comments; every generated file (CLAUDE.md, `agent_docs/*`, MEMORY/SCRATCHPAD/BACKLOG, skills); and user-facing UI strings (inline literals, no i18n framework).
+- **Technical terms — every surface, chat included: English, never translated.**
+
+**Technical terms are never translated** — not even inside a German sentence. Keep the English word verbatim and inflect around it: „2 Bugs gefixt", „Code Smell in `app.py`", „PR gemerged", „Build ist rot" — never „Programmfehler", „Code-Geruch", „Zusammenführungsantrag". Covers bug · smell · lint · build · commit · merge · rebase · branch · PR · review · refactoring · deployment · rollback · issue · breaking change · hotfix · flaky test · regression · edge case · stack trace · dependency · tech debt, plus everything that names something real: file paths, commands, tool / skill / hook names, status labels, error strings (quoted verbatim). Test: English in code, a commit or a PR → English in chat.
 
 ## Performance / Modes
 
 - **Default model:** whatever the session resolves to — don't pin one here or in `.claude/settings.json`; `/model` switches mid-session.
 - **Fast mode** (`/fast`): the **same** Opus model with faster output — not a downgrade. Use when latency beats reasoning depth.
 - **Caveman mode** (chat compression): `caveman lite|full|ultra` / `stop caveman`. Chat only, never generated files.
+- **Orca mode** (orchestrator-only): `/orca` toggles it, `/orca <N>` sets the parallel width (default 5). While on, the agent itself does no task work — every unit goes to a subagent at the session's model and effort. Off by default; contract in `.claude/skills/orca/SKILL.md`.
 - **Plan mode:** for non-trivial implementation strategy — `Plan` subagent or `EnterPlanMode`. Not for single-step tasks.
+
+## Autonomy
+
+Which session you are in is resolvable, so it is a rule and not a guess: `$CLAUDE_CODE_REMOTE` is `"true"` in Claude Code web/cloud sessions — routine runs included — and unset in the local CLI.
+
+- **Unattended** (`CLAUDE_CODE_REMOTE=true`, or the session's initial instructions are a routine): nobody is there to answer. Never end a turn with a question — decide under an assumption you state, finish every part that isn't blocked, and carry the open point into the final report or `BACKLOG.md`. A routine run has no permission prompts at all, so an unattended session that "waits for approval" waits forever.
+- **Interactive** (local CLI): asking is cheap. Ask when two readings of the task produce materially different work; otherwise decide and mention the call.
+- **Both:** an action that is destructive _and_ not ordered _and_ not standard practice gets the same answer in either mode — skip it, put it in the report with the recommendation, and finish everything it does not block. Never guess at it. The instances keep their own gates: merges → `.claude/skills/pr/SKILL.md → /pr merge`, reversals and force operations → `.claude/skills/rollback/SKILL.md`, release dispatch → _Deployment_, secrets → `agent_docs/env-vars.md`.
+
+## Scheduled Work
+
+Three schedulers with different lifetimes: **Routines** (cloud, durable, ≥1 h, survive the session), **`/loop` + `CronCreate`/`CronList`/`CronDelete`** (this session only, 7-day expiry), **Desktop scheduled tasks** (local machine). Choosing one, creating/listing/deleting jobs, and the cleanup contract for agent-created jobs: `.claude/skills/scheduler/SKILL.md`. This repo's default prompt for a bare `/loop`: `.claude/loop.md`.
 
 ## Tech Stack
 
-| Component         | Technology                                                                                 | Version                                |
-| ----------------- | ------------------------------------------------------------------------------------------ | -------------------------------------- |
-| Language          | Python                                                                                     | >=3.10 (CI + dev on 3.11/3.12)         |
-| GUI Framework     | PySide6 (Qt 6)                                                                             | >=6.6                                  |
-| Speech-to-text    | faster-whisper (CTranslate2); optional `[openvino]` / `[parakeet]` extras, both in the exe | >=1.2.1                                |
-| Audio · hotkeys   | sounddevice (PortAudio) · pynput                                                           | >=0.4.6 / >=1.7.7                      |
-| Build · packaging | setuptools (`pyproject.toml`) · PyInstaller one-file (CI)                                  | >=68                                   |
-| Package Manager   | pip (`requirements.txt` + `pyproject.toml`)                                                | —                                      |
-| Test Framework    | none configured                                                                            | CI: `compileall` + Qt offscreen smoke  |
-| Linter/Formatter  | none for Python; Prettier (via npx) for Markdown only                                      | de-facto black-style, line length ~100 |
+Python >=3.10 (CI 3.12) · PySide6 (Qt 6) >=6.6 · faster-whisper >=1.2.1 (+ optional OpenVINO / Parakeet backends) · sounddevice · pynput · pip + setuptools, PyInstaller one-file in CI. **No linter, formatter, type-checker or test framework for Python** — Prettier (via `npx`) formats Markdown only.
 
-Remaining runtime deps (numpy, Pillow, pyperclip, requests) and their bounds: `requirements.txt`.
+Full table, version reasoning and the packaging asymmetry: `agent_docs/tech_stack.md`. Runtime dep bounds: `requirements.txt`.
 
 ## Project Overview
 
@@ -72,14 +77,15 @@ Remaining runtime deps (numpy, Pillow, pyperclip, requests) and their bounds: `r
 ```
 src/listen_to_me/     # The single application package — flat, no sub-packages
 scripts/              # Dev/build helpers (make_icon.py)
-.github/workflows/    # ci.yml (check job on PRs); docs-format.yml (Prettier on **.md);
+.github/workflows/    # ci.yml (PR check); docs-format.yml (Prettier on **.md);
                       # release.yml (manual Windows build, main only)
 docs/                 # ARCHITECTURE.mmd (+ .svg), adr/, research/
-agent_docs/           # Agent process docs (review, backlog, memory, budget, API ref, hooks, MCP)
-.claude/skills/       # done, pr, review, security-review, rollback, ci, stuck, beacon
+agent_docs/           # Agent process docs (review, backlog, memory, budget, API ref, MCP)
+.claude/              # settings.json + loop.md; skills/: done, pr, review, security-review,
+                      # rollback, ci, stuck, beacon, scheduler, orca
 ```
 
-Module map + notable file sizes: `agent_docs/project_structure.md`. Find files via glob/grep.
+Module map + file sizes: `agent_docs/project_structure.md`. Setup hints, platform quirks, single-instance mechanics, frozen-build specifics: `agent_docs/development_notes.md`. Find files via glob/grep.
 
 ## Commands
 
@@ -99,12 +105,14 @@ python -m compileall -q src scripts   # syntax-check every source file (fast, no
 QT_QPA_PLATFORM=offscreen PYTHONPATH=src \
   python -c "import sys; from listen_to_me.selftest import gui_smoke; sys.exit(gui_smoke())"
 
+# Markdown formatting — the only formatter; version pinned in docs-format.yml
+npx --yes prettier@3.9.6 --write "**/*.md"   # --check is the read-only CI variant
+
 # Architecture diagram (validate/render)
 npx -y -p @mermaid-js/mermaid-cli mmdc -i docs/ARCHITECTURE.mmd -o docs/ARCHITECTURE.svg
 ```
 
 > **No lint/format/typecheck step exists for Python.** Do not invent one — adding ruff/black/mypy/pytest is a dependency + config change requiring user sign-off.
-> Markdown is the sole exception: `docs-format.yml` checks `**/*.md` with Prettier via `npx` (no `package.json`, no dependency). Run `npx --yes prettier@3.9.6 --write "**/*.md"` before committing docs; the version is pinned in the workflow and mirrored in `CONTRIBUTING.md`.
 > The Windows one-file build is CI's job; the local PyInstaller invocation lives in `agent_docs/development_notes.md`.
 
 ## Key Patterns
@@ -112,9 +120,9 @@ npx -y -p @mermaid-js/mermaid-cli mmdc -i docs/ARCHITECTURE.mmd -o docs/ARCHITEC
 > Top 5 — a lookup index, not documentation. Every module and its role: `agent_docs/key-patterns.md`.
 
 - **App core & state machine** — `App` owns `idle` → `recording` → `processing`, a thread-safe event queue, and wires every component; a `QTimer` drains the queue on the Qt main thread. → `app.py`
-- **Threading model (critical)** — all GUI/tray/overlay work is main-thread; worker threads never touch Qt, they call `App.post(...)` / `App.notify(...)`. → `app.py`
-- **Lazy heavy imports** — Qt, `sounddevice`, `pynput`, `faster_whisper`, `numpy` are imported inside functions so `--version`/`--selftest` stay fast and headless. Never hoist to module scope.
-- **Backend abstraction** — `create_transcriber(cfg)` picks faster-whisper (default), OpenVINO or Parakeet by `cfg["backend"]`; all share one surface, optional deps stay lazy. → `transcriber*.py`
+- **Threading model (critical)** — all GUI/tray/overlay work is main-thread; workers never touch Qt, they call `App.post(...)` / `App.notify(...)`. → `app.py`
+- **Lazy heavy imports** — Qt, `sounddevice`, `pynput`, `faster_whisper`, `numpy` are imported inside functions so `--version`/`--selftest` stay headless. Never hoist to module scope.
+- **Backend abstraction** — `create_transcriber(cfg)` picks faster-whisper (default), OpenVINO or Parakeet by `cfg["backend"]`; one surface, optional deps stay lazy. → `transcriber*.py`
 - **Config deep-merge over DEFAULTS** — atomic writes; a non-dict stored value never replaces a dict section. Treat the file as untrusted input. → `config.py`
 
 ### Error Handling
@@ -135,7 +143,7 @@ Full conventions: `agent_docs/coding_conventions.md`.
 
 ## Architecture Principles
 
-- **Cross-thread communication is one-way through the event queue.** Never mutate Qt objects off the main thread; `App.state` (via `_set_state`) is the single source of truth that drives tray + overlay + mute integrations together.
+- **Cross-thread communication is one-way through the event queue.** Never mutate Qt objects off the main thread; `App.state` (via `_set_state`) is the single source of truth driving tray + overlay + mute integrations together.
 - **Everything degrades gracefully and never silently** — no mic, no GPU, no network, no clipboard must each fail soft with a user-visible notification, never a crash and never a no-op.
 
 Full set (config-without-restart, no-cloud-for-core, security boundaries, untrusted on-disk input): `agent_docs/architecture_principles.md`.
@@ -149,7 +157,8 @@ Significant decisions are recorded as ADRs under `docs/adr/`. Triggers + format:
 - **Branch Naming:** `claude/<short-slug>`; feature branches, never commit straight to `main`.
 - **Commit Messages:** imperative, capitalized subject (~50–72 chars), e.g. `Add in-app Help page and auto CPU fallback`; an optional lowercase `area:` prefix appears occasionally (`ci: run the check job`). **Not** Conventional Commits — never force `feat:`/`fix:`. Reference issues/PRs with `#N`.
 - **Merge Strategy:** GitHub **merge commits**, not squash. **CI/CD:** `ci.yml` check job on every PR; `release.yml` = manual dispatch only, guarded to `main`.
-- **Actions are pinned by commit SHA, never by tag** (#22) — a tag can be moved, and `release.yml` runs with `contents: write` and publishes the exe the updater hands to users. Bump procedure: `agent_docs/deployment.md`.
+- **Cloud / routine runs:** a `claude/`-prefixed branch is always accepted; a push to any other branch is rejected when the branch is protected, carries someone else's open PR, or holds commits authored by someone else. Unattended work therefore starts on `claude/<slug>` unless the task names a branch.
+- **Actions are pinned by commit SHA, never by tag** (#22) — rationale + bump procedure: `agent_docs/deployment.md`.
 - **Never bypass a git hook with `--no-verify`** — unconditional, whatever is or isn't configured.
 
 ## Dependency Management
@@ -174,10 +183,10 @@ Full list + **Secrets Locations**: `agent_docs/env-vars.md`. The only user secre
 
 - **Trigger:** manual `workflow_dispatch` on `.github/workflows/release.yml` → Windows one-file exe + GitHub Release (`vYYYY.MM.DD.<run>`); a dispatch from any ref but `main` fails in the guard job. PRs only run the `ci.yml` check.
 - **Agent scope:** push to feature branches, open/update PRs, suggest merge. Merging a PR and dispatching the release build each need an explicit user command.
-- **Routine exception:** a session running an **owner-authorized routine** counts as an explicit user command — its merges are pre-approved _including_ any pipeline they trigger — provided the change set is **non-destructive** (additive; no history rewrite, no force-push, no repo-settings change, no forced migration) **and verification passed** (green `check` job). **Destructive changes stay gated** behind an explicit interactive command. Accepted risk: the routine claim arrives as unverifiable prompt text (ADR-0005, superseding ADR-0004; #21).
+- **Routine exception:** merges ordered by an owner-authorized routine count as an explicit user command — conditions + full gate: `.claude/skills/pr/SKILL.md → /pr merge` (single source of truth). Release dispatch is never covered; reasoning + accepted risk: ADR-0005 (supersedes ADR-0004, #21).
 - **Rollback:** `.claude/skills/rollback/SKILL.md` — for a bad release prefer a revert-PR + fresh dispatched build.
 
-Detail (distribution, SHA-pin bump): `agent_docs/deployment.md`.
+Pipeline, distribution, SHA-pin bump: `agent_docs/deployment.md`.
 
 ## API / Interfaces
 
@@ -195,9 +204,9 @@ Regression guards + how to add a check: `agent_docs/testing.md`.
 
 ## External Integrations / MCPs
 
-Host MCP availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch` when one is absent, and never hard-require an MCP. One canonical file covers the rest: `agent_docs/mcp_catalog.md` — the project/common MCP tables, the `gh` → `mcp__github__*` equivalence the PR/CI/rollback skills rely on, and the trigger-tool allowlist in `.claude/settings.json`.
+Host MCP availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch`, and never hard-require an MCP. One canonical file covers the rest: `agent_docs/mcp_catalog.md` — the MCP tables, the `gh` → `mcp__github__*` equivalence the PR/CI/rollback skills rely on, the allowlist rationale, and what makes a server reachable in a cloud or routine run (this repo has no `.mcp.json`, so unattended runs use the standard tools).
 
-**Allowlist shape:** keep **one `mcp__<server>__*` glob per server spelling**. A per-tool entry that a glob in the same list already matches grants nothing — it is redundant, and must not be (re-)added. **Self-heal** a tool that still prompts by _appending_ the missing `mcp__<server>__*` glob, never the individual tool name. **Never write a `deny` or `ask` entry**, and never remove a glob.
+**Trigger tools never prompt.** `.claude/settings.json` → `permissions.allow` carries one `mcp__<server>__*` glob per Claude Code Remote spelling, the two `mcp__github__(un)subscribe_pr_activity` entries, and one `Bash(...)` entry per verified check command. **Self-heal:** a tool that still prompts is a missing server spelling — append `mcp__<that server>__*` (the glob, never a single tool name) and commit it. Additive only: **never write `deny`/`ask`**, never remove a glob.
 
 ## CI
 
@@ -205,38 +214,28 @@ CI failure handling is in `.claude/skills/ci/SKILL.md`. Triggered by `/ci`, "fix
 
 ## Subagents
 
-Delegate complex / parallel / read-heavy work: `Explore` (read-only search), `Plan` (strategy), `general-purpose` (write+execute, tests/docs, refactor), `claude-code-guide` (Claude Code itself). Direct tools beat subagents when the target is known; parallelize independent calls; pass full context — subagents have no history. Guide: `agent_docs/review_process.md → Subagent Delegation`.
-
-## Development Notes
-
-- **Windows-first**; `injector.py`, `autostart.py`, `config.py`, `_beep` branch per `sys.platform` — keep those branches coherent.
-- **Version** is stamped into `__init__.py` by CI at build time (`0.0.0.dev0` in source).
-
-Config paths, single-instance mechanics, frozen-build specifics, local build: `agent_docs/development_notes.md`.
+Delegate complex / parallel / read-heavy work: `Explore` (read-only search), `Plan` (strategy), `general-purpose` (write+execute), `claude-code-guide` (Claude Code itself). Direct tools beat subagents when the target is known; parallelize independent calls; pass full context — subagents have no history. **Orca mode** (`/orca`) makes delegation the only path — while it is on these thresholds do not apply (`.claude/skills/orca/SKILL.md`). Guide: `agent_docs/review_process.md → Subagent Delegation`.
 
 ## Refactoring Notes
 
-- `settings_ui.py` (~3175 lines) and `selftest.py` (~2945) far exceed the size guideline; Settings is the split candidate (per-page modules), the Home page already lives in `home_page.py`.
-- `app.py` (~970) and `theme.py` (~580) are over the ~500 bar — keep new behavior in the component modules, not in `App`. Figures measured 2026-08-12; re-measure rather than trusting them.
-- Refactor only when it blocks work. Principles: `agent_docs/refactoring_guidelines.md`.
+- `settings_ui.py` and `selftest.py` far exceed the size guideline; Settings is the split candidate (per-page modules), the Home page already lives in `home_page.py`. `app.py` and `theme.py` are over the ~500 bar — keep new behavior in the component modules, not in `App`.
+- Refactor only when it blocks work. Current line counts (they drift — re-measure, never trust a copied number), the invariants a refactor must preserve, and the principles: `agent_docs/refactoring_guidelines.md`.
 
 ## Documentation Rules
 
 After every code change, check and update:
 
-| File                    | Update when...                                             |
-| ----------------------- | ---------------------------------------------------------- |
-| `CLAUDE.md`             | New modules, config keys, patterns, technical details      |
-| `README.md`             | New features, settings, platform notes for users           |
-| `BACKLOG.md`            | Unfixed review findings (Accepted/Deferred)                |
-| `MEMORY.md`             | Decisions, gotchas, external-dep quirks, user preferences  |
-| `SCRATCHPAD.md`         | Working context, open questions, short-lived notes         |
-| `docs/ARCHITECTURE.mmd` | Structural changes (new module, data flow, external dep)   |
-| `docs/adr/`             | New significant architecture decisions                     |
-| `config.py DEFAULTS`    | New config options (reflect in Settings UI + README table) |
+- `CLAUDE.md` — new modules, config keys, patterns, technical details
+- `README.md` — new features, settings, platform notes for users
+- `BACKLOG.md` — unfixed review findings (Accepted/Deferred)
+- `MEMORY.md` — decisions, gotchas, external-dep quirks, user preferences
+- `SCRATCHPAD.md` — working context, open questions, short-lived notes
+- `docs/ARCHITECTURE.mmd` — structural changes (new module, data flow, external dep)
+- `docs/adr/` — new significant architecture decisions
+- `config.py DEFAULTS` — new config options (reflect in Settings UI + README table)
 
 ### Context budget
 
 `CLAUDE.md` / `MEMORY.md` / `SCRATCHPAD.md` load every session: target **15k / 8k / 4k** chars, offload at **20k / 16k / 8k**. `agent_docs/`, `.claude/skills/` and `docs/adr/` are read on demand and unbudgeted. Over budget → **move** content out and leave a one-line pointer (never delete to fit, never summarize detail away). Ladder + archive format: `agent_docs/context_budget.md`. The Tier-1 guard flags it after any Edit/Write — act in the same session.
 
-<!-- Generated by claude-code-optimizer v1.18.0 -->
+<!-- Generated by claude-code-optimizer v1.22.0 -->

@@ -1,6 +1,7 @@
 ---
 name: security-review
 description: "Use when the user wants a focused security audit of the current diff or recent changes. Triggered by /security-review, 'security review', 'audit this for security', 'check for vulnerabilities', 'OWASP review'. Runs deeper checks than the generic review — OWASP / secrets / injection / auth / crypto. Independent of the generic review skill."
+disallowed-tools: AskUserQuestion
 ---
 
 # Security Review — Focused Vulnerability Audit

@@ -164,7 +164,7 @@ Rules:
 
 ## Subagent Delegation
 
-For isolated, clearly bounded subtasks. Pick the matching `subagent_type` instead of always defaulting to `general-purpose`.
+For isolated, clearly bounded subtasks. Pick the matching `subagent_type` instead of always defaulting to `general-purpose`. The thresholds below are the default; while **Orca mode** is on (`.claude/skills/orca/SKILL.md`) they are void — everything is delegated, whatever its size.
 
 | Task                              | When to delegate                                     | Recommended `subagent_type` |
 | --------------------------------- | ---------------------------------------------------- | --------------------------- |

@@ -80,6 +80,20 @@ What would you like?
 
 Then **stop**. Do NOT take a 4th attempt without user input.
 
+### 4b. Unattended run — same snapshot, no question
+
+`$CLAUDE_CODE_REMOTE=true` (web/cloud session, routine runs included) means nobody will answer, and a run that ends on
+"What would you like?" is a run that ended on nothing (CLAUDE.md → _Autonomy_). Same 3-attempt cap, same snapshot,
+different landing:
+
+1. Write the snapshot and the options as one `BACKLOG.md` entry (`agent_docs/backlog_process.md` format), status **Open**.
+2. Leave the loop work uncommitted, or `/rollback` it if it made the tree worse. Never commit a defect to get past it.
+3. Continue with the parts of the task that do **not** depend on the stuck defect — being blocked on one thing is not
+   being blocked on everything.
+4. End with the run's normal report, naming the defect, the backlog entry and what was finished around it.
+
+Option D of the interactive format is the unattended default; A–C need a human and are recorded, not chosen.
+
 ## Hard Rules
 
 - **3-attempt cap on the same defect.** No exceptions. The 4th try without user input is forbidden.
@@ -87,6 +101,7 @@ Then **stop**. Do NOT take a 4th attempt without user input.
 - **Verbatim error messages.** Never paraphrase the error when escalating.
 - **No silent retries.**
 - **Loop work doesn't get committed silently.** Either user picks a path or rollback the loop.
+- **Never end an unattended run with a question.** Escalation there means step 4b: backlog entry plus report.
 
 ## After User Response
 
