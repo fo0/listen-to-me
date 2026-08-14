@@ -1,0 +1,30 @@
+# Tech Stack
+
+Offloaded from `CLAUDE.md` (context budget). CLAUDE.md keeps a one-line summary; this file carries the full table and
+the version reasoning.
+
+| Component         | Technology                                                                                 | Version                                |
+| ----------------- | ------------------------------------------------------------------------------------------ | -------------------------------------- |
+| Language          | Python                                                                                     | >=3.10 (CI + dev on 3.11/3.12)         |
+| GUI Framework     | PySide6 (Qt 6)                                                                             | >=6.6                                  |
+| Speech-to-text    | faster-whisper (CTranslate2); optional `[openvino]` / `[parakeet]` extras, both in the exe | >=1.2.1                                |
+| Audio · hotkeys   | sounddevice (PortAudio) · pynput                                                           | >=0.4.6 / >=1.7.7                      |
+| Build · packaging | setuptools (`pyproject.toml`) · PyInstaller one-file (CI)                                  | >=68                                   |
+| Package Manager   | pip (`requirements.txt` + `pyproject.toml`)                                                | —                                      |
+| Test Framework    | none configured                                                                            | CI: `compileall` + Qt offscreen smoke  |
+| Linter/Formatter  | none for Python; Prettier (via npx) for Markdown only                                      | de-facto black-style, line length ~100 |
+
+Remaining runtime deps (numpy, Pillow, pyperclip, requests) and their bounds: `requirements.txt`.
+
+## Notes
+
+- **`>=3.10` is a real floor, not a formality** — the codebase uses PEP 604 `X | None` unions and
+  `from __future__ import annotations` throughout.
+- **No tooling tier.** There is no ruff/black/mypy/pytest and no lock file; runtime deps are pinned with lower bounds
+  (`>=`) only. Adding any of them is a dependency + config change requiring user sign-off
+  (`MEMORY.md` → _User Preferences_).
+- **The optional STT extras ship in the released exe** even though a plain `pip install -e .` omits them —
+  `release.yml` installs and `--collect-all`s them. That asymmetry is why a locally built exe offers fewer backends
+  than the published one (`agent_docs/development_notes.md` → _Local Windows build_).
+- **Prettier is fetched via `npx` at a pinned version**, deliberately not a dependency — the repo has no
+  `package.json` and should not grow one for a Markdown formatter.

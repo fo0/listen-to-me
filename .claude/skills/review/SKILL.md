@@ -1,6 +1,7 @@
 ---
 name: review
 description: "Use when the user wants a code review of the current diff or recent changes. Triggered by /review, 'review this', 'review the diff', 'do a review', 'review my changes'. Wraps the workflow in agent_docs/review_process.md — runs automated checks, evaluates all P0/P1/P2 categories, fixes findings inline, writes deferred items to BACKLOG.md."
+disallowed-tools: AskUserQuestion
 ---
 
 # Review — Diff / Recent-Changes Code Review

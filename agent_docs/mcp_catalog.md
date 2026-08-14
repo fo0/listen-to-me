@@ -60,6 +60,28 @@ Merge additively into an existing file; never remove a user's own entries there.
 
 **Self-heal:** if a Claude Code Remote tool still raises an approval prompt, its server spelling is missing. **Append** `mcp__<that spelling>__*` to the repo's `permissions.allow` and commit it on the current branch/PR. One heal per spelling — append the _glob_, never the individual tool name, and **never write a `deny` or `ask` entry**. Removing a glob, or narrowing one into per-tool entries, is not a heal.
 
+## MCPs in cloud and routine runs
+
+A cloud session — every routine run included — starts from a fresh clone of `main`. Nothing added locally with `claude mcp add` travels with it, because that configuration lives on the machine, not in the repo. Two paths make a server reachable in an unattended run:
+
+1. **A committed `.mcp.json` at the repo root** (project scope). It is part of the clone, so it applies everywhere the repo goes:
+
+   ```json
+   {
+     "mcpServers": {
+       "example": { "type": "http", "url": "https://mcp.example.com/mcp" }
+     }
+   }
+   ```
+
+   stdio servers use `"command"` + `"args"` instead of `"type"`/`"url"`. `${VAR}` and `${VAR:-default}` expand in `command`, `args` and `env` — **use them for every credential**; a token committed in `.mcp.json` is a leaked token. Project servers need approval before they connect: `.claude/settings.json` → `enableAllProjectMcpServers: true` grants it, and like every project-level allow rule it applies only after the workspace-trust dialog is accepted.
+
+   **This repo has no `.mcp.json`**, which is why `.claude/settings.json` deliberately carries no `enableAllProjectMcpServers` key — it would approve an empty set. Add the key in the same change that adds the file, never before.
+
+2. **claude.ai connectors.** A routine includes the account's connectors, and its own form is where you narrow them to what the run needs. Connector traffic goes through Anthropic's servers, so it is unaffected by the environment's allowed-domains list.
+
+Neither path is a hard requirement — Selection Heuristic rule 3 still holds. A run whose MCP is missing falls back and says so once.
+
 ## Selection Heuristic for the Agent
 
 1. **Project MCPs first.** If the project intends an MCP for a task, use it.

@@ -1,6 +1,7 @@
 ---
 name: ci
 description: "Use when the user wants CI status, failed-job logs, or help fixing a red build. Triggered by /ci, 'CI status', 'check the build', 'fix CI', 'why is CI failing', 'look at the build'. Auto-routes by state: status / logs / fix-proposal. Reads logs locally — never re-triggers builds without explicit user command."
+argument-hint: "[status|logs|fix]"
 ---
 
 # CI — Continuous Integration Workflow
