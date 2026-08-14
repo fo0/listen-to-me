@@ -192,6 +192,19 @@ Configuration is a plain JSON file (tray → _Open config folder_):
 `~/.config/listen-to-me/config.json` on Linux,
 `~/Library/Application Support/ListenToMe/config.json` on macOS.
 
+That same folder holds everything else the app keeps on disk, so it is the one
+place to look when reporting a bug or cleaning up:
+
+| File                              | What it is                                                                                                          |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `config.json`                     | Your settings — the only file that may contain a secret (the optional assistant API key). Don't share it unredacted |
+| `history.json`                    | The transcript **text** of recent recordings (never audio). Switch it off or clear it in Settings → History         |
+| `listen-to-me.log` (+ `.1`, `.2`) | Rotating log, 512 KB per file — the first thing to attach to a bug report                                           |
+| `instance.lock` _(Linux/macOS)_   | The single-instance lock; on Windows a named mutex does the same job without a file                                 |
+
+Nothing is written anywhere else — downloaded models live in the Hugging Face
+cache (see [Choosing a Whisper model](#choosing-a-whisper-model)), not here.
+
 ### config.json reference
 
 Every option above is stored under one of these keys. The file is written with

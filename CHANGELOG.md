@@ -14,6 +14,19 @@ changes at a glance.
 
 ### Added
 
+- **The floating icon remembers the monitor** it was left on, not just a screen
+  coordinate — so it comes back to the right screen after a restart, after a
+  reboot that brings the second monitor up late, and after a monitor is
+  unplugged and reconnected.
+- **Reset icon position** — in the floating icon's right-click menu and on the
+  Overlay settings page — brings the icon back from wherever a drag or a
+  rearranged desktop left it, without editing `config.json`.
+- **A request timeout for the assistant**, editable in Settings → Assistant
+  (`assistant.timeout`, 120 s by default): how long a finished dictation is held
+  back waiting for the LLM before the raw transcript is inserted instead.
+- **Test connection** on the Assistant settings page — sends one sample sentence
+  and shows the reply, so the endpoint is verified before a dictation depends on
+  it.
 - **A Releases link in the window footer**, next to the version and the
   existing GitHub link — straight to the download page, which is where you end
   up whenever the in-app updater can't serve you.
