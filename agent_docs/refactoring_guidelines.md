@@ -32,7 +32,7 @@ Refactoring does NOT happen automatically. Only when:
 
 > Figures below were measured on 2026-08-12 — they drift with every commit. Re-measure with `wc -l src/listen_to_me/*.py | sort -rn | head` instead of trusting a copied number.
 
-- **`settings_ui.py` (~3175 lines)** — the clearest split target: one module per settings page (General / Whisper / Audio / Overlay / Integrations / Assistant / History / Help) plus shared card/row helpers. The Home page already lives in `home_page.py`. Do it only when a change to the settings window is being blocked by the size. Tracked in `BACKLOG.md`.
+- **`settings_ui.py` (~3175 lines)** — the clearest split target: one module per settings page (General / Whisper / Audio / Overlay / Integrations / Assistant / History / Updates / Help) plus shared card/row helpers. The Home page already lives in `home_page.py`. Do it only when a change to the settings window is being blocked by the size. Tracked in `BACKLOG.md`.
 - **`selftest.py` (~2945 lines)** — grows with every regression guard, which is the point; split by check group only if navigating it starts to cost more than it saves.
 - **`app.py` (~970 lines)** — over the ~500 bar. Keep new behavior in the component modules, not in `App`; extract the event `_handle` dispatch only if it keeps growing.
 - **`theme.py` (~580)** — just over the bar, cohesive; no split planned. `home_page.py` (~475) dropped back under the bar and is no longer a candidate.
