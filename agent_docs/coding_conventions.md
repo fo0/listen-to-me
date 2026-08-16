@@ -1,6 +1,6 @@
 # Coding Conventions — full reference
 
-Offloaded from `CLAUDE.md` (context budget). CLAUDE.md keeps the eight rules that bite most often; this file is the complete set.
+Offloaded from `CLAUDE.md` (context budget). CLAUDE.md keeps the seven rules that bite most often; this file is the complete set.
 
 ## Language
 
