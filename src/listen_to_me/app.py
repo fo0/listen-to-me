@@ -107,6 +107,10 @@ class App:
         self._recording_id = 0  # invalidates live-preview workers of old takes
         self._recording_started = 0.0  # monotonic start of the running take
         self._length_warned = False  # one max-length heads-up per take
+        self._clock_seconds = -1  # whole second the tray clock currently shows
+        # Global hotkey suspended by the user (tray menu → Pause hotkey).
+        # Deliberately not a config key — see _toggle_hotkey_pause.
+        self.hotkey_paused = False
         self._live_typer = None  # per-take live-typing worker (livetype.py)
         self._quitting = False  # set by _quit; guards UI opened after shutdown
 
@@ -191,6 +195,7 @@ class App:
         except queue.Empty:
             pass
         self._check_length_warning()
+        self._tick_recording_clock()
 
     def _check_length_warning(self) -> None:
         """Warn once, shortly before the maximum length ends the running take.
@@ -211,6 +216,27 @@ class App:
         # into one notification per poll tick for the rest of the take.
         self._length_warned = True
         self.notify(message)
+
+    def _tick_recording_clock(self) -> None:
+        """Count the running take up in the tray status, once per second.
+
+        Rides the 100 ms timer that already drains the event queue (same
+        reasoning as the length warning) and only touches the tray when the
+        whole second changed — the label is rebuilt once a second, not sixty
+        times. `_set_state` writes the clock-free label on every transition, so
+        leaving RECORDING clears the counter by itself.
+        """
+        if self.state != STATE_RECORDING:
+            self._clock_seconds = -1
+            return
+        seconds = int(time.monotonic() - self._recording_started)
+        if seconds == self._clock_seconds:
+            return
+        self._clock_seconds = seconds
+        try:
+            self.tray.set_elapsed(seconds)
+        except Exception:
+            log.debug("could not update the tray recording clock", exc_info=True)
 
     def _handle(self, kind: str, payload) -> None:
         if kind == "toggle":
@@ -240,6 +266,8 @@ class App:
         elif kind == "flash_text":
             if self.overlay is not None and self.cfg["overlay"]["show_preview"]:
                 self.overlay.flash(str(payload))
+        elif kind == "toggle_hotkey_pause":
+            self._toggle_hotkey_pause()
         elif kind == "toggle_overlay":
             ocfg = self.cfg["overlay"]
             ocfg["enabled"] = not ocfg["enabled"]
@@ -254,6 +282,8 @@ class App:
             self._cancel_recording()
         elif kind == "copy_last":
             self._copy_last_transcript()
+        elif kind == "copy_text":
+            self._copy_transcript(str(payload))
         elif kind == "auto_stop":
             if self._owns_take(payload):
                 self.notify("Maximum recording length reached.")
@@ -316,6 +346,7 @@ class App:
         self._recording_id = take
         self._recording_started = time.monotonic()
         self._length_warned = False
+        self._clock_seconds = -1  # the next poll renders this take's 0:00
         self._set_state(STATE_RECORDING)
         self._beep(880)
         ocfg = self.cfg["overlay"]
@@ -568,7 +599,8 @@ class App:
         Settings, walk the sidebar to History, find the entry, press its Copy
         button — is four steps for the text the user just dictated.
 
-        Main thread only (posted as an event): the clipboard fallback is Qt's.
+        Reading the history is what belongs here; the clipboard itself is
+        `_copy_transcript`, shared with the tray's recent-transcripts menu.
         """
         try:
             text = self.history.latest()
@@ -580,6 +612,21 @@ class App:
             # Also the state right after "Keep a local history" was switched
             # off — say what is missing instead of a silent no-op.
             self.notify("No transcript in the history yet.", force=True)
+            return
+        self._copy_transcript(text)
+
+    def _copy_transcript(self, text: str) -> None:
+        """Put one transcript on the clipboard and say how that went.
+
+        Shared by the tray's "Copy last transcript" and by every entry of its
+        "Recent transcripts" submenu, so the two can never drift into different
+        wording or a different clipboard path. Main thread only (posted as an
+        event): the fallback inside copy_to_clipboard is Qt's.
+        """
+        if not text:
+            # An entry the store would not have accepted (a hand-edited
+            # history.json) — never a silently empty clipboard action.
+            self.notify("That transcript is empty — nothing to copy.", force=True)
             return
         from .qtutil import copy_to_clipboard
 
@@ -678,12 +725,55 @@ class App:
             self.notify(f"“Start with the system” is not active: {problem}.", force=True)
 
     def _register_hotkey(self) -> None:
+        if self.hotkey_paused:
+            # Every path that hands the listener back (settings saved, hotkey
+            # test finished, key picker closed) comes through here, so the
+            # pause survives all of them instead of being undone by the next
+            # unrelated action.
+            self.hotkeys.stop()
+            log.info("hotkey stays paused — not registering")
+            return
         combo = self.cfg["hotkey"]
         try:
             self.hotkeys.register(combo, mode=self.cfg["hotkey_mode"])
         except Exception:
             log.exception("failed to register hotkey %r", combo)
             self.notify(f"Could not register hotkey {combo!r} — change it in Settings.", force=True)
+
+    def _toggle_hotkey_pause(self) -> None:
+        """Suspend or resume the global hotkey without touching the settings.
+
+        The hotkey is global by definition: while a game, a remote session or
+        another app wants the same combination, the only way out so far was to
+        open Settings and change (or clear) it — and to remember what it was
+        afterwards. Pausing costs one click and leaves the combination alone.
+
+        Never persisted. A pause that survived a restart would be
+        indistinguishable from an app that stopped working, with nothing on
+        screen at logon to explain it; the tray status line and a forced
+        notification say it out loud for the same reason.
+
+        Refused while a take is running: in hold mode the release event would
+        never arrive, so the recording would sit there until the maximum length
+        cut it off — and stopping it for the user would insert text into
+        whatever window the tray click just focused.
+        """
+        if self.state != STATE_IDLE:
+            self.notify("Finish the current recording before pausing the hotkey.", force=True)
+            self.tray.set_state(self.state)  # put the menu tick back
+            return
+        self.hotkey_paused = not self.hotkey_paused
+        if self.hotkey_paused:
+            self.hotkeys.stop()
+            self.notify(
+                "Hotkey paused — switch it back on in the tray menu when you need it.",
+                force=True,
+            )
+        else:
+            self._register_hotkey()
+            self.notify("Hotkey active again.", force=True)
+        log.info("global hotkey %s by the user", "paused" if self.hotkey_paused else "resumed")
+        self.tray.set_state(self.state)
 
     def apply_settings(self) -> None:
         """Called by the settings window after the config was saved.

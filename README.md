@@ -49,7 +49,12 @@ standalone system-tray app that works in _every_ application.
 - **System tray app** — runs quietly in the background; icon shows
   idle / recording / transcribing state and names your configured hotkey
   ("Idle — press Ctrl+Alt+Space to record"), so a forgotten combination is a
-  hover away. Only one instance runs at a time:
+  hover away. While you dictate it **counts the take up** ("Recording 1:12… press
+  Ctrl+Alt+Space to stop"), so you can see how long you have been speaking
+  against the maximum recording length. **Pause hotkey** in the same menu
+  suspends the global combination for a game or another app that wants the same
+  keys — your hotkey is kept, and the pause is forgotten on the next start.
+  Only one instance runs at a time:
   starting the app again simply brings the running instance's settings
   window to the front.
 - **Transcript history** — the transcribed text of each recording is kept
@@ -61,7 +66,8 @@ standalone system-tray app that works in _every_ application.
   the app in one step.
   The newest one is a single click away: **Copy last transcript** in the
   tray menu and in the floating icon's right-click menu puts it straight back
-  on the clipboard.
+  on the clipboard — and the tray menu's **Recent transcripts** submenu lists
+  the last five, so the one before last is a click away too.
 - **Home hub** — the main window opens on a **Home page**: the live recording
   state with a big **Start/Stop** button (red while recording), your hotkey
   shown as key caps, at-a-glance cards for the active engine/model, language

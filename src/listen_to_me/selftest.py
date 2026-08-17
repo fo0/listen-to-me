@@ -2166,6 +2166,11 @@ class _StubApp:
 class _StubHotkeys:
     def __init__(self):
         self.running = True
+        self.combo: str | None = None
+
+    def register(self, combo, mode="toggle"):
+        self.combo, self.mode = combo, mode
+        self.running = True
 
     def stop(self):
         self.running = False
@@ -2324,6 +2329,47 @@ def _overlay_position_is_anchored_to_its_monitor():
         overlay_module._screen_key = key
 
 
+def _tray_counts_the_recording_time():
+    """A running take is counted up in the tray status, and the clock survives
+    whatever the caller hands it.
+
+    The elapsed time is opt-in per call, so every caller that only knows the
+    state — and every state that is not a running recording — must keep the
+    exact wording it always had."""
+    from listen_to_me.tray import _STATE_LABELS, format_duration, state_label
+
+    assert format_duration(0) == "0:00"
+    assert format_duration(9.9) == "0:09"  # truncated, never rounded up
+    assert format_duration(75) == "1:15"
+    assert format_duration(600) == "10:00"
+    assert format_duration(3661) == "1:01:01"
+    # A clock read before the take was stamped, and hand-edited/garbage input:
+    # this renders inside the 100 ms poll and must never raise there.
+    assert format_duration(-5) == "0:00"
+    assert format_duration(float("nan")) == "0:00"
+    assert format_duration(float("inf")) == "0:00"
+    assert format_duration(None) == "0:00"
+    assert format_duration("nonsense") == "0:00"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        assert (
+            state_label("recording", stub.cfg, elapsed=72)
+            == "Recording 1:12… press Ctrl+Alt+Space to stop"
+        )
+        stub.cfg["hotkey_mode"] = "hold"
+        assert (
+            state_label("recording", stub.cfg, elapsed=0)
+            == "Recording 0:00… release Ctrl+Alt+Space to stop"
+        )
+        stub.cfg["hotkey"] = ""  # no combo to name: generic wording, still counting
+        assert state_label("recording", stub.cfg, elapsed=72) == "Recording 1:12…"
+        # Only a running take has a clock — and no clock means the old wording.
+        assert state_label("recording", stub.cfg) == _STATE_LABELS["recording"]
+        assert state_label("processing", stub.cfg, elapsed=72) == _STATE_LABELS["processing"]
+        assert state_label("idle", stub.cfg, elapsed=72) == _STATE_LABELS["idle"]
+
+
 def _tray_names_the_hotkey():
     """The tray status spells the configured combination out instead of saying
     "the hotkey" — including after it was changed in the settings, and with the
@@ -2369,6 +2415,124 @@ def _tray_click_opens_the_window():
             stub.posts.clear()
             tray._on_activated(reason)
             assert not stub.posts, f"{reason} posted {stub.posts}"
+
+
+def _hotkey_pause_is_visible_and_temporary():
+    """Pausing the global hotkey stops the listener, says so in the tray status,
+    and survives every path that hands the listener back (a saved setting, a
+    finished hotkey test). It is refused while a take is running — a hold-mode
+    release would never arrive — and it is never written to the config."""
+    from listen_to_me.app import STATE_IDLE, STATE_RECORDING, App
+    from listen_to_me.tray import _PAUSED_LABEL, _STATE_LABELS, state_label
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        # Only the idle status changes: "press Ctrl+Alt+Space to record" would
+        # be a lie, while a running take is still a running take.
+        assert state_label("idle", stub.cfg, paused=True) == _PAUSED_LABEL
+        assert state_label("idle", stub.cfg, paused=False) != _PAUSED_LABEL
+        assert state_label("recording", stub.cfg, paused=True) == (
+            "Recording… press Ctrl+Alt+Space to stop"
+        )
+        assert state_label("processing", stub.cfg, paused=True) == _STATE_LABELS["processing"]
+
+        class _PauseApp:
+            """Just the parts App._toggle_hotkey_pause touches."""
+
+            def __init__(self, cfg):
+                self.cfg = cfg
+                self.state = STATE_IDLE
+                self.hotkey_paused = False
+                self.hotkeys = _StubHotkeys()
+                self.messages: list = []
+                self.tray = self
+
+            def notify(self, message, force=False):
+                self.messages.append(message)
+
+            def set_state(self, state):  # the tray's half of the interface
+                pass
+
+            _register_hotkey = App._register_hotkey
+            _toggle_hotkey_pause = App._toggle_hotkey_pause
+
+        app = _PauseApp(stub.cfg)
+        app._toggle_hotkey_pause()
+        assert app.hotkey_paused and not app.hotkeys.running
+        assert app.messages and "paused" in app.messages[-1].lower()
+        # Saving a setting, finishing the hotkey test or closing the key picker
+        # all re-register — none of them may quietly undo the pause.
+        app.hotkeys.running = True
+        app._register_hotkey()
+        assert not app.hotkeys.running
+
+        app._toggle_hotkey_pause()
+        assert not app.hotkey_paused and app.hotkeys.running
+
+        # A running take owns the listener: pausing it would strand a hold-mode
+        # recording until the maximum length cut it off.
+        app.state = STATE_RECORDING
+        app.messages.clear()
+        app._toggle_hotkey_pause()
+        assert not app.hotkey_paused and app.hotkeys.running
+        assert app.messages and "recording" in app.messages[-1].lower()
+
+        # Session-only: nothing about the pause reaches config.json.
+        assert "hotkey_paused" not in stub.cfg.data
+
+
+def _tray_lists_recent_transcripts():
+    """The tray's "Recent transcripts" submenu is built from the history file
+    every time it opens — newest first, bounded, one elided line each — and an
+    entry copies exactly the transcript it shows. An empty history says so
+    instead of offering an empty menu."""
+    from listen_to_me import tray as tray_module
+
+    _ensure_qapp()
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        tray = tray_module.Tray(stub)
+        tray.start()
+        try:
+            tray._fill_recent_menu()
+            labels = [action.text() for action in tray._recent_menu.actions()]
+            # _StubApp seeds two transcripts; newest first, as the store hands
+            # them over.
+            assert labels == [
+                "An entry with a corrupt timestamp.",
+                "A stored transcript for the self-test.",
+            ], labels
+
+            # A dictated paragraph is one menu line: no line breaks, elided,
+            # and its "&" doubled so Qt renders it instead of eating it as the
+            # mnemonic marker.
+            stub.history.add("Fish & chips\nsecond line " + "long " * 30)
+            tray._fill_recent_menu()
+            label = tray._recent_menu.actions()[0].text()
+            assert label.startswith("Fish && chips second line long"), label
+            assert "\n" not in label and label.endswith("…"), label
+
+            # Clicking one copies that transcript — with its line breaks and a
+            # single "&", exactly as it was stored.
+            stub.posts.clear()
+            tray._recent_menu.actions()[0].trigger()
+            assert len(stub.posts) == 1 and stub.posts[0][0] == "copy_text", stub.posts
+            assert stub.posts[0][1].startswith("Fish & chips\nsecond line"), stub.posts
+
+            # Bounded: the menu is a shortcut, the History page is the archive.
+            for i in range(10):
+                stub.history.add(f"Transcript number {i}")
+            tray._fill_recent_menu()
+            assert len(tray._recent_menu.actions()) == tray_module._RECENT_LIMIT
+            assert tray._recent_menu.actions()[0].text() == "Transcript number 9"
+
+            stub.history.clear()
+            tray._fill_recent_menu()
+            actions = tray._recent_menu.actions()
+            assert len(actions) == 1 and actions[0].text() == "No transcripts yet"
+            assert not actions[0].isEnabled()
+        finally:
+            tray.stop()
 
 
 def _tray_survives_a_missing_notification_area():
@@ -3150,6 +3314,9 @@ _LIGHT_CHECKS = [
     ("voice mic widget", _voice_mic_widget),
     ("overlay position is anchored to its monitor", _overlay_position_is_anchored_to_its_monitor),
     ("tray names the hotkey", _tray_names_the_hotkey),
+    ("tray counts the recording time", _tray_counts_the_recording_time),
+    ("tray lists recent transcripts", _tray_lists_recent_transcripts),
+    ("hotkey pause is visible and temporary", _hotkey_pause_is_visible_and_temporary),
     ("tray click opens the window", _tray_click_opens_the_window),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("Qt UI construction", _gui_construction),

@@ -10,10 +10,16 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from . import APP_NAME, REPO_URL
+from .history import entry_timestamp
 from .keymap import hotkey_label
 from .qtutil import tray_icon
 
 log = logging.getLogger(__name__)
+
+# How many of the latest transcripts the tray lists, and how much of one fits
+# on a menu line before it is elided.
+_RECENT_LIMIT = 5
+_RECENT_CHARS = 56
 
 # Started from the OS autostart, the app can be up before the shell's
 # notification area is: the icon is then silently dropped and never appears.
@@ -26,8 +32,52 @@ _STATE_LABELS = {
     "processing": "Transcribing…",
 }
 
+# Shown instead of the idle status while the global hotkey is suspended: an app
+# that looks idle while its hotkey does nothing is indistinguishable from a
+# broken one, and this line is the first place anyone looks.
+_PAUSED_LABEL = "Hotkey paused — switch it back on in this menu"
 
-def state_label(state: str, cfg) -> str:
+
+def format_duration(seconds) -> str:
+    """`seconds` as ``m:ss`` — ``h:mm:ss`` once a take passes the hour.
+
+    Deliberately unshakeable about its input: it renders a value derived from a
+    clock into a label that is rebuilt every second inside the app's poll
+    timer, and a status line must never be the thing that raises there. A
+    negative value (a clock read before the take was stamped) and anything
+    unusable read 0:00.
+    """
+    try:
+        total = int(float(seconds))
+    except (TypeError, ValueError, OverflowError):
+        return "0:00"
+    total = max(0, total)
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def recent_entry_label(entry: dict, max_chars: int = _RECENT_CHARS) -> str:
+    """One menu line for a stored transcript: its text on a single line, elided.
+
+    A menu item is one line whatever the dictation did, so the line breaks a
+    dictated paragraph carries are folded into spaces rather than dropping the
+    text after the first one. Qt reads a single ``&`` as the mnemonic marker
+    and would swallow it while underlining the next letter — the entry would
+    then advertise text it does not contain, so every ``&`` is doubled.
+
+    str(): history.json is untrusted input and the store's own normalization
+    is not this function's to assume.
+    """
+    text = " ".join(str(entry.get("text", "")).split())
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "…"
+    return text.replace("&", "&&")
+
+
+def state_label(state: str, cfg, elapsed=None, paused: bool = False) -> str:
     """The tray's one-line status, naming the combination that acts on it.
 
     "Press the hotkey" is the one thing the tray can't assume the user knows:
@@ -35,11 +85,24 @@ def state_label(state: str, cfg) -> str:
     exactly where someone looks after forgetting it. Spelling it out costs a
     lookup per state change and saves opening the settings window.
 
+    `elapsed` (seconds) puts the running take's clock into the recording
+    status, `paused` replaces the idle status while the global hotkey is
+    suspended. Both are opt-in per call rather than read from the app, so every
+    caller that only knows the state keeps the wording it always had — and so
+    the label stays a pure function of its arguments.
+
     Falls back to the generic wording when the combination can't be rendered
     (an empty or unusable `hotkey` in the config) — never to a raw pynput
     token in the middle of a sentence.
     """
+    if paused and state == "idle":
+        # Naming the hotkey here would be a lie: pressing it does nothing.
+        return _PAUSED_LABEL
     generic = _STATE_LABELS.get(state, state)
+    if state == "recording" and elapsed is not None:
+        # A speaker has no clock, and the take has a cap: without this the only
+        # feedback about a running recording was the heads-up 30 s before it.
+        generic = f"Recording {format_duration(elapsed)}…"
     if state not in ("idle", "recording"):
         return generic
     try:
@@ -52,7 +115,7 @@ def state_label(state: str, cfg) -> str:
         return generic
     if state == "recording":
         # Hold mode stops on release, so "press it again" would be wrong.
-        return f"Recording… {'release' if hold else 'press'} {combo} to stop"
+        return f"{generic} {'release' if hold else 'press'} {combo} to stop"
     return f"Idle — press {combo} to record"
 
 
@@ -64,7 +127,9 @@ class Tray:
         self._act_state = None
         self._act_toggle = None
         self._act_cancel = None
+        self._act_pause = None
         self._act_overlay = None
+        self._recent_menu = None
         self._retry_timer = None
         self._retries = 0
 
@@ -95,10 +160,33 @@ class Tray:
         act_copy.setToolTip("Put the text of the most recent recording back on the clipboard.")
         act_copy.triggered.connect(lambda: app.post("copy_last"))
         menu.addAction(act_copy)
+
+        # …and the ones before it. Reaching the second-newest transcript meant
+        # opening Settings and walking the sidebar to History — four steps for
+        # a dictation that is two minutes old.
+        self._recent_menu = QMenu("Recent transcripts", menu)
+        self._recent_menu.setToolTipsVisible(True)
+        # Filled when it opens, not when it is built: the recording worker
+        # appends to the history while this menu sits idle, so a list built at
+        # startup would be stale within one dictation.
+        self._recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        act_recent = menu.addMenu(self._recent_menu)
+        act_recent.setToolTip("Copy any of the last few transcripts back to the clipboard.")
         # QMenu ignores its actions' tooltips unless asked — without this the
-        # hint above would exist but never render on any platform.
+        # hints above would exist but never render on any platform.
         menu.setToolTipsVisible(True)
         menu.addSeparator()
+
+        self._act_pause = QAction("Pause hotkey", menu)
+        self._act_pause.setCheckable(True)
+        self._act_pause.setChecked(bool(getattr(app, "hotkey_paused", False)))
+        self._act_pause.setToolTip(
+            "Stop the global hotkey from firing until you switch it back on — "
+            "for a game or another app that needs the same keys. The "
+            "combination itself is kept, and the pause is forgotten on restart."
+        )
+        self._act_pause.triggered.connect(lambda: app.post("toggle_hotkey_pause"))
+        menu.addAction(self._act_pause)
 
         self._act_overlay = QAction("Show floating icon", menu)
         self._act_overlay.setCheckable(True)
@@ -144,6 +232,43 @@ class Tray:
             self._retry_timer = QTimer()
             self._retry_timer.timeout.connect(self._retry_show)
             self._retry_timer.start(_RETRY_MS)
+
+    def _fill_recent_menu(self) -> None:
+        """(Re-)build the "Recent transcripts" submenu from the history file.
+
+        Runs on the Qt main thread every time the submenu opens. A history that
+        cannot be read is named as such instead of showing an empty list: an
+        app that offers nothing looks the same as one that stored nothing,
+        which is the one thing this must not do.
+        """
+        menu = self._recent_menu
+        if menu is None:
+            return
+        menu.clear()
+        try:
+            entries = self.app.history.entries()[:_RECENT_LIMIT]
+        except Exception:
+            log.exception("could not read the transcript history for the tray menu")
+            failed = menu.addAction("Could not read the history")
+            failed.setEnabled(False)
+            return
+        if not entries:
+            empty = menu.addAction("No transcripts yet")
+            empty.setEnabled(False)
+            return
+        for entry in entries:
+            text = str(entry.get("text", ""))
+            action = menu.addAction(recent_entry_label(entry))
+            stamp = entry_timestamp(entry)
+            # The label is elided and stripped of its line breaks — the tooltip
+            # carries when it was dictated, which is how two similar-looking
+            # transcripts are told apart.
+            action.setToolTip(
+                f"{stamp} — copy this transcript" if stamp else "Copy this transcript"
+            )
+            action.triggered.connect(
+                lambda _checked=False, t=text: self.app.post("copy_text", t)
+            )
 
     def _open_project_page(self) -> None:
         # The settings footer reports a failed browser launch — the tray entry
@@ -226,7 +351,8 @@ class Tray:
             return
         # Rebuilt on every state change rather than cached, so a hotkey changed
         # in the settings shows up here as soon as apply_settings() calls in.
-        label = state_label(state, self.app.cfg)
+        paused = self._paused()
+        label = state_label(state, self.app.cfg, paused=paused)
         self._icon.setIcon(tray_icon(state))
         self._icon.setToolTip(f"{APP_NAME} — {label}")
         self._act_state.setText(label)
@@ -234,7 +360,32 @@ class Tray:
             "Stop recording (insert text)" if state == "recording" else "Start recording"
         )
         self._act_cancel.setVisible(state == "recording")
+        # Re-read rather than left to the click that toggled it: App refuses to
+        # pause during a recording, and the tick must then go back where it was.
+        self._act_pause.setChecked(paused)
         self._act_overlay.setChecked(bool(self.app.cfg["overlay"]["enabled"]))
+
+    def _paused(self) -> bool:
+        """Whether the app currently has its global hotkey suspended. getattr:
+        the self-test's App stub predates the flag and only knows the state."""
+        return bool(getattr(self.app, "hotkey_paused", False))
+
+    def set_elapsed(self, seconds) -> None:
+        """Put the running take's clock into the status line and the tooltip.
+
+        Separate from `set_state` because this runs once a second: set_state
+        also rebuilds the tray icon and every menu label, none of which the
+        clock changes. Reads the state back from the app so a tick that arrives
+        just after a recording ended renders the new state's wording instead of
+        a frozen counter.
+        """
+        if self._icon is None or self._act_state is None:
+            return
+        label = state_label(
+            self.app.state, self.app.cfg, elapsed=seconds, paused=self._paused()
+        )
+        self._icon.setToolTip(f"{APP_NAME} — {label}")
+        self._act_state.setText(label)
 
     def notify(self, message: str, force: bool = False) -> None:
         """Show a desktop notification. `force` bypasses the user setting (errors)."""

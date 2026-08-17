@@ -14,6 +14,20 @@ changes at a glance.
 
 ### Added
 
+- **Pause hotkey** in the tray menu — suspends the global hotkey while a game,
+  a remote session or another app needs the same keys, without changing (and
+  having to remember) the configured combination. The tray status says it out
+  loud while it is off, and the pause is deliberately not remembered across a
+  restart.
+- **A “Recent transcripts” submenu in the tray menu** — the last five
+  transcripts, newest first, each one click away from the clipboard. "Copy last
+  transcript" only ever reached the newest one; anything older meant opening
+  Settings → History.
+- **A running clock for the recording** in the tray status line and the tray
+  icon's tooltip ("Recording 1:12… press Ctrl+Alt+Space to stop") — how long
+  you have been dictating was invisible until the heads-up 30 seconds before
+  the maximum length.
+
 - **The floating icon remembers the monitor** it was left on, not just a screen
   coordinate — so it comes back to the right screen after a restart, after a
   reboot that brings the second monitor up late, and after a monitor is
