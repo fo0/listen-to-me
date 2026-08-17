@@ -187,6 +187,7 @@ class Overlay:
     def __init__(self, app):
         self.app = app
         self.state = "idle"
+        self._progress_text: str | None = None  # running download, see set_progress
 
         self.win = _FloatingIcon(self)
         self.win.setToolTip(_idle_label(app.cfg) + "\nDrag to move • right-click for menu")
@@ -266,6 +267,17 @@ class Overlay:
         self.win.move(int(x), int(y))
         self.reposition_bubble()
         self.save_position()
+
+    def reapply_position(self) -> None:
+        """Place the icon by the *current* config again.
+
+        For the factory reset, where the settings were replaced wholesale: the
+        saved position is gone with them, so the icon has to land where a fresh
+        install puts it. Unlike reset_position() this persists nothing — with
+        no coordinates in the config the first-run corner stays unsaved, which
+        is exactly what a first launch leaves behind.
+        """
+        self._restore_position()
 
     def _saved_int(self, key: str) -> int | None:
         """One saved coordinate, or None when it is missing or unusable.
@@ -478,9 +490,30 @@ class Overlay:
 
     # -------------------------------------------------------------- state
 
+    def set_progress(self, fraction: float | None, text: str | None) -> None:
+        """Show a running download on the icon: a progress ring plus the
+        percentage in place of the mic glyph, or an indeterminate sweep when
+        the total size is unknown (#110). `text` (None ends the display) also
+        becomes the tooltip, so the icon says *what* is downloading.
+
+        Main thread only — workers report through App.progress().
+        """
+        self._progress_text = text
+        self.win.mic.set_progress(fraction, active=text is not None)
+        # Back to whatever the state line says once the download is over.
+        self.win.setToolTip(
+            (text or self._state_tooltip()) + "\nDrag to move • right-click for menu"
+        )
+
+    def _state_tooltip(self) -> str:
+        state = self.state
+        return _idle_label(self.app.cfg) if state == "idle" else _STATE_LABELS.get(state, state)
+
     def set_state(self, state: str) -> None:
         self.state = state
-        label = _idle_label(self.app.cfg) if state == "idle" else _STATE_LABELS.get(state, state)
+        # A download outlives a state change (the model is fetched during
+        # "processing"), so it keeps the tooltip until it reports itself done.
+        label = self._progress_text or self._state_tooltip()
         self.win.setToolTip(label + "\nDrag to move • right-click for menu")
         self.win.mic.set_recording(state == "recording")
         self.win.mic.set_processing(state == "processing")

@@ -30,6 +30,11 @@ from pathlib import Path
 
 from . import RELEASES_URL, REPO_URL, __version__, netutil
 
+# Re-exported, not redefined: the release list and the download status render
+# byte counts with it, and so does the icon's download display (progress.py) —
+# one formatting rule, one home. Callers may keep using updater.format_size.
+from .progress import format_size  # noqa: F401
+
 log = logging.getLogger(__name__)
 
 _API_URL = "https://api.github.com/repos/{owner_repo}/releases"
@@ -57,25 +62,6 @@ def current_version() -> tuple[int, ...]:
     return parse_version(__version__)
 
 
-def format_size(num_bytes: int | None) -> str:
-    """A release asset's size for the UI ("198.4 MB", "512 KB").
-
-    The portable build is a few hundred MB, so a bare percentage during the
-    download says nothing about how long it will take — the UI shows the sizes
-    next to it. Binary units (what the OS reports), one decimal from MB up,
-    empty string when the size is unknown so callers can just skip it."""
-    if not num_bytes or num_bytes < 0:
-        return ""
-    size = float(num_bytes)
-    for unit in ("bytes", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            if unit == "bytes":
-                return f"{int(size)} bytes"
-            if unit == "KB":
-                return f"{size:.0f} KB"
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return ""  # unreachable: the loop returns on "GB"
 
 
 def is_frozen() -> bool:

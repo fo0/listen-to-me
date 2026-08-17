@@ -154,6 +154,8 @@ class VoiceMicWidget(QWidget):
         self._t0 = time.perf_counter()
         self._recording = False
         self._processing = False
+        self._progress_active = False
+        self._progress: float | None = None  # 0.0-1.0, None = indeterminate
 
         self._smooth_volume = 0.0
         self._energy_low = 0.0
@@ -198,6 +200,20 @@ class VoiceMicWidget(QWidget):
     def set_processing(self, active: bool) -> None:
         """Tint the mic glyph in the processing color while transcribing."""
         self._processing = active
+
+    def set_progress(self, fraction: float | None, active: bool = True) -> None:
+        """Show a running download on the icon (#110).
+
+        `fraction` 0.0-1.0 draws a progress arc around the icon and puts the
+        percentage where the mic glyph normally sits — at 64 px a number is the
+        only thing that actually reads. `None` while `active` means the total
+        size is unknown, which draws a rotating sweep and no number: a
+        percentage nobody can compute must not be invented. `active=False`
+        ends the display and the icon goes back to its state animation.
+        """
+        self._progress_active = bool(active)
+        self._progress = None if fraction is None else _clamp01(float(fraction))
+        self.update()
 
     @Slot(float, float, float)
     def set_levels(self, low: float, mid: float, high: float) -> None:
@@ -337,6 +353,67 @@ class VoiceMicWidget(QWidget):
 
     # -------------------------------------------------------------- painting
 
+    def _paint_progress(self, painter: QPainter, cx: float, cy: float, size: float) -> None:
+        """Draw the download state over the ring: a track with a progress arc
+        in the app colour, and the percentage on a dark plate in the middle.
+
+        The plate replaces the mic glyph rather than sharing the space with it:
+        the whole icon is 64 px, and a number squeezed in beside a microphone
+        is unreadable at that size while the ring, the glow and the pulse
+        already say which app this is.
+        """
+        track_r = size * 0.325
+        width = max(3.0, size * 0.055)
+        rect = QRectF(cx - track_r, cy - track_r, track_r * 2, track_r * 2)
+
+        track = QPen(QColor(255, 255, 255, 46))
+        track.setWidthF(width)
+        track.setCapStyle(Qt.PenCapStyle.FlatCap)
+        painter.setPen(track)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(rect)
+
+        arc = QPen(QColor(COLORS["app"]))
+        arc.setWidthF(width)
+        arc.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(arc)
+        # Qt angles are 1/16°, counter-clockwise from 3 o'clock: start at 12
+        # o'clock (90°) and sweep negative so the arc grows clockwise, the way
+        # every other progress ring does.
+        if self._progress is None:
+            # Unknown total: a sweep that circles instead of a bar that lies.
+            start = 90.0 - (self._shimmer_deg * 2.0) % 360.0
+            painter.drawArc(rect, int(start * 16), int(-90 * 16))
+        elif self._progress > 0:
+            painter.drawArc(rect, int(90 * 16), int(-360 * self._progress * 16))
+
+        plate_r = track_r - width * 0.75
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(28, 28, 30))
+        painter.drawEllipse(QPointF(cx, cy), plate_r, plate_r)
+
+        text = "…" if self._progress is None else f"{int(self._progress * 100)}%"
+        font = painter.font()
+        font.setBold(True)
+        # Shrunk until it fits the plate: "100%" is a third wider than "7%",
+        # and a clipped number is worse than a small one.
+        available = plate_r * 1.8
+        pixels = max(6, int(size * 0.26))
+        while pixels > 6:
+            font.setPixelSize(pixels)
+            painter.setFont(font)
+            if painter.fontMetrics().horizontalAdvance(text) <= available:
+                break
+            pixels -= 1
+        font.setPixelSize(pixels)
+        painter.setFont(font)
+        painter.setPen(QColor(242, 242, 242))
+        painter.drawText(
+            QRectF(cx - plate_r, cy - plate_r, plate_r * 2, plate_r * 2),
+            int(Qt.AlignmentFlag.AlignCenter),
+            text,
+        )
+
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -371,6 +448,11 @@ class VoiceMicWidget(QWidget):
             painter.setOpacity(0.92)
             painter.drawPath(self._ring_path)
             painter.setOpacity(1.0)
+
+        if self._progress_active:
+            self._paint_progress(painter, cx, cy, size)
+            painter.end()
+            return
 
         mic_r = size * 0.2
         painter.setPen(Qt.PenStyle.NoPen)

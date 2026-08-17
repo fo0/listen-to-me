@@ -51,6 +51,40 @@ def _quantization(cfg_value: str) -> str | None:
     return None if cfg_value == "fp32" else (cfg_value or "int8")
 
 
+def _download_filter(quantization: str | None):
+    """Which files of MODEL_REPO a download of `quantization` fetches.
+
+    The repo ships both variants side by side (int8 ≈ 0.7 GB next to fp32 ≈
+    2.5 GB), so counting all of it would leave an int8 download stuck at a
+    fifth of the bar. The variant is spelled into the file name
+    (``encoder-model.int8.onnx``); the handful of shared files carry no marker
+    and are counted with fp32 — a fraction of a megabyte either way.
+    """
+
+    def keep(name: str) -> bool:
+        return (".int8." in name) == (quantization == "int8")
+
+    return keep
+
+
+def _download_watcher(quantization: str | None, model_dir, progress):
+    """A DownloadWatcher over the folder the Parakeet model downloads into —
+    the backend's own directory under a custom model folder, the Hugging Face
+    cache otherwise."""
+    from .progress import DownloadWatcher, hub_cache_dir, hub_repo_size
+
+    if model_dir:
+        folder = os.path.join(str(model_dir), _MODEL_DIRNAME)
+    else:
+        folder = hub_cache_dir(MODEL_REPO)
+    return DownloadWatcher(
+        folder,
+        hub_repo_size(MODEL_REPO, keep=_download_filter(quantization)),
+        progress,
+        label=f"Downloading {MODEL_NAME}",
+    )
+
+
 def _resolve_providers(device: str) -> list[str]:
     """ONNX Runtime execution providers for the configured device.
 
@@ -128,18 +162,22 @@ class ParakeetTranscriber:
 
     # ------------------------------------------------------------ loading
 
-    def ensure_loaded(self, notify=None) -> None:
+    def ensure_loaded(self, notify=None, progress=None) -> None:
         """Load the Parakeet model, reloading if the settings changed.
 
         Downloads the ONNX model from Hugging Face on first use (into
         cfg["model_dir"] or the Hugging Face cache) and loads from disk on
         every later run — onnx-asr itself resolves offline-first, so restarts
         never re-download.
+
+        `progress` follows the same contract as the other backends: called
+        from a background thread while the download runs, and once with
+        ``label=None`` when it ends.
         """
         with self._lock:
-            self._ensure_loaded_locked(notify)
+            self._ensure_loaded_locked(notify, progress)
 
-    def _ensure_loaded_locked(self, notify=None) -> None:
+    def _ensure_loaded_locked(self, notify=None, progress=None) -> None:
         if self._cpu_fallback_for is not None and not self._forced_cpu:
             # The config moved away from the device that failed: drop the
             # marker so a later RETURN to it retries the GPU instead of
@@ -179,13 +217,22 @@ class ParakeetTranscriber:
                     "Whisper.",
                     True,  # force: important even when notifications are off
                 )
-        try:
-            model = onnx_asr.load_model(
+        def load(chosen):
+            return onnx_asr.load_model(
                 MODEL_NAME,
                 path,
                 quantization=quantization,
-                providers=providers,
+                providers=chosen,
             )
+
+        try:
+            if cached or progress is None:
+                model = load(providers)
+            else:
+                # Only the downloading load is watched: onnx-asr fetches the
+                # files itself, so the bytes are counted where they land.
+                with _download_watcher(quantization, model_dir, progress):
+                    model = load(providers)
         except FileNotFoundError:
             # onnx-asr treats an *existing* custom model directory as a
             # complete offline copy — an interrupted first download leaves it
@@ -217,12 +264,8 @@ class ParakeetTranscriber:
                     True,  # force: important even when notifications are off
                 )
             providers = ["CPUExecutionProvider"]
-            model = onnx_asr.load_model(
-                MODEL_NAME,
-                path,
-                quantization=quantization,
-                providers=providers,
-            )
+            # No watcher: the files are on disk by the time a provider fails.
+            model = load(providers)
         self._model = model
         self._key = key
         self._providers = providers
@@ -237,8 +280,8 @@ class ParakeetTranscriber:
 
     # ----------------------------------------------------------- decoding
 
-    def transcribe(self, audio, notify=None) -> str:
-        self.ensure_loaded(notify=notify)
+    def transcribe(self, audio, notify=None, progress=None) -> str:
+        self.ensure_loaded(notify=notify, progress=progress)
         try:
             text = self._recognize(audio)
         except Exception as exc:

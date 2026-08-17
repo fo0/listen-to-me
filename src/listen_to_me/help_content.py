@@ -236,6 +236,25 @@ notification &mdash; your dictation is never lost.</li>
 </ul>
 """.replace("{app}", APP_NAME),
     },
+    {
+        "id": "factory-reset",
+        "title": "Start over: reset to factory settings",
+        "body": f"""
+<p>When a setting has been changed past the point of remembering what it was,
+<b>Settings &rarr; General &rarr; Reset</b> puts all of them back to the values
+{APP_NAME} shipped with and reopens the guided setup from the first launch.</p>
+<ul>
+<li>You are asked to confirm first &mdash; nothing happens until you do.</li>
+<li>Hotkey, model, backend, microphone, floating icon, assistant and the app
+integrations all go back to their defaults, and <b>autostart is switched
+off</b>.</li>
+<li><b>Kept:</b> your transcript history and every Whisper model already
+downloaded &mdash; the setup does not download anything again.</li>
+<li>Cancelling the wizard still leaves the defaults in place; the reset itself
+cannot be undone.</li>
+</ul>
+""",
+    },
 ]
 
 

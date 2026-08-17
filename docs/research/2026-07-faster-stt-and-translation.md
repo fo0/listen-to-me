@@ -62,7 +62,8 @@ no new OpenAI open ASR release; no multilingual distil-whisper shipped yet.
 `OpenVINO/whisper-large-v3-turbo-{fp16,int8,int4}-ov` **exists** and our generic
 `openvino_model_repo()` mapping already covers it — nothing to do.
 `OpenVINO/distil-whisper-large-v3-*-ov` also exists. Still missing upstream: distil-v3.5 and all
-`.en` distils (our `_UNAVAILABLE_PRESETS` stays correct).
+`.en` distils (our unsupported-preset list stays correct — since #112 it lives in
+`choices.OPENVINO_UNSUPPORTED_MODELS`, which also names the replacement to offer).
 
 ### 1.5 Decode-side speed levers (model-independent)
 

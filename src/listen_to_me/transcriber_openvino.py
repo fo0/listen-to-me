@@ -20,14 +20,10 @@ import os
 import threading
 
 from .audio import SAMPLE_RATE
-from .choices import GERMAN_TURBO_CT2
+from .choices import OPENVINO_UNSUPPORTED_MODELS, openvino_alternative
 from .transcriber import _PREVIEW_WINDOW_SECONDS
 
 log = logging.getLogger(__name__)
-
-# Model presets that exist as CTranslate2 conversions but were never published
-# by the OpenVINO organisation — mapping them would 404 on download.
-_UNAVAILABLE_PRESETS = ("distil-small.en", "distil-medium.en", "distil-large-v3.5")
 
 _INSTALL_HINT = (
     "The OpenVINO backend needs the optional openvino-genai package. "
@@ -44,21 +40,22 @@ def openvino_model_repo(model: str, precision: str) -> str:
     and passed through verbatim, so any OpenVINO IR model can be used. Raises
     ValueError for the presets that have no OpenVINO conversion.
     """
-    if model == GERMAN_TURBO_CT2:
-        # The German preset is a CTranslate2 conversion — passing it through
-        # verbatim would download a model this backend cannot load.
+    # Checked before the "/" passthrough below: the German preset is a
+    # CTranslate2 repo id, so passing it through verbatim would download a
+    # model this backend cannot load. The message leads with the fix that keeps
+    # the backend the user chose — swapping the *model* — because the model is
+    # the incompatible half; recommending faster-whisper first sent people with
+    # an Intel machine and no NVIDIA GPU off the only backend that fits their
+    # hardware (#112).
+    if model in OPENVINO_UNSUPPORTED_MODELS:
         raise ValueError(
-            "The German fine-tuned model has no OpenVINO conversion — switch "
-            "Backend to faster-whisper in Settings → Whisper to use it."
+            f"The model '{model}' has no OpenVINO conversion — pick "
+            f"'{openvino_alternative(model)}' (or another model) in Settings → "
+            "Whisper. Only if you need this exact model, switch Backend back to "
+            "faster-whisper, which can run it."
         )
     if "/" in model or os.sep in model:
         return model
-    if model in _UNAVAILABLE_PRESETS:
-        raise ValueError(
-            f"The model '{model}' has no OpenVINO conversion — pick another model "
-            "(e.g. small or distil-large-v3), or switch back to the faster-whisper "
-            "backend in Settings → Whisper."
-        )
     base = "distil-whisper-large-v3" if model == "distil-large-v3" else f"whisper-{model}"
     return f"OpenVINO/{base}-{precision}-ov"
 
@@ -179,18 +176,22 @@ class OpenVinoTranscriber:
 
     # ------------------------------------------------------------ loading
 
-    def ensure_loaded(self, notify=None) -> None:
+    def ensure_loaded(self, notify=None, progress=None) -> None:
         """Load the Whisper pipeline, reloading if the settings changed.
 
         Downloads the pre-converted OpenVINO model from Hugging Face on first
         use (into cfg["model_dir"] or the Hugging Face cache) and loads from
         that cache on every later run. A failure to load on the GPU/NPU falls
         back to the CPU for this session and retries, so transcription keeps
-        working — mirroring the faster-whisper CUDA fallback."""
-        with self._lock:
-            self._ensure_loaded_locked(notify)
+        working — mirroring the faster-whisper CUDA fallback.
 
-    def _ensure_loaded_locked(self, notify=None) -> None:
+        `progress` follows the same contract as the faster-whisper backend: it
+        is called from a background thread while the download runs and once
+        with ``label=None`` when it ends."""
+        with self._lock:
+            self._ensure_loaded_locked(notify, progress)
+
+    def _ensure_loaded_locked(self, notify=None, progress=None) -> None:
         if self._cpu_fallback_for is not None and not self._forced_cpu:
             # The config moved away from the setup that failed: drop the
             # marker so a later RETURN to that device/precision retries it
@@ -234,13 +235,30 @@ class OpenVinoTranscriber:
         else:
             from huggingface_hub import snapshot_download
 
-            # Already cached → resolve straight from disk, skipping the network
-            # revision check so restarts are fast and work fully offline.
-            path = snapshot_download(
-                repo,
-                cache_dir=str(model_dir) if model_dir else None,
-                local_files_only=cached,
-            )
+            from .progress import DownloadWatcher, hub_cache_dir, hub_repo_size
+
+            def download():
+                # Already cached → resolve straight from disk, skipping the
+                # network revision check so restarts are fast and work offline.
+                return snapshot_download(
+                    repo,
+                    cache_dir=str(model_dir) if model_dir else None,
+                    local_files_only=cached,
+                )
+
+            if cached or progress is None:
+                path = download()
+            else:
+                # snapshot_download fetches the whole repo, so its full size is
+                # exactly what the percentage is of — no file filter needed.
+                watcher = DownloadWatcher(
+                    hub_cache_dir(repo, model_dir),
+                    hub_repo_size(repo),
+                    progress,
+                    label=f"Downloading {repo}",
+                )
+                with watcher:
+                    path = download()
         device = self._resolve_device(device_cfg)
         try:
             self._pipe = openvino_genai.WhisperPipeline(path, device)
@@ -323,8 +341,8 @@ class OpenVinoTranscriber:
         texts = getattr(result, "texts", None)
         return (texts[0] if texts else str(result)).strip()
 
-    def transcribe(self, audio, notify=None) -> str:
-        self.ensure_loaded(notify=notify)
+    def transcribe(self, audio, notify=None, progress=None) -> str:
+        self.ensure_loaded(notify=notify, progress=progress)
         try:
             with self._use_lock:
                 text = self._decode(audio)

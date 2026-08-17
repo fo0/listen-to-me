@@ -26,7 +26,7 @@ Grouped by role. Full behavioral notes: `agent_docs/key-patterns.md`.
 | Input / output        | `hotkeys.py`, `keymap.py`, `injector.py`, `livetype.py`                                                         |
 | UI                    | `settings_ui.py`, `home_page.py`, `onboarding.py`, `widgets.py`, `overlay.py`, `voice_mic_widget.py`, `tray.py` |
 | UI support            | `theme.py`, `glyphs.py`, `icons.py`, `qtutil.py`, `choices.py`, `help_content.py`                               |
-| Platform / system     | `autostart.py`, `netutil.py`, `updater.py`, `integrations.py`                                                   |
+| Platform / system     | `autostart.py`, `netutil.py`, `updater.py`, `integrations.py`, `progress.py`                                    |
 | Data & extras         | `history.py`, `assistant.py`                                                                                    |
 | Verification          | `selftest.py` (`gui_smoke()` = the CI subset), `diagnostics.py` (Settings self-test engine)                     |
 

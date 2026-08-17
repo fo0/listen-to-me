@@ -113,6 +113,11 @@ class App:
         self.hotkey_paused = False
         self._live_typer = None  # per-take live-typing worker (livetype.py)
         self._quitting = False  # set by _quit; guards UI opened after shutdown
+        # True while a factory reset is running its (modal, nested) wizard —
+        # see _factory_reset.
+        self._resetting = False
+        # True while a download is showing on the icon/tray (see _set_progress).
+        self._progress_active = False
 
     def post(self, kind: str, payload=None) -> None:
         """Thread-safe: queue an event for the main loop."""
@@ -122,6 +127,16 @@ class App:
         """Thread-safe desktop notification: routed through the event queue so
         the tray's showMessage() is always invoked on the Qt main thread."""
         self.post("notify", (message, force))
+
+    def progress(self, label, fraction, done: int = 0, total: int = 0) -> None:
+        """Thread-safe progress report for a running download (#110).
+
+        The transcribers' download watchers and the updater call this from
+        worker threads, so like notify() it only queues — the floating icon
+        and the tray are updated by the main-thread drain. `label=None` means
+        the download ended and the display goes back to the plain state icon.
+        """
+        self.post("progress", None if label is None else (str(label), fraction, done, total))
 
     def run(self) -> None:
         from PySide6.QtCore import QTimer
@@ -300,6 +315,8 @@ class App:
         elif kind == "notify":
             message, force = payload if isinstance(payload, tuple) else (payload, False)
             self.tray.notify(str(message), force=bool(force))
+        elif kind == "progress":
+            self._set_progress(payload)
         elif kind == "activate":
             self._activate_from_second_launch()
         elif kind == "settings":
@@ -310,6 +327,8 @@ class App:
             self._open_help()
         elif kind == "open_config":
             self._open_config_folder()
+        elif kind == "factory_reset":
+            self._factory_reset()
         elif kind == "quit":
             self._quit()
 
@@ -459,8 +478,10 @@ class App:
                 audio = audio[live.committed_frames :]
             text = ""
             if len(audio) / SAMPLE_RATE >= 0.3:
-                self.transcriber.ensure_loaded(notify=self.notify)
-                text = self.transcriber.transcribe(audio, notify=self.notify)
+                self.transcriber.ensure_loaded(notify=self.notify, progress=self.progress)
+                text = self.transcriber.transcribe(
+                    audio, notify=self.notify, progress=self.progress
+                )
             full_text = f"{prefix} {text}" if prefix and text else (prefix or text)
             if not full_text:
                 self.notify("No speech detected.")
@@ -648,7 +669,7 @@ class App:
         work on the very first take instead of showing nothing until loaded.
         """
         try:
-            self.transcriber.ensure_loaded(notify=self.notify)
+            self.transcriber.ensure_loaded(notify=self.notify, progress=self.progress)
         except Exception:
             log.exception("live preview model load failed — disabling for this take")
             return
@@ -671,9 +692,44 @@ class App:
 
     # ------------------------------------------------------------ helpers
 
+    def _set_progress(self, payload) -> None:
+        """Show (or clear) a running download on the floating icon and in the
+        tray tooltip. Main thread only — App.progress() is what workers call.
+
+        `payload` is (label, fraction, done, total) while a download runs and
+        None once it is over; `fraction` stays None whenever the total size is
+        unknown, and the icon then shows an indeterminate ring instead of a
+        made-up percentage.
+        """
+        from .progress import progress_text
+
+        # "or None": a report that renders to nothing is no report — a blank
+        # tooltip next to a spinning ring says less than the state line does.
+        text = None if payload is None else (progress_text(*payload) or None)
+        fraction = payload[1] if (payload is not None and text is not None) else None
+        self._progress_active = text is not None
+        try:
+            self.tray.set_progress(text)
+        except Exception:
+            log.debug("tray progress update failed", exc_info=True)
+        if self.overlay is not None:
+            try:
+                self.overlay.set_progress(fraction, text)
+            except Exception:
+                log.debug("overlay progress update failed", exc_info=True)
+
+    def _clear_progress(self) -> None:
+        """Drop a progress display that is no longer current. The backstop for
+        a watcher whose final "download over" report never arrived (a killed
+        worker, a report lost to a shutdown): every state change ends any
+        download that was running for it."""
+        if self._progress_active:
+            self._set_progress(None)
+
     def _set_state(self, state: str) -> None:
         previous = self.state
         self.state = state
+        self._clear_progress()
         # Mute configured apps (Discord, …) for exactly the duration of the
         # recording. Deactivation on any exit from RECORDING (finish, cancel,
         # too-short, auto-stop) happens here — always before _process pastes,
@@ -796,6 +852,45 @@ class App:
         self.tray.set_state(self.state)
         if self.overlay is not None:
             self.overlay.set_visible(bool(self.cfg["overlay"]["enabled"]))
+
+    def _factory_reset(self) -> None:
+        """Settings → General → "Reset to factory settings": every setting back
+        to DEFAULTS, then the first-run wizard again.
+
+        The defaults are applied *before* the wizard opens, not after it
+        finishes: the wizard can be cancelled, and what has to be running then
+        is the reset app — a configuration the user just discarded must not
+        keep driving the hotkey and the autostart entry behind a cancelled
+        dialog. apply_settings() re-registers the hotkey, syncs autostart off,
+        rebuilds the transcriber for the default backend and re-applies the
+        overlay visibility; the icon's saved position is gone with the config,
+        so it is moved back explicitly.
+        """
+        if self._quitting or self._resetting:
+            # The wizard below runs a nested event loop, during which the queue
+            # keeps draining — a second click before the settings window closed
+            # would otherwise stack a second wizard on top of the first.
+            return
+        self._resetting = True
+        try:
+            saved = self.cfg.reset()
+            self.apply_settings()
+            if self.overlay is not None:
+                try:
+                    self.overlay.reapply_position()
+                except Exception:
+                    log.exception("could not move the floating icon back after the reset")
+            if not saved:
+                self.notify(
+                    "The settings were reset, but could not be written to disk — "
+                    "your previous settings will be back after a restart. "
+                    "See the log file.",
+                    force=True,
+                )
+            log.info("factory reset applied — starting the setup wizard")
+            self._run_onboarding()
+        finally:
+            self._resetting = False
 
     def _run_onboarding(self) -> None:
         """First launch: modal setup wizard for the essential settings. A

@@ -132,6 +132,9 @@ class Tray:
         self._recent_menu = None
         self._retry_timer = None
         self._retries = 0
+        # Text of a running download; while set it owns the tooltip and
+        # the status line (see set_progress).
+        self._progress: str | None = None
 
     def start(self) -> None:
         app = self.app
@@ -354,8 +357,10 @@ class Tray:
         paused = self._paused()
         label = state_label(state, self.app.cfg, paused=paused)
         self._icon.setIcon(tray_icon(state))
-        self._icon.setToolTip(f"{APP_NAME} — {label}")
-        self._act_state.setText(label)
+        # A download outlives the state change that started it (the model is
+        # fetched during "processing"), so it keeps the line it is on.
+        self._icon.setToolTip(f"{APP_NAME} — {self._progress or label}")
+        self._act_state.setText(self._progress or label)
         self._act_toggle.setText(
             "Stop recording (insert text)" if state == "recording" else "Start recording"
         )
@@ -384,8 +389,30 @@ class Tray:
         label = state_label(
             self.app.state, self.app.cfg, elapsed=seconds, paused=self._paused()
         )
-        self._icon.setToolTip(f"{APP_NAME} — {label}")
-        self._act_state.setText(label)
+        self._icon.setToolTip(f"{APP_NAME} — {self._progress or label}")
+        self._act_state.setText(self._progress or label)
+
+    def set_progress(self, text: str | None) -> None:
+        """Show a running download in the tooltip and the status line, or drop
+        it and go back to the state wording (#110).
+
+        The floating icon can be switched off, and the tray is then the only
+        place a multi-minute model download is visible at all.
+
+        Only the two lines that change are touched — this fires a couple of
+        times a second for minutes, and set_state() re-renders the tray icon
+        through Pillow and rebuilds every menu label on each call. The end of
+        the download goes through set_state once, to restore all of it.
+        """
+        self._progress = text or None
+        if self._icon is None:
+            return
+        if self._progress is None:
+            self.set_state(self.app.state)
+            return
+        self._icon.setToolTip(f"{APP_NAME} — {self._progress}")
+        if self._act_state is not None:
+            self._act_state.setText(self._progress)
 
     def notify(self, message: str, force: bool = False) -> None:
         """Show a desktop notification. `force` bypasses the user setting (errors)."""

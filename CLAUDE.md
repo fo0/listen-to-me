@@ -42,21 +42,15 @@ Skills live at `.claude/skills/<name>/SKILL.md` — load the one whose trigger f
 
 **Technical terms are never translated** — not even inside a German sentence. Keep the English word verbatim and inflect around it: „2 Bugs gefixt", „Code Smell in `app.py`", „PR gemerged", „Build ist rot" — never „Programmfehler", „Code-Geruch", „Zusammenführungsantrag". Covers bug · smell · lint · build · commit · merge · rebase · branch · PR · review · refactoring · deployment · rollback · issue · breaking change · hotfix · flaky test · regression · edge case · stack trace · dependency · tech debt, plus everything that names something real: file paths, commands, tool / skill / hook names, status labels, error strings (quoted verbatim). Test: English in code, a commit or a PR → English in chat.
 
-## Performance / Modes
-
-- **Default model:** whatever the session resolves to — don't pin one here or in `.claude/settings.json`; `/model` switches mid-session.
-- **Fast mode** (`/fast`): the **same** Opus model with faster output — not a downgrade. Use when latency beats reasoning depth.
-- **Caveman mode** (chat compression): `caveman lite|full|ultra` / `stop caveman`. Chat only, never generated files.
-- **Orca mode** (orchestrator-only): `/orca` toggles it, `/orca <N>` sets the parallel width (default 5). While on, the agent itself does no task work — every unit goes to a subagent at the session's model and effort. Off by default; contract in `.claude/skills/orca/SKILL.md`.
-- **Plan mode:** for non-trivial implementation strategy — `Plan` subagent or `EnterPlanMode`. Not for single-step tasks.
-
-## Autonomy
+## Autonomy & Modes
 
 Which session you are in is resolvable, so it is a rule and not a guess: `$CLAUDE_CODE_REMOTE` is `"true"` in Claude Code web/cloud sessions — routine runs included — and unset in the local CLI.
 
-- **Unattended** (`CLAUDE_CODE_REMOTE=true`, or the session's initial instructions are a routine): nobody is there to answer. Never end a turn with a question — decide under an assumption you state, finish every part that isn't blocked, and carry the open point into the final report or `BACKLOG.md`. A routine run has no permission prompts at all, so an unattended session that "waits for approval" waits forever.
-- **Interactive** (local CLI): asking is cheap. Ask when two readings of the task produce materially different work; otherwise decide and mention the call.
-- **Both:** an action that is destructive _and_ not ordered _and_ not standard practice gets the same answer in either mode — skip it, put it in the report with the recommendation, and finish everything it does not block. Never guess at it. The instances keep their own gates: merges → `.claude/skills/pr/SKILL.md → /pr merge`, reversals and force operations → `.claude/skills/rollback/SKILL.md`, release dispatch → _Deployment_, secrets → `agent_docs/env-vars.md`.
+- **Unattended** (that variable, or a routine as the initial instructions): nobody is there to answer, and a routine run has no permission prompts at all. Never end a turn with a question — decide under a stated assumption, finish everything unblocked, carry the open point into the report or `BACKLOG.md`.
+- **Interactive** (local CLI): ask when two readings produce materially different work; otherwise decide and mention the call.
+- **Both:** destructive _and_ not ordered _and_ not standard practice → skip it, recommend it in the report, finish the rest. Each gate has one source of truth: merges → `.claude/skills/pr/SKILL.md → /pr merge`, reversals → `.claude/skills/rollback/SKILL.md`, release dispatch → _Deployment_, secrets → `agent_docs/env-vars.md`.
+
+Full wording, and the mode reference (`/model`, `/fast`, caveman, `/orca`, plan mode): `agent_docs/autonomy.md`.
 
 ## Scheduled Work
 
@@ -70,22 +64,20 @@ Full table, version reasoning and the packaging asymmetry: `agent_docs/tech_stac
 
 ## Project Overview
 
-**Listen To Me** is a push-to-talk voice-typing desktop app: press a global hotkey, speak, and the recording is transcribed **locally** by a Whisper model and inserted at the cursor of whatever field is focused. It runs as a tray app with an optional floating status icon; optional LLM post-processing (any OpenAI-compatible API) and mute-other-apps-while-recording integrations are built in. Windows-first, Linux/macOS paths prepared.
+**Listen To Me** is a push-to-talk voice-typing tray app: press a global hotkey, speak, and the recording is transcribed **locally** by a Whisper model and inserted at the cursor of whatever field is focused. Windows-first, Linux/macOS paths prepared. Feature list: `README.md`.
 
 ## Project Structure
 
 ```
 src/listen_to_me/     # The single application package — flat, no sub-packages
-scripts/              # Dev/build helpers (make_icon.py)
-.github/workflows/    # ci.yml (PR check); docs-format.yml (Prettier on **.md);
-                      # release.yml (manual Windows build, main only)
+scripts/              # Dev/build helpers
+.github/workflows/    # ci.yml, docs-format.yml, release.yml
 docs/                 # ARCHITECTURE.mmd (+ .svg), adr/, research/
-agent_docs/           # Agent process docs (review, backlog, memory, budget, API ref, MCP)
-.claude/              # settings.json + loop.md; skills/: done, pr, review, security-review,
-                      # rollback, ci, stuck, beacon, scheduler, orca
+agent_docs/           # Agent process docs
+.claude/              # settings.json, loop.md, skills/
 ```
 
-Module map + file sizes: `agent_docs/project_structure.md`. Setup hints, platform quirks, single-instance mechanics, frozen-build specifics: `agent_docs/development_notes.md`. Find files via glob/grep.
+What is in each: `agent_docs/project_structure.md` (full tree, module map, file sizes). Setup hints, platform quirks, single-instance mechanics, frozen-build specifics: `agent_docs/development_notes.md`. Find files via glob/grep.
 
 ## Commands
 
@@ -125,10 +117,6 @@ npx -y -p @mermaid-js/mermaid-cli mmdc -i docs/ARCHITECTURE.mmd -o docs/ARCHITEC
 - **Backend abstraction** — `create_transcriber(cfg)` picks faster-whisper (default), OpenVINO or Parakeet by `cfg["backend"]`; one surface, optional deps stay lazy. → `transcriber*.py`
 - **Config deep-merge over DEFAULTS** — atomic writes; a non-dict stored value never replaces a dict section. Treat the file as untrusted input. → `config.py`
 
-### Error Handling
-
-Broad `except Exception` at boundaries (a desktop app must never crash), logged via a module-level `log` with `log.exception(...)`; user-facing failures go through `App.notify(...)`. Silent failure is the anti-pattern that has bitten this codebase most — read a write back instead of assuming it worked.
-
 ## Coding Conventions
 
 - **`from __future__ import annotations`** at the top of every module.
@@ -139,11 +127,11 @@ Broad `except Exception` at boundaries (a desktop app must never crash), logged 
 - **Type hints** on public signatures; `X | None` unions (3.10+). **Logging, not print.**
 - **Max file length:** ~300 lines (split), ~500 (strongly recommended) — exceptions in Refactoring Notes.
 
-Full conventions: `agent_docs/coding_conventions.md`.
+Full conventions, incl. **error handling** (broad `except` at boundaries, `log.exception`, never a silent no-op): `agent_docs/coding_conventions.md`.
 
 ## Architecture Principles
 
-- **Cross-thread communication is one-way through the event queue.** Never mutate Qt objects off the main thread; `App.state` (via `_set_state`) is the single source of truth driving tray + overlay + mute integrations together.
+- **`App.state` (via `_set_state`) is the single source of truth** driving tray + overlay + mute integrations together, and cross-thread communication is one-way through the event queue.
 - **Everything degrades gracefully and never silently** — no mic, no GPU, no network, no clipboard must each fail soft with a user-visible notification, never a crash and never a no-op.
 
 Full set (config-without-restart, no-cloud-for-core, security boundaries, untrusted on-disk input): `agent_docs/architecture_principles.md`.
@@ -163,19 +151,17 @@ Significant decisions are recorded as ADRs under `docs/adr/`. Triggers + format:
 
 ## Dependency Management
 
-- **New runtime dependencies:** only after user approval with reasoning — they bloat the one-file Windows build and its `--collect-all` list.
-- **Keep `requirements.txt` and `pyproject.toml` in sync**; a dep with C extensions or data files may also need a `--collect-all` in `release.yml`, verified by the built exe's `--selftest`.
+- **New runtime dependencies:** only after user approval with reasoning — they bloat the one-file Windows build.
+- **Keep `requirements.txt` and `pyproject.toml` in sync**; a dep with C extensions or data files also needs a `--collect-all` in `release.yml`, verified by the built exe's `--selftest`.
 - No tooling tier and no lock file; deps are pinned with lower bounds (`>=`).
 
 ## Environment Variables
 
 No custom env vars for the app's own config — settings live in `config.json` (`config.py → config_dir()`); there is no `.env` file. The three that matter:
 
-| Variable                      | Description                                    | Default                    |
-| ----------------------------- | ---------------------------------------------- | -------------------------- |
-| `HF_HOME` / `HF_HUB_CACHE`    | Where the STT backends cache downloaded models | `~/.cache/huggingface/hub` |
-| `QT_QPA_PLATFORM`             | `offscreen` for headless Qt (CI smoke test)    | (unset)                    |
-| `APPDATA` / `XDG_CONFIG_HOME` | Base for the app config dir                    | OS default                 |
+- `HF_HOME` / `HF_HUB_CACHE` — where the STT backends cache models (default `~/.cache/huggingface/hub`)
+- `QT_QPA_PLATFORM` — `offscreen` for headless Qt (the CI smoke test); unset otherwise
+- `APPDATA` / `XDG_CONFIG_HOME` — base for the app config dir (OS default)
 
 Full list + **Secrets Locations**: `agent_docs/env-vars.md`. The only user secret is the optional assistant API key in their local `config.json` — never log it, never commit one.
 
@@ -183,10 +169,10 @@ Full list + **Secrets Locations**: `agent_docs/env-vars.md`. The only user secre
 
 - **Trigger:** manual `workflow_dispatch` on `.github/workflows/release.yml` → Windows one-file exe + GitHub Release (`vYYYY.MM.DD.<run>`); a dispatch from any ref but `main` fails in the guard job. PRs only run the `ci.yml` check.
 - **Agent scope:** push to feature branches, open/update PRs, suggest merge. Merging a PR and dispatching the release build each need an explicit user command.
-- **Routine exception:** merges ordered by an owner-authorized routine count as an explicit user command — conditions + full gate: `.claude/skills/pr/SKILL.md → /pr merge` (single source of truth). Release dispatch is never covered; reasoning + accepted risk: ADR-0005 (supersedes ADR-0004, #21).
+- **Routine exception:** an owner-authorized routine's merge counts as that command (never a release dispatch) — conditions in `.claude/skills/pr/SKILL.md → /pr merge`, reasoning in ADR-0005.
 - **Rollback:** `.claude/skills/rollback/SKILL.md` — for a bad release prefer a revert-PR + fresh dispatched build.
 
-Pipeline, distribution, SHA-pin bump: `agent_docs/deployment.md`.
+Pipeline, distribution, routine wording, SHA-pin bump: `agent_docs/deployment.md`.
 
 ## API / Interfaces
 
@@ -196,9 +182,7 @@ Full reference: `agent_docs/api-reference.md`.
 
 ## Testing
 
-- **Framework:** none (no pytest) — verification is the CI `check` job. **Run:** the two commands under _Automated Checks_; full packaging self-test `python -m listen_to_me --selftest` (needs all deps).
-- **Structure:** `selftest.py` holds the checks; `gui_smoke()` is the dependency-light subset CI runs from source.
-- **Constraints:** agent-runnable, zero-cost, deterministic — binding wording in `agent_docs/review_process.md → Test execution constraints`.
+No framework (no pytest) — verification is the CI `check` job: the two commands under _Automated Checks_, plus `python -m listen_to_me --selftest` when all deps are installed. `selftest.py` holds the checks; `gui_smoke()` is the dependency-light subset CI runs from source. Every check must be agent-runnable, zero-cost and deterministic (binding wording: `agent_docs/review_process.md → Test execution constraints`).
 
 Regression guards + how to add a check: `agent_docs/testing.md`.
 
@@ -206,7 +190,7 @@ Regression guards + how to add a check: `agent_docs/testing.md`.
 
 Host MCP availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch`, and never hard-require an MCP. One canonical file covers the rest: `agent_docs/mcp_catalog.md` — the MCP tables, the `gh` → `mcp__github__*` equivalence the PR/CI/rollback skills rely on, the allowlist rationale, and what makes a server reachable in a cloud or routine run (this repo has no `.mcp.json`, so unattended runs use the standard tools).
 
-**Trigger tools never prompt.** `.claude/settings.json` → `permissions.allow` carries one `mcp__<server>__*` glob per Claude Code Remote spelling, the two `mcp__github__(un)subscribe_pr_activity` entries, and one `Bash(...)` entry per verified check command. **Self-heal:** a tool that still prompts is a missing server spelling — append `mcp__<that server>__*` (the glob, never a single tool name) and commit it. Additive only: **never write `deny`/`ask`**, never remove a glob.
+**Trigger tools never prompt**, and keeping it that way is additive only: a tool that still prompts is a missing server spelling — append `mcp__<that server>__*` (the glob, never a single tool name) and commit it. **Never write `deny`/`ask`**, never remove a glob. What is already allowed and why: `agent_docs/mcp_catalog.md`.
 
 ## CI
 
@@ -214,12 +198,11 @@ CI failure handling is in `.claude/skills/ci/SKILL.md`. Triggered by `/ci`, "fix
 
 ## Subagents
 
-Delegate complex / parallel / read-heavy work: `Explore` (read-only search), `Plan` (strategy), `general-purpose` (write+execute), `claude-code-guide` (Claude Code itself). Direct tools beat subagents when the target is known; parallelize independent calls; pass full context — subagents have no history. **Orca mode** (`/orca`) makes delegation the only path — while it is on these thresholds do not apply (`.claude/skills/orca/SKILL.md`). Guide: `agent_docs/review_process.md → Subagent Delegation`.
+Delegate complex / parallel / read-heavy work: `Explore` (read-only search), `Plan` (strategy), `general-purpose` (write+execute), `claude-code-guide` (Claude Code itself). Direct tools beat subagents when the target is known; parallelize independent calls; pass full context — subagents have no history. Thresholds per task type, and the orca exception: `agent_docs/review_process.md → Subagent Delegation`.
 
 ## Refactoring Notes
 
-- `settings_ui.py` and `selftest.py` far exceed the size guideline; Settings is the split candidate (per-page modules), the Home page already lives in `home_page.py`. `app.py` and `theme.py` are over the ~500 bar — keep new behavior in the component modules, not in `App`.
-- Refactor only when it blocks work. Current line counts (they drift — re-measure, never trust a copied number), the invariants a refactor must preserve, and the principles: `agent_docs/refactoring_guidelines.md`.
+**Refactor only when it blocks work.** Several files are over the size guideline — `settings_ui.py` and `selftest.py` far over — so keep new behavior in the component modules rather than growing `App` or the settings window. Which files, the split plans, the invariants a refactor must preserve, and the current line counts (they drift — re-measure, never trust a copied number): `agent_docs/refactoring_guidelines.md`.
 
 ## Documentation Rules
 

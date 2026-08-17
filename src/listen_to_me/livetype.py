@@ -138,7 +138,7 @@ class LiveTyper:
     def _run(self) -> None:
         app = self.app
         try:
-            app.transcriber.ensure_loaded(notify=app.notify)
+            app.transcriber.ensure_loaded(notify=app.notify, progress=app.progress)
         except Exception:
             log.exception("live typing: model load failed — disabled for this take")
             return

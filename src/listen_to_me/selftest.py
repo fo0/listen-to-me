@@ -192,6 +192,48 @@ def _config_read_failure_never_costs_the_file():
         assert bad.read_text(encoding="utf-8") == broken  # and never touch the backup
 
 
+def _config_factory_reset():
+    """"Reset to factory settings" puts every value back to DEFAULTS, on disk
+    as well as in memory — including nested sections, where a shallow reset
+    would leave the old overlay/assistant/integration values behind. A config
+    that could not be read is preserved as .bad rather than lost, exactly as a
+    normal save does."""
+    import json
+
+    from listen_to_me.config import DEFAULTS, Config
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        cfg = Config(path=path)
+        cfg["language"] = "de"
+        cfg["backend"] = "openvino"
+        cfg["overlay"]["x"] = 1234
+        cfg["overlay"]["enabled"] = False
+        cfg["assistant"]["enabled"] = True
+        assert cfg.save() is True
+
+        assert cfg.reset() is True
+        assert cfg.data == DEFAULTS
+        assert cfg["overlay"]["x"] is None and cfg["overlay"]["enabled"] is True
+        assert cfg["assistant"]["enabled"] is False
+        assert json.loads(path.read_text(encoding="utf-8")) == DEFAULTS  # persisted
+        assert Config(path=path).data == DEFAULTS  # …and survives a reload
+        # DEFAULTS itself must not be aliased by the reset — mutating the live
+        # config would otherwise rewrite the defaults for the whole process.
+        cfg["overlay"]["x"] = 7
+        assert DEFAULTS["overlay"]["x"] is None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        broken = '{"language": "de", THIS IS NOT JSON'
+        path.write_text(broken, encoding="utf-8")
+        cfg = Config(path=path)
+        assert cfg.load_failed is True
+        assert cfg.reset() is True
+        assert path.with_name(path.name + ".bad").read_text(encoding="utf-8") == broken
+        assert json.loads(path.read_text(encoding="utf-8")) == DEFAULTS
+
+
 def _history_normalizes_entries():
     """The history file is untrusted input and its text goes straight into a
     QLabel. Entries whose "text" is not a non-empty string are dropped, so no
@@ -1292,7 +1334,7 @@ def _autostart_reporting():
     assert autostart.launch_problem() is verdict
     # A status line must never carry a raw program path: a Windows path has no
     # space to wrap at, so the label would set a minimum width that widens the
-    # whole settings page and clips its cards (see MEMORY.md).
+    # whole settings page and clips its cards (agent_docs/memory_archive/2026-07.md).
     # Native separators: _split_command only keeps backslashes on Windows, so a
     # hard-coded Windows path would test nothing on the CI runner.
     deep = os.path.join(os.sep + "programs", "listen to me", "ListenToMe.exe")
@@ -1708,24 +1750,38 @@ def _openvino_backend_logic():
     assert openvino_model_repo("distil-large-v3", "int8") == "OpenVINO/distil-whisper-large-v3-int8-ov"
     assert openvino_model_repo("base.en", "int4") == "OpenVINO/whisper-base.en-int4-ov"
     assert openvino_model_repo("Someone/custom-ov", "int8") == "Someone/custom-ov"  # verbatim
-    try:
-        openvino_model_repo("distil-small.en", "int8")
-        raise AssertionError("expected ValueError for a preset without an OpenVINO conversion")
-    except ValueError:
-        pass
-    try:
-        openvino_model_repo("distil-large-v3.5", "int8")
-        raise AssertionError("expected ValueError for a preset without an OpenVINO conversion")
-    except ValueError:
-        pass
-    from listen_to_me.choices import GERMAN_TURBO_CT2
+    from listen_to_me.choices import (
+        GERMAN_TURBO_CT2,
+        MODEL_CHOICES,
+        models_for_backend,
+        openvino_alternative,
+        openvino_supports_model,
+    )
 
-    try:
-        # The German CT2 preset must not fall into the verbatim repo-id branch.
-        openvino_model_repo(GERMAN_TURBO_CT2, "int8")
-        raise AssertionError("expected ValueError for the CT2-only German preset")
-    except ValueError:
-        pass
+    # Every preset the backend refuses names the model that replaces it, and
+    # the replacement itself is one the backend accepts — the message used to
+    # send the user to faster-whisper instead, which on an Intel machine with
+    # no NVIDIA GPU is the wrong half of the pair to change (#112).
+    for preset in ("distil-small.en", "distil-medium.en", "distil-large-v3.5", GERMAN_TURBO_CT2):
+        assert not openvino_supports_model(preset)
+        alternative = openvino_alternative(preset)
+        assert openvino_supports_model(alternative)
+        assert openvino_model_repo(alternative, "int8").startswith("OpenVINO/")
+        try:
+            # The German CT2 preset must not fall into the verbatim repo-id branch.
+            openvino_model_repo(preset, "int8")
+            raise AssertionError(f"expected ValueError for {preset!r} — no OpenVINO conversion")
+        except ValueError as exc:
+            assert alternative in str(exc), str(exc)
+
+    # What the dropdowns offer per backend: everything for the CT2 backends,
+    # only the convertible presets for OpenVINO.
+    assert models_for_backend("faster-whisper") == list(MODEL_CHOICES)
+    assert all(openvino_supports_model(m) for m, _ in models_for_backend("openvino"))
+    assert len(models_for_backend("openvino")) == len(MODEL_CHOICES) - 4
+    # A custom id stays allowed: it may well be an OpenVINO IR repo, and the
+    # format pre-check below is what decides that.
+    assert openvino_supports_model("Someone/custom-ov")
 
     # Format pre-check for custom ids: an OpenVINO IR directory passes, a
     # CTranslate2 one is recognized as the wrong format, and anything that
@@ -2123,7 +2179,125 @@ def _voice_mic_widget():
     widget.set_processing(True)
     widget._on_tick()
     assert not widget.grab().isNull()
+
+    # Download state (#110): a determinate percentage, an indeterminate sweep
+    # and the way back. Every one of them has to paint — this replaces the mic
+    # glyph with text and an arc, the one path the state animation never takes.
+    widget.set_processing(False)
+    for fraction in (0.0, 0.07, 0.42, 1.0, None):
+        widget.set_progress(fraction)
+        assert widget._progress_active is True
+        widget._on_tick()
+        assert not widget.grab().isNull()
+    # Out-of-range input is clamped, never drawn as "-40%" or "250%".
+    widget.set_progress(-2.0)
+    assert widget._progress == 0.0
+    widget.set_progress(9.0)
+    assert widget._progress == 1.0
+    widget.set_progress(None, active=False)
+    assert widget._progress_active is False
+    widget._on_tick()
+    assert not widget.grab().isNull()
     widget.deleteLater()
+
+
+def _download_progress_logic():
+    """The download progress plumbing (#110): the watcher measures growth from
+    a baseline, clamps an overshoot, reports an unknown total as "no
+    percentage" rather than inventing one, and always ends with the "download
+    over" call. Qt-free and offline — the hub helpers are only checked for not
+    raising, since huggingface_hub may or may not be installed here."""
+    import time
+
+    from listen_to_me.progress import (
+        DownloadWatcher,
+        directory_size,
+        hub_cache_dir,
+        hub_repo_size,
+        progress_text,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        assert directory_size(folder) == 0
+        assert directory_size(folder / "does-not-exist") == 0
+        (folder / "already-there.bin").write_bytes(b"x" * 400)
+        # Partial blobs count: that is what a running download is writing.
+        (folder / "model.bin.incomplete").write_bytes(b"y" * 600)
+        assert directory_size(folder) == 1000
+
+    # Baseline: what is already on disk when the watch starts is not progress.
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        (folder / "old.bin").write_bytes(b"x" * (4 * 1024 * 1024))
+        reports: list = []
+        watcher = DownloadWatcher(
+            folder,
+            (4 + 8) * 1024 * 1024,  # 4 MB already there, 8 MB still to come
+            lambda label, fraction, done, total: reports.append((label, fraction, done, total)),
+            label="Downloading test-model",
+            poll_seconds=0.1,
+        )
+        with watcher:
+            (folder / "new.bin").write_bytes(b"y" * (2 * 1024 * 1024))
+            deadline = time.monotonic() + 5.0
+            while not reports and time.monotonic() < deadline:
+                time.sleep(0.05)
+        assert reports, "the watcher reported nothing"
+        label, fraction, done, total = reports[0]
+        assert label == "Downloading test-model"
+        assert done == 2 * 1024 * 1024  # the pre-existing 4 MB are not progress
+        assert total == 8 * 1024 * 1024  # …and neither are they part of the total
+        assert 0.24 < fraction < 0.26
+        # Leaving the context always reports the end, so no display can stay
+        # frozen at some percentage.
+        assert reports[-1] == (None, None, 0, 0)
+
+    # An unknown total means no percentage, and an overshoot is clamped.
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        watcher = DownloadWatcher(folder, None, lambda *args: None)
+        assert watcher._total is None
+        (folder / "big.bin").write_bytes(b"z" * 1024)
+        reported: list = []
+        watcher = DownloadWatcher(
+            folder, 2 * 1024 * 1024, lambda *args: reported.append(args), poll_seconds=0.1
+        )
+        (folder / "huge.bin").write_bytes(b"z" * (4 * 1024 * 1024))
+        watcher._report()
+        assert reported and reported[0][1] == 1.0  # clamped, not 2.0
+
+    # A total too small to be a real model is treated as unknown.
+    with tempfile.TemporaryDirectory() as tmp:
+        assert DownloadWatcher(Path(tmp), 4096, lambda *args: None)._total is None
+
+    assert progress_text("Downloading small", 0.5) == "Downloading small 50%"
+    assert "50%" in progress_text("Downloading small", 0.5, 1_000_000, 2_000_000)
+    assert "%" not in progress_text("Downloading small", None)
+    assert progress_text("", None) == ""
+
+    # Local-only and non-raising whether or not huggingface_hub is installed
+    # here. hub_repo_size is deliberately NOT exercised: it is one HTTP request,
+    # and the checks stay offline and free.
+    hub_cache_dir("OpenVINO/whisper-small-int8-ov")
+
+    # The repo a preset downloads from — an explicit id passes through, and
+    # anything unresolvable costs the download its progress display, nothing else.
+    from listen_to_me.transcriber import hub_repo_id
+
+    assert hub_repo_id("Someone/faster-whisper-thing") == "Someone/faster-whisper-thing"
+    assert hub_repo_id("") is None
+    with tempfile.TemporaryDirectory() as tmp:
+        assert hub_repo_id(tmp) is None  # a local model directory downloads nothing
+
+    # Parakeet ships both quantizations in one repo, so the size of a download
+    # is only the variant it actually fetches.
+    from listen_to_me.transcriber_parakeet import _download_filter
+
+    int8, fp32 = _download_filter("int8"), _download_filter(None)
+    assert int8("encoder-model.int8.onnx") and not int8("encoder-model.onnx")
+    assert fp32("encoder-model.onnx") and fp32("encoder-model.onnx.data")
+    assert not fp32("decoder_joint-model.int8.onnx")
 
 
 class _StubApp:
@@ -2144,6 +2318,7 @@ class _StubApp:
         self.history.add("An entry with a corrupt timestamp.", timestamp=1e300)
         self.hotkeys = _StubHotkeys()
         self.posts: list = []  # events the UI posted (asserted by the tests)
+        self.progress_reports: list = []  # App.progress() calls (download display)
         self.state = "idle"
         # Stands in for an event still sitting in App's queue: _poll() applies
         # it, exactly like the real 100 ms poll timer does.
@@ -2151,6 +2326,9 @@ class _StubApp:
 
     def post(self, *args, **kwargs):
         self.posts.append(args)
+
+    def progress(self, label, fraction, done=0, total=0):
+        self.progress_reports.append((label, fraction, done, total))
 
     def _poll(self):
         if self.queued_state is not None:
@@ -2323,6 +2501,22 @@ def _overlay_position_is_anchored_to_its_monitor():
                 ocfg["screen"], ocfg["rel_x"], ocfg["rel_y"] = 17, float("inf"), 2**40
                 overlay._restore_position()
                 assert overlay._on_any_screen()
+
+                # A running download takes over the icon and the tooltip, and
+                # keeps them across a state change — the model is fetched
+                # *during* "processing", so a state update must not wipe it
+                # (#110). Reporting the end puts the state wording back.
+                overlay.set_state("processing")
+                overlay.set_progress(0.35, "Downloading small 35%")
+                assert overlay.win.mic._progress_active is True
+                assert "35%" in overlay.win.toolTip()
+                overlay.set_state("processing")
+                assert "35%" in overlay.win.toolTip()
+                overlay.set_progress(None, None)
+                assert overlay.win.mic._progress_active is False
+                assert "Transcribing" in overlay.win.toolTip()
+                overlay.set_state("idle")
+                assert "35%" not in overlay.win.toolTip()
             finally:
                 overlay.destroy()
     finally:
@@ -2512,6 +2706,23 @@ def _tray_lists_recent_transcripts():
             assert label.startswith("Fish && chips second line long"), label
             assert "\n" not in label and label.endswith("…"), label
 
+            # A running download owns the tooltip and the status line until it
+            # reports itself done — the floating icon can be switched off, and
+            # the tray is then the only place a model download shows at all
+            # (#110). A state change or a clock tick must not wipe it.
+            tray.set_progress("Downloading small 40% (200 MB / 500 MB)")
+            assert "40%" in tray._icon.toolTip()
+            assert "40%" in tray._act_state.text()
+            tray.set_state("processing")
+            assert "40%" in tray._icon.toolTip()
+            stub.state = "recording"
+            tray.set_elapsed(12)
+            assert "40%" in tray._icon.toolTip()
+            stub.state = "idle"
+            tray.set_progress(None)
+            assert "40%" not in tray._icon.toolTip()
+            assert "Idle" in tray._icon.toolTip()
+
             # Clicking one copies that transcript — with its line breaks and a
             # single "&", exactly as it was stored.
             stub.posts.clear()
@@ -2577,6 +2788,7 @@ def _tray_survives_a_missing_notification_area():
 
 
 def _gui_construction():
+    from listen_to_me.choices import GERMAN_TURBO_CT2, model_from_label, model_label
     from listen_to_me.onboarding import OnboardingWizard
     from listen_to_me.overlay import Overlay
     from listen_to_me.settings_ui import SettingsWindow
@@ -2962,6 +3174,64 @@ def _gui_construction():
         window.model_combo.setCurrentText(model_label(saved_model))
         assert window._collect() == window._saved_snapshot
 
+        # The OpenVINO backend has no pre-converted model for a few presets.
+        # Selecting it must re-list the dropdown and swap an incompatible model
+        # for the closest one that works, rather than accept a combination that
+        # every screen shows as fine and the first transcription then refuses —
+        # after the user has already spoken (#112). Leaving the backend puts the
+        # original pick back, and the custom-model row is still recognised by
+        # label now that the list length depends on the backend.
+        from listen_to_me.choices import GERMAN_TURBO_CT2, model_from_label
+
+        window._fill_model_combo("faster-whisper", GERMAN_TURBO_CT2)
+        window._model_index = window.model_combo.currentIndex()
+        window.backend_combo.setCurrentIndex(1)  # OpenVINO
+        assert window._selected_model() == "large-v3-turbo"
+        assert window.model_combo.findText(model_label(GERMAN_TURBO_CT2)) < 0
+        assert GERMAN_TURBO_CT2 in window._speech_hint.text()
+        last = window.model_combo.count() - 1
+        assert window.model_combo.itemText(last) == CUSTOM_MODEL_LABEL
+        assert not window._is_custom_entry(window.model_combo.itemText(last - 1))
+        assert window._is_custom_entry("Someone/private-ct2-model")
+
+        # …and the "Custom model id…" dialog must not smuggle a filtered-out
+        # preset back in through the side door: typing one while OpenVINO is
+        # selected is refused with a message, and the previous model stays.
+        from listen_to_me import settings_ui as _settings_module
+
+        warned: list = []
+
+        class _FakeInput:
+            @staticmethod
+            def getText(*_args, **_kwargs):
+                return ("distil-small.en", True)
+
+        class _FakeBox:
+            @staticmethod
+            def warning(*args, **_kwargs):
+                warned.append(args[-1])
+
+        real_input = _settings_module.QInputDialog
+        real_box = _settings_module.QMessageBox
+        _settings_module.QInputDialog, _settings_module.QMessageBox = _FakeInput, _FakeBox
+        try:
+            before = window._selected_model()
+            sentinel_row = window.model_combo.count() - 1
+            window.model_combo.setCurrentIndex(sentinel_row)
+            window._on_model_activated(sentinel_row)
+        finally:
+            _settings_module.QInputDialog = real_input
+            _settings_module.QMessageBox = real_box
+        assert warned and "distil-small.en" in warned[0]
+        assert window._selected_model() == before
+        assert window.model_combo.currentIndex() == window._model_index
+
+        window.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert model_from_label(window.model_combo.currentText()) == GERMAN_TURBO_CT2
+        window._fill_model_combo("faster-whisper", saved_model)
+        window._model_index = window.model_combo.currentIndex()
+        assert window._collect() == window._saved_snapshot
+
         # Wheel guard: a wheel tick over an unfocused combo/spin box must not
         # change its value (it would scroll the page instead), and the wheel
         # alone can never give the widget focus (StrongFocus, not WheelFocus).
@@ -3194,18 +3464,95 @@ def _gui_construction():
         assert wizard.language_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus  # wheel guard
         assert not wizard.model_combo.isEditable()  # read-only — presets only
         wizard.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
-        assert not wizard._engine_note.text()
+        assert "OpenVINO" in wizard._engine_note.text()
         # Parakeet ignores the model and language chosen on the previous wizard
         # page — the page must say so instead of dropping them silently.
         wizard.backend_combo.setCurrentIndex(2)  # Parakeet
         assert "Parakeet" in wizard._engine_note.text()
         wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
         assert not wizard._engine_note.text()
+
+        # The OpenVINO backend has no conversion for a few presets. Picking one
+        # of those must not survive the switch — the wizard swaps in the closest
+        # model that works, says so, and restores the original when the backend
+        # moves on (#112).
+        wizard._fill_model_combo("faster-whisper", GERMAN_TURBO_CT2)
+        wizard.backend_combo.setCurrentIndex(1)  # OpenVINO
+        assert model_from_label(wizard.model_combo.currentText()) == "large-v3-turbo"
+        assert GERMAN_TURBO_CT2 in wizard._engine_note.text()
+        assert wizard.model_combo.findText(model_label(GERMAN_TURBO_CT2)) < 0  # filtered out
+        wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert model_from_label(wizard.model_combo.currentText()) == GERMAN_TURBO_CT2
+        wizard._fill_model_combo("faster-whisper", "small")
         wizard._apply()
         assert stub.cfg["backend"] == "faster-whisper"
         assert stub.cfg["model"] == "small"  # preset label round-trips to the id
 
         app.processEvents()
+
+        # A model download's byte progress reaches this page's bar *and* the
+        # floating icon, and every way a diagnostic ends clears the icon again
+        # — a display left at 62% forever is wrong whatever happened (#110).
+        window._model_download_label = "small"
+        gen = window._diag_gen
+        window._on_model_progress(gen, 50 * 1024 * 1024, 200 * 1024 * 1024)
+        assert window.diag_progress.value() == 25
+        assert stub.progress_reports[-1][1] == 0.25
+        # An unknown total means an indeterminate bar and no percentage.
+        window._on_model_progress(gen, 50 * 1024 * 1024, 0)
+        assert window.diag_progress.maximum() == 0
+        assert stub.progress_reports[-1][1] is None
+        window._set_diag_busy(False)
+        assert stub.progress_reports[-1][0] is None
+        # A report from a detached (cancelled/superseded) worker is ignored.
+        window.diag_progress.setRange(0, 100)
+        window.diag_progress.setValue(7)
+        window._on_model_progress(gen + 1, 1, 2)
+        assert window.diag_progress.value() == 7
+
+        # "Reset to factory settings" is the one destructive button in this
+        # window. It must ask first, and a confirmed reset hands the work to
+        # App — which owns the hotkey, the OS autostart entry and the wizard —
+        # instead of rewriting values behind the user's back. Declining leaves
+        # everything alone; confirming closes the window without the
+        # unsaved-changes prompt, since those edits are being discarded anyway.
+        from PySide6.QtWidgets import QMessageBox as _RealBox
+
+        class _FakeBox:
+            StandardButton = _RealBox.StandardButton
+            answer = _RealBox.StandardButton.Cancel
+            informed: list = []
+
+            @classmethod
+            def question(cls, *_args, **_kwargs):
+                return cls.answer
+
+            @classmethod
+            def information(cls, *args, **_kwargs):
+                cls.informed.append(args[-1])
+
+        real_box = _settings_module.QMessageBox
+        _settings_module.QMessageBox = _FakeBox
+        try:
+            # Not while a take is running: the reset re-registers the hotkey and
+            # hands the key picker to the wizard, which would lose the dictation.
+            before = len(stub.posts)
+            stub.state = "recording"
+            window._factory_reset()
+            stub.state = "idle"
+            assert len(stub.posts) == before
+            assert _FakeBox.informed and "recording" in _FakeBox.informed[0]
+            assert window._force_close is False
+
+            window._factory_reset()  # declined
+            assert len(stub.posts) == before
+            assert window._force_close is False
+            _FakeBox.answer = _RealBox.StandardButton.Reset
+            window._factory_reset()  # confirmed
+            assert ("factory_reset",) in stub.posts
+            assert window._force_close is True
+        finally:
+            _settings_module.QMessageBox = real_box
 
         # force_close bypasses the unsaved-changes prompt even when dirty —
         # App._quit relies on that; a modal box here would hang this run.
@@ -3266,6 +3613,7 @@ _LIGHT_CHECKS = [
     ("config survives corrupt sections", _config_survives_corrupt_sections),
     ("config guards scalar types", _config_guards_scalar_types),
     ("config read failure never costs the file", _config_read_failure_never_costs_the_file),
+    ("config factory reset", _config_factory_reset),
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
@@ -3298,6 +3646,7 @@ _LIGHT_CHECKS = [
     ("insecure SSL switch", _insecure_ssl_switch),
     ("insecure SSL huggingface httpx API", _insecure_ssl_hub_httpx),
     ("std stream stub (windowed build)", _std_stream_stub),
+    ("download progress logic", _download_progress_logic),
     ("transcriber cache probe", _transcriber_cache_probe),
     ("CUDA error detection", _cuda_error_detection),
     ("transcriber CPU fallback", _transcriber_cpu_fallback),

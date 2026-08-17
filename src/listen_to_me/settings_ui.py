@@ -65,7 +65,10 @@ from .choices import (
     language_label,
     model_from_label,
     model_label,
+    models_for_backend,
     mute_preset_note,
+    openvino_alternative,
+    openvino_supports_model,
 )
 from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
 from .diagnostics import DiagnosticsEngine
@@ -120,6 +123,7 @@ class _DiagSignals(QObject):
     detached by Cancel (or superseded by a newer run) can't touch the UI."""
 
     model_status = Signal(int, str)
+    model_progress = Signal(int, int, int)  # generation, bytes done, bytes total
     model_done = Signal(int, str)
     model_failed = Signal(int, str)
     mic_level = Signal(int, float)  # recent peak 0.0-1.0 while the mic test records
@@ -173,6 +177,15 @@ _A_TEST_PREVIEW_CHARS = 160
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
 # with the first-run onboarding wizard.
+
+# The one destructive button in this window — spelled out, and with the "…"
+# that promises a confirmation step before anything happens.
+_FACTORY_RESET_LABEL = "Reset to factory settings…"
+
+# Every preset label the model dropdown can hold. The list is re-filtered per
+# backend, so "is this row the custom-model entry?" can no longer be answered
+# by its index (see SettingsWindow._is_custom_entry).
+_PRESET_LABELS = frozenset(model_label(model) for model, _ in MODEL_CHOICES)
 
 # Cap how many transcript rows the History page renders at once. The store keeps
 # up to `history_max`; rendering every one as widgets would be slow for large
@@ -346,6 +359,7 @@ class SettingsWindow(QDialog):
         self._diag = DiagnosticsEngine()
         self._dsig = _DiagSignals()
         self._dsig.model_status.connect(self._on_diag_status)
+        self._dsig.model_progress.connect(self._on_model_progress)
         self._dsig.model_done.connect(self._on_model_done)
         self._dsig.model_failed.connect(self._on_model_failed)
         self._dsig.mic_level.connect(self._on_mic_level)
@@ -369,7 +383,13 @@ class SettingsWindow(QDialog):
         self._hw_gen = 0
         self._hw_busy = False
         self._status_probed = False  # first probe runs when the page is opened
+        # The preset the OpenVINO model filter swapped out (see
+        # _reload_model_combo), so leaving that backend puts it back.
+        self._model_swapped_from: str | None = None
         self._update_cancel_event: threading.Event | None = None
+        # Model named when a download started — the label its progress reports
+        # carry, so a combo changed mid-download doesn't relabel them.
+        self._model_download_label = ""
         self._hotkey_test: Hotkeys | None = None
         # Bumped on every test start so a stale timeout timer from an earlier
         # (already finished) test can't cancel a later one.
@@ -831,13 +851,10 @@ class SettingsWindow(QDialog):
         # failed at model load. Custom CTranslate2 ids now go through the
         # explicit "Custom model id…" sentinel entry (_on_model_activated).
         self.model_combo = QComboBox()
-        self.model_combo.addItems([model_label(m) for m, _ in MODEL_CHOICES])
-        if self.model_combo.findText(model_label(self.cfg["model"])) < 0:
-            # Unlisted id from the config (custom dialog / hand-edited file):
-            # keep it selectable verbatim instead of resetting to item 0.
-            self.model_combo.addItem(self.cfg["model"])
-        self.model_combo.addItem(CUSTOM_MODEL_LABEL)
-        self.model_combo.setCurrentText(model_label(self.cfg["model"]))
+        # Listed for the *saved* backend — the backend combo lives on the
+        # Whisper page, which is built after this one; _on_backend_changed
+        # re-lists it (and every later switch) through _reload_model_combo.
+        self._fill_model_combo(self.cfg["backend"], self.cfg["model"])
         self._model_index = self.model_combo.currentIndex()
         self.model_combo.activated.connect(self._on_model_activated)
         self.model_combo.setToolTip(
@@ -954,6 +971,33 @@ class SettingsWindow(QDialog):
             "longer proven to come from GitHub."
         ))
         layout.addWidget(network)
+
+        reset = QGroupBox("Reset")
+        rv = QVBoxLayout(reset)
+        rv.setSpacing(4)
+        self.factory_reset_button = QPushButton(_FACTORY_RESET_LABEL)
+        self.factory_reset_button.setAutoDefault(False)
+        # The theme's danger styling — the only button here that throws
+        # something away, so it must not look like Save or Refresh.
+        self.factory_reset_button.setProperty("destructive", True)
+        self.factory_reset_button.setToolTip(
+            "Put every setting back to the value it shipped with and start the setup "
+            "wizard from the first launch again. Your transcript history and the "
+            "already downloaded Whisper models are kept."
+        )
+        self.factory_reset_button.clicked.connect(self._factory_reset)
+        reset_row = QWidget()
+        rh = QHBoxLayout(reset_row)
+        rh.setContentsMargins(0, 0, 0, 0)
+        rh.addWidget(self.factory_reset_button)
+        rh.addStretch(1)
+        rv.addWidget(reset_row)
+        rv.addWidget(self._hint(
+            "Starts over with the guided setup you saw on the very first launch — "
+            "the way back when a setting has been changed past the point of "
+            "remembering what it was. History and downloaded models stay."
+        ))
+        layout.addWidget(reset)
 
         layout.addStretch(1)
         return page
@@ -1810,6 +1854,47 @@ class SettingsWindow(QDialog):
         self.app.post("reset_overlay_position")
         self._flash_button(self.overlay_reset_button, "Moved ✓", "Reset position")
 
+    def _factory_reset(self) -> None:
+        """Confirm, then hand the reset to App: every setting back to its
+        default and the first-run wizard again.
+
+        App owns the work, not this window: the values shown here go stale the
+        moment the config is replaced, and applying the defaults means
+        re-registering the hotkey and re-syncing the OS autostart entry, which
+        only App can do. So the window closes itself and posts the event —
+        force_close because an "unsaved changes" prompt about edits the user
+        just asked to throw away is pure noise.
+        """
+        if self._app_busy():
+            # Same guard the microphone tests run: the reset re-registers the
+            # hotkey and swaps the transcriber, and the wizard then takes the
+            # key picker — doing that to a running take loses the dictation.
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                "A recording is still running. Let it finish, then reset.",
+            )
+            return
+        confirm = QMessageBox.question(
+            self,
+            APP_NAME,
+            "Reset every setting to the factory defaults?\n\n"
+            "Hotkey, model, backend, microphone, floating icon, assistant and "
+            "the app integrations all go back to the values the app shipped "
+            "with, autostart is switched off, and the setup wizard from the "
+            "first launch opens again.\n\n"
+            "Your transcript history and the Whisper models already downloaded "
+            "are kept. Unsaved changes in this window are discarded, and the "
+            "reset itself cannot be undone.",
+            QMessageBox.StandardButton.Reset | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Reset:
+            return
+        log.info("factory reset requested from the settings window")
+        self.app.post("factory_reset")
+        self.force_close()
+
     def _reset_prompt(self) -> None:
         self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
 
@@ -1973,6 +2058,11 @@ class SettingsWindow(QDialog):
         # concurrent tests would interleave their status output anyway.
         self._diag_busy = busy
         self._diag_kind = kind if busy else None
+        if not busy:
+            # Every way a diagnostic ends — done, failed, cancelled — passes
+            # through here, so the icon's download display is dropped in one
+            # place instead of in six handlers that would drift apart.
+            self._report_progress(None, 0, 0)
         for button in (self.model_download_button, self.tx_test_button, self.mic_test_button):
             button.setEnabled(not busy)
         # Only the Cancel button next to the running diagnostic is active.
@@ -2072,7 +2162,9 @@ class SettingsWindow(QDialog):
             return
         snapshot = self._diag_snapshot()
         gen, _cancel = self._begin_diag("model")
-        self.diag_progress.setRange(0, 0)  # indeterminate — no byte progress
+        self._model_download_label = str(snapshot["model"])
+        self.diag_progress.setRange(0, 100)
+        self.diag_progress.setValue(0)
         self.diag_progress.setVisible(True)
         self.diag_status.setText(f"Preparing model '{snapshot['model']}'…")
 
@@ -2081,6 +2173,15 @@ class SettingsWindow(QDialog):
                 message = self._diag.prepare_model(
                     snapshot,
                     notify=lambda text, force=False: self._dsig.model_status.emit(gen, str(text)),
+                    # Worker thread: the byte counter runs on a thread of its
+                    # own again, so it goes through the signal like every other
+                    # diagnostic message rather than touching a widget.
+                    # label=None is the watcher's "download over" call — the
+                    # done/failed handlers own that moment, and forwarding it
+                    # would blink the bar back to 0 right before them.
+                    progress=lambda label, fraction, done=0, total=0: (
+                        None if label is None else self._dsig.model_progress.emit(gen, done, total)
+                    ),
                 )
                 self._dsig.model_done.emit(gen, message)
             except Exception as exc:  # surfaced in the UI
@@ -2088,6 +2189,38 @@ class SettingsWindow(QDialog):
                 self._dsig.model_failed.emit(gen, str(exc))
 
         threading.Thread(target=work, name="diag-model", daemon=True).start()
+
+    def _on_model_progress(self, gen: int, done: int, total: int) -> None:
+        """Byte progress of a running model download: into this page's bar and
+        onward to the floating icon, so a multi-minute first download is
+        visible with the settings window minimized too (#110).
+
+        `total` 0 means the size could not be determined — the bar goes back to
+        indeterminate rather than showing a percentage of an unknown whole.
+        """
+        if gen != self._diag_gen:
+            return
+        from .progress import format_size
+
+        if total > 0:
+            self.diag_progress.setRange(0, 100)
+            self.diag_progress.setValue(int(done * 100 / total))
+            self.diag_status.setText(
+                f"Downloading model — {format_size(done)} of {format_size(total)}"
+            )
+        else:
+            self.diag_progress.setRange(0, 0)  # indeterminate
+            # format_size returns "" below a byte — before the first block has
+            # landed there is nothing to name but the download itself.
+            downloaded = format_size(done)
+            self.diag_status.setText(
+                f"Downloading model — {downloaded} so far" if downloaded
+                else "Downloading model…"
+            )
+        # The label is the one captured when the download started, not a fresh
+        # snapshot: this fires several times a second, and the combo may have
+        # been changed meanwhile — the bytes still belong to the old model.
+        self._report_progress(f"Downloading {self._model_download_label}", done, total)
 
     def _on_model_done(self, gen: int, message: str) -> None:
         if gen != self._diag_gen:
@@ -2115,6 +2248,7 @@ class SettingsWindow(QDialog):
         snapshot = self._diag_snapshot()
         device = self._selected_input_device()
         gen, cancel = self._begin_diag("tx")
+        self._model_download_label = str(snapshot["model"])
         self.diag_progress.setRange(0, 0)  # indeterminate while the model loads
         self.diag_progress.setVisible(True)
         self.diag_status.setText("Preparing model…")
@@ -2127,6 +2261,12 @@ class SettingsWindow(QDialog):
                     seconds=5.0,
                     on_status=lambda message: self._dsig.tx_status.emit(gen, str(message)),
                     on_level=lambda level: self._dsig.tx_level.emit(gen, float(level)),
+                    # label=None is the watcher's "download over" call — the
+                    # done/failed handlers own that moment, and forwarding it
+                    # would blink the bar back to 0 right before them.
+                    progress=lambda label, fraction, done=0, total=0: (
+                        None if label is None else self._dsig.model_progress.emit(gen, done, total)
+                    ),
                     is_cancelled=cancel.is_set,
                 )
                 self._dsig.tx_done.emit(gen, text)
@@ -2737,6 +2877,24 @@ class SettingsWindow(QDialog):
         # portable build. Relabel only when the text actually changed.
         if text != self.update_status.text():
             self.update_status.setText(text)
+        # …and onto the floating icon, so a several-hundred-MB update is
+        # visible after the settings window has been minimized (#110). Already
+        # on the main thread (this is a signal slot), but App.progress only
+        # queues, which is exactly what the other progress sources do.
+        self._report_progress(f"Downloading {self._update_download_label}", done, total)
+
+    def _report_progress(self, label: str, done: int, total: int) -> None:
+        """Forward a download's byte count to App's icon/tray display. `label`
+        None ends it. Never fatal: a stub app in the self-test has no
+        progress()."""
+        report = getattr(self.app, "progress", None)
+        if not callable(report):
+            return
+        try:
+            fraction = (done / total) if (label is not None and total > 0) else None
+            report(label, fraction, done, total)
+        except Exception:
+            log.debug("could not report download progress to the app", exc_info=True)
 
     def _on_update_downloaded(self, path: str) -> None:
         from pathlib import Path
@@ -2753,6 +2911,7 @@ class SettingsWindow(QDialog):
             self._on_update_download_cancelled()
             return
         self._update_busy = False
+        self._report_progress(None, 0, 0)  # the icon's download display is done
         self.update_cancel_button.setVisible(False)
         self.update_progress.setRange(0, 100)
         self.update_progress.setValue(100)
@@ -2777,6 +2936,7 @@ class SettingsWindow(QDialog):
         not apply update" was reported underneath a full bar that reads as
         success.
         """
+        self._report_progress(None, 0, 0)  # …including the floating icon
         self._update_busy = False
         self.update_cancel_button.setVisible(False)
         self.update_progress.setVisible(False)
@@ -3088,11 +3248,13 @@ class SettingsWindow(QDialog):
         self._clipboard_hint.setVisible(always)
 
     def _on_backend_changed(self) -> None:
-        """Show only the Engine rows that apply to the selected backend."""
+        """Show only the Engine rows that apply to the selected backend, and
+        re-list the model dropdown for what that backend can run."""
         backend = self._selected_backend()
         fw = backend == "faster-whisper"
         openvino = backend == "openvino"
         parakeet = backend == "parakeet"
+        swapped_out = self._reload_model_combo(backend)
         form = self._engine_form
         # Parakeet shares the CUDA/CPU device choice with faster-whisper; the
         # remaining Whisper decode options apply to faster-whisper only.
@@ -3110,16 +3272,7 @@ class SettingsWindow(QDialog):
         self.model_combo.setEnabled(not parakeet)
         self.language_combo.setEnabled(not parakeet)
         self.initial_prompt_edit.setEnabled(not parakeet)
-        self._speech_hint.setText(
-            "The Parakeet backend ignores both: it runs one fixed model and "
-            "always detects the spoken language itself. Choose a different "
-            "backend on the Whisper page to use them again — your selections "
-            "are kept."
-            if parakeet
-            else "Downloaded automatically on first use (folder on the Whisper page). "
-            "Pick a preset, or choose “Custom model id…” to use any CTranslate2 "
-            "model from Hugging Face."
-        )
+        self._speech_hint.setText(self._speech_hint_text(backend, swapped_out))
         # Live typing (General page) needs faster-whisper's segment timestamps,
         # so the option is greyed out for the other backends — its tooltip
         # explains the requirement. The stored value is kept either way.
@@ -3134,6 +3287,92 @@ class SettingsWindow(QDialog):
             return self.cfg["model"]
         return model_from_label(label)
 
+    @staticmethod
+    def _speech_hint_text(backend: str, swapped_out: str | None) -> str:
+        """The hint under the model dropdown: what the selected backend does
+        with the model + language above it. Never leaves a narrowed list or a
+        replaced selection unexplained — that would just look broken."""
+        if backend == "parakeet":
+            return (
+                "The Parakeet backend ignores both: it runs one fixed model and "
+                "always detects the spoken language itself. Choose a different "
+                "backend on the Whisper page to use them again — your selections "
+                "are kept."
+            )
+        if backend == "openvino":
+            listed = (
+                "Only models with a pre-converted OpenVINO version are listed; "
+                "the rest need Backend = faster-whisper on the Whisper page."
+            )
+            if swapped_out is None:
+                return listed
+            return (
+                f"“{swapped_out}” has no OpenVINO version — switched to "
+                f"“{openvino_alternative(swapped_out)}”. {listed} Your previous "
+                "choice comes back when you leave this backend."
+            )
+        return (
+            "Downloaded automatically on first use (folder on the Whisper page). "
+            "Pick a preset, or choose “Custom model id…” to use any CTranslate2 "
+            "model from Hugging Face."
+        )
+
+    def _fill_model_combo(self, backend: str, model: str) -> None:
+        """(Re)list the model dropdown for `backend` and select `model`.
+
+        Signals stay blocked while the items are swapped, so no half-built list
+        reaches the status card; the closing setCurrentIndex emits once."""
+        presets = [preset for preset, _ in models_for_backend(backend)]
+        labels = [model_label(preset) for preset in presets]
+        if model not in presets:
+            # An unlisted id (custom dialog, hand-edited file) or a preset this
+            # backend cannot run: keep it selectable verbatim instead of
+            # silently resetting the user's model to item 0.
+            labels.append(model)
+        labels.append(CUSTOM_MODEL_LABEL)
+        blocked = self.model_combo.blockSignals(True)
+        try:
+            self.model_combo.clear()
+            self.model_combo.addItems(labels)
+        finally:
+            self.model_combo.blockSignals(blocked)
+        row = self.model_combo.findText(model_label(model) if model in presets else model)
+        self.model_combo.setCurrentIndex(max(0, row))
+
+    def _reload_model_combo(self, backend: str) -> str | None:
+        """Re-list the model dropdown for `backend`, returning the preset that
+        had to be swapped out (None when the selection survived unchanged).
+
+        The OpenVINO backend can only run models the OpenVINO organisation has
+        published an IR conversion for. Offering the others anyway produced a
+        combination that every screen accepted and that was then refused at the
+        first transcription — after the user had already spoken (#112). An
+        incompatible preset is swapped for the closest working one and
+        remembered, so moving to another backend puts the original choice back.
+        """
+        model = self._selected_model()
+        swapped_out = None
+        if backend == "openvino" and not openvino_supports_model(model):
+            swapped_out = model
+            self._model_swapped_from = model
+            model = openvino_alternative(model)
+        elif backend != "openvino" and self._model_swapped_from is not None:
+            # Restore only while the replacement is still what's selected: a
+            # model the user picked themselves outranks the remembered one.
+            if model == openvino_alternative(self._model_swapped_from):
+                model = self._model_swapped_from
+            self._model_swapped_from = None
+        self._fill_model_combo(backend, model)
+        self._model_index = self.model_combo.currentIndex()
+        return swapped_out
+
+    @staticmethod
+    def _is_custom_entry(label: str) -> bool:
+        """Whether a dropdown entry is the single custom-model row rather than
+        a preset or the sentinel. Matched by label, not by index: the list is
+        re-filtered per backend, so its length is no fixed offset (#112)."""
+        return label != CUSTOM_MODEL_LABEL and label not in _PRESET_LABELS
+
     def _on_model_activated(self, index: int) -> None:
         """Resolve the "Custom model id…" sentinel via an input dialog.
 
@@ -3143,6 +3382,11 @@ class SettingsWindow(QDialog):
         selected."""
         if self.model_combo.itemText(index) != CUSTOM_MODEL_LABEL:
             self._model_index = index
+            # An explicit pick outranks the model the OpenVINO filter
+            # remembered: leaving the backend must not undo what was just
+            # chosen here. Only on a pick that sticks — a cancelled custom
+            # dialog below changes nothing and must not drop it either.
+            self._model_swapped_from = None
             return
         previous = model_from_label(self.model_combo.itemText(self._model_index))
         is_preset = any(previous == model for model, _ in MODEL_CHOICES)
@@ -3157,16 +3401,32 @@ class SettingsWindow(QDialog):
         if not model or model == CUSTOM_MODEL_LABEL:
             self.model_combo.setCurrentIndex(self._model_index)
             return
+        if self._selected_backend() == "openvino" and not openvino_supports_model(model):
+            # The dropdown filters these presets out for this backend; typing
+            # one in here would put the broken combination back through the
+            # side door and fail at the first transcription again (#112).
+            QMessageBox.warning(
+                self,
+                "Not available on OpenVINO",
+                f"“{model}” has no pre-converted OpenVINO version, so the "
+                "OpenVINO backend cannot load it.\n\nUse "
+                f"“{openvino_alternative(model)}” instead, or set Backend = "
+                "faster-whisper on the Whisper page to keep this model.",
+            )
+            self.model_combo.setCurrentIndex(self._model_index)
+            return
+        self._model_swapped_from = None
         row = self.model_combo.findText(model_label(model))
         if row < 0:
             # Keep a single custom entry, directly above the sentinel.
             sentinel = self.model_combo.count() - 1
-            if sentinel == len(MODEL_CHOICES):
+            above = sentinel - 1
+            if above >= 0 and self._is_custom_entry(self.model_combo.itemText(above)):
+                row = above
+                self.model_combo.setItemText(row, model)
+            else:
                 self.model_combo.insertItem(sentinel, model)
                 row = sentinel
-            else:
-                row = sentinel - 1
-                self.model_combo.setItemText(row, model)
         self.model_combo.setCurrentIndex(row)
         self._model_index = row
 

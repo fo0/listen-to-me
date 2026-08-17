@@ -458,6 +458,21 @@ class Config:
             return False
         return True
 
+    def reset(self) -> bool:
+        """Restore every setting to DEFAULTS and write them out. True when they
+        arrived on disk (same contract as save()).
+
+        The in-memory data is reset either way, so the running app applies the
+        defaults even if the file could not be written — the caller surfaces
+        the False. `load_failed` is deliberately left alone: its handling in
+        save() moves an unreadable config.json aside to .bad instead of
+        overwriting it, which is exactly as useful here (the user gets the
+        defaults, the file they could not load stays recoverable).
+        """
+        log.info("resetting %s to the factory defaults", self.path)
+        self.data = copy.deepcopy(DEFAULTS)
+        return self.save()
+
     def __getitem__(self, key: str):
         return self.data[key]
 

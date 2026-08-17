@@ -34,6 +34,8 @@ Double quotes, 4-space indent, trailing commas in multi-line literals, line leng
 
 Broad `except Exception` at boundaries (this is a desktop app that must never crash), logged with `log.exception(...)`; user-facing failures surface through `App.notify(...)`. Never let a cleanup path leave a target app stuck muted — see `_quit` / `integrations.reset()`.
 
+**Silent failure is the anti-pattern that has bitten this codebase most** — read a write back instead of assuming it worked (`autostart.enable`, `Config.save`), and never leave a failure as a no-op the user cannot see.
+
 Silent failure is the anti-pattern this codebase has been bitten by most (autostart, tray icon, overlay): if a write can fail invisibly, read it back and report.
 
 ## File size

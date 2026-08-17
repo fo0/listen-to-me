@@ -1,0 +1,43 @@
+# Autonomy & Session Modes
+
+Offloaded from `CLAUDE.md` (context budget). CLAUDE.md keeps the one rule that decides everything — how to tell the two session kinds apart — plus a one-line summary of each. This file carries the full wording and the mode reference.
+
+## Which session am I in?
+
+Resolvable, so it is a rule and not a guess: **`$CLAUDE_CODE_REMOTE` is `"true"` in Claude Code web/cloud sessions — routine runs included — and unset in the local CLI.**
+
+## Unattended (`CLAUDE_CODE_REMOTE=true`, or the session's initial instructions are a routine)
+
+Nobody is there to answer.
+
+- **Never end a turn with a question.** Decide under an assumption you state, finish every part that isn't blocked, and carry the open point into the final report or `BACKLOG.md`.
+- A routine run has **no permission prompts at all**, so an unattended session that "waits for approval" waits forever. That is also why every trigger tool is pre-approved — see `agent_docs/mcp_catalog.md`.
+- The final report is the only channel back to a human. Anything the next person needs — an assumption taken, a part left out, a risk noticed — has to be in it or in `BACKLOG.md`, not implied by the diff.
+
+## Interactive (local CLI)
+
+Asking is cheap.
+
+- Ask when two readings of the task produce **materially different work**; otherwise decide and mention the call.
+- Don't ask for permission to do the obvious. A question that a careful colleague would answer for themselves costs a round trip and buys nothing.
+
+## Both modes
+
+An action that is **destructive** _and_ **not ordered** _and_ **not standard practice** gets the same answer either way: skip it, put it in the report with the recommendation, and finish everything it does not block. Never guess at it.
+
+The instances keep their own gates, each with a single source of truth:
+
+| Action                      | Gate                                               |
+| --------------------------- | -------------------------------------------------- |
+| Merging a PR                | `.claude/skills/pr/SKILL.md → /pr merge`           |
+| Reversals, force operations | `.claude/skills/rollback/SKILL.md`                 |
+| Release dispatch            | `agent_docs/deployment.md` (never routine-covered) |
+| Secrets                     | `agent_docs/env-vars.md`                           |
+
+## Modes
+
+- **Default model:** whatever the session resolves to — don't pin one in `CLAUDE.md` or in `.claude/settings.json`; `/model` switches mid-session.
+- **Fast mode** (`/fast`): the **same** Opus model with faster output — not a downgrade. Use when latency beats reasoning depth.
+- **Caveman mode** (chat compression): `caveman lite|full|ultra` / `stop caveman`. Chat only, never generated files.
+- **Orca mode** (orchestrator-only): `/orca` toggles it, `/orca <N>` sets the parallel width (default 5). While on, the agent itself does no task work — every unit goes to a subagent at the session's model and effort. Off by default; contract in `.claude/skills/orca/SKILL.md`.
+- **Plan mode:** for non-trivial implementation strategy — `Plan` subagent or `EnterPlanMode`. Not for single-step tasks.

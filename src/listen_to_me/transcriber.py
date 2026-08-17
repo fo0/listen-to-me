@@ -70,6 +70,43 @@ def _model_is_cached(model_name: str, model_dir) -> bool:
         return False
 
 
+def hub_repo_id(model_name: str) -> str | None:
+    """The Hugging Face repo a model preset resolves to — the one
+    faster-whisper would download from.
+
+    None for a local directory (nothing is fetched) and whenever the preset
+    table cannot be read, which costs the download only its progress display.
+    The table is faster-whisper's own and private, so it is reached defensively
+    rather than mirrored here, where it would silently rot out of date.
+    """
+    if not model_name or os.path.isdir(model_name):
+        return None
+    if "/" in model_name:
+        return model_name  # an explicit repo id, used verbatim
+    try:
+        from faster_whisper.utils import _MODELS
+
+        return _MODELS.get(model_name)
+    except Exception:
+        log.debug("could not resolve the hub repo of %r", model_name, exc_info=True)
+        return None
+
+
+def _download_watcher(model_name: str, model_dir, progress):
+    """A DownloadWatcher over the cache folder `model_name` downloads into.
+
+    Falls back to a watcher with no directory (which reports nothing) when the
+    repo cannot be resolved — a model download must never fail because its
+    progress display could not be set up.
+    """
+    from .progress import DownloadWatcher, hub_cache_dir, hub_repo_size
+
+    repo = hub_repo_id(model_name)
+    folder = hub_cache_dir(repo, model_dir) if repo else None
+    total = hub_repo_size(repo) if repo else None
+    return DownloadWatcher(folder, total, progress, label=f"Downloading {model_name}")
+
+
 def create_transcriber(cfg):
     """Build the transcription backend selected by cfg["backend"].
 
@@ -132,7 +169,7 @@ class Transcriber:
     def loaded(self) -> bool:
         return self._model is not None and self._key == self._current_key()
 
-    def ensure_loaded(self, notify=None) -> None:
+    def ensure_loaded(self, notify=None, progress=None) -> None:
         """Load the Whisper model, reloading if the settings changed.
 
         The model is fetched from Hugging Face on first use and cached locally
@@ -141,14 +178,19 @@ class Transcriber:
         cache; there is no second download. The notification reflects which of
         the two is happening instead of always warning about a download.
 
+        `progress(label, fraction, done, total)` — optional — is called from a
+        background thread while a download runs, and once with ``label=None``
+        when it is over (see progress.DownloadWatcher). It never fires for a
+        load from cache, which is the case that needs no progress bar.
+
         If loading on the GPU fails because the CUDA libraries are missing, it
         automatically falls back to the CPU for this session (see
         _maybe_force_cpu) and retries, so transcription keeps working.
         """
         with self._lock:
-            self._ensure_loaded_locked(notify)
+            self._ensure_loaded_locked(notify, progress)
 
-    def _ensure_loaded_locked(self, notify=None) -> None:
+    def _ensure_loaded_locked(self, notify=None, progress=None) -> None:
         """Load/reload the model. Caller must hold self._lock."""
         if self._cpu_fallback_for is not None and not self._forced_cpu:
             # The config moved away from the setup that failed: drop the
@@ -171,8 +213,8 @@ class Transcriber:
                 )
         from faster_whisper import WhisperModel
 
-        try:
-            self._model = WhisperModel(
+        def load():
+            return WhisperModel(
                 model_name,
                 device=device,
                 compute_type="default" if compute_type == "auto" else compute_type,
@@ -181,10 +223,20 @@ class Transcriber:
                 # revision check so restarts are fast and work fully offline.
                 local_files_only=cached,
             )
+
+        try:
+            if cached or progress is None:
+                self._model = load()
+            else:
+                # Only the downloading load is watched: WhisperModel does the
+                # fetching itself, so the bytes are counted where they land.
+                with _download_watcher(model_name, model_dir, progress):
+                    self._model = load()
         except Exception as exc:
             if self._maybe_force_cpu(device, exc, notify):
                 # Retry on the CPU. notify=None: _maybe_force_cpu already told the
                 # user we switched, so don't repeat the "Loading model…" toast.
+                # No progress either — the model is on disk by now.
                 self._ensure_loaded_locked(None)
                 return
             raise
@@ -254,8 +306,8 @@ class Transcriber:
         text = " ".join(part for _end, part in segments if part).strip()
         return text, info
 
-    def transcribe(self, audio, notify=None) -> str:
-        self.ensure_loaded(notify=notify)
+    def transcribe(self, audio, notify=None, progress=None) -> str:
+        self.ensure_loaded(notify=notify, progress=progress)
         # Clamp instead of trusting the config file: beam_size 0/negative would
         # crash faster-whisper mid-recording.
         beam_size = max(1, int(self.cfg["beam_size"] or 5))
