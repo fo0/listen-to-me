@@ -267,6 +267,17 @@ class Overlay:
         self.reposition_bubble()
         self.save_position()
 
+    def reapply_position(self) -> None:
+        """Place the icon by the *current* config again.
+
+        For the factory reset, where the settings were replaced wholesale: the
+        saved position is gone with them, so the icon has to land where a fresh
+        install puts it. Unlike reset_position() this persists nothing — with
+        no coordinates in the config the first-run corner stays unsaved, which
+        is exactly what a first launch leaves behind.
+        """
+        self._restore_position()
+
     def _saved_int(self, key: str) -> int | None:
         """One saved coordinate, or None when it is missing or unusable.
 

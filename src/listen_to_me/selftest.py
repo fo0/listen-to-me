@@ -192,6 +192,48 @@ def _config_read_failure_never_costs_the_file():
         assert bad.read_text(encoding="utf-8") == broken  # and never touch the backup
 
 
+def _config_factory_reset():
+    """"Reset to factory settings" puts every value back to DEFAULTS, on disk
+    as well as in memory — including nested sections, where a shallow reset
+    would leave the old overlay/assistant/integration values behind. A config
+    that could not be read is preserved as .bad rather than lost, exactly as a
+    normal save does."""
+    import json
+
+    from listen_to_me.config import DEFAULTS, Config
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        cfg = Config(path=path)
+        cfg["language"] = "de"
+        cfg["backend"] = "openvino"
+        cfg["overlay"]["x"] = 1234
+        cfg["overlay"]["enabled"] = False
+        cfg["assistant"]["enabled"] = True
+        assert cfg.save() is True
+
+        assert cfg.reset() is True
+        assert cfg.data == DEFAULTS
+        assert cfg["overlay"]["x"] is None and cfg["overlay"]["enabled"] is True
+        assert cfg["assistant"]["enabled"] is False
+        assert json.loads(path.read_text(encoding="utf-8")) == DEFAULTS  # persisted
+        assert Config(path=path).data == DEFAULTS  # …and survives a reload
+        # DEFAULTS itself must not be aliased by the reset — mutating the live
+        # config would otherwise rewrite the defaults for the whole process.
+        cfg["overlay"]["x"] = 7
+        assert DEFAULTS["overlay"]["x"] is None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        broken = '{"language": "de", THIS IS NOT JSON'
+        path.write_text(broken, encoding="utf-8")
+        cfg = Config(path=path)
+        assert cfg.load_failed is True
+        assert cfg.reset() is True
+        assert path.with_name(path.name + ".bad").read_text(encoding="utf-8") == broken
+        assert json.loads(path.read_text(encoding="utf-8")) == DEFAULTS
+
+
 def _history_normalizes_entries():
     """The history file is untrusted input and its text goes straight into a
     QLabel. Entries whose "text" is not a non-empty string are dropped, so no
@@ -3293,6 +3335,50 @@ def _gui_construction():
 
         app.processEvents()
 
+        # "Reset to factory settings" is the one destructive button in this
+        # window. It must ask first, and a confirmed reset hands the work to
+        # App — which owns the hotkey, the OS autostart entry and the wizard —
+        # instead of rewriting values behind the user's back. Declining leaves
+        # everything alone; confirming closes the window without the
+        # unsaved-changes prompt, since those edits are being discarded anyway.
+        from PySide6.QtWidgets import QMessageBox as _RealBox
+
+        class _FakeBox:
+            StandardButton = _RealBox.StandardButton
+            answer = _RealBox.StandardButton.Cancel
+            informed: list = []
+
+            @classmethod
+            def question(cls, *_args, **_kwargs):
+                return cls.answer
+
+            @classmethod
+            def information(cls, *args, **_kwargs):
+                cls.informed.append(args[-1])
+
+        real_box = _settings_module.QMessageBox
+        _settings_module.QMessageBox = _FakeBox
+        try:
+            # Not while a take is running: the reset re-registers the hotkey and
+            # hands the key picker to the wizard, which would lose the dictation.
+            before = len(stub.posts)
+            stub.state = "recording"
+            window._factory_reset()
+            stub.state = "idle"
+            assert len(stub.posts) == before
+            assert _FakeBox.informed and "recording" in _FakeBox.informed[0]
+            assert window._force_close is False
+
+            window._factory_reset()  # declined
+            assert len(stub.posts) == before
+            assert window._force_close is False
+            _FakeBox.answer = _RealBox.StandardButton.Reset
+            window._factory_reset()  # confirmed
+            assert ("factory_reset",) in stub.posts
+            assert window._force_close is True
+        finally:
+            _settings_module.QMessageBox = real_box
+
         # force_close bypasses the unsaved-changes prompt even when dirty —
         # App._quit relies on that; a modal box here would hang this run.
         window.chk_beep.setChecked(not window.chk_beep.isChecked())
@@ -3352,6 +3438,7 @@ _LIGHT_CHECKS = [
     ("config survives corrupt sections", _config_survives_corrupt_sections),
     ("config guards scalar types", _config_guards_scalar_types),
     ("config read failure never costs the file", _config_read_failure_never_costs_the_file),
+    ("config factory reset", _config_factory_reset),
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),

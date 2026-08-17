@@ -113,6 +113,9 @@ class App:
         self.hotkey_paused = False
         self._live_typer = None  # per-take live-typing worker (livetype.py)
         self._quitting = False  # set by _quit; guards UI opened after shutdown
+        # True while a factory reset is running its (modal, nested) wizard —
+        # see _factory_reset.
+        self._resetting = False
 
     def post(self, kind: str, payload=None) -> None:
         """Thread-safe: queue an event for the main loop."""
@@ -310,6 +313,8 @@ class App:
             self._open_help()
         elif kind == "open_config":
             self._open_config_folder()
+        elif kind == "factory_reset":
+            self._factory_reset()
         elif kind == "quit":
             self._quit()
 
@@ -796,6 +801,45 @@ class App:
         self.tray.set_state(self.state)
         if self.overlay is not None:
             self.overlay.set_visible(bool(self.cfg["overlay"]["enabled"]))
+
+    def _factory_reset(self) -> None:
+        """Settings → General → "Reset to factory settings": every setting back
+        to DEFAULTS, then the first-run wizard again.
+
+        The defaults are applied *before* the wizard opens, not after it
+        finishes: the wizard can be cancelled, and what has to be running then
+        is the reset app — a configuration the user just discarded must not
+        keep driving the hotkey and the autostart entry behind a cancelled
+        dialog. apply_settings() re-registers the hotkey, syncs autostart off,
+        rebuilds the transcriber for the default backend and re-applies the
+        overlay visibility; the icon's saved position is gone with the config,
+        so it is moved back explicitly.
+        """
+        if self._quitting or self._resetting:
+            # The wizard below runs a nested event loop, during which the queue
+            # keeps draining — a second click before the settings window closed
+            # would otherwise stack a second wizard on top of the first.
+            return
+        self._resetting = True
+        try:
+            saved = self.cfg.reset()
+            self.apply_settings()
+            if self.overlay is not None:
+                try:
+                    self.overlay.reapply_position()
+                except Exception:
+                    log.exception("could not move the floating icon back after the reset")
+            if not saved:
+                self.notify(
+                    "The settings were reset, but could not be written to disk — "
+                    "your previous settings will be back after a restart. "
+                    "See the log file.",
+                    force=True,
+                )
+            log.info("factory reset applied — starting the setup wizard")
+            self._run_onboarding()
+        finally:
+            self._resetting = False
 
     def _run_onboarding(self) -> None:
         """First launch: modal setup wizard for the essential settings. A

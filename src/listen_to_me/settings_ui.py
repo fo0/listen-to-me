@@ -177,6 +177,10 @@ _A_TEST_PREVIEW_CHARS = 160
 # The choice lists (models, languages, backends, …) live in choices.py, shared
 # with the first-run onboarding wizard.
 
+# The one destructive button in this window — spelled out, and with the "…"
+# that promises a confirmation step before anything happens.
+_FACTORY_RESET_LABEL = "Reset to factory settings…"
+
 # Every preset label the model dropdown can hold. The list is re-filtered per
 # backend, so "is this row the custom-model entry?" can no longer be answered
 # by its index (see SettingsWindow._is_custom_entry).
@@ -962,6 +966,33 @@ class SettingsWindow(QDialog):
             "longer proven to come from GitHub."
         ))
         layout.addWidget(network)
+
+        reset = QGroupBox("Reset")
+        rv = QVBoxLayout(reset)
+        rv.setSpacing(4)
+        self.factory_reset_button = QPushButton(_FACTORY_RESET_LABEL)
+        self.factory_reset_button.setAutoDefault(False)
+        # The theme's danger styling — the only button here that throws
+        # something away, so it must not look like Save or Refresh.
+        self.factory_reset_button.setProperty("destructive", True)
+        self.factory_reset_button.setToolTip(
+            "Put every setting back to the value it shipped with and start the setup "
+            "wizard from the first launch again. Your transcript history and the "
+            "already downloaded Whisper models are kept."
+        )
+        self.factory_reset_button.clicked.connect(self._factory_reset)
+        reset_row = QWidget()
+        rh = QHBoxLayout(reset_row)
+        rh.setContentsMargins(0, 0, 0, 0)
+        rh.addWidget(self.factory_reset_button)
+        rh.addStretch(1)
+        rv.addWidget(reset_row)
+        rv.addWidget(self._hint(
+            "Starts over with the guided setup you saw on the very first launch — "
+            "the way back when a setting has been changed past the point of "
+            "remembering what it was. History and downloaded models stay."
+        ))
+        layout.addWidget(reset)
 
         layout.addStretch(1)
         return page
@@ -1817,6 +1848,47 @@ class SettingsWindow(QDialog):
         # goes through the event queue like every other overlay action.
         self.app.post("reset_overlay_position")
         self._flash_button(self.overlay_reset_button, "Moved ✓", "Reset position")
+
+    def _factory_reset(self) -> None:
+        """Confirm, then hand the reset to App: every setting back to its
+        default and the first-run wizard again.
+
+        App owns the work, not this window: the values shown here go stale the
+        moment the config is replaced, and applying the defaults means
+        re-registering the hotkey and re-syncing the OS autostart entry, which
+        only App can do. So the window closes itself and posts the event —
+        force_close because an "unsaved changes" prompt about edits the user
+        just asked to throw away is pure noise.
+        """
+        if self._app_busy():
+            # Same guard the microphone tests run: the reset re-registers the
+            # hotkey and swaps the transcriber, and the wizard then takes the
+            # key picker — doing that to a running take loses the dictation.
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                "A recording is still running. Let it finish, then reset.",
+            )
+            return
+        confirm = QMessageBox.question(
+            self,
+            APP_NAME,
+            "Reset every setting to the factory defaults?\n\n"
+            "Hotkey, model, backend, microphone, floating icon, assistant and "
+            "the app integrations all go back to the values the app shipped "
+            "with, autostart is switched off, and the setup wizard from the "
+            "first launch opens again.\n\n"
+            "Your transcript history and the Whisper models already downloaded "
+            "are kept. Unsaved changes in this window are discarded, and the "
+            "reset itself cannot be undone.",
+            QMessageBox.StandardButton.Reset | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if confirm != QMessageBox.StandardButton.Reset:
+            return
+        log.info("factory reset requested from the settings window")
+        self.app.post("factory_reset")
+        self.force_close()
 
     def _reset_prompt(self) -> None:
         self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
