@@ -2292,9 +2292,9 @@ def _download_progress_logic():
 
     # Parakeet ships both quantizations in one repo, so the size of a download
     # is only the variant it actually fetches.
-    from listen_to_me.transcriber_parakeet import _download_keeps
+    from listen_to_me.transcriber_parakeet import _download_filter
 
-    int8, fp32 = _download_keeps("int8"), _download_keeps(None)
+    int8, fp32 = _download_filter("int8"), _download_filter(None)
     assert int8("encoder-model.int8.onnx") and not int8("encoder-model.onnx")
     assert fp32("encoder-model.onnx") and fp32("encoder-model.onnx.data")
     assert not fp32("decoder_joint-model.int8.onnx")

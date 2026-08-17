@@ -51,7 +51,7 @@ def _quantization(cfg_value: str) -> str | None:
     return None if cfg_value == "fp32" else (cfg_value or "int8")
 
 
-def _download_keeps(quantization: str | None):
+def _download_filter(quantization: str | None):
     """Which files of MODEL_REPO a download of `quantization` fetches.
 
     The repo ships both variants side by side (int8 ≈ 0.7 GB next to fp32 ≈
@@ -79,7 +79,7 @@ def _download_watcher(quantization: str | None, model_dir, progress):
         folder = hub_cache_dir(MODEL_REPO)
     return DownloadWatcher(
         folder,
-        hub_repo_size(MODEL_REPO, keep=_download_keeps(quantization)),
+        hub_repo_size(MODEL_REPO, keep=_download_filter(quantization)),
         progress,
         label=f"Downloading {MODEL_NAME}",
     )
