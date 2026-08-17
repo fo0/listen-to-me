@@ -32,6 +32,11 @@ _STATE_LABELS = {
     "processing": "Transcribing…",
 }
 
+# Shown instead of the idle status while the global hotkey is suspended: an app
+# that looks idle while its hotkey does nothing is indistinguishable from a
+# broken one, and this line is the first place anyone looks.
+_PAUSED_LABEL = "Hotkey paused — switch it back on in this menu"
+
 
 def format_duration(seconds) -> str:
     """`seconds` as ``m:ss`` — ``h:mm:ss`` once a take passes the hour.
@@ -72,7 +77,7 @@ def recent_entry_label(entry: dict, max_chars: int = _RECENT_CHARS) -> str:
     return text.replace("&", "&&")
 
 
-def state_label(state: str, cfg, elapsed=None) -> str:
+def state_label(state: str, cfg, elapsed=None, paused: bool = False) -> str:
     """The tray's one-line status, naming the combination that acts on it.
 
     "Press the hotkey" is the one thing the tray can't assume the user knows:
@@ -81,14 +86,18 @@ def state_label(state: str, cfg, elapsed=None) -> str:
     lookup per state change and saves opening the settings window.
 
     `elapsed` (seconds) puts the running take's clock into the recording
-    status. Opt-in per call rather than read from the app, so every caller that
-    only knows the state keeps the wording it always had — and so the label
-    stays a pure function of its arguments.
+    status, `paused` replaces the idle status while the global hotkey is
+    suspended. Both are opt-in per call rather than read from the app, so every
+    caller that only knows the state keeps the wording it always had — and so
+    the label stays a pure function of its arguments.
 
     Falls back to the generic wording when the combination can't be rendered
     (an empty or unusable `hotkey` in the config) — never to a raw pynput
     token in the middle of a sentence.
     """
+    if paused and state == "idle":
+        # Naming the hotkey here would be a lie: pressing it does nothing.
+        return _PAUSED_LABEL
     generic = _STATE_LABELS.get(state, state)
     if state == "recording" and elapsed is not None:
         # A speaker has no clock, and the take has a cap: without this the only
@@ -118,6 +127,7 @@ class Tray:
         self._act_state = None
         self._act_toggle = None
         self._act_cancel = None
+        self._act_pause = None
         self._act_overlay = None
         self._recent_menu = None
         self._retry_timer = None
@@ -166,6 +176,17 @@ class Tray:
         # hints above would exist but never render on any platform.
         menu.setToolTipsVisible(True)
         menu.addSeparator()
+
+        self._act_pause = QAction("Pause hotkey", menu)
+        self._act_pause.setCheckable(True)
+        self._act_pause.setChecked(bool(getattr(app, "hotkey_paused", False)))
+        self._act_pause.setToolTip(
+            "Stop the global hotkey from firing until you switch it back on — "
+            "for a game or another app that needs the same keys. The "
+            "combination itself is kept, and the pause is forgotten on restart."
+        )
+        self._act_pause.triggered.connect(lambda: app.post("toggle_hotkey_pause"))
+        menu.addAction(self._act_pause)
 
         self._act_overlay = QAction("Show floating icon", menu)
         self._act_overlay.setCheckable(True)
@@ -330,7 +351,8 @@ class Tray:
             return
         # Rebuilt on every state change rather than cached, so a hotkey changed
         # in the settings shows up here as soon as apply_settings() calls in.
-        label = state_label(state, self.app.cfg)
+        paused = self._paused()
+        label = state_label(state, self.app.cfg, paused=paused)
         self._icon.setIcon(tray_icon(state))
         self._icon.setToolTip(f"{APP_NAME} — {label}")
         self._act_state.setText(label)
@@ -338,7 +360,15 @@ class Tray:
             "Stop recording (insert text)" if state == "recording" else "Start recording"
         )
         self._act_cancel.setVisible(state == "recording")
+        # Re-read rather than left to the click that toggled it: App refuses to
+        # pause during a recording, and the tick must then go back where it was.
+        self._act_pause.setChecked(paused)
         self._act_overlay.setChecked(bool(self.app.cfg["overlay"]["enabled"]))
+
+    def _paused(self) -> bool:
+        """Whether the app currently has its global hotkey suspended. getattr:
+        the self-test's App stub predates the flag and only knows the state."""
+        return bool(getattr(self.app, "hotkey_paused", False))
 
     def set_elapsed(self, seconds) -> None:
         """Put the running take's clock into the status line and the tooltip.
@@ -351,7 +381,9 @@ class Tray:
         """
         if self._icon is None or self._act_state is None:
             return
-        label = state_label(self.app.state, self.app.cfg, elapsed=seconds)
+        label = state_label(
+            self.app.state, self.app.cfg, elapsed=seconds, paused=self._paused()
+        )
         self._icon.setToolTip(f"{APP_NAME} — {label}")
         self._act_state.setText(label)
 

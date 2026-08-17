@@ -51,7 +51,10 @@ standalone system-tray app that works in _every_ application.
   ("Idle — press Ctrl+Alt+Space to record"), so a forgotten combination is a
   hover away. While you dictate it **counts the take up** ("Recording 1:12… press
   Ctrl+Alt+Space to stop"), so you can see how long you have been speaking
-  against the maximum recording length. Only one instance runs at a time:
+  against the maximum recording length. **Pause hotkey** in the same menu
+  suspends the global combination for a game or another app that wants the same
+  keys — your hotkey is kept, and the pause is forgotten on the next start.
+  Only one instance runs at a time:
   starting the app again simply brings the running instance's settings
   window to the front.
 - **Transcript history** — the transcribed text of each recording is kept

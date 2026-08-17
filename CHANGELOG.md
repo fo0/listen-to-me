@@ -14,6 +14,11 @@ changes at a glance.
 
 ### Added
 
+- **Pause hotkey** in the tray menu — suspends the global hotkey while a game,
+  a remote session or another app needs the same keys, without changing (and
+  having to remember) the configured combination. The tray status says it out
+  loud while it is off, and the pause is deliberately not remembered across a
+  restart.
 - **A “Recent transcripts” submenu in the tray menu** — the last five
   transcripts, newest first, each one click away from the clipboard. "Copy last
   transcript" only ever reached the newest one; anything older meant opening

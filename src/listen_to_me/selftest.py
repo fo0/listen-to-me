@@ -2166,6 +2166,11 @@ class _StubApp:
 class _StubHotkeys:
     def __init__(self):
         self.running = True
+        self.combo: str | None = None
+
+    def register(self, combo, mode="toggle"):
+        self.combo, self.mode = combo, mode
+        self.running = True
 
     def stop(self):
         self.running = False
@@ -2410,6 +2415,70 @@ def _tray_click_opens_the_window():
             stub.posts.clear()
             tray._on_activated(reason)
             assert not stub.posts, f"{reason} posted {stub.posts}"
+
+
+def _hotkey_pause_is_visible_and_temporary():
+    """Pausing the global hotkey stops the listener, says so in the tray status,
+    and survives every path that hands the listener back (a saved setting, a
+    finished hotkey test). It is refused while a take is running — a hold-mode
+    release would never arrive — and it is never written to the config."""
+    from listen_to_me.app import STATE_IDLE, STATE_RECORDING, App
+    from listen_to_me.tray import _PAUSED_LABEL, _STATE_LABELS, state_label
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        # Only the idle status changes: "press Ctrl+Alt+Space to record" would
+        # be a lie, while a running take is still a running take.
+        assert state_label("idle", stub.cfg, paused=True) == _PAUSED_LABEL
+        assert state_label("idle", stub.cfg, paused=False) != _PAUSED_LABEL
+        assert state_label("recording", stub.cfg, paused=True) == (
+            "Recording… press Ctrl+Alt+Space to stop"
+        )
+        assert state_label("processing", stub.cfg, paused=True) == _STATE_LABELS["processing"]
+
+        class _PauseApp:
+            """Just the parts App._toggle_hotkey_pause touches."""
+
+            def __init__(self, cfg):
+                self.cfg = cfg
+                self.state = STATE_IDLE
+                self.hotkey_paused = False
+                self.hotkeys = _StubHotkeys()
+                self.messages: list = []
+                self.tray = self
+
+            def notify(self, message, force=False):
+                self.messages.append(message)
+
+            def set_state(self, state):  # the tray's half of the interface
+                pass
+
+            _register_hotkey = App._register_hotkey
+            _toggle_hotkey_pause = App._toggle_hotkey_pause
+
+        app = _PauseApp(stub.cfg)
+        app._toggle_hotkey_pause()
+        assert app.hotkey_paused and not app.hotkeys.running
+        assert app.messages and "paused" in app.messages[-1].lower()
+        # Saving a setting, finishing the hotkey test or closing the key picker
+        # all re-register — none of them may quietly undo the pause.
+        app.hotkeys.running = True
+        app._register_hotkey()
+        assert not app.hotkeys.running
+
+        app._toggle_hotkey_pause()
+        assert not app.hotkey_paused and app.hotkeys.running
+
+        # A running take owns the listener: pausing it would strand a hold-mode
+        # recording until the maximum length cut it off.
+        app.state = STATE_RECORDING
+        app.messages.clear()
+        app._toggle_hotkey_pause()
+        assert not app.hotkey_paused and app.hotkeys.running
+        assert app.messages and "recording" in app.messages[-1].lower()
+
+        # Session-only: nothing about the pause reaches config.json.
+        assert "hotkey_paused" not in stub.cfg.data
 
 
 def _tray_lists_recent_transcripts():
@@ -3247,6 +3316,7 @@ _LIGHT_CHECKS = [
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("tray lists recent transcripts", _tray_lists_recent_transcripts),
+    ("hotkey pause is visible and temporary", _hotkey_pause_is_visible_and_temporary),
     ("tray click opens the window", _tray_click_opens_the_window),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("Qt UI construction", _gui_construction),
