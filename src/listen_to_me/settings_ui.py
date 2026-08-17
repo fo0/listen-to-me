@@ -123,6 +123,7 @@ class _DiagSignals(QObject):
     detached by Cancel (or superseded by a newer run) can't touch the UI."""
 
     model_status = Signal(int, str)
+    model_progress = Signal(int, int, int)  # generation, bytes done, bytes total
     model_done = Signal(int, str)
     model_failed = Signal(int, str)
     mic_level = Signal(int, float)  # recent peak 0.0-1.0 while the mic test records
@@ -358,6 +359,7 @@ class SettingsWindow(QDialog):
         self._diag = DiagnosticsEngine()
         self._dsig = _DiagSignals()
         self._dsig.model_status.connect(self._on_diag_status)
+        self._dsig.model_progress.connect(self._on_model_progress)
         self._dsig.model_done.connect(self._on_model_done)
         self._dsig.model_failed.connect(self._on_model_failed)
         self._dsig.mic_level.connect(self._on_mic_level)
@@ -385,6 +387,9 @@ class SettingsWindow(QDialog):
         # _reload_model_combo), so leaving that backend puts it back.
         self._model_swapped_from: str | None = None
         self._update_cancel_event: threading.Event | None = None
+        # Model named when a download started — the label its progress reports
+        # carry, so a combo changed mid-download doesn't relabel them.
+        self._model_download_label = ""
         self._hotkey_test: Hotkeys | None = None
         # Bumped on every test start so a stale timeout timer from an earlier
         # (already finished) test can't cancel a later one.
@@ -2053,6 +2058,11 @@ class SettingsWindow(QDialog):
         # concurrent tests would interleave their status output anyway.
         self._diag_busy = busy
         self._diag_kind = kind if busy else None
+        if not busy:
+            # Every way a diagnostic ends — done, failed, cancelled — passes
+            # through here, so the icon's download display is dropped in one
+            # place instead of in six handlers that would drift apart.
+            self._report_progress(None, 0, 0)
         for button in (self.model_download_button, self.tx_test_button, self.mic_test_button):
             button.setEnabled(not busy)
         # Only the Cancel button next to the running diagnostic is active.
@@ -2152,7 +2162,9 @@ class SettingsWindow(QDialog):
             return
         snapshot = self._diag_snapshot()
         gen, _cancel = self._begin_diag("model")
-        self.diag_progress.setRange(0, 0)  # indeterminate — no byte progress
+        self._model_download_label = str(snapshot["model"])
+        self.diag_progress.setRange(0, 100)
+        self.diag_progress.setValue(0)
         self.diag_progress.setVisible(True)
         self.diag_status.setText(f"Preparing model '{snapshot['model']}'…")
 
@@ -2161,6 +2173,15 @@ class SettingsWindow(QDialog):
                 message = self._diag.prepare_model(
                     snapshot,
                     notify=lambda text, force=False: self._dsig.model_status.emit(gen, str(text)),
+                    # Worker thread: the byte counter runs on a thread of its
+                    # own again, so it goes through the signal like every other
+                    # diagnostic message rather than touching a widget.
+                    # label=None is the watcher's "download over" call — the
+                    # done/failed handlers own that moment, and forwarding it
+                    # would blink the bar back to 0 right before them.
+                    progress=lambda label, fraction, done=0, total=0: (
+                        None if label is None else self._dsig.model_progress.emit(gen, done, total)
+                    ),
                 )
                 self._dsig.model_done.emit(gen, message)
             except Exception as exc:  # surfaced in the UI
@@ -2168,6 +2189,38 @@ class SettingsWindow(QDialog):
                 self._dsig.model_failed.emit(gen, str(exc))
 
         threading.Thread(target=work, name="diag-model", daemon=True).start()
+
+    def _on_model_progress(self, gen: int, done: int, total: int) -> None:
+        """Byte progress of a running model download: into this page's bar and
+        onward to the floating icon, so a multi-minute first download is
+        visible with the settings window minimized too (#110).
+
+        `total` 0 means the size could not be determined — the bar goes back to
+        indeterminate rather than showing a percentage of an unknown whole.
+        """
+        if gen != self._diag_gen:
+            return
+        from .progress import format_size
+
+        if total > 0:
+            self.diag_progress.setRange(0, 100)
+            self.diag_progress.setValue(int(done * 100 / total))
+            self.diag_status.setText(
+                f"Downloading model — {format_size(done)} of {format_size(total)}"
+            )
+        else:
+            self.diag_progress.setRange(0, 0)  # indeterminate
+            # format_size returns "" below a byte — before the first block has
+            # landed there is nothing to name but the download itself.
+            downloaded = format_size(done)
+            self.diag_status.setText(
+                f"Downloading model — {downloaded} so far" if downloaded
+                else "Downloading model…"
+            )
+        # The label is the one captured when the download started, not a fresh
+        # snapshot: this fires several times a second, and the combo may have
+        # been changed meanwhile — the bytes still belong to the old model.
+        self._report_progress(f"Downloading {self._model_download_label}", done, total)
 
     def _on_model_done(self, gen: int, message: str) -> None:
         if gen != self._diag_gen:
@@ -2195,6 +2248,7 @@ class SettingsWindow(QDialog):
         snapshot = self._diag_snapshot()
         device = self._selected_input_device()
         gen, cancel = self._begin_diag("tx")
+        self._model_download_label = str(snapshot["model"])
         self.diag_progress.setRange(0, 0)  # indeterminate while the model loads
         self.diag_progress.setVisible(True)
         self.diag_status.setText("Preparing model…")
@@ -2207,6 +2261,12 @@ class SettingsWindow(QDialog):
                     seconds=5.0,
                     on_status=lambda message: self._dsig.tx_status.emit(gen, str(message)),
                     on_level=lambda level: self._dsig.tx_level.emit(gen, float(level)),
+                    # label=None is the watcher's "download over" call — the
+                    # done/failed handlers own that moment, and forwarding it
+                    # would blink the bar back to 0 right before them.
+                    progress=lambda label, fraction, done=0, total=0: (
+                        None if label is None else self._dsig.model_progress.emit(gen, done, total)
+                    ),
                     is_cancelled=cancel.is_set,
                 )
                 self._dsig.tx_done.emit(gen, text)
@@ -2817,6 +2877,24 @@ class SettingsWindow(QDialog):
         # portable build. Relabel only when the text actually changed.
         if text != self.update_status.text():
             self.update_status.setText(text)
+        # …and onto the floating icon, so a several-hundred-MB update is
+        # visible after the settings window has been minimized (#110). Already
+        # on the main thread (this is a signal slot), but App.progress only
+        # queues, which is exactly what the other progress sources do.
+        self._report_progress(f"Downloading {self._update_download_label}", done, total)
+
+    def _report_progress(self, label: str, done: int, total: int) -> None:
+        """Forward a download's byte count to App's icon/tray display. `label`
+        None ends it. Never fatal: a stub app in the self-test has no
+        progress()."""
+        report = getattr(self.app, "progress", None)
+        if not callable(report):
+            return
+        try:
+            fraction = (done / total) if (label is not None and total > 0) else None
+            report(label, fraction, done, total)
+        except Exception:
+            log.debug("could not report download progress to the app", exc_info=True)
 
     def _on_update_downloaded(self, path: str) -> None:
         from pathlib import Path
@@ -2833,6 +2911,7 @@ class SettingsWindow(QDialog):
             self._on_update_download_cancelled()
             return
         self._update_busy = False
+        self._report_progress(None, 0, 0)  # the icon's download display is done
         self.update_cancel_button.setVisible(False)
         self.update_progress.setRange(0, 100)
         self.update_progress.setValue(100)
@@ -2857,6 +2936,7 @@ class SettingsWindow(QDialog):
         not apply update" was reported underneath a full bar that reads as
         success.
         """
+        self._report_progress(None, 0, 0)  # …including the floating icon
         self._update_busy = False
         self.update_cancel_button.setVisible(False)
         self.update_progress.setVisible(False)

@@ -32,6 +32,7 @@ flowchart TD
         LiveType("LiveTyper — live typing while recording"):::backend
         Mute("MuteIntegrations — mute other apps"):::backend
         Diag("DiagnosticsEngine — settings self-tests"):::backend
+        Progress("DownloadWatcher — model download byte progress"):::backend
     end
 
     subgraph "Persistence"
@@ -101,6 +102,11 @@ flowchart TD
     Updater -->|"verify="| Net
     Assistant -->|"verify="| Net
     App --> Updater
+    Transcriber -->|"watch download"| Progress
+    TranscriberOV -->|"watch download"| Progress
+    TranscriberPK -->|"watch download"| Progress
+    Progress -->|"post progress (%)"| Events
+    Updater -->|"post progress (%)"| Events
     App -->|"record text"| History
     App --> Autostart
 
@@ -127,6 +133,7 @@ flowchart TD
     click Updater "src/listen_to_me/updater.py"
     click Net "src/listen_to_me/netutil.py"
     click Diag "src/listen_to_me/diagnostics.py"
+    click Progress "src/listen_to_me/progress.py"
 
     classDef frontend fill:#42b883,stroke:#35495e,color:#fff
     classDef backend fill:#3178c6,stroke:#265a8f,color:#fff

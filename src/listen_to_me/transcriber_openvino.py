@@ -176,18 +176,22 @@ class OpenVinoTranscriber:
 
     # ------------------------------------------------------------ loading
 
-    def ensure_loaded(self, notify=None) -> None:
+    def ensure_loaded(self, notify=None, progress=None) -> None:
         """Load the Whisper pipeline, reloading if the settings changed.
 
         Downloads the pre-converted OpenVINO model from Hugging Face on first
         use (into cfg["model_dir"] or the Hugging Face cache) and loads from
         that cache on every later run. A failure to load on the GPU/NPU falls
         back to the CPU for this session and retries, so transcription keeps
-        working — mirroring the faster-whisper CUDA fallback."""
-        with self._lock:
-            self._ensure_loaded_locked(notify)
+        working — mirroring the faster-whisper CUDA fallback.
 
-    def _ensure_loaded_locked(self, notify=None) -> None:
+        `progress` follows the same contract as the faster-whisper backend: it
+        is called from a background thread while the download runs and once
+        with ``label=None`` when it ends."""
+        with self._lock:
+            self._ensure_loaded_locked(notify, progress)
+
+    def _ensure_loaded_locked(self, notify=None, progress=None) -> None:
         if self._cpu_fallback_for is not None and not self._forced_cpu:
             # The config moved away from the setup that failed: drop the
             # marker so a later RETURN to that device/precision retries it
@@ -231,13 +235,30 @@ class OpenVinoTranscriber:
         else:
             from huggingface_hub import snapshot_download
 
-            # Already cached → resolve straight from disk, skipping the network
-            # revision check so restarts are fast and work fully offline.
-            path = snapshot_download(
-                repo,
-                cache_dir=str(model_dir) if model_dir else None,
-                local_files_only=cached,
-            )
+            from .progress import DownloadWatcher, hub_cache_dir, hub_repo_size
+
+            def download():
+                # Already cached → resolve straight from disk, skipping the
+                # network revision check so restarts are fast and work offline.
+                return snapshot_download(
+                    repo,
+                    cache_dir=str(model_dir) if model_dir else None,
+                    local_files_only=cached,
+                )
+
+            if cached or progress is None:
+                path = download()
+            else:
+                # snapshot_download fetches the whole repo, so its full size is
+                # exactly what the percentage is of — no file filter needed.
+                watcher = DownloadWatcher(
+                    hub_cache_dir(repo, model_dir),
+                    hub_repo_size(repo),
+                    progress,
+                    label=f"Downloading {repo}",
+                )
+                with watcher:
+                    path = download()
         device = self._resolve_device(device_cfg)
         try:
             self._pipe = openvino_genai.WhisperPipeline(path, device)
@@ -320,8 +341,8 @@ class OpenVinoTranscriber:
         texts = getattr(result, "texts", None)
         return (texts[0] if texts else str(result)).strip()
 
-    def transcribe(self, audio, notify=None) -> str:
-        self.ensure_loaded(notify=notify)
+    def transcribe(self, audio, notify=None, progress=None) -> str:
+        self.ensure_loaded(notify=notify, progress=progress)
         try:
             with self._use_lock:
                 text = self._decode(audio)

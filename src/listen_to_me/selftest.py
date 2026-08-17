@@ -2179,7 +2179,125 @@ def _voice_mic_widget():
     widget.set_processing(True)
     widget._on_tick()
     assert not widget.grab().isNull()
+
+    # Download state (#110): a determinate percentage, an indeterminate sweep
+    # and the way back. Every one of them has to paint — this replaces the mic
+    # glyph with text and an arc, the one path the state animation never takes.
+    widget.set_processing(False)
+    for fraction in (0.0, 0.07, 0.42, 1.0, None):
+        widget.set_progress(fraction)
+        assert widget._progress_active is True
+        widget._on_tick()
+        assert not widget.grab().isNull()
+    # Out-of-range input is clamped, never drawn as "-40%" or "250%".
+    widget.set_progress(-2.0)
+    assert widget._progress == 0.0
+    widget.set_progress(9.0)
+    assert widget._progress == 1.0
+    widget.set_progress(None, active=False)
+    assert widget._progress_active is False
+    widget._on_tick()
+    assert not widget.grab().isNull()
     widget.deleteLater()
+
+
+def _download_progress_logic():
+    """The download progress plumbing (#110): the watcher measures growth from
+    a baseline, clamps an overshoot, reports an unknown total as "no
+    percentage" rather than inventing one, and always ends with the "download
+    over" call. Qt-free and offline — the hub helpers are only checked for not
+    raising, since huggingface_hub may or may not be installed here."""
+    import time
+
+    from listen_to_me.progress import (
+        DownloadWatcher,
+        directory_size,
+        hub_cache_dir,
+        hub_repo_size,
+        progress_text,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        assert directory_size(folder) == 0
+        assert directory_size(folder / "does-not-exist") == 0
+        (folder / "already-there.bin").write_bytes(b"x" * 400)
+        # Partial blobs count: that is what a running download is writing.
+        (folder / "model.bin.incomplete").write_bytes(b"y" * 600)
+        assert directory_size(folder) == 1000
+
+    # Baseline: what is already on disk when the watch starts is not progress.
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        (folder / "old.bin").write_bytes(b"x" * (4 * 1024 * 1024))
+        reports: list = []
+        watcher = DownloadWatcher(
+            folder,
+            (4 + 8) * 1024 * 1024,  # 4 MB already there, 8 MB still to come
+            lambda label, fraction, done, total: reports.append((label, fraction, done, total)),
+            label="Downloading test-model",
+            poll_seconds=0.1,
+        )
+        with watcher:
+            (folder / "new.bin").write_bytes(b"y" * (2 * 1024 * 1024))
+            deadline = time.monotonic() + 5.0
+            while not reports and time.monotonic() < deadline:
+                time.sleep(0.05)
+        assert reports, "the watcher reported nothing"
+        label, fraction, done, total = reports[0]
+        assert label == "Downloading test-model"
+        assert done == 2 * 1024 * 1024  # the pre-existing 4 MB are not progress
+        assert total == 8 * 1024 * 1024  # …and neither are they part of the total
+        assert 0.24 < fraction < 0.26
+        # Leaving the context always reports the end, so no display can stay
+        # frozen at some percentage.
+        assert reports[-1] == (None, None, 0, 0)
+
+    # An unknown total means no percentage, and an overshoot is clamped.
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        watcher = DownloadWatcher(folder, None, lambda *args: None)
+        assert watcher._total is None
+        (folder / "big.bin").write_bytes(b"z" * 1024)
+        reported: list = []
+        watcher = DownloadWatcher(
+            folder, 2 * 1024 * 1024, lambda *args: reported.append(args), poll_seconds=0.1
+        )
+        (folder / "huge.bin").write_bytes(b"z" * (4 * 1024 * 1024))
+        watcher._report()
+        assert reported and reported[0][1] == 1.0  # clamped, not 2.0
+
+    # A total too small to be a real model is treated as unknown.
+    with tempfile.TemporaryDirectory() as tmp:
+        assert DownloadWatcher(Path(tmp), 4096, lambda *args: None)._total is None
+
+    assert progress_text("Downloading small", 0.5) == "Downloading small 50%"
+    assert "50%" in progress_text("Downloading small", 0.5, 1_000_000, 2_000_000)
+    assert "%" not in progress_text("Downloading small", None)
+    assert progress_text("", None) == ""
+
+    # Local-only and non-raising whether or not huggingface_hub is installed
+    # here. hub_repo_size is deliberately NOT exercised: it is one HTTP request,
+    # and the checks stay offline and free.
+    hub_cache_dir("OpenVINO/whisper-small-int8-ov")
+
+    # The repo a preset downloads from — an explicit id passes through, and
+    # anything unresolvable costs the download its progress display, nothing else.
+    from listen_to_me.transcriber import hub_repo_id
+
+    assert hub_repo_id("Someone/faster-whisper-thing") == "Someone/faster-whisper-thing"
+    assert hub_repo_id("") is None
+    with tempfile.TemporaryDirectory() as tmp:
+        assert hub_repo_id(tmp) is None  # a local model directory downloads nothing
+
+    # Parakeet ships both quantizations in one repo, so the size of a download
+    # is only the variant it actually fetches.
+    from listen_to_me.transcriber_parakeet import _download_keeps
+
+    int8, fp32 = _download_keeps("int8"), _download_keeps(None)
+    assert int8("encoder-model.int8.onnx") and not int8("encoder-model.onnx")
+    assert fp32("encoder-model.onnx") and fp32("encoder-model.onnx.data")
+    assert not fp32("decoder_joint-model.int8.onnx")
 
 
 class _StubApp:
@@ -2200,6 +2318,7 @@ class _StubApp:
         self.history.add("An entry with a corrupt timestamp.", timestamp=1e300)
         self.hotkeys = _StubHotkeys()
         self.posts: list = []  # events the UI posted (asserted by the tests)
+        self.progress_reports: list = []  # App.progress() calls (download display)
         self.state = "idle"
         # Stands in for an event still sitting in App's queue: _poll() applies
         # it, exactly like the real 100 ms poll timer does.
@@ -2207,6 +2326,9 @@ class _StubApp:
 
     def post(self, *args, **kwargs):
         self.posts.append(args)
+
+    def progress(self, label, fraction, done=0, total=0):
+        self.progress_reports.append((label, fraction, done, total))
 
     def _poll(self):
         if self.queued_state is not None:
@@ -2379,6 +2501,22 @@ def _overlay_position_is_anchored_to_its_monitor():
                 ocfg["screen"], ocfg["rel_x"], ocfg["rel_y"] = 17, float("inf"), 2**40
                 overlay._restore_position()
                 assert overlay._on_any_screen()
+
+                # A running download takes over the icon and the tooltip, and
+                # keeps them across a state change — the model is fetched
+                # *during* "processing", so a state update must not wipe it
+                # (#110). Reporting the end puts the state wording back.
+                overlay.set_state("processing")
+                overlay.set_progress(0.35, "Downloading small 35%")
+                assert overlay.win.mic._progress_active is True
+                assert "35%" in overlay.win.toolTip()
+                overlay.set_state("processing")
+                assert "35%" in overlay.win.toolTip()
+                overlay.set_progress(None, None)
+                assert overlay.win.mic._progress_active is False
+                assert "Transcribing" in overlay.win.toolTip()
+                overlay.set_state("idle")
+                assert "35%" not in overlay.win.toolTip()
             finally:
                 overlay.destroy()
     finally:
@@ -2567,6 +2705,23 @@ def _tray_lists_recent_transcripts():
             label = tray._recent_menu.actions()[0].text()
             assert label.startswith("Fish && chips second line long"), label
             assert "\n" not in label and label.endswith("…"), label
+
+            # A running download owns the tooltip and the status line until it
+            # reports itself done — the floating icon can be switched off, and
+            # the tray is then the only place a model download shows at all
+            # (#110). A state change or a clock tick must not wipe it.
+            tray.set_progress("Downloading small 40% (200 MB / 500 MB)")
+            assert "40%" in tray._icon.toolTip()
+            assert "40%" in tray._act_state.text()
+            tray.set_state("processing")
+            assert "40%" in tray._icon.toolTip()
+            stub.state = "recording"
+            tray.set_elapsed(12)
+            assert "40%" in tray._icon.toolTip()
+            stub.state = "idle"
+            tray.set_progress(None)
+            assert "40%" not in tray._icon.toolTip()
+            assert "Idle" in tray._icon.toolTip()
 
             # Clicking one copies that transcript — with its line breaks and a
             # single "&", exactly as it was stored.
@@ -3335,6 +3490,26 @@ def _gui_construction():
 
         app.processEvents()
 
+        # A model download's byte progress reaches this page's bar *and* the
+        # floating icon, and every way a diagnostic ends clears the icon again
+        # — a display left at 62% forever is wrong whatever happened (#110).
+        window._model_download_label = "small"
+        gen = window._diag_gen
+        window._on_model_progress(gen, 50 * 1024 * 1024, 200 * 1024 * 1024)
+        assert window.diag_progress.value() == 25
+        assert stub.progress_reports[-1][1] == 0.25
+        # An unknown total means an indeterminate bar and no percentage.
+        window._on_model_progress(gen, 50 * 1024 * 1024, 0)
+        assert window.diag_progress.maximum() == 0
+        assert stub.progress_reports[-1][1] is None
+        window._set_diag_busy(False)
+        assert stub.progress_reports[-1][0] is None
+        # A report from a detached (cancelled/superseded) worker is ignored.
+        window.diag_progress.setRange(0, 100)
+        window.diag_progress.setValue(7)
+        window._on_model_progress(gen + 1, 1, 2)
+        assert window.diag_progress.value() == 7
+
         # "Reset to factory settings" is the one destructive button in this
         # window. It must ask first, and a confirmed reset hands the work to
         # App — which owns the hotkey, the OS autostart entry and the wizard —
@@ -3471,6 +3646,7 @@ _LIGHT_CHECKS = [
     ("insecure SSL switch", _insecure_ssl_switch),
     ("insecure SSL huggingface httpx API", _insecure_ssl_hub_httpx),
     ("std stream stub (windowed build)", _std_stream_stub),
+    ("download progress logic", _download_progress_logic),
     ("transcriber cache probe", _transcriber_cache_probe),
     ("CUDA error detection", _cuda_error_detection),
     ("transcriber CPU fallback", _transcriber_cpu_fallback),

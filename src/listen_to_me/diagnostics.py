@@ -210,11 +210,15 @@ class DiagnosticsEngine:
             self._key = key
         return self._transcriber
 
-    def prepare_model(self, snapshot: dict, notify=None) -> str:
+    def prepare_model(self, snapshot: dict, notify=None, progress=None) -> str:
         """Download (first use) and load the model the snapshot describes.
-        Returns a short human-readable success message."""
+        Returns a short human-readable success message.
+
+        `progress` is passed straight through to the backend (see
+        transcriber.Transcriber.ensure_loaded): the same byte counter that
+        drives the floating icon during a recording's first download."""
         transcriber = self._transcriber_for(snapshot)
-        transcriber.ensure_loaded(notify=notify)
+        transcriber.ensure_loaded(notify=notify, progress=progress)
         if transcriber.backend == "parakeet":
             # The Parakeet backend runs one fixed model — the Whisper preset
             # in the snapshot is not what was just downloaded.
@@ -238,10 +242,14 @@ class DiagnosticsEngine:
         on_status=None,
         on_level=None,
         is_cancelled=None,
+        progress=None,
     ) -> str:
         """End-to-end check: load the model, record a short clip and
         transcribe it. Returns the recognized text ("" when cancelled or
-        nothing was understood). Nothing is inserted or written to history."""
+        nothing was understood). Nothing is inserted or written to history.
+
+        `progress` is the backend's download byte counter (see
+        prepare_model) — the test is a first download as often as not."""
 
         def status(message) -> None:
             if on_status is not None:
@@ -249,7 +257,9 @@ class DiagnosticsEngine:
 
         transcriber = self._transcriber_for(snapshot)
         # The transcribers call notify(message[, force]); route it to status.
-        transcriber.ensure_loaded(notify=lambda message, force=False: status(message))
+        transcriber.ensure_loaded(
+            notify=lambda message, force=False: status(message), progress=progress
+        )
         if is_cancelled is not None and is_cancelled():
             return ""
         status(f"Recording {seconds:.0f} s — speak now…")
