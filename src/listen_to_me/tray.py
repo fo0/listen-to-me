@@ -27,7 +27,28 @@ _STATE_LABELS = {
 }
 
 
-def state_label(state: str, cfg) -> str:
+def format_duration(seconds) -> str:
+    """`seconds` as ``m:ss`` — ``h:mm:ss`` once a take passes the hour.
+
+    Deliberately unshakeable about its input: it renders a value derived from a
+    clock into a label that is rebuilt every second inside the app's poll
+    timer, and a status line must never be the thing that raises there. A
+    negative value (a clock read before the take was stamped) and anything
+    unusable read 0:00.
+    """
+    try:
+        total = int(float(seconds))
+    except (TypeError, ValueError, OverflowError):
+        return "0:00"
+    total = max(0, total)
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def state_label(state: str, cfg, elapsed=None) -> str:
     """The tray's one-line status, naming the combination that acts on it.
 
     "Press the hotkey" is the one thing the tray can't assume the user knows:
@@ -35,11 +56,20 @@ def state_label(state: str, cfg) -> str:
     exactly where someone looks after forgetting it. Spelling it out costs a
     lookup per state change and saves opening the settings window.
 
+    `elapsed` (seconds) puts the running take's clock into the recording
+    status. Opt-in per call rather than read from the app, so every caller that
+    only knows the state keeps the wording it always had — and so the label
+    stays a pure function of its arguments.
+
     Falls back to the generic wording when the combination can't be rendered
     (an empty or unusable `hotkey` in the config) — never to a raw pynput
     token in the middle of a sentence.
     """
     generic = _STATE_LABELS.get(state, state)
+    if state == "recording" and elapsed is not None:
+        # A speaker has no clock, and the take has a cap: without this the only
+        # feedback about a running recording was the heads-up 30 s before it.
+        generic = f"Recording {format_duration(elapsed)}…"
     if state not in ("idle", "recording"):
         return generic
     try:
@@ -52,7 +82,7 @@ def state_label(state: str, cfg) -> str:
         return generic
     if state == "recording":
         # Hold mode stops on release, so "press it again" would be wrong.
-        return f"Recording… {'release' if hold else 'press'} {combo} to stop"
+        return f"{generic} {'release' if hold else 'press'} {combo} to stop"
     return f"Idle — press {combo} to record"
 
 
@@ -235,6 +265,21 @@ class Tray:
         )
         self._act_cancel.setVisible(state == "recording")
         self._act_overlay.setChecked(bool(self.app.cfg["overlay"]["enabled"]))
+
+    def set_elapsed(self, seconds) -> None:
+        """Put the running take's clock into the status line and the tooltip.
+
+        Separate from `set_state` because this runs once a second: set_state
+        also rebuilds the tray icon and every menu label, none of which the
+        clock changes. Reads the state back from the app so a tick that arrives
+        just after a recording ended renders the new state's wording instead of
+        a frozen counter.
+        """
+        if self._icon is None or self._act_state is None:
+            return
+        label = state_label(self.app.state, self.app.cfg, elapsed=seconds)
+        self._icon.setToolTip(f"{APP_NAME} — {label}")
+        self._act_state.setText(label)
 
     def notify(self, message: str, force: bool = False) -> None:
         """Show a desktop notification. `force` bypasses the user setting (errors)."""

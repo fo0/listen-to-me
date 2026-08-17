@@ -14,6 +14,11 @@ changes at a glance.
 
 ### Added
 
+- **A running clock for the recording** in the tray status line and the tray
+  icon's tooltip ("Recording 1:12… press Ctrl+Alt+Space to stop") — how long
+  you have been dictating was invisible until the heads-up 30 seconds before
+  the maximum length.
+
 - **The floating icon remembers the monitor** it was left on, not just a screen
   coordinate — so it comes back to the right screen after a restart, after a
   reboot that brings the second monitor up late, and after a monitor is

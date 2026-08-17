@@ -107,6 +107,7 @@ class App:
         self._recording_id = 0  # invalidates live-preview workers of old takes
         self._recording_started = 0.0  # monotonic start of the running take
         self._length_warned = False  # one max-length heads-up per take
+        self._clock_seconds = -1  # whole second the tray clock currently shows
         self._live_typer = None  # per-take live-typing worker (livetype.py)
         self._quitting = False  # set by _quit; guards UI opened after shutdown
 
@@ -191,6 +192,7 @@ class App:
         except queue.Empty:
             pass
         self._check_length_warning()
+        self._tick_recording_clock()
 
     def _check_length_warning(self) -> None:
         """Warn once, shortly before the maximum length ends the running take.
@@ -211,6 +213,27 @@ class App:
         # into one notification per poll tick for the rest of the take.
         self._length_warned = True
         self.notify(message)
+
+    def _tick_recording_clock(self) -> None:
+        """Count the running take up in the tray status, once per second.
+
+        Rides the 100 ms timer that already drains the event queue (same
+        reasoning as the length warning) and only touches the tray when the
+        whole second changed — the label is rebuilt once a second, not sixty
+        times. `_set_state` writes the clock-free label on every transition, so
+        leaving RECORDING clears the counter by itself.
+        """
+        if self.state != STATE_RECORDING:
+            self._clock_seconds = -1
+            return
+        seconds = int(time.monotonic() - self._recording_started)
+        if seconds == self._clock_seconds:
+            return
+        self._clock_seconds = seconds
+        try:
+            self.tray.set_elapsed(seconds)
+        except Exception:
+            log.debug("could not update the tray recording clock", exc_info=True)
 
     def _handle(self, kind: str, payload) -> None:
         if kind == "toggle":
@@ -316,6 +339,7 @@ class App:
         self._recording_id = take
         self._recording_started = time.monotonic()
         self._length_warned = False
+        self._clock_seconds = -1  # the next poll renders this take's 0:00
         self._set_state(STATE_RECORDING)
         self._beep(880)
         ocfg = self.cfg["overlay"]

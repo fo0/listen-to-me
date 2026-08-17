@@ -2324,6 +2324,47 @@ def _overlay_position_is_anchored_to_its_monitor():
         overlay_module._screen_key = key
 
 
+def _tray_counts_the_recording_time():
+    """A running take is counted up in the tray status, and the clock survives
+    whatever the caller hands it.
+
+    The elapsed time is opt-in per call, so every caller that only knows the
+    state — and every state that is not a running recording — must keep the
+    exact wording it always had."""
+    from listen_to_me.tray import _STATE_LABELS, format_duration, state_label
+
+    assert format_duration(0) == "0:00"
+    assert format_duration(9.9) == "0:09"  # truncated, never rounded up
+    assert format_duration(75) == "1:15"
+    assert format_duration(600) == "10:00"
+    assert format_duration(3661) == "1:01:01"
+    # A clock read before the take was stamped, and hand-edited/garbage input:
+    # this renders inside the 100 ms poll and must never raise there.
+    assert format_duration(-5) == "0:00"
+    assert format_duration(float("nan")) == "0:00"
+    assert format_duration(float("inf")) == "0:00"
+    assert format_duration(None) == "0:00"
+    assert format_duration("nonsense") == "0:00"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        assert (
+            state_label("recording", stub.cfg, elapsed=72)
+            == "Recording 1:12… press Ctrl+Alt+Space to stop"
+        )
+        stub.cfg["hotkey_mode"] = "hold"
+        assert (
+            state_label("recording", stub.cfg, elapsed=0)
+            == "Recording 0:00… release Ctrl+Alt+Space to stop"
+        )
+        stub.cfg["hotkey"] = ""  # no combo to name: generic wording, still counting
+        assert state_label("recording", stub.cfg, elapsed=72) == "Recording 1:12…"
+        # Only a running take has a clock — and no clock means the old wording.
+        assert state_label("recording", stub.cfg) == _STATE_LABELS["recording"]
+        assert state_label("processing", stub.cfg, elapsed=72) == _STATE_LABELS["processing"]
+        assert state_label("idle", stub.cfg, elapsed=72) == _STATE_LABELS["idle"]
+
+
 def _tray_names_the_hotkey():
     """The tray status spells the configured combination out instead of saying
     "the hotkey" — including after it was changed in the settings, and with the
@@ -3150,6 +3191,7 @@ _LIGHT_CHECKS = [
     ("voice mic widget", _voice_mic_widget),
     ("overlay position is anchored to its monitor", _overlay_position_is_anchored_to_its_monitor),
     ("tray names the hotkey", _tray_names_the_hotkey),
+    ("tray counts the recording time", _tray_counts_the_recording_time),
     ("tray click opens the window", _tray_click_opens_the_window),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("Qt UI construction", _gui_construction),
