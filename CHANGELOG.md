@@ -14,6 +14,10 @@ changes at a glance.
 
 ### Added
 
+- **A “Recent transcripts” submenu in the tray menu** — the last five
+  transcripts, newest first, each one click away from the clipboard. "Copy last
+  transcript" only ever reached the newest one; anything older meant opening
+  Settings → History.
 - **A running clock for the recording** in the tray status line and the tray
   icon's tooltip ("Recording 1:12… press Ctrl+Alt+Space to stop") — how long
   you have been dictating was invisible until the heads-up 30 seconds before

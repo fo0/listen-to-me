@@ -10,10 +10,16 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from . import APP_NAME, REPO_URL
+from .history import entry_timestamp
 from .keymap import hotkey_label
 from .qtutil import tray_icon
 
 log = logging.getLogger(__name__)
+
+# How many of the latest transcripts the tray lists, and how much of one fits
+# on a menu line before it is elided.
+_RECENT_LIMIT = 5
+_RECENT_CHARS = 56
 
 # Started from the OS autostart, the app can be up before the shell's
 # notification area is: the icon is then silently dropped and never appears.
@@ -46,6 +52,24 @@ def format_duration(seconds) -> str:
     if hours:
         return f"{hours}:{minutes:02d}:{secs:02d}"
     return f"{minutes}:{secs:02d}"
+
+
+def recent_entry_label(entry: dict, max_chars: int = _RECENT_CHARS) -> str:
+    """One menu line for a stored transcript: its text on a single line, elided.
+
+    A menu item is one line whatever the dictation did, so the line breaks a
+    dictated paragraph carries are folded into spaces rather than dropping the
+    text after the first one. Qt reads a single ``&`` as the mnemonic marker
+    and would swallow it while underlining the next letter — the entry would
+    then advertise text it does not contain, so every ``&`` is doubled.
+
+    str(): history.json is untrusted input and the store's own normalization
+    is not this function's to assume.
+    """
+    text = " ".join(str(entry.get("text", "")).split())
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "…"
+    return text.replace("&", "&&")
 
 
 def state_label(state: str, cfg, elapsed=None) -> str:
@@ -95,6 +119,7 @@ class Tray:
         self._act_toggle = None
         self._act_cancel = None
         self._act_overlay = None
+        self._recent_menu = None
         self._retry_timer = None
         self._retries = 0
 
@@ -125,8 +150,20 @@ class Tray:
         act_copy.setToolTip("Put the text of the most recent recording back on the clipboard.")
         act_copy.triggered.connect(lambda: app.post("copy_last"))
         menu.addAction(act_copy)
+
+        # …and the ones before it. Reaching the second-newest transcript meant
+        # opening Settings and walking the sidebar to History — four steps for
+        # a dictation that is two minutes old.
+        self._recent_menu = QMenu("Recent transcripts", menu)
+        self._recent_menu.setToolTipsVisible(True)
+        # Filled when it opens, not when it is built: the recording worker
+        # appends to the history while this menu sits idle, so a list built at
+        # startup would be stale within one dictation.
+        self._recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        act_recent = menu.addMenu(self._recent_menu)
+        act_recent.setToolTip("Copy any of the last few transcripts back to the clipboard.")
         # QMenu ignores its actions' tooltips unless asked — without this the
-        # hint above would exist but never render on any platform.
+        # hints above would exist but never render on any platform.
         menu.setToolTipsVisible(True)
         menu.addSeparator()
 
@@ -174,6 +211,43 @@ class Tray:
             self._retry_timer = QTimer()
             self._retry_timer.timeout.connect(self._retry_show)
             self._retry_timer.start(_RETRY_MS)
+
+    def _fill_recent_menu(self) -> None:
+        """(Re-)build the "Recent transcripts" submenu from the history file.
+
+        Runs on the Qt main thread every time the submenu opens. A history that
+        cannot be read is named as such instead of showing an empty list: an
+        app that offers nothing looks the same as one that stored nothing,
+        which is the one thing this must not do.
+        """
+        menu = self._recent_menu
+        if menu is None:
+            return
+        menu.clear()
+        try:
+            entries = self.app.history.entries()[:_RECENT_LIMIT]
+        except Exception:
+            log.exception("could not read the transcript history for the tray menu")
+            failed = menu.addAction("Could not read the history")
+            failed.setEnabled(False)
+            return
+        if not entries:
+            empty = menu.addAction("No transcripts yet")
+            empty.setEnabled(False)
+            return
+        for entry in entries:
+            text = str(entry.get("text", ""))
+            action = menu.addAction(recent_entry_label(entry))
+            stamp = entry_timestamp(entry)
+            # The label is elided and stripped of its line breaks — the tooltip
+            # carries when it was dictated, which is how two similar-looking
+            # transcripts are told apart.
+            action.setToolTip(
+                f"{stamp} — copy this transcript" if stamp else "Copy this transcript"
+            )
+            action.triggered.connect(
+                lambda _checked=False, t=text: self.app.post("copy_text", t)
+            )
 
     def _open_project_page(self) -> None:
         # The settings footer reports a failed browser launch — the tray entry

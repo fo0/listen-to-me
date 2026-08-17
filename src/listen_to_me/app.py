@@ -277,6 +277,8 @@ class App:
             self._cancel_recording()
         elif kind == "copy_last":
             self._copy_last_transcript()
+        elif kind == "copy_text":
+            self._copy_transcript(str(payload))
         elif kind == "auto_stop":
             if self._owns_take(payload):
                 self.notify("Maximum recording length reached.")
@@ -592,7 +594,8 @@ class App:
         Settings, walk the sidebar to History, find the entry, press its Copy
         button — is four steps for the text the user just dictated.
 
-        Main thread only (posted as an event): the clipboard fallback is Qt's.
+        Reading the history is what belongs here; the clipboard itself is
+        `_copy_transcript`, shared with the tray's recent-transcripts menu.
         """
         try:
             text = self.history.latest()
@@ -604,6 +607,21 @@ class App:
             # Also the state right after "Keep a local history" was switched
             # off — say what is missing instead of a silent no-op.
             self.notify("No transcript in the history yet.", force=True)
+            return
+        self._copy_transcript(text)
+
+    def _copy_transcript(self, text: str) -> None:
+        """Put one transcript on the clipboard and say how that went.
+
+        Shared by the tray's "Copy last transcript" and by every entry of its
+        "Recent transcripts" submenu, so the two can never drift into different
+        wording or a different clipboard path. Main thread only (posted as an
+        event): the fallback inside copy_to_clipboard is Qt's.
+        """
+        if not text:
+            # An entry the store would not have accepted (a hand-edited
+            # history.json) — never a silently empty clipboard action.
+            self.notify("That transcript is empty — nothing to copy.", force=True)
             return
         from .qtutil import copy_to_clipboard
 
