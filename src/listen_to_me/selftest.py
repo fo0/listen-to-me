@@ -1334,7 +1334,7 @@ def _autostart_reporting():
     assert autostart.launch_problem() is verdict
     # A status line must never carry a raw program path: a Windows path has no
     # space to wrap at, so the label would set a minimum width that widens the
-    # whole settings page and clips its cards (see MEMORY.md).
+    # whole settings page and clips its cards (agent_docs/memory_archive/2026-07.md).
     # Native separators: _split_command only keeps backslashes on Windows, so a
     # hard-coded Windows path would test nothing on the CI runner.
     deep = os.path.join(os.sep + "programs", "listen to me", "ListenToMe.exe")
