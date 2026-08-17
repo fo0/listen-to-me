@@ -65,7 +65,10 @@ from .choices import (
     language_label,
     model_from_label,
     model_label,
+    models_for_backend,
     mute_preset_note,
+    openvino_alternative,
+    openvino_supports_model,
 )
 from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
 from .diagnostics import DiagnosticsEngine
@@ -173,6 +176,11 @@ _A_TEST_PREVIEW_CHARS = 160
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
 # with the first-run onboarding wizard.
+
+# Every preset label the model dropdown can hold. The list is re-filtered per
+# backend, so "is this row the custom-model entry?" can no longer be answered
+# by its index (see SettingsWindow._is_custom_entry).
+_PRESET_LABELS = frozenset(model_label(model) for model, _ in MODEL_CHOICES)
 
 # Cap how many transcript rows the History page renders at once. The store keeps
 # up to `history_max`; rendering every one as widgets would be slow for large
@@ -369,6 +377,9 @@ class SettingsWindow(QDialog):
         self._hw_gen = 0
         self._hw_busy = False
         self._status_probed = False  # first probe runs when the page is opened
+        # The preset the OpenVINO model filter swapped out (see
+        # _reload_model_combo), so leaving that backend puts it back.
+        self._model_swapped_from: str | None = None
         self._update_cancel_event: threading.Event | None = None
         self._hotkey_test: Hotkeys | None = None
         # Bumped on every test start so a stale timeout timer from an earlier
@@ -831,13 +842,10 @@ class SettingsWindow(QDialog):
         # failed at model load. Custom CTranslate2 ids now go through the
         # explicit "Custom model id…" sentinel entry (_on_model_activated).
         self.model_combo = QComboBox()
-        self.model_combo.addItems([model_label(m) for m, _ in MODEL_CHOICES])
-        if self.model_combo.findText(model_label(self.cfg["model"])) < 0:
-            # Unlisted id from the config (custom dialog / hand-edited file):
-            # keep it selectable verbatim instead of resetting to item 0.
-            self.model_combo.addItem(self.cfg["model"])
-        self.model_combo.addItem(CUSTOM_MODEL_LABEL)
-        self.model_combo.setCurrentText(model_label(self.cfg["model"]))
+        # Listed for the *saved* backend — the backend combo lives on the
+        # Whisper page, which is built after this one; _on_backend_changed
+        # re-lists it (and every later switch) through _reload_model_combo.
+        self._fill_model_combo(self.cfg["backend"], self.cfg["model"])
         self._model_index = self.model_combo.currentIndex()
         self.model_combo.activated.connect(self._on_model_activated)
         self.model_combo.setToolTip(
@@ -3088,11 +3096,13 @@ class SettingsWindow(QDialog):
         self._clipboard_hint.setVisible(always)
 
     def _on_backend_changed(self) -> None:
-        """Show only the Engine rows that apply to the selected backend."""
+        """Show only the Engine rows that apply to the selected backend, and
+        re-list the model dropdown for what that backend can run."""
         backend = self._selected_backend()
         fw = backend == "faster-whisper"
         openvino = backend == "openvino"
         parakeet = backend == "parakeet"
+        swapped_out = self._reload_model_combo(backend)
         form = self._engine_form
         # Parakeet shares the CUDA/CPU device choice with faster-whisper; the
         # remaining Whisper decode options apply to faster-whisper only.
@@ -3110,16 +3120,7 @@ class SettingsWindow(QDialog):
         self.model_combo.setEnabled(not parakeet)
         self.language_combo.setEnabled(not parakeet)
         self.initial_prompt_edit.setEnabled(not parakeet)
-        self._speech_hint.setText(
-            "The Parakeet backend ignores both: it runs one fixed model and "
-            "always detects the spoken language itself. Choose a different "
-            "backend on the Whisper page to use them again — your selections "
-            "are kept."
-            if parakeet
-            else "Downloaded automatically on first use (folder on the Whisper page). "
-            "Pick a preset, or choose “Custom model id…” to use any CTranslate2 "
-            "model from Hugging Face."
-        )
+        self._speech_hint.setText(self._speech_hint_text(backend, swapped_out))
         # Live typing (General page) needs faster-whisper's segment timestamps,
         # so the option is greyed out for the other backends — its tooltip
         # explains the requirement. The stored value is kept either way.
@@ -3134,6 +3135,92 @@ class SettingsWindow(QDialog):
             return self.cfg["model"]
         return model_from_label(label)
 
+    @staticmethod
+    def _speech_hint_text(backend: str, swapped_out: str | None) -> str:
+        """The hint under the model dropdown: what the selected backend does
+        with the model + language above it. Never leaves a narrowed list or a
+        replaced selection unexplained — that would just look broken."""
+        if backend == "parakeet":
+            return (
+                "The Parakeet backend ignores both: it runs one fixed model and "
+                "always detects the spoken language itself. Choose a different "
+                "backend on the Whisper page to use them again — your selections "
+                "are kept."
+            )
+        if backend == "openvino":
+            listed = (
+                "Only models with a pre-converted OpenVINO version are listed; "
+                "the rest need Backend = faster-whisper on the Whisper page."
+            )
+            if swapped_out is None:
+                return listed
+            return (
+                f"“{swapped_out}” has no OpenVINO version — switched to "
+                f"“{openvino_alternative(swapped_out)}”. {listed} Your previous "
+                "choice comes back when you leave this backend."
+            )
+        return (
+            "Downloaded automatically on first use (folder on the Whisper page). "
+            "Pick a preset, or choose “Custom model id…” to use any CTranslate2 "
+            "model from Hugging Face."
+        )
+
+    def _fill_model_combo(self, backend: str, model: str) -> None:
+        """(Re)list the model dropdown for `backend` and select `model`.
+
+        Signals stay blocked while the items are swapped, so no half-built list
+        reaches the status card; the closing setCurrentIndex emits once."""
+        presets = [preset for preset, _ in models_for_backend(backend)]
+        labels = [model_label(preset) for preset in presets]
+        if model not in presets:
+            # An unlisted id (custom dialog, hand-edited file) or a preset this
+            # backend cannot run: keep it selectable verbatim instead of
+            # silently resetting the user's model to item 0.
+            labels.append(model)
+        labels.append(CUSTOM_MODEL_LABEL)
+        blocked = self.model_combo.blockSignals(True)
+        try:
+            self.model_combo.clear()
+            self.model_combo.addItems(labels)
+        finally:
+            self.model_combo.blockSignals(blocked)
+        row = self.model_combo.findText(model_label(model) if model in presets else model)
+        self.model_combo.setCurrentIndex(max(0, row))
+
+    def _reload_model_combo(self, backend: str) -> str | None:
+        """Re-list the model dropdown for `backend`, returning the preset that
+        had to be swapped out (None when the selection survived unchanged).
+
+        The OpenVINO backend can only run models the OpenVINO organisation has
+        published an IR conversion for. Offering the others anyway produced a
+        combination that every screen accepted and that was then refused at the
+        first transcription — after the user had already spoken (#112). An
+        incompatible preset is swapped for the closest working one and
+        remembered, so moving to another backend puts the original choice back.
+        """
+        model = self._selected_model()
+        swapped_out = None
+        if backend == "openvino" and not openvino_supports_model(model):
+            swapped_out = model
+            self._model_swapped_from = model
+            model = openvino_alternative(model)
+        elif backend != "openvino" and self._model_swapped_from is not None:
+            # Restore only while the replacement is still what's selected: a
+            # model the user picked themselves outranks the remembered one.
+            if model == openvino_alternative(self._model_swapped_from):
+                model = self._model_swapped_from
+            self._model_swapped_from = None
+        self._fill_model_combo(backend, model)
+        self._model_index = self.model_combo.currentIndex()
+        return swapped_out
+
+    @staticmethod
+    def _is_custom_entry(label: str) -> bool:
+        """Whether a dropdown entry is the single custom-model row rather than
+        a preset or the sentinel. Matched by label, not by index: the list is
+        re-filtered per backend, so its length is no fixed offset (#112)."""
+        return label != CUSTOM_MODEL_LABEL and label not in _PRESET_LABELS
+
     def _on_model_activated(self, index: int) -> None:
         """Resolve the "Custom model id…" sentinel via an input dialog.
 
@@ -3143,6 +3230,11 @@ class SettingsWindow(QDialog):
         selected."""
         if self.model_combo.itemText(index) != CUSTOM_MODEL_LABEL:
             self._model_index = index
+            # An explicit pick outranks the model the OpenVINO filter
+            # remembered: leaving the backend must not undo what was just
+            # chosen here. Only on a pick that sticks — a cancelled custom
+            # dialog below changes nothing and must not drop it either.
+            self._model_swapped_from = None
             return
         previous = model_from_label(self.model_combo.itemText(self._model_index))
         is_preset = any(previous == model for model, _ in MODEL_CHOICES)
@@ -3157,16 +3249,32 @@ class SettingsWindow(QDialog):
         if not model or model == CUSTOM_MODEL_LABEL:
             self.model_combo.setCurrentIndex(self._model_index)
             return
+        if self._selected_backend() == "openvino" and not openvino_supports_model(model):
+            # The dropdown filters these presets out for this backend; typing
+            # one in here would put the broken combination back through the
+            # side door and fail at the first transcription again (#112).
+            QMessageBox.warning(
+                self,
+                "Not available on OpenVINO",
+                f"“{model}” has no pre-converted OpenVINO version, so the "
+                "OpenVINO backend cannot load it.\n\nUse "
+                f"“{openvino_alternative(model)}” instead, or set Backend = "
+                "faster-whisper on the Whisper page to keep this model.",
+            )
+            self.model_combo.setCurrentIndex(self._model_index)
+            return
+        self._model_swapped_from = None
         row = self.model_combo.findText(model_label(model))
         if row < 0:
             # Keep a single custom entry, directly above the sentinel.
             sentinel = self.model_combo.count() - 1
-            if sentinel == len(MODEL_CHOICES):
+            above = sentinel - 1
+            if above >= 0 and self._is_custom_entry(self.model_combo.itemText(above)):
+                row = above
+                self.model_combo.setItemText(row, model)
+            else:
                 self.model_combo.insertItem(sentinel, model)
                 row = sentinel
-            else:
-                row = sentinel - 1
-                self.model_combo.setItemText(row, model)
         self.model_combo.setCurrentIndex(row)
         self._model_index = row
 

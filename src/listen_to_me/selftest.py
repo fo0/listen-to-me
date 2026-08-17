@@ -1708,24 +1708,38 @@ def _openvino_backend_logic():
     assert openvino_model_repo("distil-large-v3", "int8") == "OpenVINO/distil-whisper-large-v3-int8-ov"
     assert openvino_model_repo("base.en", "int4") == "OpenVINO/whisper-base.en-int4-ov"
     assert openvino_model_repo("Someone/custom-ov", "int8") == "Someone/custom-ov"  # verbatim
-    try:
-        openvino_model_repo("distil-small.en", "int8")
-        raise AssertionError("expected ValueError for a preset without an OpenVINO conversion")
-    except ValueError:
-        pass
-    try:
-        openvino_model_repo("distil-large-v3.5", "int8")
-        raise AssertionError("expected ValueError for a preset without an OpenVINO conversion")
-    except ValueError:
-        pass
-    from listen_to_me.choices import GERMAN_TURBO_CT2
+    from listen_to_me.choices import (
+        GERMAN_TURBO_CT2,
+        MODEL_CHOICES,
+        models_for_backend,
+        openvino_alternative,
+        openvino_supports_model,
+    )
 
-    try:
-        # The German CT2 preset must not fall into the verbatim repo-id branch.
-        openvino_model_repo(GERMAN_TURBO_CT2, "int8")
-        raise AssertionError("expected ValueError for the CT2-only German preset")
-    except ValueError:
-        pass
+    # Every preset the backend refuses names the model that replaces it, and
+    # the replacement itself is one the backend accepts — the message used to
+    # send the user to faster-whisper instead, which on an Intel machine with
+    # no NVIDIA GPU is the wrong half of the pair to change (#112).
+    for preset in ("distil-small.en", "distil-medium.en", "distil-large-v3.5", GERMAN_TURBO_CT2):
+        assert not openvino_supports_model(preset)
+        alternative = openvino_alternative(preset)
+        assert openvino_supports_model(alternative)
+        assert openvino_model_repo(alternative, "int8").startswith("OpenVINO/")
+        try:
+            # The German CT2 preset must not fall into the verbatim repo-id branch.
+            openvino_model_repo(preset, "int8")
+            raise AssertionError(f"expected ValueError for {preset!r} — no OpenVINO conversion")
+        except ValueError as exc:
+            assert alternative in str(exc), str(exc)
+
+    # What the dropdowns offer per backend: everything for the CT2 backends,
+    # only the convertible presets for OpenVINO.
+    assert models_for_backend("faster-whisper") == list(MODEL_CHOICES)
+    assert all(openvino_supports_model(m) for m, _ in models_for_backend("openvino"))
+    assert len(models_for_backend("openvino")) == len(MODEL_CHOICES) - 4
+    # A custom id stays allowed: it may well be an OpenVINO IR repo, and the
+    # format pre-check below is what decides that.
+    assert openvino_supports_model("Someone/custom-ov")
 
     # Format pre-check for custom ids: an OpenVINO IR directory passes, a
     # CTranslate2 one is recognized as the wrong format, and anything that
@@ -2577,6 +2591,7 @@ def _tray_survives_a_missing_notification_area():
 
 
 def _gui_construction():
+    from listen_to_me.choices import GERMAN_TURBO_CT2, model_from_label, model_label
     from listen_to_me.onboarding import OnboardingWizard
     from listen_to_me.overlay import Overlay
     from listen_to_me.settings_ui import SettingsWindow
@@ -2962,6 +2977,64 @@ def _gui_construction():
         window.model_combo.setCurrentText(model_label(saved_model))
         assert window._collect() == window._saved_snapshot
 
+        # The OpenVINO backend has no pre-converted model for a few presets.
+        # Selecting it must re-list the dropdown and swap an incompatible model
+        # for the closest one that works, rather than accept a combination that
+        # every screen shows as fine and the first transcription then refuses —
+        # after the user has already spoken (#112). Leaving the backend puts the
+        # original pick back, and the custom-model row is still recognised by
+        # label now that the list length depends on the backend.
+        from listen_to_me.choices import GERMAN_TURBO_CT2, model_from_label
+
+        window._fill_model_combo("faster-whisper", GERMAN_TURBO_CT2)
+        window._model_index = window.model_combo.currentIndex()
+        window.backend_combo.setCurrentIndex(1)  # OpenVINO
+        assert window._selected_model() == "large-v3-turbo"
+        assert window.model_combo.findText(model_label(GERMAN_TURBO_CT2)) < 0
+        assert GERMAN_TURBO_CT2 in window._speech_hint.text()
+        last = window.model_combo.count() - 1
+        assert window.model_combo.itemText(last) == CUSTOM_MODEL_LABEL
+        assert not window._is_custom_entry(window.model_combo.itemText(last - 1))
+        assert window._is_custom_entry("Someone/private-ct2-model")
+
+        # …and the "Custom model id…" dialog must not smuggle a filtered-out
+        # preset back in through the side door: typing one while OpenVINO is
+        # selected is refused with a message, and the previous model stays.
+        from listen_to_me import settings_ui as _settings_module
+
+        warned: list = []
+
+        class _FakeInput:
+            @staticmethod
+            def getText(*_args, **_kwargs):
+                return ("distil-small.en", True)
+
+        class _FakeBox:
+            @staticmethod
+            def warning(*args, **_kwargs):
+                warned.append(args[-1])
+
+        real_input = _settings_module.QInputDialog
+        real_box = _settings_module.QMessageBox
+        _settings_module.QInputDialog, _settings_module.QMessageBox = _FakeInput, _FakeBox
+        try:
+            before = window._selected_model()
+            sentinel_row = window.model_combo.count() - 1
+            window.model_combo.setCurrentIndex(sentinel_row)
+            window._on_model_activated(sentinel_row)
+        finally:
+            _settings_module.QInputDialog = real_input
+            _settings_module.QMessageBox = real_box
+        assert warned and "distil-small.en" in warned[0]
+        assert window._selected_model() == before
+        assert window.model_combo.currentIndex() == window._model_index
+
+        window.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert model_from_label(window.model_combo.currentText()) == GERMAN_TURBO_CT2
+        window._fill_model_combo("faster-whisper", saved_model)
+        window._model_index = window.model_combo.currentIndex()
+        assert window._collect() == window._saved_snapshot
+
         # Wheel guard: a wheel tick over an unfocused combo/spin box must not
         # change its value (it would scroll the page instead), and the wheel
         # alone can never give the widget focus (StrongFocus, not WheelFocus).
@@ -3194,13 +3267,26 @@ def _gui_construction():
         assert wizard.language_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus  # wheel guard
         assert not wizard.model_combo.isEditable()  # read-only — presets only
         wizard.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
-        assert not wizard._engine_note.text()
+        assert "OpenVINO" in wizard._engine_note.text()
         # Parakeet ignores the model and language chosen on the previous wizard
         # page — the page must say so instead of dropping them silently.
         wizard.backend_combo.setCurrentIndex(2)  # Parakeet
         assert "Parakeet" in wizard._engine_note.text()
         wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
         assert not wizard._engine_note.text()
+
+        # The OpenVINO backend has no conversion for a few presets. Picking one
+        # of those must not survive the switch — the wizard swaps in the closest
+        # model that works, says so, and restores the original when the backend
+        # moves on (#112).
+        wizard._fill_model_combo("faster-whisper", GERMAN_TURBO_CT2)
+        wizard.backend_combo.setCurrentIndex(1)  # OpenVINO
+        assert model_from_label(wizard.model_combo.currentText()) == "large-v3-turbo"
+        assert GERMAN_TURBO_CT2 in wizard._engine_note.text()
+        assert wizard.model_combo.findText(model_label(GERMAN_TURBO_CT2)) < 0  # filtered out
+        wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert model_from_label(wizard.model_combo.currentText()) == GERMAN_TURBO_CT2
+        wizard._fill_model_combo("faster-whisper", "small")
         wizard._apply()
         assert stub.cfg["backend"] == "faster-whisper"
         assert stub.cfg["model"] == "small"  # preset label round-trips to the id

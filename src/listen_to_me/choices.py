@@ -37,6 +37,44 @@ MODEL_CHOICES = [
     ("distil-medium.en", "distilled English only — fast with good accuracy"),
 ]
 
+# Model presets that exist only as a CTranslate2 conversion — the OpenVINO
+# organisation publishes no pre-converted IR model for them, so pairing one
+# with the OpenVINO backend can only fail. Each maps to the closest preset that
+# *does* have an OpenVINO conversion, so the UI can offer a working replacement
+# instead of pushing the user off the backend they deliberately chose (#112).
+# Lives here rather than in transcriber_openvino so the settings window and the
+# onboarding wizard can filter their dropdown without importing the backend.
+OPENVINO_UNSUPPORTED_MODELS = {
+    GERMAN_TURBO_CT2: "large-v3-turbo",
+    "distil-large-v3.5": "distil-large-v3",
+    "distil-small.en": "small.en",
+    "distil-medium.en": "medium.en",
+}
+
+
+def openvino_supports_model(model: str) -> bool:
+    """Whether `model` can run on the OpenVINO backend.
+
+    Only the known CT2-only presets are refused. Any other id — a custom
+    Hugging Face id in particular — stays allowed: it may well be an OpenVINO
+    IR repo, and the backend checks the actual file format before downloading.
+    """
+    return model not in OPENVINO_UNSUPPORTED_MODELS
+
+
+def openvino_alternative(model: str) -> str:
+    """The preset to offer instead of `model` on the OpenVINO backend — the
+    closest conversion that exists. `model` itself when it needs no swap."""
+    return OPENVINO_UNSUPPORTED_MODELS.get(model, model)
+
+
+def models_for_backend(backend: str) -> list[tuple[str, str]]:
+    """MODEL_CHOICES narrowed to the presets `backend` can actually run."""
+    if backend != "openvino":
+        return list(MODEL_CHOICES)
+    return [(model, benefit) for model, benefit in MODEL_CHOICES if openvino_supports_model(model)]
+
+
 # Sentinel entry at the bottom of the read-only model dropdown: activating it
 # opens an explicit input dialog for an arbitrary CTranslate2 model id (the
 # combo itself takes no free text — accidental typing was once saved verbatim

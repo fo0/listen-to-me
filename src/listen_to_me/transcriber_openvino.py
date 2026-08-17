@@ -20,14 +20,10 @@ import os
 import threading
 
 from .audio import SAMPLE_RATE
-from .choices import GERMAN_TURBO_CT2
+from .choices import OPENVINO_UNSUPPORTED_MODELS, openvino_alternative
 from .transcriber import _PREVIEW_WINDOW_SECONDS
 
 log = logging.getLogger(__name__)
-
-# Model presets that exist as CTranslate2 conversions but were never published
-# by the OpenVINO organisation — mapping them would 404 on download.
-_UNAVAILABLE_PRESETS = ("distil-small.en", "distil-medium.en", "distil-large-v3.5")
 
 _INSTALL_HINT = (
     "The OpenVINO backend needs the optional openvino-genai package. "
@@ -44,21 +40,22 @@ def openvino_model_repo(model: str, precision: str) -> str:
     and passed through verbatim, so any OpenVINO IR model can be used. Raises
     ValueError for the presets that have no OpenVINO conversion.
     """
-    if model == GERMAN_TURBO_CT2:
-        # The German preset is a CTranslate2 conversion — passing it through
-        # verbatim would download a model this backend cannot load.
+    # Checked before the "/" passthrough below: the German preset is a
+    # CTranslate2 repo id, so passing it through verbatim would download a
+    # model this backend cannot load. The message leads with the fix that keeps
+    # the backend the user chose — swapping the *model* — because the model is
+    # the incompatible half; recommending faster-whisper first sent people with
+    # an Intel machine and no NVIDIA GPU off the only backend that fits their
+    # hardware (#112).
+    if model in OPENVINO_UNSUPPORTED_MODELS:
         raise ValueError(
-            "The German fine-tuned model has no OpenVINO conversion — switch "
-            "Backend to faster-whisper in Settings → Whisper to use it."
+            f"The model '{model}' has no OpenVINO conversion — pick "
+            f"'{openvino_alternative(model)}' (or another model) in Settings → "
+            "Whisper. Only if you need this exact model, switch Backend back to "
+            "faster-whisper, which can run it."
         )
     if "/" in model or os.sep in model:
         return model
-    if model in _UNAVAILABLE_PRESETS:
-        raise ValueError(
-            f"The model '{model}' has no OpenVINO conversion — pick another model "
-            "(e.g. small or distil-large-v3), or switch back to the faster-whisper "
-            "backend in Settings → Whisper."
-        )
     base = "distil-whisper-large-v3" if model == "distil-large-v3" else f"whisper-{model}"
     return f"OpenVINO/{base}-{precision}-ov"
 

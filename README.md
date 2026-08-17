@@ -437,7 +437,11 @@ GPU, then the NPU, then the CPU.
 - The portable Windows build ships the backend; from source install the extra:
   `pip install -e ".[openvino]"`.
 - Not available on this backend: the `distil-….en` / `distil-large-v3.5` /
-  German turbo model presets and the VAD silence filter.
+  German turbo model presets and the VAD silence filter. The model dropdown
+  hides those presets while OpenVINO is selected; if one of them was your
+  choice, it is swapped for the closest model that does have an OpenVINO
+  version (the note under the dropdown says which) and comes back as soon as
+  you pick another backend.
 
 ### Maximum speed (Parakeet backend)
 

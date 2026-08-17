@@ -30,7 +30,6 @@ from .choices import (
     BACKENDS,
     DEVICES,
     LANGUAGES,
-    MODEL_CHOICES,
     OPENVINO_DEVICES,
     backend_from_label,
     backend_label,
@@ -40,6 +39,9 @@ from .choices import (
     language_label,
     model_from_label,
     model_label,
+    models_for_backend,
+    openvino_alternative,
+    openvino_supports_model,
 )
 from .hotkeys import Hotkeys
 from .qtutil import elastic_combo, guard_wheel
@@ -81,6 +83,9 @@ class OnboardingWizard(QWizard):
         super().__init__(parent)
         self.cfg = cfg
         self._app = app
+        # The preset the OpenVINO model filter swapped out, so going back to
+        # another backend restores it (see _on_backend_changed).
+        self._model_swapped_from: str | None = None
         self.setWindowTitle(f"Welcome to {APP_NAME}")
         self.setWizardStyle(QWizard.WizardStyle.ClassicStyle)
         self.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
@@ -152,10 +157,10 @@ class OnboardingWizard(QWizard):
         # as the model id. Custom CTranslate2 ids live behind the explicit
         # "Custom model id…" dialog in Settings, not in the first-run wizard.
         self.model_combo = QComboBox()
-        self.model_combo.addItems([model_label(m) for m, _ in MODEL_CHOICES])
-        if self.model_combo.findText(model_label(self.cfg["model"])) < 0:
-            self.model_combo.addItem(self.cfg["model"])  # unlisted id, verbatim
-        self.model_combo.setCurrentText(model_label(self.cfg["model"]))
+        # Listed for the backend chosen on the *next* page — which starts out
+        # as the saved/default one and re-lists this combo whenever it changes
+        # (see _on_backend_changed): not every preset has an OpenVINO version.
+        self._fill_model_combo(self.cfg["backend"], self.cfg["model"])
         self.model_combo.setToolTip(
             "Bigger = more accurate but slower and larger. small is a good start; "
             "custom Hugging Face model ids can be set later in Settings."
@@ -313,21 +318,70 @@ class OnboardingWizard(QWizard):
         )
         return False
 
+    def _fill_model_combo(self, backend: str, model: str) -> None:
+        """(Re)list the model dropdown for `backend` and select `model`.
+
+        Only presets the backend can actually run are offered — the OpenVINO
+        backend has no conversion for a few of them, and a combination that the
+        wizard accepts and the first transcription then refuses is worse than
+        no choice at all (#112)."""
+        presets = [preset for preset, _ in models_for_backend(backend)]
+        labels = [model_label(preset) for preset in presets]
+        if model not in presets:
+            labels.append(model)  # unlisted id from the config, verbatim
+        blocked = self.model_combo.blockSignals(True)
+        try:
+            self.model_combo.clear()
+            self.model_combo.addItems(labels)
+        finally:
+            self.model_combo.blockSignals(blocked)
+        row = self.model_combo.findText(model_label(model) if model in presets else model)
+        self.model_combo.setCurrentIndex(max(0, row))
+
     def _on_backend_changed(self) -> None:
-        """Show only the device row that applies to the selected backend, and
-        say when the previous page's choices no longer apply."""
+        """Show only the device row that applies to the selected backend,
+        re-list the model page's dropdown for it, and say when the previous
+        page's choices no longer apply."""
         backend = backend_from_label(self.backend_combo.currentText())
         openvino = backend == "openvino"
         self._engine_form.setRowVisible(self.device_combo, not openvino)
         self._engine_form.setRowVisible(self.ov_device_combo, openvino)
-        self._engine_note.setText(
-            "Note: Parakeet ignores the Whisper model and the spoken language "
-            "from the previous page — it runs one fixed model and detects the "
-            "language itself (25 supported). Go Back and choose another backend "
-            "to use them; your selections are kept either way."
-            if backend == "parakeet"
-            else ""
-        )
+
+        model = model_from_label(self.model_combo.currentText())
+        swapped_out = None
+        if openvino and not openvino_supports_model(model):
+            swapped_out = model
+            self._model_swapped_from = model
+            model = openvino_alternative(model)
+        elif not openvino and self._model_swapped_from is not None:
+            # Restore only while the replacement is still selected — a model
+            # the user went back and picked themselves wins.
+            if model == openvino_alternative(self._model_swapped_from):
+                model = self._model_swapped_from
+            self._model_swapped_from = None
+        self._fill_model_combo(backend, model)
+
+        if backend == "parakeet":
+            note = (
+                "Note: Parakeet ignores the Whisper model and the spoken language "
+                "from the previous page — it runs one fixed model and detects the "
+                "language itself (25 supported). Go Back and choose another backend "
+                "to use them; your selections are kept either way."
+            )
+        elif swapped_out is not None:
+            note = (
+                f"Note: “{swapped_out}” has no OpenVINO version — the model on the "
+                f"previous page was switched to “{openvino_alternative(swapped_out)}”. "
+                "Choosing another backend brings your original pick back."
+            )
+        elif openvino:
+            note = (
+                "Note: the previous page now lists only models with a pre-converted "
+                "OpenVINO version; the rest need the faster-whisper backend."
+            )
+        else:
+            note = ""
+        self._engine_note.setText(note)
 
     def _load_devices(self) -> None:
         values, current = input_device_choices(self.cfg["input_device"])
