@@ -148,7 +148,16 @@ def copy_to_clipboard(text: str) -> bool:
     try:
         from PySide6.QtWidgets import QApplication
 
-        QApplication.clipboard().setText(text)
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        # Read back for the same reason the pyperclip branch above does: a
+        # returning setText() only means the call returned. Every caller
+        # announces "Copied to the clipboard" on this return value, so a Qt
+        # write that silently took nothing must report False rather than a
+        # promise that fails at the user's next Ctrl+V.
+        if (clipboard.text() or "").replace("\r\n", "\n") != text.replace("\r\n", "\n"):
+            log.warning("the Qt clipboard did not take the text (%d chars)", len(text))
+            return False
         return True
     except Exception:
         log.exception("could not copy text to the clipboard")

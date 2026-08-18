@@ -234,4 +234,11 @@ class DownloadWatcher:
             # Clamped: the total is an estimate from the repo metadata, and a
             # download that overshoots it must show 99%, never 137%.
             fraction = min(1.0, done / self._total)
+        if self._stop.is_set():
+            # Re-checked after the walk, not only before it: measuring a cache
+            # folder holding gigabytes of blobs can outlast stop()'s bounded
+            # join, and __exit__ sends its final "download over" report right
+            # after that join returns. Reporting here would land behind it and
+            # leave the icon and the tray stuck at a percentage for good.
+            return
         self._on_progress(self._label, fraction, done, self._total or 0)
