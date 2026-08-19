@@ -420,6 +420,12 @@ class HomePage(QWidget):
         copy_btn = QPushButton("Copy")
         copy_btn.setAutoDefault(False)
         copy_btn.setToolTip("Put the full transcript back on the clipboard.")
+        # One "Copy" per listed transcript: without a per-row name a screen
+        # reader announces the same button three times over, and the timestamp
+        # above it is a sibling label, not a label relation (see _StatCard).
+        copy_btn.setAccessibleName(
+            f"Copy the transcript from {stamp}" if stamp else "Copy this transcript"
+        )
         copy_btn.clicked.connect(lambda _checked=False, t=raw, b=copy_btn: self._copy(t, b))
         rh.addWidget(copy_btn, 0, Qt.AlignmentFlag.AlignTop)
         return row
