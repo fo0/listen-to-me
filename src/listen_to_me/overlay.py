@@ -190,7 +190,13 @@ class Overlay:
         self._progress_text: str | None = None  # running download, see set_progress
 
         self.win = _FloatingIcon(self)
-        self.win.setToolTip(_idle_label(app.cfg) + "\nDrag to move • right-click for menu")
+        # The icon is a real control (click = start/stop, right-click = menu)
+        # drawn as a glyph with no text anywhere on it, and its tooltip — the
+        # only thing that says what a click does — is not something assistive
+        # tech reads. A stable name plus a state description gives it the same
+        # identity the tray icon gets for free from its own tooltip.
+        self.win.setAccessibleName("Listen To Me — floating recording control")
+        self._apply_status(_idle_label(app.cfg))
 
         self.bubble = _Bubble()
 
@@ -501,9 +507,19 @@ class Overlay:
         self._progress_text = text
         self.win.mic.set_progress(fraction, active=text is not None)
         # Back to whatever the state line says once the download is over.
-        self.win.setToolTip(
-            (text or self._state_tooltip()) + "\nDrag to move • right-click for menu"
-        )
+        self._apply_status(text or self._state_tooltip())
+
+    def _apply_status(self, label: str) -> None:
+        """Put `label` on the icon as tooltip *and* accessible description.
+
+        One place, so the two can never say different things: the tooltip is
+        what a mouse user sees, the description is what assistive tech reads —
+        and an icon-only control that only carries the former is unreadable to
+        anyone who never hovers it.
+        """
+        text = label + "\nDrag to move • right-click for menu"
+        self.win.setToolTip(text)
+        self.win.setAccessibleDescription(text)
 
     def _state_tooltip(self) -> str:
         state = self.state
@@ -513,8 +529,7 @@ class Overlay:
         self.state = state
         # A download outlives a state change (the model is fetched during
         # "processing"), so it keeps the tooltip until it reports itself done.
-        label = self._progress_text or self._state_tooltip()
-        self.win.setToolTip(label + "\nDrag to move • right-click for menu")
+        self._apply_status(self._progress_text or self._state_tooltip())
         self.win.mic.set_recording(state == "recording")
         self.win.mic.set_processing(state == "processing")
         if state == "recording":
