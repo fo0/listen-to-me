@@ -3057,11 +3057,20 @@ class SettingsWindow(QDialog):
         stamp_label.setProperty("role", "hint")
         header.addWidget(stamp_label)
         header.addStretch(1)
+        # Every row repeats the same two labels, so a screen reader reads
+        # "Copy button, Delete button" once per transcript with nothing to tell
+        # them apart — and Delete is destructive. The timestamp beside them is
+        # a sibling label, not a real label relation, so the row has to be
+        # named on the buttons themselves (same reasoning as HomePage's cards).
+        which = f"from {stamp}" if stamp else "in this row"
         copy_btn = QPushButton("Copy")
+        copy_btn.setToolTip("Put the full transcript back on the clipboard.")
+        copy_btn.setAccessibleName(f"Copy the transcript {which}")
         copy_btn.clicked.connect(lambda _checked=False, t=text, b=copy_btn: self._copy_history(t, b))
         header.addWidget(copy_btn)
         delete_btn = QPushButton("Delete")
         delete_btn.setProperty("destructive", True)
+        delete_btn.setAccessibleName(f"Delete the transcript {which}")
         delete_btn.setToolTip(
             "Permanently delete this one transcript. The rest of the history is kept."
         )
