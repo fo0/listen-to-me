@@ -1531,6 +1531,7 @@ class SettingsWindow(QDialog):
         reset = QPushButton("Reset to default")
         reset.setToolTip("Replace the prompt below with the built-in default cleanup prompt.")
         reset.clicked.connect(self._reset_prompt)
+        self.a_prompt_reset_button = reset
         header.addWidget(reset)
         pv.addLayout(header)
         self.a_prompt_edit = QPlainTextEdit(acfg["system_prompt"])
@@ -1896,7 +1897,17 @@ class SettingsWindow(QDialog):
         self.force_close()
 
     def _reset_prompt(self) -> None:
+        """Put the built-in cleanup prompt back, and say on the button that it
+        happened.
+
+        The prompt box is long enough that the swap can happen entirely off
+        screen, and a prompt that already *is* the default changes nothing at
+        all — in both cases the click was visually indistinguishable from one
+        that never registered. Same confirmation-where-you-clicked contract as
+        the device rescan, the overlay reset and the history export.
+        """
         self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
+        self._flash_button(self.a_prompt_reset_button, "Reset ✓", "Reset to default")
 
     # ---------------------------------------------------- assistant test
 
