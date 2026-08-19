@@ -2,7 +2,8 @@
 pixmaps/icons, the wheel guard for value widgets on scrollable pages, the
 width cap for combo boxes with unbounded item texts, and the one clipboard
 path every "Copy" in the app uses — plus the button feedback that reports how
-that copy went.
+that copy went, and the generic on-the-button confirmation every one-shot
+action uses.
 
 Kept separate from icons.py so that module stays Qt-free (the packaging
 self-test and make_icon.py import it without pulling in PySide6).
@@ -206,6 +207,38 @@ def copy_with_feedback(text: str, button, *, label: str = "Copy") -> bool:
 
     QTimer.singleShot(1200 if ok else 3000, restore)
     return ok
+
+
+def flash_button(button, message: str, label: str, *, ms: int = 1500) -> None:
+    """Show `message` on `button` briefly, then put `label` back.
+
+    The confirmation belongs where the user is looking. A modal box would have
+    to be dismissed for an action whose result is already on screen (or on
+    disk), and an action whose usual outcome *looks* like nothing happened —
+    a device rescan that finds the same list, a reset that was already applied
+    — is otherwise indistinguishable from a button that never registered.
+
+    The width is pinned across both labels first so the button (and the row
+    beside it) does not reflow twice — same reasoning as `copy_with_feedback`.
+
+    Qt main thread only.
+    """
+    widest = 0
+    for candidate in (label, message):
+        button.setText(candidate)
+        widest = max(widest, button.sizeHint().width())
+    button.setMinimumWidth(widest)
+    button.setText(message)
+
+    def restore():
+        # The window (and with it this button) may be gone by now — a deleted
+        # C++ object raises RuntimeError through the Python wrapper.
+        try:
+            button.setText(label)
+        except RuntimeError:
+            pass
+
+    QTimer.singleShot(ms, restore)
 
 
 def pil_to_pixmap(img) -> QPixmap:

@@ -76,7 +76,13 @@ from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
 from .keymap import hotkey_label
-from .qtutil import copy_with_feedback, elastic_combo, elastic_label, guard_wheel
+from .qtutil import (
+    copy_with_feedback,
+    elastic_combo,
+    elastic_label,
+    flash_button,
+    guard_wheel,
+)
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -3164,30 +3170,11 @@ class SettingsWindow(QDialog):
         log.info("exported %d transcripts to %s", len(entries), path)
         self._flash_button(self.history_export_button, "Exported ✓", "Export…")
 
-    def _flash_button(self, button: QPushButton, message: str, label: str) -> None:
-        """Show `message` on `button` briefly, then put `label` back.
-
-        The confirmation belongs where the user is looking. A modal box would
-        have to be dismissed for an action whose result is already a file on
-        disk. The width is pinned first so the button (and the row beside it)
-        does not reflow twice — same reasoning as qtutil.copy_with_feedback.
-        """
-        widest = 0
-        for candidate in (label, message):
-            button.setText(candidate)
-            widest = max(widest, button.sizeHint().width())
-        button.setMinimumWidth(widest)
-        button.setText(message)
-
-        def restore():
-            # The window may be gone by now — a deleted C++ object raises
-            # RuntimeError through the Python wrapper.
-            try:
-                button.setText(label)
-            except RuntimeError:
-                pass
-
-        QTimer.singleShot(1500, restore)
+    @staticmethod
+    def _flash_button(button: QPushButton, message: str, label: str) -> None:
+        """Confirm a one-shot action on the button itself — see
+        qtutil.flash_button, which the first-run wizard shares."""
+        flash_button(button, message, label)
 
     def _delete_history_entry(self, entry: dict) -> None:
         """Delete the one transcript this row shows.

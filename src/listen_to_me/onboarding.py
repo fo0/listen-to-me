@@ -44,7 +44,7 @@ from .choices import (
     openvino_supports_model,
 )
 from .hotkeys import Hotkeys
-from .qtutil import elastic_combo, guard_wheel
+from .qtutil import elastic_combo, flash_button, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -242,7 +242,11 @@ class OnboardingWizard(QWizard):
         rh.addWidget(self.input_combo, 1)
         refresh = QPushButton("Refresh")
         refresh.setToolTip("Re-scan the audio devices, e.g. after plugging in a headset.")
-        refresh.clicked.connect(self._load_devices)
+        # Not _load_devices directly: the usual outcome of a rescan is the very
+        # same list, so the button looked dead in exactly the normal case —
+        # the same trap the settings window's Refresh already avoids.
+        self._devices_refresh_button = refresh
+        refresh.clicked.connect(self._rescan_devices)
         rh.addWidget(refresh)
         form.addRow("Input device:", row)
         form.addRow(_hint(
@@ -388,6 +392,28 @@ class OnboardingWizard(QWizard):
         self.input_combo.clear()
         self.input_combo.addItems(values)
         self.input_combo.setCurrentText(current)
+
+    def _rescan_devices(self) -> None:
+        """Re-scan on the Refresh button and confirm on it that it happened.
+
+        Plugging a headset in is the reason to press this on the very first
+        launch, and the list usually comes back identical — with no
+        confirmation the button reads as doing nothing at all. Counted by the
+        "<index>: <name>" shape rather than by row count: the list also carries
+        "System default" and, when enumeration failed, an inline error entry,
+        and neither is a microphone that was found.
+        """
+        self._load_devices()
+        found = sum(
+            1
+            for row in range(self.input_combo.count())
+            if input_device_from_label(self.input_combo.itemText(row)) is not None
+        )
+        flash_button(
+            self._devices_refresh_button,
+            f"{found} found ✓" if found else "None found",
+            "Refresh",
+        )
 
     # -------------------------------------------------------------- accept
 
