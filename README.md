@@ -41,8 +41,9 @@ standalone system-tray app that works in _every_ application.
   as an experimental **live preview while you speak**. It remembers the
   **monitor** you drag it to, not just a screen coordinate, so it comes back
   there after a restart, after a reboot that brings the second screen up late,
-  and after a monitor is unplugged and reconnected. A built-in watchdog brings
-  the icon back automatically if Windows drops it (display sleep, monitor
+  and after a monitor is unplugged and reconnected. A built-in watchdog checks
+  every 5 seconds that the icon is actually on screen and brings it back
+  automatically if Windows drops it (display sleep, monitor or resolution
   changes, explorer restarts), and **Reset icon position** — in its right-click
   menu and on the Overlay settings page — brings it back from wherever a drag
   or a rearranged monitor left it. While something is downloading — the Whisper

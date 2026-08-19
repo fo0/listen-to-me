@@ -3421,12 +3421,77 @@ def _gui_construction():
         # hard path (post-resume / monitor change) too; disabling stops it.
         overlay.set_visible(True)
         assert overlay._watchdog.isActive()
+        assert overlay._watchdog.interval() == 5_000, "the probe cadence regressed"
         overlay.win.hide()
         overlay._reassert()
         assert overlay.win.isVisible()
         overlay.win.hide()
         overlay._reassert(hard=True)
         assert overlay.win.isVisible()
+
+        # The tick repairs what its probes report — a Qt-hidden window is
+        # re-shown, and a healthy tick afterwards ends the drop episode.
+        overlay.win.hide()
+        overlay._watchdog_tick()
+        assert overlay.win.isVisible(), "the tick did not repair a hidden icon"
+        assert overlay._drop_streak == 1
+        overlay._watchdog_tick()
+        assert overlay._drop_streak == 0
+
+        # A position stranded outside every screen (a pure resolution change
+        # fires no screenAdded/Removed signal) is brought back by the tick.
+        overlay.win.move(-4000, -4000)
+        overlay._watchdog_tick()
+        assert overlay._on_any_screen(), "the tick did not rescue a stranded icon"
+        overlay._watchdog_tick()  # healthy again → the episode ends
+
+        # A drag in progress is proof the icon is on screen — and a repair
+        # mid-drag would abort the drag, so the tick must stand down.
+        overlay.win.hide()
+        overlay.win._drag_start = (QPoint(0, 0), QPoint(0, 0))
+        overlay._watchdog_tick()
+        assert not overlay.win.isVisible(), "the tick fought a drag in progress"
+        overlay.win._drag_start = None
+        overlay._watchdog_tick()
+        assert overlay.win.isVisible()
+        overlay._watchdog_tick()  # healthy again → the episode ends
+
+        # A tick arriving far too late means the machine was suspended —
+        # the window is hard-reshown without waiting for a probe.
+        overlay.win.hide()
+        overlay._last_tick -= 100.0
+        overlay._watchdog_tick()
+        assert overlay.win.isVisible(), "no hard re-show after a resume"
+        assert overlay._drop_streak == 0
+
+        # The ladder throttles: a drop that survives its repair (a probe that
+        # cannot be satisfied on this setup) is retried every 6th tick — once
+        # by rebuilding the native window — never on every 5 s tick.
+        repairs = []
+        overlay._dropped_reason = lambda: "stubbed drop"  # instance shadows method
+        overlay._reassert = lambda hard=False: repairs.append("hard" if hard else "soft")
+        overlay._recreate_window = lambda: repairs.append("recreate")
+        for _ in range(13):
+            overlay._watchdog_tick()
+        assert repairs == ["hard", "recreate", "hard"], repairs
+        del overlay._dropped_reason, overlay._reassert, overlay._recreate_window
+        overlay._watchdog_tick()
+        assert overlay._drop_streak == 0 and overlay.win.isVisible()
+
+        # The last rung actually works on this platform: destroying the
+        # native window and re-asserting brings a visible icon back.
+        overlay._recreate_window()
+        assert overlay.win.isVisible(), "the native rebuild lost the icon"
+
+        # Screen-change bursts (one geometryChanged per screen) coalesce into
+        # one settle pass instead of re-placing once per signal.
+        overlay._on_screens_changed()
+        overlay._on_screens_changed()
+        assert overlay._settle_timer.isActive()
+        overlay._settle_timer.stop()
+        overlay._on_screens_settled()
+        assert overlay.win.isVisible()
+
         overlay.set_visible(False)
         assert not overlay._watchdog.isActive()
         overlay._reassert()  # disabled → must stay hidden
