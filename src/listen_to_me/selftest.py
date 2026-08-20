@@ -3605,6 +3605,21 @@ def _gui_construction():
         overlay.set_visible(True)
         assert overlay._watchdog.isActive()
         assert overlay._watchdog.interval() == 5_000, "the probe cadence regressed"
+
+        def _healthy_tick():
+            """One tick with the probes reporting a healthy icon.
+
+            The win32 probes read real OS state (expose, WS_VISIBLE, DWM
+            cloaking) that no CI runner guarantees — the frozen Windows build
+            failed exactly here, on an icon Qt had shown but not yet painted.
+            What these assertions are about is the ladder, so the verdict is
+            stubbed; the probe itself gets its own guard further down.
+            """
+            overlay._dropped_reason = lambda: None
+            try:
+                overlay._watchdog_tick()
+            finally:
+                del overlay._dropped_reason
         overlay.win.hide()
         overlay._reassert()
         assert overlay.win.isVisible()
@@ -3618,7 +3633,7 @@ def _gui_construction():
         overlay._watchdog_tick()
         assert overlay.win.isVisible(), "the tick did not repair a hidden icon"
         assert overlay._drop_streak == 1
-        overlay._watchdog_tick()
+        _healthy_tick()
         assert overlay._drop_streak == 0
 
         # A position stranded outside every screen (a pure resolution change
@@ -3626,7 +3641,7 @@ def _gui_construction():
         overlay.win.move(-4000, -4000)
         overlay._watchdog_tick()
         assert overlay._on_any_screen(), "the tick did not rescue a stranded icon"
-        overlay._watchdog_tick()  # healthy again → the episode ends
+        _healthy_tick()  # healthy again → the episode ends
 
         # A drag in progress is proof the icon is on screen — and a repair
         # mid-drag would abort the drag, so the tick must stand down.
@@ -3637,7 +3652,7 @@ def _gui_construction():
         overlay.win._drag_start = None
         overlay._watchdog_tick()
         assert overlay.win.isVisible()
-        overlay._watchdog_tick()  # healthy again → the episode ends
+        _healthy_tick()  # healthy again → the episode ends
 
         # A tick arriving far too late means the machine was suspended —
         # the window is hard-reshown without waiting for a probe.
@@ -3658,7 +3673,7 @@ def _gui_construction():
             overlay._watchdog_tick()
         assert repairs == ["hard", "recreate", "hard"], repairs
         del overlay._dropped_reason, overlay._reassert, overlay._recreate_window
-        overlay._watchdog_tick()
+        _healthy_tick()
         assert overlay._drop_streak == 0 and overlay.win.isVisible()
 
         # The last rung actually works on this platform: destroying the
@@ -3684,13 +3699,13 @@ def _gui_construction():
         # the icon every 5 s would fight whatever the user just focused.
         raises = []
         overlay.win.raise_ = lambda: raises.append(1)
-        overlay._watchdog_tick()
+        _healthy_tick()
         assert not raises, "a healthy tick raised the icon although it may be covered"
         overlay.win.hide()  # …but a real repair still shows and raises it
         overlay._watchdog_tick()
         assert raises and overlay.win.isVisible()
         del overlay.win.raise_
-        overlay._watchdog_tick()
+        _healthy_tick()
         stub.cfg["overlay"]["always_on_top"] = True
         overlay.apply_always_on_top()
         assert overlay.win.windowFlags() & on_top and overlay.win.isVisible()
@@ -3703,8 +3718,38 @@ def _gui_construction():
         assert overlay._drop_streak == 0, "a lost z-order escalated like a real drop"
         assert overlay.win.isVisible() and overlay._topmost_lost
         del overlay._dropped_reason
-        overlay._watchdog_tick()
+        _healthy_tick()
         assert not overlay._topmost_lost, "the z-order episode never ended"
+
+        # The win32 probe path itself, which no Linux run reaches on its own
+        # (it sits behind a sys.platform check) — and which is where the
+        # frozen Windows build failed: Qt clears the expose state until the
+        # platform has painted the window, so a just-repaired icon reports
+        # isExposed() == False and counting that on the spot made every
+        # repair look like it had failed.
+        class _Handle:
+            def __init__(self, exposed):
+                self._exposed = exposed
+
+            def isExposed(self):
+                return self._exposed
+
+        real_platform, real_handle = overlay_module.sys.platform, overlay.win.windowHandle
+        try:
+            overlay_module.sys.platform = "win32"
+            overlay.win.windowHandle = lambda: _Handle(False)
+            overlay._unexposed = False
+            assert overlay._dropped_reason() is None, "a just-shown window counted as dropped"
+            assert overlay._dropped_reason() == overlay_module._UNEXPOSED, (
+                "an icon that stays unexposed must be reported"
+            )
+            overlay.win.windowHandle = lambda: _Handle(True)
+            overlay._dropped_reason()  # an exposed tick clears it again…
+            overlay.win.windowHandle = lambda: _Handle(False)
+            assert overlay._dropped_reason() is None, "an exposed tick must clear the debounce"
+        finally:
+            overlay_module.sys.platform = real_platform
+            overlay.win.windowHandle = real_handle
 
         # Screen-change bursts (one geometryChanged per screen) coalesce into
         # one settle pass instead of re-placing once per signal.
