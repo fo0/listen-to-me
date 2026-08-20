@@ -1318,12 +1318,20 @@ class SettingsWindow(QDialog):
         cv = QVBoxLayout(card)
         cv.setSpacing(4)
         self.chk_o_enabled = self._checkbox(
-            "Show floating microphone icon (always on top)",
+            "Show floating microphone icon",
             ocfg["enabled"],
-            "A small round always-on-top icon showing the state. Click = start/stop, drag = move, right-click = menu.",
+            "A small round icon showing the state. Click = start/stop, drag = move, right-click = menu.",
         )
         cv.addWidget(self.chk_o_enabled)
         cv.addWidget(self._hint("Click = start/stop • drag = move (position is saved) • right-click = menu."))
+        self.chk_o_on_top = self._checkbox(
+            "Keep the icon above all other windows",
+            ocfg.get("always_on_top", True),
+            "Keeps the icon on top and re-applies that every few seconds — Windows silently takes "
+            "the always-on-top state away (explorer restarts, fullscreen apps), which makes the "
+            "icon look like it vanished when it is only buried. Turn off to let windows cover it.",
+        )
+        cv.addWidget(self.chk_o_on_top)
         self.chk_o_preview = self._checkbox(
             "Show the transcribed text next to the icon after each recording",
             ocfg["show_preview"],
@@ -3480,6 +3488,7 @@ class SettingsWindow(QDialog):
             "max_seconds": int(self.max_seconds_spin.value()),
             "overlay": {
                 "enabled": self.chk_o_enabled.isChecked(),
+                "always_on_top": self.chk_o_on_top.isChecked(),
                 "show_preview": self.chk_o_preview.isChecked(),
                 "live_preview": self.chk_o_live.isChecked(),
                 "preview_seconds": int(self.preview_seconds_spin.value()),

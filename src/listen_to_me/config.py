@@ -98,6 +98,13 @@ DEFAULTS: dict = {
     # Floating always-on-top status icon.
     "overlay": {
         "enabled": True,
+        # Keep the icon above every other window and re-apply that continuously.
+        # Windows strips WS_EX_TOPMOST behind Qt's back (an explorer restart
+        # does it to every topmost window, fullscreen apps take the band for
+        # themselves), and Qt's raise_() never puts it back — the icon is then
+        # still there but buried, which reads as "it vanished". Off leaves it an
+        # ordinary window that other windows may cover.
+        "always_on_top": True,
         # Briefly show the transcribed text next to the icon after a recording.
         "show_preview": True,
         # Experimental: transcribe in the background *while* recording and show

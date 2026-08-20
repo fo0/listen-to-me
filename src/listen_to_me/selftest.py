@@ -2788,6 +2788,7 @@ def _tray_survives_a_missing_notification_area():
 
 
 def _gui_construction():
+    from listen_to_me import overlay as overlay_module
     from listen_to_me.choices import GERMAN_TURBO_CT2, model_from_label, model_label
     from listen_to_me.onboarding import OnboardingWizard
     from listen_to_me.overlay import Overlay
@@ -3482,6 +3483,46 @@ def _gui_construction():
         # native window and re-asserting brings a visible icon back.
         overlay._recreate_window()
         assert overlay.win.isVisible(), "the native rebuild lost the icon"
+
+        # Always-on-top is a setting, applied without a restart: the flag
+        # follows the config on both windows, a visible icon stays visible
+        # across the native rebuild Qt does for a flag change, and turning it
+        # off stops the watchdog forcing the icon back over everything.
+        from PySide6.QtCore import Qt as _QtNs
+
+        on_top = _QtNs.WindowType.WindowStaysOnTopHint
+        assert overlay.win.windowFlags() & on_top, "the icon should start on top"
+        stub.cfg["overlay"]["always_on_top"] = False
+        overlay.apply_always_on_top()
+        assert not overlay.win.windowFlags() & on_top, "the setting did not reach the icon"
+        assert not overlay.bubble.windowFlags() & on_top, "the bubble ignored the setting"
+        assert overlay.win.isVisible(), "the flag change lost the icon"
+        assert not overlay._always_on_top
+        # …and with it off, a healthy tick leaves the z-order alone: raising
+        # the icon every 5 s would fight whatever the user just focused.
+        raises = []
+        overlay.win.raise_ = lambda: raises.append(1)
+        overlay._watchdog_tick()
+        assert not raises, "a healthy tick raised the icon although it may be covered"
+        overlay.win.hide()  # …but a real repair still shows and raises it
+        overlay._watchdog_tick()
+        assert raises and overlay.win.isVisible()
+        del overlay.win.raise_
+        overlay._watchdog_tick()
+        stub.cfg["overlay"]["always_on_top"] = True
+        overlay.apply_always_on_top()
+        assert overlay.win.windowFlags() & on_top and overlay.win.isVisible()
+
+        # A stripped z-order is repaired in place: the tick must not treat it
+        # as a drop (no hide()/show() flicker for a window that is only
+        # buried) and must not escalate the ladder.
+        overlay._dropped_reason = lambda: overlay_module._TOPMOST_LOST
+        overlay._watchdog_tick()
+        assert overlay._drop_streak == 0, "a lost z-order escalated like a real drop"
+        assert overlay.win.isVisible() and overlay._topmost_lost
+        del overlay._dropped_reason
+        overlay._watchdog_tick()
+        assert not overlay._topmost_lost, "the z-order episode never ended"
 
         # Screen-change bursts (one geometryChanged per screen) coalesce into
         # one settle pass instead of re-placing once per signal.

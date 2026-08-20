@@ -44,6 +44,9 @@ _LEVEL_WINDOW_FRAMES = SAMPLE_RATE // 10  # analyze the most recent 100 ms
 _WATCHDOG_MS = 5_000  # probe the icon every 5 s while it should be visible
 _RESUME_GAP_S = 30.0  # a tick this late means the machine was suspended, not busy
 _REPAIR_RETRY_TICKS = 6  # a drop that survives a repair retries only every ~30 s
+# A lost z-order is repaired in place (SetWindowPos), never by a hide()/show():
+# the window is fine, only buried — see _watchdog_tick.
+_TOPMOST_LOST = "no longer above other windows"
 _PLACE_RETRY_MS = 2_000  # look again while the saved monitor is still missing
 _PLACE_RETRY_LIMIT = 15  # …for ~30 s after start; later hot-plug arrives as a signal
 
@@ -222,6 +225,8 @@ class Overlay:
         self._visible_wanted = False
         self._last_tick = time.monotonic()
         self._drop_streak = 0  # consecutive ticks a probe reported the icon gone
+        self._always_on_top = True  # real value applied below, from the config
+        self._topmost_lost = False  # only log a lost z-order once per episode
         self._watchdog = QTimer(self.win)
         self._watchdog.timeout.connect(self._watchdog_tick)
         # Coalesces bursts of screen signals (a resolution change fires
@@ -251,6 +256,7 @@ class Overlay:
         self._menu.addSeparator()
         self._menu.addAction("Quit", lambda: app.post("quit"))
 
+        self.apply_always_on_top()
         self._restore_position()
 
     # ---------------------------------------------------------- placement
@@ -436,6 +442,32 @@ class Overlay:
 
     # --------------------------------------------------------- visibility
 
+    def apply_always_on_top(self) -> None:
+        """Put the `overlay.always_on_top` setting into effect, now.
+
+        Toggling the flag makes Qt drop and rebuild the native window (and hide
+        the widget with it), so a visible icon has to be shown again — which is
+        also why this only touches the windows when the setting actually
+        changed. The bubble follows the icon: a transcript popping up above a
+        window the icon itself sits behind would look like a stray artefact.
+        """
+        wanted = bool(self.app.cfg["overlay"].get("always_on_top", True))
+        if wanted == self._always_on_top and self.win.windowHandle() is not None:
+            return  # already in that state (and past the first, pre-show call)
+        self._always_on_top = wanted
+        self._topmost_lost = False
+        hint = Qt.WindowType.WindowStaysOnTopHint
+        try:
+            for window in (self.win, self.bubble):
+                was_visible = window.isVisible()
+                window.setWindowFlag(hint, wanted)
+                if was_visible:
+                    window.show()
+        except Exception:
+            log.exception("could not change the floating icon's always-on-top state")
+        if self._visible_wanted:
+            self._reassert()
+
     def set_visible(self, visible: bool) -> None:
         self._visible_wanted = bool(visible)
         if visible:
@@ -463,6 +495,17 @@ class Overlay:
             self._reassert(hard=True)
             return
         reason = self._dropped_reason()
+        if reason == _TOPMOST_LOST:
+            # The window is intact, only buried — the usual reason the icon
+            # "disappears". A plain SetWindowPos puts it back on top; a
+            # hide()/show() here would only add a flicker.
+            if not self._topmost_lost:
+                self._topmost_lost = True
+                log.info("the floating icon lost its always-on-top state — re-applying it")
+            self._drop_streak = 0
+            self._reassert()
+            return
+        self._topmost_lost = False
         if reason is None:
             self._drop_streak = 0
             self._reassert()
@@ -519,6 +562,13 @@ class Overlay:
                 # DWM keeps composing the window but does not draw it — e.g.
                 # it was left behind on another virtual desktop.
                 return "cloaked by the compositor"
+            if self._always_on_top:
+                # WS_EX_TOPMOST can be stripped without Qt ever hearing about
+                # it (explorer restarts do it to every topmost window), and
+                # then the icon is merely buried under whatever has focus.
+                ex_style = ctypes.windll.user32.GetWindowLongW(hwnd, -20)  # GWL_EXSTYLE
+                if ex_style and not ex_style & 0x00000008:  # WS_EX_TOPMOST
+                    return _TOPMOST_LOST  # 0 = the call failed → say nothing
         except Exception:
             log.debug("native visibility probe failed", exc_info=True)
         return None
@@ -571,6 +621,11 @@ class Overlay:
                 self.win.show()
             elif not self.win.isVisible():
                 self.win.show()
+            elif not self._always_on_top:
+                # Healthy, and the user does not want it forced on top: leave
+                # the z-order alone. Raising it on every 5 s tick would fight
+                # whatever they just brought to the front.
+                return
             self.win.raise_()
             self._reassert_topmost()
         except Exception:
@@ -586,8 +641,11 @@ class Overlay:
         HWND_TOPMOST | SWP_SHOWWINDOW is idempotent: on a healthy window it
         changes nothing (so ticking it every 5 s costs no flicker), on a
         stripped or natively hidden one it repairs the state in place.
+
+        Skipped when the user turned always-on-top off — forcing the icon back
+        over their windows is then exactly what they asked us not to do.
         """
-        if sys.platform != "win32" or not self.win.isVisible():
+        if not self._always_on_top or sys.platform != "win32" or not self.win.isVisible():
             return
         try:
             import ctypes

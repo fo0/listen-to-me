@@ -19,4 +19,4 @@ _(none)_
 
 ## Temporary Notes
 
-- **Overlay icon drop (2026-08-19, `claude/overlay-icon-visibility-bug-po78p4`):** the exact drop mode on the user's Windows machine is still unconfirmed — the reworked watchdog logs `the floating icon was dropped (<probe>)` on every repair. If the icon ever vanishes again, that log line names the cause; until then this stays open.
+- **Overlay icon drop (2026-08-19, `claude/overlay-icon-visibility-bug-po78p4`):** the exact drop mode on the user's Windows machine is still unconfirmed. Leading candidate is the user's own reading — the icon is only buried, not gone — so the watchdog now logs `the floating icon lost its always-on-top state` for that case and `the floating icon was dropped (<probe>)` for a real drop. Whichever line shows up in the log names the cause; until then this stays open.
