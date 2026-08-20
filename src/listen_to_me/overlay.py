@@ -27,7 +27,14 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QLabel, QMenu, QVBoxLayout, QWidget
 
 from .audio import SAMPLE_RATE, band_levels
+from .history import entry_timestamp
 from .keymap import hotkey_label
+
+# From the tray on purpose, private constant included: the take clock and the
+# "Recent transcripts" submenu exist on both surfaces and must render the same
+# second and list the same transcripts. A second copy here would be a second
+# thing to keep in step. (tray.py imports nothing from overlay.py — no cycle.)
+from .tray import _RECENT_LIMIT, format_duration, recent_entry_label
 from .voice_mic_widget import VoiceMicWidget
 
 log = logging.getLogger(__name__)
@@ -49,6 +56,24 @@ _STATE_LABELS = {
     "recording": "Recording… click again to stop",
     "processing": "Transcribing…",
 }
+
+
+def _recording_label(elapsed=None) -> str:
+    """The recording tooltip, counting the running take up once a second.
+
+    The tray has carried this clock since the take-length cap became visible
+    there; the floating icon — the always-on-top control the same user is
+    looking at while they speak — kept a frozen "Recording…" for the whole
+    take, so the one place that never leaves the screen was the one place the
+    elapsed time was missing. `format_duration` is shared with the tray so the
+    two can never render the same second differently.
+
+    `None` (no clock yet, e.g. the state change that starts the take) keeps the
+    wording the label always had.
+    """
+    if elapsed is None:
+        return _STATE_LABELS["recording"]
+    return f"Recording {format_duration(elapsed)}… click again to stop"
 
 
 def _idle_label(cfg) -> str:
@@ -188,6 +213,9 @@ class Overlay:
         self.app = app
         self.state = "idle"
         self._progress_text: str | None = None  # running download, see set_progress
+        # Seconds of the running take, fed once a second by App's poll timer
+        # (see set_elapsed). None whenever no take is being counted.
+        self._elapsed: int | None = None
 
         self.win = _FloatingIcon(self)
         # The icon is a real control (click = start/stop, right-click = menu)
@@ -230,6 +258,21 @@ class Overlay:
         self._menu.addAction("Start / stop recording", lambda: app.post("toggle"))
         self._menu.addAction("Cancel recording", lambda: app.post("cancel"))
         self._menu.addAction("Copy last transcript", lambda: app.post("copy_last"))
+        # …and the ones before it, exactly as in the tray menu. Reaching the
+        # second-newest transcript from here meant opening Settings and walking
+        # the sidebar to History — and someone working from the floating icon
+        # is the one user who may have the tray icon switched off entirely, so
+        # the shortcut the tray offers has to exist on this menu too.
+        self._recent_menu = QMenu("Recent transcripts", self._menu)
+        self._recent_menu.setToolTipsVisible(True)
+        # Filled when it opens, not when it is built: a recording appends to
+        # the history while this menu sits idle, so a list built at startup
+        # would be stale within one dictation.
+        self._recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        act_recent = self._menu.addMenu(self._recent_menu)
+        act_recent.setToolTip("Copy any of the last few transcripts back to the clipboard.")
+        # QMenu ignores its actions' tooltips unless asked.
+        self._menu.setToolTipsVisible(True)
         self._menu.addSeparator()
         self._menu.addAction("Settings…", lambda: app.post("settings"))
         # Right here as well as on the Overlay settings page: the icon you want
@@ -523,10 +566,32 @@ class Overlay:
 
     def _state_tooltip(self) -> str:
         state = self.state
-        return _idle_label(self.app.cfg) if state == "idle" else _STATE_LABELS.get(state, state)
+        if state == "idle":
+            return _idle_label(self.app.cfg)
+        if state == "recording":
+            return _recording_label(self._elapsed)
+        return _STATE_LABELS.get(state, state)
+
+    def set_elapsed(self, seconds) -> None:
+        """Put the running take's clock on the icon (tooltip + accessible
+        description), the tray's counterpart for the floating icon.
+
+        Ignored unless a take is actually running: the clock arrives from
+        App's 100 ms poll and a tick that lands just after a recording ended
+        must not re-label an idle icon with a frozen counter. A running
+        download keeps the icon it owns — same rule as `set_state`.
+        """
+        if self.state != "recording":
+            return
+        self._elapsed = seconds
+        self._apply_status(self._progress_text or self._state_tooltip())
 
     def set_state(self, state: str) -> None:
         self.state = state
+        # A new state owns a fresh clock: leaving "recording" clears the
+        # counter, and entering it starts from the wording without one until
+        # the first tick arrives.
+        self._elapsed = None
         # A download outlives a state change (the model is fetched during
         # "processing"), so it keeps the tooltip until it reports itself done.
         self._apply_status(self._progress_text or self._state_tooltip())
@@ -618,6 +683,45 @@ class Overlay:
         self.bubble.hide()
 
     # ------------------------------------------------------------ menu
+
+    def _fill_recent_menu(self) -> None:
+        """(Re-)build the "Recent transcripts" submenu from the history file.
+
+        The tray's twin, and deliberately the same behaviour rather than a
+        second interpretation of it: newest first, bounded to the same few, one
+        elided line each, the timestamp in the tooltip so two similar-looking
+        dictations can be told apart, and the raw transcript — line breaks and
+        single "&" intact — handed to the same `copy_text` event.
+
+        A history that cannot be read says so instead of showing an empty list:
+        an app that offers nothing looks exactly like one that stored nothing.
+        Runs on the Qt main thread every time the submenu opens.
+        """
+        menu = self._recent_menu
+        if menu is None:
+            return
+        menu.clear()
+        try:
+            entries = self.app.history.entries()[:_RECENT_LIMIT]
+        except Exception:
+            log.exception("could not read the transcript history for the overlay menu")
+            failed = menu.addAction("Could not read the history")
+            failed.setEnabled(False)
+            return
+        if not entries:
+            empty = menu.addAction("No transcripts yet")
+            empty.setEnabled(False)
+            return
+        for entry in entries:
+            text = str(entry.get("text", ""))
+            action = menu.addAction(recent_entry_label(entry))
+            stamp = entry_timestamp(entry)
+            action.setToolTip(
+                f"{stamp} — copy this transcript" if stamp else "Copy this transcript"
+            )
+            action.triggered.connect(
+                lambda _checked=False, t=text: self.app.post("copy_text", t)
+            )
 
     def show_menu(self, global_pos) -> None:
         self._menu.popup(global_pos)

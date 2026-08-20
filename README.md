@@ -36,7 +36,11 @@ standalone system-tray app that works in _every_ application.
 - **Floating status icon** — a small animated always-on-top icon you can drag
   anywhere: a wavy equalizer ring that shimmers gently while idle, pulses with
   your live microphone levels while recording, and shows an orange mic glyph
-  while transcribing. Click it to start/stop, right-click for a menu.
+  while transcribing. Click it to start/stop, right-click for a menu. Hovering
+  it while you dictate shows **how long the take has been running**
+  ("Recording 1:12… click again to stop"), the same clock the tray carries —
+  so the maximum recording length is visible on the control that never leaves
+  the screen.
   Optionally shows the transcript in a bubble — after each recording and/or
   as an experimental **live preview while you speak**. It remembers the
   **monitor** you drag it to, not just a screen coordinate, so it comes back
@@ -72,8 +76,9 @@ standalone system-tray app that works in _every_ application.
   the app in one step.
   The newest one is a single click away: **Copy last transcript** in the
   tray menu and in the floating icon's right-click menu puts it straight back
-  on the clipboard — and the tray menu's **Recent transcripts** submenu lists
-  the last five, so the one before last is a click away too.
+  on the clipboard — and a **Recent transcripts** submenu in both of those
+  menus lists the last five, so the one before last is a click away too,
+  whichever of the two icons you work from.
 - **Home hub** — the main window opens on a **Home page**: the live recording
   state with a big **Start/Stop** button (red while recording), your hotkey
   shown as key caps, at-a-glance cards for the active engine/model, language
@@ -167,7 +172,7 @@ what you need when a build can't update itself.
 | **Assistant**    | Enable/disable, API base URL, model, API key, temperature, **request timeout** (how long a dictation is held back waiting for the answer), **Test connection** (sends one sample sentence and shows the reply — verifies the endpoint before a dictation depends on it), **system prompt** (editable, with _Reset to default_)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | **History**      | Recent **transcribed text** kept locally (never the audio), each with a **Copy** button so a lost transcript can be recovered and a **Delete** button that removes just that one entry; a **search field** narrows the list to the transcripts containing your words (any order, case-insensitive) and shows how many of them matched; **Export…** writes the listed transcripts (the search filter applies) to a text file; toggle history on/off, how many entries to keep, and **Clear history**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | **Updates**      | Installed version, **check on startup** toggle, include pre-releases, **Check now**, changelog per release and **Download & install** (frozen Windows build) with progress — **download size** next to each release and in the confirmation, and "42.0 MB of 198.0 MB" while it runs — and a **Cancel download** button. The new build is written over the running executable — same folder, same file name — so shortcuts, pinned taskbar entries and the autostart entry keep working; the dated `ListenToMe-…-win64.exe` name is only how the download is published                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| **Help**         | Built-in **troubleshooting** page (GPU/CUDA errors, Intel GPU/NPU setup, hotkey, text insertion, model storage, assistant setup) with clickable links — also on the tray menu                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Help**         | Built-in **troubleshooting** page (GPU/CUDA errors, Intel GPU/NPU setup, hotkey, text insertion, model storage, assistant setup) with clickable links — also on the tray menu. **Find in help** (`Ctrl+F`) searches the whole page, so an error message you can read on screen is enough to reach the right topic; the search wraps around at the end                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 Every option has a hover tooltip explaining what it does. The sidebar groups
 the pages into **Home**, **Settings** and **More** (History/Updates/Help).
@@ -404,7 +409,9 @@ want:
 
 There is a built-in help page: **right-click the tray icon → Help /
 Troubleshooting** (also reachable as the **Help** tab in the settings window).
-It covers the topics below with clickable download links.
+It covers the topics below with clickable download links, and the field at the
+top of that page (or `Ctrl+F`) searches all of them — paste in a word from the
+error you are seeing to jump straight to the matching section.
 
 ### `Transcription failed: cublas64_12.dll is not found or cannot be loaded`
 

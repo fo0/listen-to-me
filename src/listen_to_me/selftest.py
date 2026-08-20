@@ -2523,6 +2523,114 @@ def _overlay_position_is_anchored_to_its_monitor():
         overlay_module._screen_key = key
 
 
+def _overlay_counts_the_recording_time():
+    """The floating icon counts the running take up, like the tray does.
+
+    The clock rides App's 100 ms poll, so it must only ever apply to a take
+    that is actually running: a tick draining just after the recording ended
+    would otherwise freeze a counter onto an idle icon. A running download
+    still owns the icon, and the tooltip and the accessible description stay
+    the same sentence (an icon-only control is unreadable through the tooltip
+    alone)."""
+    _ensure_qapp()
+    from listen_to_me.overlay import Overlay
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        overlay = Overlay(stub)
+        try:
+            # Entering the state starts from the clock-free wording; the first
+            # tick puts the counter in, sharing the tray's formatting.
+            overlay.set_state("recording")
+            assert "Recording…" in overlay.win.toolTip(), overlay.win.toolTip()
+            overlay.set_elapsed(72)
+            assert "Recording 1:12…" in overlay.win.toolTip(), overlay.win.toolTip()
+            # Tooltip and accessible description are one string, always.
+            assert overlay.win.toolTip() == overlay.win.accessibleDescription()
+
+            # A download owns the icon while it runs — a clock tick must not
+            # take it away (the model is fetched during a take's processing,
+            # and the same rule applies to every progress display).
+            overlay.set_progress(0.4, "Downloading small 40%")
+            overlay.set_elapsed(73)
+            assert "40%" in overlay.win.toolTip(), overlay.win.toolTip()
+            overlay.set_progress(None, None)
+            assert "Recording 1:13…" in overlay.win.toolTip(), overlay.win.toolTip()
+
+            # Leaving the state clears the counter, and a late tick from the
+            # finished take is ignored rather than re-labelling an idle icon.
+            overlay.set_state("idle")
+            overlay.set_elapsed(74)
+            tip = overlay.win.toolTip()
+            assert "Recording" not in tip and "Idle" in tip, tip
+
+            # Whatever the clock hands over, the label renders — this runs
+            # inside the poll timer and must never raise there.
+            overlay.set_state("recording")
+            for value in (None, -5, float("nan"), "nonsense"):
+                overlay.set_elapsed(value)
+                assert "Recording" in overlay.win.toolTip(), value
+        finally:
+            overlay.destroy()
+
+
+def _overlay_lists_recent_transcripts():
+    """The floating icon's menu offers the last few transcripts, like the tray.
+
+    Same store, same bound, same copy path — someone working from the floating
+    icon may have the tray switched off entirely, so the shortcut past
+    "Settings → History" has to exist on this menu too. An unreadable or empty
+    history is named rather than shown as an empty list."""
+    _ensure_qapp()
+    from listen_to_me import tray as tray_module
+    from listen_to_me.overlay import Overlay
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        overlay = Overlay(stub)
+        try:
+            overlay._fill_recent_menu()
+            labels = [action.text() for action in overlay._recent_menu.actions()]
+            # _StubApp seeds two transcripts; newest first, as the store hands
+            # them over — the same order the tray renders.
+            assert labels == [
+                "An entry with a corrupt timestamp.",
+                "A stored transcript for the self-test.",
+            ], labels
+
+            # One menu line whatever the dictation did: no line breaks, elided,
+            # and its "&" doubled so Qt renders it instead of eating it as the
+            # mnemonic marker.
+            stub.history.add("Fish & chips\nsecond line " + "long " * 30)
+            overlay._fill_recent_menu()
+            label = overlay._recent_menu.actions()[0].text()
+            assert label.startswith("Fish && chips second line long"), label
+            assert "\n" not in label and label.endswith("…"), label
+
+            # Clicking one copies that transcript verbatim — line breaks and a
+            # single "&", exactly as it was stored.
+            stub.posts.clear()
+            overlay._recent_menu.actions()[0].trigger()
+            assert len(stub.posts) == 1 and stub.posts[0][0] == "copy_text", stub.posts
+            assert stub.posts[0][1].startswith("Fish & chips\nsecond line"), stub.posts
+
+            # Bounded, and by the *same* number as the tray: the menu is a
+            # shortcut, the History page is the archive.
+            for i in range(10):
+                stub.history.add(f"Transcript number {i}")
+            overlay._fill_recent_menu()
+            assert len(overlay._recent_menu.actions()) == tray_module._RECENT_LIMIT
+            assert overlay._recent_menu.actions()[0].text() == "Transcript number 9"
+
+            stub.history.clear()
+            overlay._fill_recent_menu()
+            actions = overlay._recent_menu.actions()
+            assert len(actions) == 1 and actions[0].text() == "No transcripts yet"
+            assert not actions[0].isEnabled()
+        finally:
+            overlay.destroy()
+
+
 def _tray_counts_the_recording_time():
     """A running take is counted up in the tray status, and the clock survives
     whatever the caller hands it.
@@ -2785,6 +2893,80 @@ def _tray_survives_a_missing_notification_area():
         assert tray._retry_timer is None and not stub.posts
         tray.stop()  # a stopped tray must not leave a timer running
         assert tray._retry_timer is None
+
+
+def _help_page_find():
+    """The Help page can be searched, and the search wraps around.
+
+    Every topic sits in one long document whose only navigation is the "Jump
+    to" list at the top, so the reader holding an actual error string needs to
+    look for it by name. Wrapping is the part that has to hold: a reader who
+    started in the middle of the page must not be told "not found" about a word
+    that is plainly there — only a term missing from the whole document says
+    so."""
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+        try:
+            # Nothing to look for yet: the step buttons must not offer an
+            # action they cannot perform.
+            assert not window.help_find_next.isEnabled()
+            assert not window.help_find_prev.isEnabled()
+
+            # Typing searches from the top, so the term resolves to the first
+            # match however far the reader had already scrolled.
+            window.help_find_edit.setText("proxy")
+            assert window.help_find_next.isEnabled()
+            assert window.help_find_status.text() == "", window.help_find_status.text()
+            selected = window._help_browser.textCursor().selectedText()
+            assert selected.casefold() == "proxy", selected
+
+            # Stepping on eventually runs out of matches and starts over —
+            # never "Not found" for a term the document contains.
+            seen = set()
+            for _ in range(20):
+                window._find_in_help()
+                seen.add(window.help_find_status.text())
+            assert "Wrapped around" in seen, seen
+            assert "Not found" not in seen, seen
+
+            # Backwards steps too, and wraps the same way.
+            window._find_in_help(backwards=True)
+            assert window.help_find_status.text() in ("", "Wrapped around")
+            selected = window._help_browser.textCursor().selectedText()
+            assert selected.casefold() == "proxy", selected
+
+            # A term that is genuinely absent is the one case that says so.
+            window.help_find_edit.setText("Zzzz-nope")
+            assert window.help_find_status.text() == "Not found"
+
+            # Clearing the field drops the stale verdict and the highlight.
+            window.help_find_edit.setText("")
+            assert window.help_find_status.text() == ""
+            assert not window._help_browser.textCursor().hasSelection()
+            assert not window.help_find_next.isEnabled()
+
+            # Ctrl+F's handler selects what is already there, so pressing it
+            # twice replaces the old term instead of appending to it.
+            window.help_find_edit.setText("OpenVINO")
+            window._focus_help_find()
+            assert window.help_find_edit.selectedText() == "OpenVINO"
+
+            # A theme switch re-renders the document; the verdict beside an
+            # empty selection must not survive it.
+            window.help_find_edit.setText("Zzzz-nope")
+            assert window.help_find_status.text() == "Not found"
+            window._render_help()
+            assert window.help_find_status.text() == ""
+        finally:
+            window.force_close()
+            window.deleteLater()
 
 
 def _gui_construction():
@@ -3655,6 +3837,7 @@ _LIGHT_CHECKS = [
     ("diagnostics engine", _diagnostics_engine),
     ("hardware/status probes", _hardware_probes),
     ("help content renders", _help_content_renders),
+    ("help page find", _help_page_find),
     ("Qt icon conversion", _qt_icons),
     ("clipboard copy falls back to Qt", _clipboard_copy_falls_back_to_qt),
     ("glyph icons render", _glyph_icons),
@@ -3662,6 +3845,8 @@ _LIGHT_CHECKS = [
     ("disabled buttons look disabled", _theme_disabled_visible),
     ("voice mic widget", _voice_mic_widget),
     ("overlay position is anchored to its monitor", _overlay_position_is_anchored_to_its_monitor),
+    ("overlay counts the recording time", _overlay_counts_the_recording_time),
+    ("overlay lists recent transcripts", _overlay_lists_recent_transcripts),
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("tray lists recent transcripts", _tray_lists_recent_transcripts),

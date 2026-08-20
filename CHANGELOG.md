@@ -26,7 +26,17 @@ changes at a glance.
 - **A running clock for the recording** in the tray status line and the tray
   icon's tooltip ("Recording 1:12… press Ctrl+Alt+Space to stop") — how long
   you have been dictating was invisible until the heads-up 30 seconds before
-  the maximum length.
+  the maximum length. The **floating icon carries the same clock** in its
+  tooltip, so the take length is on the control that never leaves the screen
+  and not only on the one that can be switched off.
+- **The “Recent transcripts” submenu on the floating icon's menu too** — the
+  shortcut past Settings → History existed only in the tray, which is exactly
+  the icon someone working from the floating control may have turned off.
+- **Find in help** on the Help / Troubleshooting page (`Ctrl+F`, or the field
+  above the text): all topics live in one long page whose only navigation was
+  the "Jump to" list at the very top, so an error message you can read on your
+  own screen was not something you could search for. The search wraps around
+  and only says "Not found" for a word the page really does not contain.
 
 - **The floating icon remembers the monitor** it was left on, not just a screen
   coordinate — so it comes back to the right screen after a restart, after a
