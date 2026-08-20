@@ -54,6 +54,8 @@ _REPAIR_RETRY_TICKS = 6  # a drop that survives a repair retries only every ~30 
 # A lost z-order is repaired in place (SetWindowPos), never by a hide()/show():
 # the window is fine, only buried — see _watchdog_tick.
 _TOPMOST_LOST = "no longer above other windows"
+# Reported only once it has persisted for a second tick — see _dropped_reason.
+_UNEXPOSED = "no longer exposed"
 _PLACE_RETRY_MS = 2_000  # look again while the saved monitor is still missing
 _PLACE_RETRY_LIMIT = 15  # …for ~30 s after start; later hot-plug arrives as a signal
 
@@ -255,6 +257,7 @@ class Overlay:
         self._drop_streak = 0  # consecutive ticks a probe reported the icon gone
         self._always_on_top = True  # real value applied below, from the config
         self._topmost_lost = False  # only log a lost z-order once per episode
+        self._unexposed = False  # an un-exposed window counts on the 2nd tick
         self._watchdog = QTimer(self.win)
         self._watchdog.timeout.connect(self._watchdog_tick)
         # Coalesces bursts of screen signals (a resolution change fires
@@ -585,12 +588,22 @@ class Overlay:
             return "outside every screen"
         if sys.platform != "win32":
             return None
+        # An un-exposed window only counts once it stays that way: Qt clears
+        # the expose state until the platform has delivered the expose event,
+        # so it is briefly false right after every show() — including the one
+        # a repair just did. Reporting that immediately would make the
+        # watchdog chase its own tail (repair → "still dropped" → escalate).
+        was_unexposed, self._unexposed = self._unexposed, False
         handle = self.win.windowHandle()
         if handle is not None and not handle.isExposed():
             # Qt saw the native window go (display sleep, DWM restart) and
             # stopped painting it, but isVisible() keeps saying True — the
             # expose state is the only Qt-side flag that tracks the OS.
-            return "no longer exposed"
+            self._unexposed = True
+            # One tick of grace, then it counts. Nothing else is probed
+            # meanwhile: a window the platform has not painted yet says little
+            # about the rest, and the next tick asks again 5 s later.
+            return _UNEXPOSED if was_unexposed else None
         try:
             import ctypes
 
