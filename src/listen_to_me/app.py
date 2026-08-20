@@ -863,6 +863,9 @@ class App:
         self.history.max_entries = max(1, int(self.cfg["history_max"]))
         self.tray.set_state(self.state)
         if self.overlay is not None:
+            # Order matters: the always-on-top flag rebuilds the native window
+            # and hides it, so visibility is (re-)applied afterwards.
+            self.overlay.apply_always_on_top()
             self.overlay.set_visible(bool(self.cfg["overlay"]["enabled"]))
 
     def _factory_reset(self) -> None:
