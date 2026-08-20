@@ -40,7 +40,14 @@ This repo's `.claude/settings.json` pre-approves **every** Claude Code Remote to
 
 **No carve-outs, including `add_repo` / `register_repo_root`.** A prompt that fires mid-run is exactly what breaks unattended operation, and those tools can only attach repositories the account already reaches. To re-gate one in this repo, add it to `permissions.ask` by hand — rules evaluate **deny → ask → allow**, first match wins, so an `ask` entry prompts even though the broader `allow` glob matches. The optimizer never writes that array and never removes a user-added entry.
 
-**Trust gate** (the usual cause of "the allowlist is there but it still prompts"): `permissions.allow` from a _project_ settings file only applies after the workspace-trust dialog for this repo has been accepted. Until then the rules are read but inert (`ask`/`deny` are unaffected). Fix it once per machine by accepting the dialog, or put the same list into the **user-level** `~/.claude/settings.json`, where no trust gate applies and it covers every repo:
+**Trust gate — the fact that decides whether any of the above does anything.** `permissions.allow` from a _project_ settings file grants capability, so Claude Code applies it **only after this repo's workspace-trust dialog has been accepted** (`ask`/`deny` are unaffected). That single fact splits the two surfaces, and they are not equally fixable:
+
+| Surface                                                             | What actually happens                                                                                                                                                                                                                                                     | The one-time fix                                                                                                            |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| **Local CLI**                                                       | The trust dialog appears on the first interactive run in this repo; accept it and the block above is live for good                                                                                                                                                        | Accept the dialog — or put the rules in user settings below and cover every repo at once                                    |
+| **Claude Code web / cloud** (routines, Claude Tag, mobile included) | No trust dialog exists and every session starts from a fresh container, so the block is dropped at startup — `Ignoring N permissions.allow entries from .claude/settings.json: this workspace has not been trusted` — and `delete_trigger` & friends prompt on every call | User settings, installed by the cloud environment's **setup script** (below). Nothing inside this repo can fix this surface |
+
+Same rules either way, in `~/.claude/settings.json` — user scope carries no trust gate and applies to every repo:
 
 ```json
 {
@@ -56,9 +63,38 @@ This repo's `.claude/settings.json` pre-approves **every** Claude Code Remote to
 }
 ```
 
+**Cloud/web — paste this into the environment's _Setup script_** (claude.ai → Claude Code → cloud environment settings). It runs as root before Claude Code launches, and what it writes survives in the environment snapshot, so later sessions start with the file already in place. Merge-safe: it adds only what is missing.
+
+```bash
+python3 - <<'PY'
+import json, os, pathlib
+d = pathlib.Path(os.environ.get("CLAUDE_CONFIG_DIR") or (pathlib.Path.home() / ".claude"))
+d.mkdir(parents=True, exist_ok=True)
+f = d / "settings.json"
+cfg = json.loads(f.read_text()) if f.exists() else {}
+allow = cfg.setdefault("permissions", {}).setdefault("allow", [])
+for rule in ["mcp__claude-code-remote__*", "mcp__Claude_Code_Remote__*", "mcp__claude_code_remote__*",
+             "mcp__github__subscribe_pr_activity", "mcp__github__unsubscribe_pr_activity"]:
+    if rule not in allow:
+        allow.append(rule)
+f.write_text(json.dumps(cfg, indent=2))
+PY
+```
+
+Editing the setup script re-runs it and rebuilds the snapshot; the cache also expires after roughly seven days. Verify in the next session with `cat ~/.claude/settings.json`. **Why not a `SessionStart` hook in this repo:** hooks do run in an untrusted workspace, but settings are read _before_ hooks fire — the rules would apply to the session _after_ the one that wrote them, and in the cloud there is no session after: each gets a new container. The web surface pre-approves the GitHub MCP server on its own, which is why the prompts that survive there are the Claude Code Remote ones.
+
 Merge additively into an existing file; never remove a user's own entries there. **The agent never writes this file on its own** — it lives outside the repo, so applying it is the user's call.
 
-**Self-heal:** if a Claude Code Remote tool still raises an approval prompt, its server spelling is missing. **Append** `mcp__<that spelling>__*` to the repo's `permissions.allow` and commit it on the current branch/PR. One heal per spelling — append the _glob_, never the individual tool name, and **never write a `deny` or `ask` entry**. Removing a glob, or narrowing one into per-tool entries, is not a heal.
+Two more keys earn their place in that same user-level file — both are read **only** from user settings, which is why this repo never writes them:
+
+| Key                                             | Effect on unattended work                                                                                                                                                                                                                                                              |
+| ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `"askUserQuestionTimeout": "5m"`                | An unanswered `AskUserQuestion` auto-continues after 5 minutes with whatever was preselected instead of holding the session open. The default `"never"` waits forever — that is what turns one ambiguous moment into a dead overnight run. Values: `"60s"`, `"5m"`, `"10m"`, `"never"` |
+| `"permissions": {"defaultMode": "acceptEdits"}` | Optional. File edits and common filesystem commands stop prompting; every other rule still applies. A project file _can_ carry this, but how much a machine may do unsupervised is the owner's call, not the repo's. `bypassPermissions` belongs only in a container you can lose      |
+
+**Self-heal — local sessions only.** If a Claude Code Remote tool still raises an approval prompt in a session where the block applies, its server spelling is missing: **append** `mcp__<that spelling>__*` to the repo's `permissions.allow` and commit it on the current branch/PR. One heal per spelling — append the _glob_, never the individual tool name, and **never write a `deny` or `ask` entry**. Removing a glob, or narrowing one into per-tool entries, is not a heal.
+
+In a web/cloud session (`$CLAUDE_CODE_REMOTE=true`) the agent **appends nothing**: the entry could not take effect there in any session, so committing it would manufacture dead config. Name the one-time user-scope fix above once and carry on.
 
 ## MCPs in cloud and routine runs
 
