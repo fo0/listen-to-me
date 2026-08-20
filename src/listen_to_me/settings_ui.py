@@ -9,6 +9,7 @@ import time
 import webbrowser
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor, QTextDocument
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QButtonGroup,
@@ -1638,6 +1639,46 @@ class SettingsWindow(QDialog):
     def _build_help(self, title: str) -> QWidget:
         page, layout = self._page(title)
 
+        # Find in page. Every topic lives in one long document whose only
+        # navigation is the "Jump to" list at the very top — so a reader who
+        # scrolled to the seventh topic had no way back to it, and someone
+        # holding the actual error string ("cublas64_12.dll", "SSL") could not
+        # search for the words they can see on their own screen.
+        find_row = QWidget()
+        fh = QHBoxLayout(find_row)
+        fh.setContentsMargins(0, 0, 0, 0)
+        fh.setSpacing(8)
+        self.help_find_edit = QLineEdit()
+        self.help_find_edit.setPlaceholderText("Find in help…  (Ctrl+F)")
+        self.help_find_edit.setClearButtonEnabled(True)
+        # No form-row label to borrow a name from — same as the History search.
+        self.help_find_edit.setAccessibleName("Find in help")
+        self.help_find_edit.setToolTip(
+            "Jump to the next place these words appear. Enter finds the next "
+            "match, the arrows step through them, and the search wraps around "
+            "at the end of the page."
+        )
+        # Typing restarts from the top, so the first match is reached while
+        # still typing; Enter and the arrows step on from wherever that landed.
+        self.help_find_edit.textChanged.connect(self._on_help_find_changed)
+        self.help_find_edit.returnPressed.connect(lambda: self._find_in_help())
+        fh.addWidget(self.help_find_edit, 1)
+        self.help_find_prev = QPushButton("Previous")
+        self.help_find_prev.setAutoDefault(False)
+        self.help_find_prev.setToolTip("Go to the previous match.")
+        self.help_find_prev.clicked.connect(lambda: self._find_in_help(backwards=True))
+        fh.addWidget(self.help_find_prev)
+        self.help_find_next = QPushButton("Next")
+        self.help_find_next.setAutoDefault(False)
+        self.help_find_next.setToolTip("Go to the next match.")
+        self.help_find_next.clicked.connect(lambda: self._find_in_help())
+        fh.addWidget(self.help_find_next)
+        # Both stay disabled until there is something to look for — a button
+        # that cannot do anything must not look like one that can.
+        self.help_find_status = self._hint("", elastic=True)
+        fh.addWidget(self.help_find_status)
+        layout.addWidget(find_row)
+
         browser = QTextBrowser()
         browser.setOpenExternalLinks(True)  # http(s) links → default browser
         browser.setToolTip("Common problems and fixes. Links open in your web browser.")
@@ -1645,7 +1686,79 @@ class SettingsWindow(QDialog):
         self._help_browser = browser
         self._render_help()
         layout.addWidget(browser, 1)
+
+        # Ctrl+F belongs to this page only: the History page owns the same key
+        # for its own search, and a window-wide shortcut would have to guess
+        # which of the two the user meant.
+        find_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), page)
+        find_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        find_shortcut.activated.connect(self._focus_help_find)
+        self._set_help_find_enabled("")
         return page
+
+    def _focus_help_find(self) -> None:
+        """Put the caret in the find field and select what is in it, so Ctrl+F
+        twice in a row replaces the old term instead of appending to it."""
+        self.help_find_edit.setFocus()
+        self.help_find_edit.selectAll()
+
+    def _set_help_find_enabled(self, text: str) -> None:
+        """Enable the step buttons only while there is a term to step through."""
+        has_term = bool(text)
+        self.help_find_prev.setEnabled(has_term)
+        self.help_find_next.setEnabled(has_term)
+
+    def _on_help_find_changed(self, text: str) -> None:
+        """Search from the top of the document on every keystroke.
+
+        Find-as-you-type: restarting at the top means the term always resolves
+        to the *first* match rather than to whatever follows the previous
+        cursor, so a search never appears to fail just because the reader had
+        scrolled past the only occurrence.
+        """
+        self._set_help_find_enabled(text.strip())
+        self.help_find_status.setText("")
+        if not text.strip():
+            # Drop the highlight of the term that was just deleted.
+            cursor = self._help_browser.textCursor()
+            cursor.clearSelection()
+            self._help_browser.setTextCursor(cursor)
+            return
+        self._find_in_help(from_start=True)
+
+    def _find_in_help(self, *, backwards: bool = False, from_start: bool = False) -> None:
+        """Move to the next (or previous) occurrence of the find term.
+
+        Wraps around rather than stopping at the end: the document is one long
+        page of topics, and a reader who started in the middle of it would
+        otherwise be told "not found" about a word that is plainly there. Only
+        a term that is missing from the whole document says so.
+        """
+        term = self.help_find_edit.text().strip()
+        if not term:
+            self.help_find_status.setText("")
+            return
+        flags = QTextDocument.FindFlag.FindBackward if backwards else QTextDocument.FindFlag(0)
+        if from_start:
+            self._move_help_cursor(to_end=backwards)
+        if self._help_browser.find(term, flags):
+            self.help_find_status.setText("")
+            return
+        # Nothing left in this direction — try again from the other end.
+        self._move_help_cursor(to_end=backwards)
+        if self._help_browser.find(term, flags):
+            self.help_find_status.setText("Wrapped around")
+            return
+        self.help_find_status.setText("Not found")
+
+    def _move_help_cursor(self, *, to_end: bool) -> None:
+        """Park the browser's cursor at one end of the document, selection
+        cleared, so the next find() starts from there."""
+        cursor = self._help_browser.textCursor()
+        cursor.movePosition(
+            QTextCursor.MoveOperation.End if to_end else QTextCursor.MoveOperation.Start
+        )
+        self._help_browser.setTextCursor(cursor)
 
     def _render_help(self) -> None:
         """(Re-)render the Help page. The document's default style sheet is
@@ -1654,6 +1767,12 @@ class SettingsWindow(QDialog):
 
         self._help_browser.document().setDefaultStyleSheet(self._help_stylesheet())
         self._help_browser.setHtml(help_content.help_html())
+        # setHtml replaces the document, so any match highlighted in the old
+        # one is gone — a stale "Not found"/"Wrapped around" beside an empty
+        # selection would describe a search that no longer exists.
+        status = getattr(self, "help_find_status", None)
+        if status is not None:
+            status.setText("")
 
     def _on_color_scheme_changed(self, *_args) -> None:
         """The OS switched between light and dark: repaint everything this

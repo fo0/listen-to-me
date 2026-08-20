@@ -2895,6 +2895,80 @@ def _tray_survives_a_missing_notification_area():
         assert tray._retry_timer is None
 
 
+def _help_page_find():
+    """The Help page can be searched, and the search wraps around.
+
+    Every topic sits in one long document whose only navigation is the "Jump
+    to" list at the top, so the reader holding an actual error string needs to
+    look for it by name. Wrapping is the part that has to hold: a reader who
+    started in the middle of the page must not be told "not found" about a word
+    that is plainly there — only a term missing from the whole document says
+    so."""
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+        try:
+            # Nothing to look for yet: the step buttons must not offer an
+            # action they cannot perform.
+            assert not window.help_find_next.isEnabled()
+            assert not window.help_find_prev.isEnabled()
+
+            # Typing searches from the top, so the term resolves to the first
+            # match however far the reader had already scrolled.
+            window.help_find_edit.setText("proxy")
+            assert window.help_find_next.isEnabled()
+            assert window.help_find_status.text() == "", window.help_find_status.text()
+            selected = window._help_browser.textCursor().selectedText()
+            assert selected.casefold() == "proxy", selected
+
+            # Stepping on eventually runs out of matches and starts over —
+            # never "Not found" for a term the document contains.
+            seen = set()
+            for _ in range(20):
+                window._find_in_help()
+                seen.add(window.help_find_status.text())
+            assert "Wrapped around" in seen, seen
+            assert "Not found" not in seen, seen
+
+            # Backwards steps too, and wraps the same way.
+            window._find_in_help(backwards=True)
+            assert window.help_find_status.text() in ("", "Wrapped around")
+            selected = window._help_browser.textCursor().selectedText()
+            assert selected.casefold() == "proxy", selected
+
+            # A term that is genuinely absent is the one case that says so.
+            window.help_find_edit.setText("Zzzz-nope")
+            assert window.help_find_status.text() == "Not found"
+
+            # Clearing the field drops the stale verdict and the highlight.
+            window.help_find_edit.setText("")
+            assert window.help_find_status.text() == ""
+            assert not window._help_browser.textCursor().hasSelection()
+            assert not window.help_find_next.isEnabled()
+
+            # Ctrl+F's handler selects what is already there, so pressing it
+            # twice replaces the old term instead of appending to it.
+            window.help_find_edit.setText("OpenVINO")
+            window._focus_help_find()
+            assert window.help_find_edit.selectedText() == "OpenVINO"
+
+            # A theme switch re-renders the document; the verdict beside an
+            # empty selection must not survive it.
+            window.help_find_edit.setText("Zzzz-nope")
+            assert window.help_find_status.text() == "Not found"
+            window._render_help()
+            assert window.help_find_status.text() == ""
+        finally:
+            window.force_close()
+            window.deleteLater()
+
+
 def _gui_construction():
     from listen_to_me.choices import GERMAN_TURBO_CT2, model_from_label, model_label
     from listen_to_me.onboarding import OnboardingWizard
@@ -3763,6 +3837,7 @@ _LIGHT_CHECKS = [
     ("diagnostics engine", _diagnostics_engine),
     ("hardware/status probes", _hardware_probes),
     ("help content renders", _help_content_renders),
+    ("help page find", _help_page_find),
     ("Qt icon conversion", _qt_icons),
     ("clipboard copy falls back to Qt", _clipboard_copy_falls_back_to_qt),
     ("glyph icons render", _glyph_icons),
