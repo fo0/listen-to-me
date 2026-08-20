@@ -31,7 +31,7 @@ Sub-commands (bare `/scheduler` routes by what the request asks for):
 | React to an event instead of polling                 | **not a scheduler**                                                               | `subscribe_pr_activity` for PR events, a GitHub trigger on a routine, `Monitor` for a stream | —                                                |
 
 **Default to the event, not the poll.** A five-minute cron that greps CI is worse in every dimension than one PR-activity
-subscription. Reach for an interval only when nothing pushes the state at you.
+subscription. Reach for an interval only when nothing pushes the state at you — binding form in _Hard rules_ below.
 
 ## 2. Surfaces — where the tools actually exist
 
@@ -40,16 +40,38 @@ subscription. Reach for an interval only when nothing pushes the state at you.
 - **Inside a Claude Code web / cloud session, routine runs included:** `/schedule` is **not available** — do not report it
   as broken. Routine management runs through the Claude Code Remote MCP tools instead: `list_triggers`, `create_trigger`,
   `update_trigger`, `delete_trigger`, `fire_trigger`, and `send_later` for a one-shot self check-in. They are pre-approved
-  in `.claude/settings.json`, so they never prompt. If the server is absent, say so once and fall back to describing what
-  the user should create at claude.ai/code/routines — never hard-require the MCP.
+  in `.claude/settings.json`, which the local CLI honors once the workspace is trusted; a web/cloud session drops that
+  block (no trust dialog exists there), so a permission prompt on this surface is **expected** until the one-time
+  user-scope fix in `agent_docs/mcp_catalog.md → Prompt-free triggers everywhere` is in place — report it as that, not as
+  a broken server. If the server is absent, say so once and fall back to describing what the user should create at
+  claude.ai/code/routines — never hard-require the MCP.
 - **Session-scoped, everywhere:** `CronCreate` / `CronList` / `CronDelete`. In a self-paced `/loop`, `ScheduleWakeup`
   with `stop: true` ends the loop immediately.
 
+**What the layer costs on a web/cloud surface.** The Claude Code Remote MCP tools raise a manual approval prompt on every
+call there until that user-scope fix is in place, and the dialog offers a single-use approval — nothing persistent. The
+built-in layer (`CronCreate` / `CronList` / `CronDelete`, `ScheduleWakeup`) never prompts. So the agent's _own_
+bookkeeping — come back to this in 20 minutes, re-check a PR that is already subscribed — takes the built-in layer. Spend
+an MCP call, and the interruption it costs the user, on what the user actually asked for, or when the job truly has to
+outlive this session: a cloud container is reclaimed after a while and a session-scoped cron dies with it, which is the
+one case where `send_later` earns its prompt.
+
 ## 3. Hard rules
 
+- **No self check-in while a subscription already covers it.** A PR this session subscribed to with
+  `subscribe_pr_activity` wakes the session on CI results, reviews and comments. Creating a `send_later` check-in, a
+  Routine or a cron for that same PR adds nothing to what the events deliver — only a permission prompt on the web
+  surface and one more job to clean up. **Subscription active → no timer**, on any surface. The cost of that rule is
+  accepted deliberately and stated here so nobody re-adds the timer as a "fix": webhooks do not cover everything (CI
+  success and merge-conflict transitions are the known gaps), so when one never arrives the session does not come back
+  on its own — the next user message picks the PR up instead. A timer is still right where no subscription exists at
+  all: a release dispatch, a long build, a PR whose subscription was refused or unavailable. Say once, in the report,
+  that watching is event-driven — an unattended run that silently stops watching looks like a run that forgot.
 - **Cleanup contract.** Every trigger, cron job and PR subscription this session created for its _own_ bookkeeping is
-  removed before the final report. Run `CronList` (and `list_triggers` where available) as the last step and report what
-  remains standing. Only jobs the user explicitly asked for survive the run.
+  removed before the final report. `CronList` runs as the last step, always. `list_triggers` runs **only if this session
+  actually created a cloud trigger** — a sweep for jobs it never made costs the user a permission prompt on the web
+  surface and can only turn up jobs the next rule forbids touching. Report what remains standing. Only jobs the user
+  explicitly asked for survive the run.
 - **Never delete a job this session did not create** without an explicit instruction — someone else's nightly is not litter.
 - **Match the lifetime, don't fake it.** A recurring session task dies with the session and expires after 7 days anyway;
   work that must outlive either is a routine or a Desktop task, and saying so is better than scheduling a job that

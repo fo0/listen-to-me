@@ -20,7 +20,11 @@ Plain stdout from a hook is **only** added to the model's context on `SessionSta
 {"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"…message…"}}
 ```
 
-Build it with `jq -nc --arg m "$msg" '…'` whenever the message contains captured output, so quotes and newlines stay escaped. Alternatives: exit 2 + stderr (blocks the call on `PreToolUse`), `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask"}}` (forces the permission prompt), `{"systemMessage":"…"}` (shown to the user, not the agent).
+`additionalContext` is carried by the tool and turn events — `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SubagentStop`. Events without it (`PreCompact`, `PostCompact`, `SessionEnd`, `Notification`, `WorktreeCreate`) can only reach the _user_ via `{"systemMessage":"…"}`, or leave a side-file for the next turn to read.
+
+Build it with `jq -nc --arg m "$msg" '…'` whenever the message contains captured output, so quotes and newlines stay escaped. Alternatives: exit 2 + stderr (blocks the call on `PreToolUse` and the other blockable events), `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask"}}` (forces the permission prompt; `"allow"` and `"deny"` are the other two values — a hook decision never overrides a matching `deny`/`ask` rule), `{"systemMessage":"…"}` (shown to the user, not the agent), `{"continue":false,"stopReason":"…"}` (ends the turn).
+
+**Two levers most catalogs miss.** `$CLAUDE_CODE_REMOTE` is `"true"` in web/cloud sessions and unset in the local CLI — the one _resolvable_ test for "is a human watching", which is what makes an autonomy-conditional hook a real rule rather than a guess. And a hook entry is not only a shell command: `"type"` also accepts `"http"`, `"mcp_tool"`, `"prompt"` (LLM yes/no) and `"agent"`, entries take `"timeout"` and an `"if"` condition, and `${CLAUDE_PROJECT_DIR}` expands inside `command`. Events beyond the ones used below: `Setup`, `PostCompact`, `SessionEnd`, `PermissionRequest`, `PermissionDenied`, `PostToolUseFailure`, `SubagentStart`/`SubagentStop`, `TaskCreated`/`TaskCompleted`, `ConfigChange`, `FileChanged` — reach for one of those before inventing a polling loop.
 
 Each snippet below states its **Trigger** and, where it matters, whether it is agent-facing or user-facing.
 
@@ -58,7 +62,23 @@ Trigger: `Stop`. **User-facing** by design: `additionalContext` on `Stop` would 
 }
 ```
 
-Trigger: `PreCompact`. **Neither agent- nor user-facing:** `PreCompact` supports no `additionalContext`, and its stdout only reaches the debug log — so the snippet writes a side-file instead of printing. The reliable path back into context after a compaction is the SessionStart reminder plus re-reading `SCRATCHPAD.md`. Gitignore the `.bak`.
+Trigger: `PreCompact`. **Neither agent- nor user-facing:** `PreCompact` supports no `additionalContext`, and its stdout only reaches the debug log — so the snippet writes a side-file instead of printing. The reliable path back into context after a compaction is the SessionStart reminder plus re-reading `SCRATCHPAD.md`; `PostCompact` fires on the other side of the same event and can `systemMessage` the user that the dump is there. Gitignore the `.bak`.
+
+### SessionStart — unattended-session banner
+
+```json
+{
+  "matcher": "startup|resume",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "if [ \"$CLAUDE_CODE_REMOTE\" = \"true\" ]; then echo 'Unattended session (CLAUDE_CODE_REMOTE=true) — no human will answer a question. CLAUDE.md > Autonomy applies to this run.'; fi; exit 0"
+    }
+  ]
+}
+```
+
+Trigger: `SessionStart`. Agent-facing via plain stdout — one of the three events where that works, so no JSON wrapper is needed. Fires only in web/cloud sessions, routine runs included; in the local CLI the variable is unset and the hook prints nothing. This is the autonomy rule arriving as context instead of hoping the model re-read CLAUDE.md.
 
 ### Stop — review reminder
 
@@ -195,7 +215,7 @@ Trigger: `UserPromptSubmit`. One of the three events where bare stdout _is_ adde
 ## Notes
 
 - **Hook input arrives as a JSON payload on stdin**, not via environment variables. Relevant fields: `.tool_input.command` (Bash tool), `.tool_input.file_path` (Edit/Write), `.prompt` (UserPromptSubmit). The snippets parse stdin with `jq` — there are no `$CLAUDE_TOOL_INPUT` / `$CLAUDE_USER_PROMPT` env vars.
-- `$CLAUDE_PROJECT_DIR` IS a real environment variable (absolute project root), usable in any hook command.
+- `$CLAUDE_PROJECT_DIR` IS a real environment variable (absolute project root), usable in any hook command; `${CLAUDE_PROJECT_DIR}` is also substituted inside `command`. `$CLAUDE_CODE_REMOTE` (`"true"` in web/cloud sessions, unset locally) and `$CLAUDE_EFFORT` are available the same way.
 - **`jq` is required** for every snippet that reads stdin. Without `jq` the hook errors out and does NOT block — for reminder hooks that's harmless, but the two BLOCK hooks then provide no protection. Verify `jq` is installed wherever you rely on them.
 - **Exit-0 stdout reaches the agent only on `SessionStart` / `UserPromptSubmit` / `UserPromptExpansion`.** Everywhere else it lands in the debug log — see _Reaching the agent_ above for the `additionalContext` / `permissionDecision` / `systemMessage` alternatives. An `echo 'WARNING…'` on `PreToolUse` or `PostToolUse` is a no-op.
 - Exit code `2` from a `PreToolUse` hook blocks the tool call and feeds **stderr** back to Claude — block messages must go to stderr (`>&2`). On `PostToolUse` the tool already ran, so exit 2 cannot block; stderr is still shown to Claude. Other non-zero exits print stderr but don't block.
