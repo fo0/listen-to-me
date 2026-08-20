@@ -28,6 +28,7 @@ from PySide6.QtWidgets import QLabel, QMenu, QVBoxLayout, QWidget
 
 from .audio import SAMPLE_RATE, band_levels
 from .keymap import hotkey_label
+from .tray import format_duration
 from .voice_mic_widget import VoiceMicWidget
 
 log = logging.getLogger(__name__)
@@ -49,6 +50,24 @@ _STATE_LABELS = {
     "recording": "Recording… click again to stop",
     "processing": "Transcribing…",
 }
+
+
+def _recording_label(elapsed=None) -> str:
+    """The recording tooltip, counting the running take up once a second.
+
+    The tray has carried this clock since the take-length cap became visible
+    there; the floating icon — the always-on-top control the same user is
+    looking at while they speak — kept a frozen "Recording…" for the whole
+    take, so the one place that never leaves the screen was the one place the
+    elapsed time was missing. `format_duration` is shared with the tray so the
+    two can never render the same second differently.
+
+    `None` (no clock yet, e.g. the state change that starts the take) keeps the
+    wording the label always had.
+    """
+    if elapsed is None:
+        return _STATE_LABELS["recording"]
+    return f"Recording {format_duration(elapsed)}… click again to stop"
 
 
 def _idle_label(cfg) -> str:
@@ -188,6 +207,9 @@ class Overlay:
         self.app = app
         self.state = "idle"
         self._progress_text: str | None = None  # running download, see set_progress
+        # Seconds of the running take, fed once a second by App's poll timer
+        # (see set_elapsed). None whenever no take is being counted.
+        self._elapsed: int | None = None
 
         self.win = _FloatingIcon(self)
         # The icon is a real control (click = start/stop, right-click = menu)
@@ -523,10 +545,32 @@ class Overlay:
 
     def _state_tooltip(self) -> str:
         state = self.state
-        return _idle_label(self.app.cfg) if state == "idle" else _STATE_LABELS.get(state, state)
+        if state == "idle":
+            return _idle_label(self.app.cfg)
+        if state == "recording":
+            return _recording_label(self._elapsed)
+        return _STATE_LABELS.get(state, state)
+
+    def set_elapsed(self, seconds) -> None:
+        """Put the running take's clock on the icon (tooltip + accessible
+        description), the tray's counterpart for the floating icon.
+
+        Ignored unless a take is actually running: the clock arrives from
+        App's 100 ms poll and a tick that lands just after a recording ended
+        must not re-label an idle icon with a frozen counter. A running
+        download keeps the icon it owns — same rule as `set_state`.
+        """
+        if self.state != "recording":
+            return
+        self._elapsed = seconds
+        self._apply_status(self._progress_text or self._state_tooltip())
 
     def set_state(self, state: str) -> None:
         self.state = state
+        # A new state owns a fresh clock: leaving "recording" clears the
+        # counter, and entering it starts from the wording without one until
+        # the first tick arrives.
+        self._elapsed = None
         # A download outlives a state change (the model is fetched during
         # "processing"), so it keeps the tooltip until it reports itself done.
         self._apply_status(self._progress_text or self._state_tooltip())

@@ -233,13 +233,20 @@ class App:
         self.notify(message)
 
     def _tick_recording_clock(self) -> None:
-        """Count the running take up in the tray status, once per second.
+        """Count the running take up in the tray status and on the floating
+        icon, once per second.
 
         Rides the 100 ms timer that already drains the event queue (same
-        reasoning as the length warning) and only touches the tray when the
-        whole second changed — the label is rebuilt once a second, not sixty
-        times. `_set_state` writes the clock-free label on every transition, so
-        leaving RECORDING clears the counter by itself.
+        reasoning as the length warning) and only touches the two surfaces when
+        the whole second changed — the labels are rebuilt once a second, not
+        sixty times. `_set_state` writes the clock-free label on every
+        transition, so leaving RECORDING clears the counter by itself.
+
+        Both surfaces are fed, and each in its own try: the floating icon is
+        the control that never leaves the screen while the user speaks, so a
+        take clock only the tray carries is missing exactly where it is being
+        looked for — and a failure on one of them must not cost the other its
+        update.
         """
         if self.state != STATE_RECORDING:
             self._clock_seconds = -1
@@ -252,6 +259,11 @@ class App:
             self.tray.set_elapsed(seconds)
         except Exception:
             log.debug("could not update the tray recording clock", exc_info=True)
+        if self.overlay is not None:
+            try:
+                self.overlay.set_elapsed(seconds)
+            except Exception:
+                log.debug("could not update the overlay recording clock", exc_info=True)
 
     def _handle(self, kind: str, payload) -> None:
         if kind == "toggle":

@@ -2523,6 +2523,57 @@ def _overlay_position_is_anchored_to_its_monitor():
         overlay_module._screen_key = key
 
 
+def _overlay_counts_the_recording_time():
+    """The floating icon counts the running take up, like the tray does.
+
+    The clock rides App's 100 ms poll, so it must only ever apply to a take
+    that is actually running: a tick draining just after the recording ended
+    would otherwise freeze a counter onto an idle icon. A running download
+    still owns the icon, and the tooltip and the accessible description stay
+    the same sentence (an icon-only control is unreadable through the tooltip
+    alone)."""
+    _ensure_qapp()
+    from listen_to_me.overlay import Overlay
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        overlay = Overlay(stub)
+        try:
+            # Entering the state starts from the clock-free wording; the first
+            # tick puts the counter in, sharing the tray's formatting.
+            overlay.set_state("recording")
+            assert "Recording…" in overlay.win.toolTip(), overlay.win.toolTip()
+            overlay.set_elapsed(72)
+            assert "Recording 1:12…" in overlay.win.toolTip(), overlay.win.toolTip()
+            # Tooltip and accessible description are one string, always.
+            assert overlay.win.toolTip() == overlay.win.accessibleDescription()
+
+            # A download owns the icon while it runs — a clock tick must not
+            # take it away (the model is fetched during a take's processing,
+            # and the same rule applies to every progress display).
+            overlay.set_progress(0.4, "Downloading small 40%")
+            overlay.set_elapsed(73)
+            assert "40%" in overlay.win.toolTip(), overlay.win.toolTip()
+            overlay.set_progress(None, None)
+            assert "Recording 1:13…" in overlay.win.toolTip(), overlay.win.toolTip()
+
+            # Leaving the state clears the counter, and a late tick from the
+            # finished take is ignored rather than re-labelling an idle icon.
+            overlay.set_state("idle")
+            overlay.set_elapsed(74)
+            tip = overlay.win.toolTip()
+            assert "Recording" not in tip and "Idle" in tip, tip
+
+            # Whatever the clock hands over, the label renders — this runs
+            # inside the poll timer and must never raise there.
+            overlay.set_state("recording")
+            for value in (None, -5, float("nan"), "nonsense"):
+                overlay.set_elapsed(value)
+                assert "Recording" in overlay.win.toolTip(), value
+        finally:
+            overlay.destroy()
+
+
 def _tray_counts_the_recording_time():
     """A running take is counted up in the tray status, and the clock survives
     whatever the caller hands it.
@@ -3662,6 +3713,7 @@ _LIGHT_CHECKS = [
     ("disabled buttons look disabled", _theme_disabled_visible),
     ("voice mic widget", _voice_mic_widget),
     ("overlay position is anchored to its monitor", _overlay_position_is_anchored_to_its_monitor),
+    ("overlay counts the recording time", _overlay_counts_the_recording_time),
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("tray lists recent transcripts", _tray_lists_recent_transcripts),
