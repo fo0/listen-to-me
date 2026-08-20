@@ -27,8 +27,14 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QLabel, QMenu, QVBoxLayout, QWidget
 
 from .audio import SAMPLE_RATE, band_levels
+from .history import entry_timestamp
 from .keymap import hotkey_label
-from .tray import format_duration
+
+# From the tray on purpose, private constant included: the take clock and the
+# "Recent transcripts" submenu exist on both surfaces and must render the same
+# second and list the same transcripts. A second copy here would be a second
+# thing to keep in step. (tray.py imports nothing from overlay.py — no cycle.)
+from .tray import _RECENT_LIMIT, format_duration, recent_entry_label
 from .voice_mic_widget import VoiceMicWidget
 
 log = logging.getLogger(__name__)
@@ -252,6 +258,21 @@ class Overlay:
         self._menu.addAction("Start / stop recording", lambda: app.post("toggle"))
         self._menu.addAction("Cancel recording", lambda: app.post("cancel"))
         self._menu.addAction("Copy last transcript", lambda: app.post("copy_last"))
+        # …and the ones before it, exactly as in the tray menu. Reaching the
+        # second-newest transcript from here meant opening Settings and walking
+        # the sidebar to History — and someone working from the floating icon
+        # is the one user who may have the tray icon switched off entirely, so
+        # the shortcut the tray offers has to exist on this menu too.
+        self._recent_menu = QMenu("Recent transcripts", self._menu)
+        self._recent_menu.setToolTipsVisible(True)
+        # Filled when it opens, not when it is built: a recording appends to
+        # the history while this menu sits idle, so a list built at startup
+        # would be stale within one dictation.
+        self._recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        act_recent = self._menu.addMenu(self._recent_menu)
+        act_recent.setToolTip("Copy any of the last few transcripts back to the clipboard.")
+        # QMenu ignores its actions' tooltips unless asked.
+        self._menu.setToolTipsVisible(True)
         self._menu.addSeparator()
         self._menu.addAction("Settings…", lambda: app.post("settings"))
         # Right here as well as on the Overlay settings page: the icon you want
@@ -662,6 +683,45 @@ class Overlay:
         self.bubble.hide()
 
     # ------------------------------------------------------------ menu
+
+    def _fill_recent_menu(self) -> None:
+        """(Re-)build the "Recent transcripts" submenu from the history file.
+
+        The tray's twin, and deliberately the same behaviour rather than a
+        second interpretation of it: newest first, bounded to the same few, one
+        elided line each, the timestamp in the tooltip so two similar-looking
+        dictations can be told apart, and the raw transcript — line breaks and
+        single "&" intact — handed to the same `copy_text` event.
+
+        A history that cannot be read says so instead of showing an empty list:
+        an app that offers nothing looks exactly like one that stored nothing.
+        Runs on the Qt main thread every time the submenu opens.
+        """
+        menu = self._recent_menu
+        if menu is None:
+            return
+        menu.clear()
+        try:
+            entries = self.app.history.entries()[:_RECENT_LIMIT]
+        except Exception:
+            log.exception("could not read the transcript history for the overlay menu")
+            failed = menu.addAction("Could not read the history")
+            failed.setEnabled(False)
+            return
+        if not entries:
+            empty = menu.addAction("No transcripts yet")
+            empty.setEnabled(False)
+            return
+        for entry in entries:
+            text = str(entry.get("text", ""))
+            action = menu.addAction(recent_entry_label(entry))
+            stamp = entry_timestamp(entry)
+            action.setToolTip(
+                f"{stamp} — copy this transcript" if stamp else "Copy this transcript"
+            )
+            action.triggered.connect(
+                lambda _checked=False, t=text: self.app.post("copy_text", t)
+            )
 
     def show_menu(self, global_pos) -> None:
         self._menu.popup(global_pos)

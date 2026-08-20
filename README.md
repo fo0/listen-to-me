@@ -76,8 +76,9 @@ standalone system-tray app that works in _every_ application.
   the app in one step.
   The newest one is a single click away: **Copy last transcript** in the
   tray menu and in the floating icon's right-click menu puts it straight back
-  on the clipboard — and the tray menu's **Recent transcripts** submenu lists
-  the last five, so the one before last is a click away too.
+  on the clipboard — and a **Recent transcripts** submenu in both of those
+  menus lists the last five, so the one before last is a click away too,
+  whichever of the two icons you work from.
 - **Home hub** — the main window opens on a **Home page**: the live recording
   state with a big **Start/Stop** button (red while recording), your hotkey
   shown as key caps, at-a-glance cards for the active engine/model, language

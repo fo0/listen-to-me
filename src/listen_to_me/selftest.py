@@ -2574,6 +2574,63 @@ def _overlay_counts_the_recording_time():
             overlay.destroy()
 
 
+def _overlay_lists_recent_transcripts():
+    """The floating icon's menu offers the last few transcripts, like the tray.
+
+    Same store, same bound, same copy path — someone working from the floating
+    icon may have the tray switched off entirely, so the shortcut past
+    "Settings → History" has to exist on this menu too. An unreadable or empty
+    history is named rather than shown as an empty list."""
+    _ensure_qapp()
+    from listen_to_me import tray as tray_module
+    from listen_to_me.overlay import Overlay
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        overlay = Overlay(stub)
+        try:
+            overlay._fill_recent_menu()
+            labels = [action.text() for action in overlay._recent_menu.actions()]
+            # _StubApp seeds two transcripts; newest first, as the store hands
+            # them over — the same order the tray renders.
+            assert labels == [
+                "An entry with a corrupt timestamp.",
+                "A stored transcript for the self-test.",
+            ], labels
+
+            # One menu line whatever the dictation did: no line breaks, elided,
+            # and its "&" doubled so Qt renders it instead of eating it as the
+            # mnemonic marker.
+            stub.history.add("Fish & chips\nsecond line " + "long " * 30)
+            overlay._fill_recent_menu()
+            label = overlay._recent_menu.actions()[0].text()
+            assert label.startswith("Fish && chips second line long"), label
+            assert "\n" not in label and label.endswith("…"), label
+
+            # Clicking one copies that transcript verbatim — line breaks and a
+            # single "&", exactly as it was stored.
+            stub.posts.clear()
+            overlay._recent_menu.actions()[0].trigger()
+            assert len(stub.posts) == 1 and stub.posts[0][0] == "copy_text", stub.posts
+            assert stub.posts[0][1].startswith("Fish & chips\nsecond line"), stub.posts
+
+            # Bounded, and by the *same* number as the tray: the menu is a
+            # shortcut, the History page is the archive.
+            for i in range(10):
+                stub.history.add(f"Transcript number {i}")
+            overlay._fill_recent_menu()
+            assert len(overlay._recent_menu.actions()) == tray_module._RECENT_LIMIT
+            assert overlay._recent_menu.actions()[0].text() == "Transcript number 9"
+
+            stub.history.clear()
+            overlay._fill_recent_menu()
+            actions = overlay._recent_menu.actions()
+            assert len(actions) == 1 and actions[0].text() == "No transcripts yet"
+            assert not actions[0].isEnabled()
+        finally:
+            overlay.destroy()
+
+
 def _tray_counts_the_recording_time():
     """A running take is counted up in the tray status, and the clock survives
     whatever the caller hands it.
@@ -3714,6 +3771,7 @@ _LIGHT_CHECKS = [
     ("voice mic widget", _voice_mic_widget),
     ("overlay position is anchored to its monitor", _overlay_position_is_anchored_to_its_monitor),
     ("overlay counts the recording time", _overlay_counts_the_recording_time),
+    ("overlay lists recent transcripts", _overlay_lists_recent_transcripts),
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("tray lists recent transcripts", _tray_lists_recent_transcripts),
