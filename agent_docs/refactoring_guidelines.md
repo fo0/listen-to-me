@@ -30,12 +30,12 @@ Refactoring does NOT happen automatically. Only when:
 
 ## Current candidates (assessment, not a mandate)
 
-> Figures below were measured on 2026-08-17 — they drift with every commit. Re-measure with `wc -l src/listen_to_me/*.py | sort -rn | head` instead of trusting a copied number.
+> Figures below were measured on 2026-08-21 — they drift with every commit. Re-measure with `wc -l src/listen_to_me/*.py | sort -rn | head` instead of trusting a copied number.
 
-- **`settings_ui.py` (~3650 lines)** — the clearest split target: one module per settings page (General / Whisper / Audio / Overlay / Integrations / Assistant / History / Updates / Help) plus shared card/row helpers. The Home page already lives in `home_page.py`. Do it only when a change to the settings window is being blocked by the size. Tracked in `BACKLOG.md`.
-- **`selftest.py` (~3725 lines)** — grows with every regression guard, which is the point; split by check group only if navigating it starts to cost more than it saves.
-- **`app.py` (~1180 lines)** — over the ~500 bar. Keep new behavior in the component modules, not in `App`; extract the event `_handle` dispatch only if it keeps growing.
-- **`theme.py` (~580)**, **`overlay.py` (~655)** — just over the bar, cohesive; no split planned. `voice_mic_widget.py` (~490) is approaching it: the painting is one animation and splitting it would only move the state flags away from the paths that read them — revisit if a third overlay mode is added. `home_page.py` (~475) dropped back under the bar and is no longer a candidate.
+- **`settings_ui.py` (~3782 lines)** — the clearest split target: one module per settings page (General / Whisper / Audio / Overlay / Integrations / Assistant / History / Updates / Help) plus shared card/row helpers. The Home page already lives in `home_page.py`. Do it only when a change to the settings window is being blocked by the size. Tracked in `BACKLOG.md`.
+- **`selftest.py` (~4059 lines)** — grows with every regression guard, which is the point; split by check group only if navigating it starts to cost more than it saves.
+- **`app.py` (~1197 lines)** — over the ~500 bar. Keep new behavior in the component modules, not in `App`; extract the event `_handle` dispatch only if it keeps growing.
+- **`theme.py` (~578)**, **`overlay.py` (~980)** — just over the bar, cohesive; no split planned, though `overlay.py` has grown well past "just over" and is worth a re-look if it keeps climbing. `voice_mic_widget.py` (~488) is approaching it: the painting is one animation and splitting it would only move the state flags away from the paths that read them — revisit if a third overlay mode is added. `home_page.py` (~480) dropped back under the bar and is no longer a candidate.
 
 ## Verification after a refactor
 
