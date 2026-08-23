@@ -164,7 +164,7 @@ Rules:
 
 ## Subagent Delegation
 
-For isolated, clearly bounded subtasks. Pick the matching `subagent_type` instead of always defaulting to `general-purpose`. The thresholds below are the default; while **Orca mode** is on (`.claude/skills/orca/SKILL.md`) they are void — everything is delegated, whatever its size.
+**Delegation is the default, not a decision per task** — orchestrator mode is on from session start (`CLAUDE.md → Subagents`, contract in `.claude/skills/orca/SKILL.md`), so every unit of task work goes to a subagent at width 5. The table below matches the task to the `subagent_type`; the role roster in `CLAUDE.md → Subagents` frames the lens. The review itself is delegated to a **different agent than wrote the code** — a fresh-context reviewer reads the diff without holding the author's intent; the orchestrator still owns the process, reads the returned diffs, and holds the commit gate. Its "when to delegate" thresholds apply only after `/orca off`.
 
 | Task                              | When to delegate                                     | Recommended `subagent_type` |
 | --------------------------------- | ---------------------------------------------------- | --------------------------- |
@@ -183,7 +183,7 @@ For isolated, clearly bounded subtasks. Pick the matching `subagent_type` instea
 - **Use `general-purpose` for write+execute** tasks. Default for "do this work" delegations.
 - **Use `claude-code-guide` for tooling questions** about Claude Code itself.
 - **Parallelize independent work** — multiple Agent calls in one message when no dependencies exist.
-- **Prefer direct tools when target is known** — `Read` for known path, `grep` for known symbol.
+- **Orchestrator mode changes what "known target" means** — reading a file for its content is task work and goes to a subagent; the orchestrator's own reads are the _verification_ kind (`git status`, `git diff`, reading a returned change). `/orca off` restores direct-tool-first behavior (`Read` for known path, `grep` for known symbol).
 - **Pass full context** — subagents have no conversation history.
 - **Trust but verify** — inspect diffs after write-capable subagents finish.
 
