@@ -38,6 +38,6 @@ The instances keep their own gates, each with a single source of truth:
 
 - **Default model:** whatever the session resolves to — don't pin one in `CLAUDE.md` or in `.claude/settings.json`; `/model` switches mid-session.
 - **Fast mode** (`/fast`): the **same** Opus model with faster output — not a downgrade. Use when latency beats reasoning depth.
-- **Caveman mode** (chat compression): `caveman lite|full|ultra` / `stop caveman`. Chat only, never generated files.
-- **Orca mode** (orchestrator-only): `/orca` toggles it, `/orca <N>` sets the parallel width (default 5). While on, the agent itself does no task work — every unit goes to a subagent at the session's model and effort. Off by default; contract in `.claude/skills/orca/SKILL.md`.
+- **Caveman mode** (chat compression): default `full` in every session — rules in `CLAUDE.md → Caveman Mode`. `caveman lite|full|ultra` switches, `stop caveman` ends it for the session; chat only, never generated files.
+- **Orchestrator mode** (`orca`): **the default**, width 5 — declared in `CLAUDE.md → Subagents`, contract in `.claude/skills/orca/SKILL.md`. `/orca <N>` sets the width, `/orca off` drops to plain behavior for that session only; neither carries forward.
 - **Plan mode:** for non-trivial implementation strategy — `Plan` subagent or `EnterPlanMode`. Not for single-step tasks.
