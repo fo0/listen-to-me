@@ -440,6 +440,27 @@ def _recording_length_warning():
     assert length_warning_message(295.0, "300") is not None
 
 
+def _empty_transcript_names_the_microphone():
+    """A take that produced no text says *why*: a microphone that delivered no
+    signal (or an unusably quiet one) is a device problem the user can fix,
+    and it must not read like a recognition failure. A verdict the classifier
+    could not produce falls back to the generic sentence instead of inventing
+    a diagnosis."""
+    from listen_to_me.diagnostics import _QUIET_PEAK, _SILENT_PEAK, no_speech_message
+
+    generic = no_speech_message("ok")
+    assert generic == "No speech detected."
+    silent = no_speech_message("silent")
+    assert "Settings → Audio" in silent and "muted" in silent
+    quiet = no_speech_message("quiet")
+    assert "quiet" in quiet.lower() and "Settings → Audio" in quiet
+    assert silent != quiet
+    for unknown in ("", "unknown", "OK", "Silent"):
+        assert no_speech_message(unknown) == generic
+    # The thresholds the verdicts rest on: ordered, and both inside full scale.
+    assert 0.0 < _SILENT_PEAK < _QUIET_PEAK < 1.0
+
+
 def _recorder_events_carry_their_take():
     """`auto_stop` / `stream_died` may only stop the take they were posted for:
     both come from PortAudio's callback thread and can wait up to 100 ms in the
@@ -3954,6 +3975,7 @@ _LIGHT_CHECKS = [
     ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
+    ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
     ("recorder events carry their take", _recorder_events_carry_their_take),
     ("assistant config is checked", _assistant_config_is_checked),
     ("recorder start failure resets", _recorder_start_failure_resets),

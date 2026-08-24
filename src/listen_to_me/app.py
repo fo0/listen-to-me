@@ -474,6 +474,11 @@ class App:
         rewrites the whole text, but the typed part can't be taken back
         (append-only by design)."""
         try:
+            # The whole take, kept before live typing slices the already
+            # committed part off `audio` below: a recording that produced no
+            # text is diagnosed from everything the microphone delivered, not
+            # from whatever tail was left over.
+            captured = audio
             prefix = ""
             pending, typed_any = "", False
             if live is not None:
@@ -496,7 +501,7 @@ class App:
                 )
             full_text = f"{prefix} {text}" if prefix and text else (prefix or text)
             if not full_text:
-                self.notify("No speech detected.")
+                self._notify_no_speech(captured)
                 return
             acfg = self.cfg["assistant"]
             if acfg["enabled"]:
@@ -564,6 +569,25 @@ class App:
                 self.notify(f"Transcription failed: {exc}", force=True)
         finally:
             self.post("done")
+
+    def _notify_no_speech(self, audio) -> None:
+        """Report a take that produced no text — naming a microphone that
+        delivered nothing instead of leaving the recognition to take the blame.
+
+        Runs on the processing thread (notify() posts, so this stays off Qt)
+        and is deliberately best-effort: the statistics only decide the
+        wording, so failing to compute them costs the diagnosis, never the
+        message. Forced only for the two verdicts that name a fixable device
+        problem — "no speech" itself stays an ordinary notification.
+        """
+        from .diagnostics import clip_stats, no_speech_message
+
+        verdict = "unknown"
+        try:
+            verdict = str(clip_stats(audio)["verdict"])
+        except Exception:
+            log.debug("could not classify the recorded audio", exc_info=True)
+        self.notify(no_speech_message(verdict), force=verdict in ("silent", "quiet"))
 
     def _insert_transcript(self, text: str) -> None:
         """Insert `text` at the cursor and say where it ended up.

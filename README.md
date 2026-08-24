@@ -26,6 +26,12 @@ standalone system-tray app that works in _every_ application.
   first few words — so a recording made with no text field focused (the paste
   lands nowhere and the app cannot tell) still ends with a visible
   "Copied to the clipboard: …" instead of silence.
+- **A recording that produced no text says why** — when nothing comes back, the
+  app looks at what the microphone actually delivered: no signal at all ("check
+  the input device under Settings → Audio and whether the microphone is muted")
+  and a signal too quiet to recognize are named as the device problems they are,
+  instead of every case reading "No speech detected." and sending you back to
+  repeat the dictation into a muted microphone.
 - **Live typing (experimental)** — start typing while you are still speaking:
   parts of the transcript that have become stable are typed at the cursor
   during the recording, the rest follows right after you stop. Strictly
