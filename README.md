@@ -52,8 +52,10 @@ standalone system-tray app that works in _every_ application.
   state that Windows silently takes away, which is the usual reason the icon
   seems to have vanished when it is really just buried behind another window
   (switchable in Settings → Overlay). **Reset icon position** — in its right-click
-  menu and on the Overlay settings page — brings it back from wherever a drag
-  or a rearranged monitor left it. While something is downloading — the Whisper
+  menu, in the tray menu (**Reset floating icon position**) and on the Overlay
+  settings page — brings it back from wherever a drag or a rearranged monitor
+  left it. The tray entry is the one that still works when the icon itself
+  cannot be found or hit any more. While something is downloading — the Whisper
   model on first use, or an app update — the icon turns into a **progress ring
   with the percentage in the middle**, so a multi-minute first download is
   visible at a glance instead of behind a notification that has long since
