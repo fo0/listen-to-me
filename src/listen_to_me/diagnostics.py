@@ -183,6 +183,36 @@ def clip_stats(audio) -> dict:
     return {"peak": peak, "rms": rms, "seconds": seconds, "verdict": verdict}
 
 
+def no_speech_message(verdict: str) -> str:
+    """What to tell the user about a recording that produced no text.
+
+    A transcript comes back empty for two very different reasons, and both used
+    to read "No speech detected.": the engine really heard nothing usable, or
+    the microphone never delivered a signal at all — the wrong input device is
+    selected, a hardware mute switch is on, the OS revoked the permission. The
+    second one is fixed in seconds, but only once something says so: dictating
+    into a dead microphone looks exactly like a dictation the model failed to
+    understand, and the user repeats the take instead of checking the device.
+
+    Takes the verdict of :func:`clip_stats` rather than the audio, so the
+    wording stays a pure function (no numpy) and can be checked headlessly —
+    and so it says the same about a signal as the microphone test on the Audio
+    settings page does. An unknown verdict falls back to the generic sentence:
+    a diagnosis is the one thing this must never invent.
+    """
+    if verdict == "silent":
+        return (
+            "No sound reached the microphone — check the input device under "
+            "Settings → Audio and whether the microphone is muted."
+        )
+    if verdict == "quiet":
+        return (
+            "The microphone signal was too quiet to recognize anything — move "
+            "closer to it or raise its input volume (Settings → Audio)."
+        )
+    return "No speech detected."
+
+
 class DiagnosticsEngine:
     """Runs the Settings-window diagnostics against a *snapshot* of the UI
     values — a plain dict holding exactly the config keys the transcribers

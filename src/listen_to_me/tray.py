@@ -197,6 +197,23 @@ class Tray:
         self._act_overlay.triggered.connect(lambda: app.post("toggle_overlay"))
         menu.addAction(self._act_overlay)
 
+        # The same action the floating icon offers on its own right-click menu —
+        # but that one is only reachable while the icon can be found and hit.
+        # An icon dragged until a sliver is left on screen, buried behind
+        # another window, or parked on a monitor that has since been
+        # rearranged is exactly the case this entry exists for, and the tray is
+        # then the only surface still in reach. App._reset_overlay_position
+        # reports both outcomes (moved / icon switched off), so this never
+        # becomes a silent click.
+        act_reset_overlay = QAction("Reset floating icon position", menu)
+        act_reset_overlay.setToolTip(
+            "Bring the floating icon back to the bottom right — for when it "
+            "was dragged off screen or a monitor change left it somewhere "
+            "unreachable."
+        )
+        act_reset_overlay.triggered.connect(lambda: app.post("reset_overlay_position"))
+        menu.addAction(act_reset_overlay)
+
         act_settings = QAction("Settings…", menu)
         act_settings.triggered.connect(lambda: app.post("settings"))
         menu.addAction(act_settings)

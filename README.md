@@ -11,7 +11,9 @@ standalone system-tray app that works in _every_ application.
 
 - **100 % local speech recognition** — [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
   (CTranslate2), no cloud, no account. Models are downloaded automatically on
-  first use.
+  first use. The model is loaded **while you are still speaking**, not after
+  you stop, so the first dictation of a session no longer waits for it between
+  the last word and the inserted text.
 - **Global hotkey** (default `Ctrl+Alt+Space`) — start/stop recording from any
   app, either as **toggle** (press to start, press to stop) or as true
   **push-to-talk** (record while the keys are held).
@@ -26,6 +28,12 @@ standalone system-tray app that works in _every_ application.
   first few words — so a recording made with no text field focused (the paste
   lands nowhere and the app cannot tell) still ends with a visible
   "Copied to the clipboard: …" instead of silence.
+- **A recording that produced no text says why** — when nothing comes back, the
+  app looks at what the microphone actually delivered: no signal at all ("check
+  the input device under Settings → Audio and whether the microphone is muted")
+  and a signal too quiet to recognize are named as the device problems they are,
+  instead of every case reading "No speech detected." and sending you back to
+  repeat the dictation into a muted microphone.
 - **Live typing (experimental)** — start typing while you are still speaking:
   parts of the transcript that have become stable are typed at the cursor
   during the recording, the rest follows right after you stop. Strictly
@@ -52,8 +60,10 @@ standalone system-tray app that works in _every_ application.
   state that Windows silently takes away, which is the usual reason the icon
   seems to have vanished when it is really just buried behind another window
   (switchable in Settings → Overlay). **Reset icon position** — in its right-click
-  menu and on the Overlay settings page — brings it back from wherever a drag
-  or a rearranged monitor left it. While something is downloading — the Whisper
+  menu, in the tray menu (**Reset floating icon position**) and on the Overlay
+  settings page — brings it back from wherever a drag or a rearranged monitor
+  left it. The tray entry is the one that still works when the icon itself
+  cannot be found or hit any more. While something is downloading — the Whisper
   model on first use, or an app update — the icon turns into a **progress ring
   with the percentage in the middle**, so a multi-minute first download is
   visible at a glance instead of behind a notification that has long since

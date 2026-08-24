@@ -392,13 +392,19 @@ class App:
                 self._live_typer.start()
             else:
                 log.info("live typing stays off for this take: %s", reason)
-        if self._live_typer is None and want_preview:
-            threading.Thread(
-                target=self._live_preview_loop,
-                args=(self._recording_id,),
-                name="live-preview",
-                daemon=True,
-            ).start()
+        if self._live_typer is None:
+            if want_preview:
+                threading.Thread(
+                    target=self._live_preview_loop,
+                    args=(self._recording_id,),
+                    name="live-preview",
+                    daemon=True,
+                ).start()
+            else:
+                # Neither the live typer nor the preview loop will load the
+                # model for this take, so nothing else would — and the load
+                # would land after the last word instead of during the take.
+                self._warm_up_model()
 
     def _live_typing_gate(self) -> str | None:
         """Why live typing must stay off for this take (None = it can run).
@@ -474,6 +480,11 @@ class App:
         rewrites the whole text, but the typed part can't be taken back
         (append-only by design)."""
         try:
+            # The whole take, kept before live typing slices the already
+            # committed part off `audio` below: a recording that produced no
+            # text is diagnosed from everything the microphone delivered, not
+            # from whatever tail was left over.
+            captured = audio
             prefix = ""
             pending, typed_any = "", False
             if live is not None:
@@ -496,7 +507,7 @@ class App:
                 )
             full_text = f"{prefix} {text}" if prefix and text else (prefix or text)
             if not full_text:
-                self.notify("No speech detected.")
+                self._notify_no_speech(captured)
                 return
             acfg = self.cfg["assistant"]
             if acfg["enabled"]:
@@ -564,6 +575,25 @@ class App:
                 self.notify(f"Transcription failed: {exc}", force=True)
         finally:
             self.post("done")
+
+    def _notify_no_speech(self, audio) -> None:
+        """Report a take that produced no text — naming a microphone that
+        delivered nothing instead of leaving the recognition to take the blame.
+
+        Runs on the processing thread (notify() posts, so this stays off Qt)
+        and is deliberately best-effort: the statistics only decide the
+        wording, so failing to compute them costs the diagnosis, never the
+        message. Forced only for the two verdicts that name a fixable device
+        problem — "no speech" itself stays an ordinary notification.
+        """
+        from .diagnostics import clip_stats, no_speech_message
+
+        verdict = "unknown"
+        try:
+            verdict = str(clip_stats(audio)["verdict"])
+        except Exception:
+            log.debug("could not classify the recorded audio", exc_info=True)
+        self.notify(no_speech_message(verdict), force=verdict in ("silent", "quiet"))
 
     def _insert_transcript(self, text: str) -> None:
         """Insert `text` at the cursor and say where it ended up.
@@ -701,6 +731,47 @@ class App:
                 return
             if text and self.state == STATE_RECORDING and recording_id == self._recording_id:
                 self.post("preview_text", text)
+
+    def _warm_up_model(self) -> None:
+        """Start loading the transcription model while the take is still running.
+
+        The model is loaded on first use, and that used to be *after* the user
+        stopped speaking: the first dictation of a session paid the whole load
+        — on the very first run the download too — as dead time between the
+        last word and the inserted text, even though the app knew a
+        transcription was coming the moment the recording started. Speaking is
+        exactly the window that load fits into: the audio is buffered by
+        PortAudio's callback thread either way.
+
+        `ensure_loaded` is the same idempotent, locked call `_process` makes,
+        so the transcription afterwards either finds the model ready or waits
+        for this thread to finish it — never a second load, and never a load of
+        something else (the transcriber is captured here, so a backend switched
+        mid-take leaves this thread warming the instance it was started for).
+
+        Only started when no other loop already loads the model for this take,
+        and silent on failure: this is a head start, not the transcription. The
+        real attempt in `_process` runs the same call and reports what goes
+        wrong there — reporting it twice would blame the wrong moment for it.
+        """
+        transcriber = self.transcriber
+        try:
+            if transcriber.loaded:
+                return
+        except Exception:
+            log.debug("could not check whether the model is loaded", exc_info=True)
+            return
+
+        def load():
+            try:
+                # notify/progress are passed on: a first-run download is
+                # minutes long, and hiding it until the take ends is what the
+                # download progress display exists to prevent.
+                transcriber.ensure_loaded(notify=self.notify, progress=self.progress)
+            except Exception:
+                log.debug("model warm-up failed — the transcription reports it", exc_info=True)
+
+        threading.Thread(target=load, name="model-warmup", daemon=True).start()
 
     # ------------------------------------------------------------ helpers
 
