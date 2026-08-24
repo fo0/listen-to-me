@@ -392,13 +392,19 @@ class App:
                 self._live_typer.start()
             else:
                 log.info("live typing stays off for this take: %s", reason)
-        if self._live_typer is None and want_preview:
-            threading.Thread(
-                target=self._live_preview_loop,
-                args=(self._recording_id,),
-                name="live-preview",
-                daemon=True,
-            ).start()
+        if self._live_typer is None:
+            if want_preview:
+                threading.Thread(
+                    target=self._live_preview_loop,
+                    args=(self._recording_id,),
+                    name="live-preview",
+                    daemon=True,
+                ).start()
+            else:
+                # Neither the live typer nor the preview loop will load the
+                # model for this take, so nothing else would — and the load
+                # would land after the last word instead of during the take.
+                self._warm_up_model()
 
     def _live_typing_gate(self) -> str | None:
         """Why live typing must stay off for this take (None = it can run).
@@ -725,6 +731,47 @@ class App:
                 return
             if text and self.state == STATE_RECORDING and recording_id == self._recording_id:
                 self.post("preview_text", text)
+
+    def _warm_up_model(self) -> None:
+        """Start loading the transcription model while the take is still running.
+
+        The model is loaded on first use, and that used to be *after* the user
+        stopped speaking: the first dictation of a session paid the whole load
+        — on the very first run the download too — as dead time between the
+        last word and the inserted text, even though the app knew a
+        transcription was coming the moment the recording started. Speaking is
+        exactly the window that load fits into: the audio is buffered by
+        PortAudio's callback thread either way.
+
+        `ensure_loaded` is the same idempotent, locked call `_process` makes,
+        so the transcription afterwards either finds the model ready or waits
+        for this thread to finish it — never a second load, and never a load of
+        something else (the transcriber is captured here, so a backend switched
+        mid-take leaves this thread warming the instance it was started for).
+
+        Only started when no other loop already loads the model for this take,
+        and silent on failure: this is a head start, not the transcription. The
+        real attempt in `_process` runs the same call and reports what goes
+        wrong there — reporting it twice would blame the wrong moment for it.
+        """
+        transcriber = self.transcriber
+        try:
+            if transcriber.loaded:
+                return
+        except Exception:
+            log.debug("could not check whether the model is loaded", exc_info=True)
+            return
+
+        def load():
+            try:
+                # notify/progress are passed on: a first-run download is
+                # minutes long, and hiding it until the take ends is what the
+                # download progress display exists to prevent.
+                transcriber.ensure_loaded(notify=self.notify, progress=self.progress)
+            except Exception:
+                log.debug("model warm-up failed — the transcription reports it", exc_info=True)
+
+        threading.Thread(target=load, name="model-warmup", daemon=True).start()
 
     # ------------------------------------------------------------ helpers
 

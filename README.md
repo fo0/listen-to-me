@@ -11,7 +11,9 @@ standalone system-tray app that works in _every_ application.
 
 - **100 % local speech recognition** — [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
   (CTranslate2), no cloud, no account. Models are downloaded automatically on
-  first use.
+  first use. The model is loaded **while you are still speaking**, not after
+  you stop, so the first dictation of a session no longer waits for it between
+  the last word and the inserted text.
 - **Global hotkey** (default `Ctrl+Alt+Space`) — start/stop recording from any
   app, either as **toggle** (press to start, press to stop) or as true
   **push-to-talk** (record while the keys are held).
