@@ -23,6 +23,8 @@ Existing regression guards worth knowing about, because they lock in real bugs:
 
 - `updater follows the insecure-SSL switch` — the update path verifies by default and stops verifying while `insecure_ssl` is on, in both cases keeping the post-redirect host check and the explaining `UpdateTrustError` (ADR-0006, superseding ADR-0002). A hardcoded `verify=` on either side fails the check.
 - `disabled buttons look disabled` — renders each button variant and asserts the _surface_ colour changes when disabled. A plain image `!=` passed on nothing but a vanishing focus ring, so the check compares the fill.
+- `theme assets stay out of shared temp` — the directory holding the generated chevron SVGs must be owned by the current user and not group- or world-reachable. It used to fall back to `<system temp>/listen-to-me`, one predictable path shared by every account on the machine (#130).
+- `activation port is exclusive` — a second socket must not be able to bind the activation port while the listener is alive. It asserts the outcome rather than the socket option, because the option that produces it differs per platform (see the `SO_REUSEADDR` entry in `MEMORY.md`).
 - History rows with a `1e300` timestamp — stored values are untrusted at render time.
 - Replaced History rows end up parentless — detach before `deleteLater`, or ghost widgets keep painting.
 - No settings page is wider than its scroll viewport — one long combo/label item otherwise clips every card at the right edge.
