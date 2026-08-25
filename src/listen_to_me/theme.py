@@ -8,13 +8,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import tempfile
 from functools import lru_cache
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
 from PySide6.QtGui import QColor, QImageReader, QPalette
 from PySide6.QtWidgets import QApplication
+
+from .config import config_dir
 
 log = logging.getLogger(__name__)
 
@@ -161,12 +162,55 @@ def _svg_supported() -> bool:
         return False
 
 
+def _own_dir(path: Path) -> Path:
+    """Create ``path`` as a directory only this user can reach, and refuse it
+    if it turns out to belong to somebody else.
+
+    ``mkdir(parents=True, exist_ok=True)`` accepts a directory — or a symlink
+    pointing at one — that another user created first. Under a per-user root
+    that should never happen, so an unexpected owner is a signal, not a
+    detail: every file written here is read back through a QSS ``url()``,
+    i.e. it styles the app's own windows. Raising leaves the caller with Qt's
+    native arrows, which is a visible fallback rather than a hijack.
+
+    Windows carries the restriction in the profile's ACL, which ``os.chmod``
+    cannot express, so the ownership check and the mode are POSIX-only.
+    """
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name != "posix":
+        return path
+    # Before chmod/stat, which both follow symlinks.
+    if path.is_symlink():
+        raise OSError(f"{path} is a symlink — refusing to use it for theme assets")
+    owner = os.stat(path).st_uid
+    if owner != os.getuid():
+        raise OSError(f"{path} is owned by uid {owner}, not {os.getuid()}")
+    os.chmod(path, 0o700)
+    return path
+
+
 def _asset_dir() -> Path:
+    """Directory for the generated chevron SVGs — always one the current user
+    owns.
+
+    The fallback used to be ``<system temp>/listen-to-me``, which is the same
+    predictable path for every account on the machine: on a multi-user host
+    anyone can create it first and then own a directory this app treats as its
+    own. The app's config dir (``config.config_dir()``) is per-user by
+    construction, so both branches now land somewhere only we can write.
+    """
     base = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
-    root = Path(base) if base else Path(tempfile.gettempdir()) / "listen-to-me"
+    root = Path(base) if base else config_dir() / "cache"
     d = root / "theme-arrows"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    try:
+        return _own_dir(d)
+    except OSError:
+        log.warning(
+            "cannot use %s for the generated arrow assets — falling back to Qt's native arrows",
+            d,
+            exc_info=True,
+        )
+        raise
 
 
 def _chevron_asset(direction: str, color: str) -> str | None:

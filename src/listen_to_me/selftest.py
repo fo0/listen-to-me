@@ -911,6 +911,31 @@ def _theme_scrollbar_contrast():
         assert _contrast(palette["scroll"], palette["muted"]) >= 1.3, name
 
 
+def _theme_assets_stay_out_of_shared_temp():
+    """The generated chevron SVGs are loaded back through a QSS ``url()``, so
+    the directory holding them must belong to this user.
+
+    It used to fall back to ``<system temp>/listen-to-me`` — the same path for
+    every account on the box, which anyone can create first and then own. This
+    pins that the directory is never under the shared temp root, is ours, and
+    (on POSIX) is not group- or world-accessible.
+    """
+    from listen_to_me.theme import _asset_dir
+
+    d = _asset_dir()
+    shared = Path(tempfile.gettempdir()).resolve()
+    # Skipped in the odd setup where the home directory itself lives under the
+    # temp root — there the two are indistinguishable and the ownership and
+    # mode assertions below are the ones that carry the property anyway.
+    if shared not in Path.home().resolve().parents:
+        assert shared not in d.resolve().parents, f"{d} sits under the shared temp dir"
+    if os.name == "posix":
+        assert not d.is_symlink(), f"{d} is a symlink"
+        st = os.stat(d)
+        assert st.st_uid == os.getuid(), f"{d} is owned by uid {st.st_uid}"
+        assert st.st_mode & 0o077 == 0, f"{d} is reachable by others: {st.st_mode & 0o777:o}"
+
+
 def _integrations_noop():
     """With no enabled mute target (the default), the recording hooks must be a
     complete no-op and must not import pynput — so they stay safe on the
@@ -1183,6 +1208,36 @@ def _single_instance_guard():
             assert hits == [1]  # the garbage connection must not have fired it
         finally:
             first.release()  # unlock so the temp dir can be removed on Windows
+
+
+def _activation_port_is_exclusive():
+    """A live activation listener owns its port alone — nobody can bind it a
+    second time and start answering the "show yourself" pings in our place.
+
+    The option that buys this differs per platform (SO_REUSEADDR on POSIX
+    relaxes only TIME_WAIT; on Windows it would be the permissive one, so
+    SO_EXCLUSIVEADDRUSE goes there instead). This asserts the outcome rather
+    than the option, so it holds on both.
+    """
+    import socket
+
+    from listen_to_me import singleinstance
+
+    holder = singleinstance.SingleInstance(0)
+    try:
+        port = holder.start_server(lambda: None)
+        assert port, "activation server must bind an OS-assigned port"
+        rival = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        singleinstance._set_address_reuse(rival)  # a second launch of *this* app
+        try:
+            rival.bind(("127.0.0.1", port))
+            raise AssertionError(f"a second socket bound the live activation port {port}")
+        except OSError:
+            pass  # refused, as it must be
+        finally:
+            rival.close()
+    finally:
+        holder.release()
 
 
 def _icon_render():
@@ -3984,6 +4039,7 @@ _LIGHT_CHECKS = [
     ("clipboard copy is announced", _clipboard_copy_is_announced),
     ("copy button reports a failure", _copy_button_reports_failure),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
+    ("theme assets stay out of shared temp", _theme_assets_stay_out_of_shared_temp),
     ("mute integrations no-op", _integrations_noop),
     ("mute keybind uses virtual keys", _mute_keybind_uses_virtual_keys),
     ("mute keybind waits for the hotkey", _mute_keybind_waits_for_the_hotkey),
@@ -3991,6 +4047,7 @@ _LIGHT_CHECKS = [
     ("mute keybind worker failure is logged", _mute_keybind_worker_failure_is_logged),
     ("mute presets are usable", _mute_presets_are_usable),
     ("single-instance guard", _single_instance_guard),
+    ("activation port is exclusive", _activation_port_is_exclusive),
     ("live typing logic", _live_typing_logic),
     ("icon render", _icon_render),
     ("key picker key mapping", _key_mapping),

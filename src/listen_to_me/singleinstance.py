@@ -39,6 +39,35 @@ _PING_TIMEOUT = 2.0
 _ERROR_ALREADY_EXISTS = 183
 
 
+def _set_address_reuse(server: socket.socket) -> None:
+    """Address handling for the activation listener — a different option per
+    platform, because ``SO_REUSEADDR`` does not mean the same thing on both.
+
+    POSIX: it only lets us re-bind a port that a lingering ``TIME_WAIT`` entry
+    from the previous run still holds. Two *live* listeners on the same
+    address still collide (that would take ``SO_REUSEPORT``), so this removes
+    a restart annoyance and grants nothing else.
+
+    Windows: the very same option is the permissive one — it lets an unrelated
+    process bind a port we are already listening on and take our connections
+    over. ``SO_EXCLUSIVEADDRUSE`` is the option that expresses "mine alone"
+    there, so that is what Windows gets; setting ``SO_REUSEADDR`` instead
+    would hand the activation channel to whoever asks for it.
+
+    Best effort by design: a rejected option must not stop the bind, and the
+    single-instance guarantee does not rest here at all — the guard is the
+    named mutex / ``flock()`` in ``acquire()``, and this socket is only the
+    "show yourself" channel.
+    """
+    try:
+        if sys.platform == "win32":
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    except (OSError, AttributeError):
+        log.debug("could not set the address option on the activation socket", exc_info=True)
+
+
 class SingleInstance:
     """Holds the OS-level claim for the process lifetime and (optionally)
     serves activation pings from later launches."""
@@ -56,6 +85,7 @@ class SingleInstance:
         (e.g. ``lambda: app.post("activate")``). Returns the bound port, or
         None when the port is unavailable (the guard itself still holds)."""
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        _set_address_reuse(server)
         try:
             server.bind(("127.0.0.1", self._port))
             server.listen(2)
