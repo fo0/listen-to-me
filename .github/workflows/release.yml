@@ -7,8 +7,12 @@ name: Release
 on:
   workflow_dispatch:
 
+# Read by default; only the job that publishes the release asks for write.
+# The guard job runs two echoes and the check job declares its own read
+# permission, so handing either of them a token that can push tags, commits
+# and releases bought nothing and widened what a compromised step could do.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   guard:
@@ -34,6 +38,10 @@ jobs:
     name: Build Windows executable
     needs: check
     runs-on: windows-latest
+    # The one job that needs it: the release-creation step below tags the
+    # commit and uploads the exe.
+    permissions:
+      contents: write
     steps:
       # Third-party actions are pinned by commit SHA, not by tag: this job runs
       # with contents: write and publishes the exe the in-app updater offers, so
