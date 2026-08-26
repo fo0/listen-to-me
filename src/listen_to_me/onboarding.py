@@ -311,15 +311,29 @@ class OnboardingWizard(QWizard):
         if combo:
             self.hotkey_edit.setText(combo)
             self._hotkey_error.setText("")
+            # Cleared together with the label: a stale reason on the field
+            # would still be read out after the picker replaced the value.
+            self.hotkey_edit.setAccessibleDescription("")
 
     def _validate_hotkey(self) -> bool:
+        """Refuse Next on an unusable combination, and point at the field.
+
+        Refusing while leaving everything where it is makes the error label the
+        only sign that anything happened — a label a screen reader never reads,
+        because focus is still on the Next button the user just pressed. So the
+        reason is carried on the offending field as well and the caret is put
+        there, exactly as the settings window's _validate does for the very
+        same value.
+        """
         hotkey = self.hotkey_edit.text().strip()
         if Hotkeys.validate(hotkey):
             self._hotkey_error.setText("")
+            self.hotkey_edit.setAccessibleDescription("")
             return True
-        self._hotkey_error.setText(
-            f"“{hotkey}” is not a valid combination — click “Change…” and press the keys."
-        )
+        reason = f"“{hotkey}” is not a valid combination — click “Change…” and press the keys."
+        self._hotkey_error.setText(reason)
+        self.hotkey_edit.setAccessibleDescription(reason)
+        self.hotkey_edit.setFocus()
         return False
 
     def _fill_model_combo(self, backend: str, model: str) -> None:
