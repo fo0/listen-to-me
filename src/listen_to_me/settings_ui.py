@@ -231,12 +231,12 @@ class MuteTargetRow(QGroupBox):
         # text is not an accessible name.
         self.name_edit.setAccessibleName("App name")
         header.addWidget(self.name_edit, 1)
-        remove = QPushButton("Remove")
-        remove.setProperty("destructive", True)
-        remove.setToolTip("Delete this app from the list.")
-        remove.setAutoDefault(False)
-        remove.clicked.connect(lambda: self._on_remove(self))
-        header.addWidget(remove)
+        self.remove_button = QPushButton("Remove")
+        self.remove_button.setProperty("destructive", True)
+        self.remove_button.setToolTip("Delete this app from the list.")
+        self.remove_button.setAutoDefault(False)
+        self.remove_button.clicked.connect(lambda: self._on_remove(self))
+        header.addWidget(self.remove_button)
         outer.addLayout(header)
 
         form = QFormLayout()
@@ -263,20 +263,31 @@ class MuteTargetRow(QGroupBox):
         kh.setContentsMargins(0, 0, 0, 0)
         self.hotkey_edit = QLineEdit(str(data.get("hotkey", "")))
         self.hotkey_edit.setPlaceholderText("e.g. <ctrl>+<alt>+m")
-        # The form row's label buddies the containing widget, not this field.
-        self.hotkey_edit.setAccessibleName("Mute keybind")
+        # The form row's label buddies the containing widget, not this field —
+        # it is named per app in _sync_accessible_names, like every other
+        # control this row repeats.
         self.hotkey_edit.setToolTip(
             "The exact combination this app has bound to mute / push-to-mute. "
             "Set the SAME combination in the app's own keybind settings."
         )
         kh.addWidget(self.hotkey_edit, 1)
-        change = QPushButton("Change…")
-        change.setToolTip("Press the key combination to use — no typing needed.")
-        change.setAutoDefault(False)
-        change.clicked.connect(self._change_hotkey)
-        kh.addWidget(change)
+        self.change_button = QPushButton("Change…")
+        self.change_button.setToolTip("Press the key combination to use — no typing needed.")
+        self.change_button.setAutoDefault(False)
+        self.change_button.clicked.connect(self._change_hotkey)
+        kh.addWidget(self.change_button)
         form.addRow("Mute keybind:", key_row)
         outer.addLayout(form)
+
+        # The Integrations page stacks one of these rows per configured app, so
+        # "Enabled", "Mode", "Mute keybind", "Change…" and "Remove" are each
+        # announced identically once per app with nothing to tell them apart —
+        # and Remove is the destructive one. The visible name field is the only
+        # thing that distinguishes the rows, so the accessible names follow it;
+        # it is editable, hence the refresh on every change. Same reasoning as
+        # the per-row names on the History page and the Home page's cards.
+        self.name_edit.textChanged.connect(self._sync_accessible_names)
+        self._sync_accessible_names()
 
         # What the key combination alone can't tell you: most of these apps
         # only listen for their mute keybind while they have focus, which would
@@ -288,6 +299,20 @@ class MuteTargetRow(QGroupBox):
             hint.setProperty("role", "hint")  # muted styling, see theme.py
             hint.setWordWrap(True)
             outer.addWidget(hint)
+
+    def _sync_accessible_names(self, *_args) -> None:
+        """Name this row and its repeated controls after the app they act on.
+
+        Falls back to a neutral wording while the name field is still empty
+        (a freshly added row) rather than announcing nothing at all.
+        """
+        name = self.name_edit.text().strip() or "this app"
+        self.setAccessibleName(f"Mute target: {name}")
+        self.chk_enabled.setAccessibleName(f"Mute {name} while recording")
+        self.mode_combo.setAccessibleName(f"Mute mode for {name}")
+        self.hotkey_edit.setAccessibleName(f"Mute keybind for {name}")
+        self.change_button.setAccessibleName(f"Change the mute keybind for {name}")
+        self.remove_button.setAccessibleName(f"Remove {name} from the list")
 
     def _change_hotkey(self) -> None:
         combo = self._capture_hotkey()
@@ -716,15 +741,23 @@ class SettingsWindow(QDialog):
         button.setMinimumWidth(widest)
 
     @staticmethod
-    def _hint(text: str, *, elastic: bool = False) -> QLabel:
+    def _hint(text: str, *, elastic: bool = False, selectable: bool = False) -> QLabel:
         """A muted, wrapping note. Pass `elastic=True` for every hint whose
         text is composed at runtime from a path, a URL or an exception — those
-        carry unbreakable words that would otherwise widen the whole page."""
+        carry unbreakable words that would otherwise widen the whole page.
+
+        Pass `selectable=True` wherever that runtime text can be a failure: an
+        error the user cannot select is an error they cannot paste into a
+        search or a bug report, which is exactly why `_status_value` and the
+        diagnostics status line are selectable.
+        """
         label = QLabel(text)
         label.setProperty("role", "hint")
         label.setWordWrap(True)
         if elastic:
             elastic_label(label)
+        if selectable:
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         return label
 
     @staticmethod
@@ -811,7 +844,7 @@ class SettingsWindow(QDialog):
         )
         self.hotkey_test_button.clicked.connect(self._test_hotkey)
         ht.addWidget(self.hotkey_test_button)
-        self.hotkey_test_status = self._hint("", elastic=True)
+        self.hotkey_test_status = self._hint("", elastic=True, selectable=True)
         ht.addWidget(self.hotkey_test_status, 1)
         form.addRow("", hotkey_test)
 
@@ -1303,7 +1336,7 @@ class SettingsWindow(QDialog):
         self.mic_level_bar.setTextVisible(False)
         self.mic_level_bar.setToolTip("Input level while the microphone test records.")
         form.addRow("Level:", self.mic_level_bar)
-        self.mic_status = self._hint("", elastic=True)
+        self.mic_status = self._hint("", elastic=True, selectable=True)
         form.addRow("", self.mic_status)
         layout.addWidget(card)
 
@@ -1535,7 +1568,7 @@ class SettingsWindow(QDialog):
         form.addRow("", test_row)
         # elastic: the line carries a URL, an endpoint reply or an exception —
         # all of them unbreakable words that would widen the whole page.
-        self.a_test_status = self._hint(_A_TEST_IDLE, elastic=True)
+        self.a_test_status = self._hint(_A_TEST_IDLE, elastic=True, selectable=True)
         form.addRow("", self.a_test_status)
         layout.addWidget(conn)
 
@@ -2107,7 +2140,9 @@ class SettingsWindow(QDialog):
 
                 self._asig.tested.emit(assistant.refine(_A_TEST_SAMPLE, values))
             except Exception as exc:  # surfaced in the UI, never raised at the user
-                self._asig.test_failed.emit(str(exc))
+                from . import netutil
+
+                self._asig.test_failed.emit(netutil.describe_error(exc))
 
         threading.Thread(target=work, name="assistant-test", daemon=True).start()
 
@@ -2704,7 +2739,7 @@ class SettingsWindow(QDialog):
         form.addRow("", self.update_check_button)
         layout.addWidget(card)
 
-        self.update_status = self._hint("Not checked yet.", elastic=True)
+        self.update_status = self._hint("Not checked yet.", elastic=True, selectable=True)
         layout.addWidget(self.update_status)
 
         self.update_list = QListWidget()
@@ -2784,7 +2819,9 @@ class SettingsWindow(QDialog):
                 releases = updater.fetch_releases(include_prerelease=include_pre)
                 self._usig.checked.emit(updater.newer_releases(releases))
             except Exception as exc:  # surfaced in the UI
-                self._usig.check_failed.emit(str(exc))
+                from . import netutil
+
+                self._usig.check_failed.emit(netutil.describe_error(exc))
 
         threading.Thread(target=work, name="update-check", daemon=True).start()
 
@@ -2988,7 +3025,9 @@ class SettingsWindow(QDialog):
                     dest.unlink(missing_ok=True)
                 except OSError:
                     log.warning("could not remove failed update download %s", dest)
-                self._usig.download_failed.emit(str(exc))
+                from . import netutil
+
+                self._usig.download_failed.emit(netutil.describe_error(exc))
 
         threading.Thread(target=work, name="update-download", daemon=True).start()
 
