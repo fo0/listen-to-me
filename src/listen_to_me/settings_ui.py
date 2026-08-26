@@ -2140,7 +2140,9 @@ class SettingsWindow(QDialog):
 
                 self._asig.tested.emit(assistant.refine(_A_TEST_SAMPLE, values))
             except Exception as exc:  # surfaced in the UI, never raised at the user
-                self._asig.test_failed.emit(str(exc))
+                from . import netutil
+
+                self._asig.test_failed.emit(netutil.describe_error(exc))
 
         threading.Thread(target=work, name="assistant-test", daemon=True).start()
 
@@ -2817,7 +2819,9 @@ class SettingsWindow(QDialog):
                 releases = updater.fetch_releases(include_prerelease=include_pre)
                 self._usig.checked.emit(updater.newer_releases(releases))
             except Exception as exc:  # surfaced in the UI
-                self._usig.check_failed.emit(str(exc))
+                from . import netutil
+
+                self._usig.check_failed.emit(netutil.describe_error(exc))
 
         threading.Thread(target=work, name="update-check", daemon=True).start()
 
@@ -3021,7 +3025,9 @@ class SettingsWindow(QDialog):
                     dest.unlink(missing_ok=True)
                 except OSError:
                     log.warning("could not remove failed update download %s", dest)
-                self._usig.download_failed.emit(str(exc))
+                from . import netutil
+
+                self._usig.download_failed.emit(netutil.describe_error(exc))
 
         threading.Thread(target=work, name="update-download", daemon=True).start()
 

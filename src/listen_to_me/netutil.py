@@ -44,6 +44,49 @@ def verify() -> bool:
     return not _insecure
 
 
+def describe_error(exc: BaseException) -> str:
+    """One sentence a user can act on, for a failed outbound request.
+
+    ``requests`` renders an unreachable host as its whole transport chain —
+    ``HTTPSConnectionPool(host='api.github.com', port=443): Max retries
+    exceeded with url: … (Caused by NewConnectionError(…))`` — and the settings
+    window put that verbatim into a one-line status label: a stack-trace
+    fragment where a next step belongs.
+
+    Only the transport failures are translated. The app's own errors
+    (``AssistantError``, ``UpdateTrustError``) and an HTTP status raised by
+    ``raise_for_status`` already carry wording written for the user, so they
+    pass through untouched — as does anything else, which keeps this safe to
+    wrap around a broad ``except``.
+
+    Qt-free, and ``requests`` is imported only once there is an exception to
+    describe, so nothing here is on the ``--version`` / smoke-test path.
+    """
+    try:
+        import requests
+    except Exception:  # requests not installed — nothing to recognise
+        return str(exc) or exc.__class__.__name__
+    errors = requests.exceptions
+    # SSLError and ConnectTimeout are both ConnectionError subclasses, so the
+    # specific cases have to be asked first.
+    if isinstance(exc, errors.SSLError):
+        return (
+            "the TLS certificate could not be verified. Behind a corporate proxy "
+            "that intercepts HTTPS, switch “Ignore SSL certificate errors” on in "
+            "Settings → General → Network."
+        )
+    if isinstance(exc, errors.Timeout):
+        return "the server did not answer in time. Check that it is running, then try again."
+    if isinstance(exc, errors.ConnectionError):
+        return (
+            "the server could not be reached. Check the address and your network "
+            "connection (a proxy or firewall may be blocking it)."
+        )
+    if isinstance(exc, (errors.MissingSchema, errors.InvalidURL)):
+        return "the address is not a usable URL — it has to start with http:// or https://."
+    return str(exc) or exc.__class__.__name__
+
+
 def apply_insecure_ssl(enabled: bool) -> None:
     """Apply ``cfg["insecure_ssl"]``: turn TLS certificate verification off
     (or back on) for every outbound HTTPS connection the app makes.
