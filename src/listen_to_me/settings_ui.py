@@ -741,15 +741,23 @@ class SettingsWindow(QDialog):
         button.setMinimumWidth(widest)
 
     @staticmethod
-    def _hint(text: str, *, elastic: bool = False) -> QLabel:
+    def _hint(text: str, *, elastic: bool = False, selectable: bool = False) -> QLabel:
         """A muted, wrapping note. Pass `elastic=True` for every hint whose
         text is composed at runtime from a path, a URL or an exception — those
-        carry unbreakable words that would otherwise widen the whole page."""
+        carry unbreakable words that would otherwise widen the whole page.
+
+        Pass `selectable=True` wherever that runtime text can be a failure: an
+        error the user cannot select is an error they cannot paste into a
+        search or a bug report, which is exactly why `_status_value` and the
+        diagnostics status line are selectable.
+        """
         label = QLabel(text)
         label.setProperty("role", "hint")
         label.setWordWrap(True)
         if elastic:
             elastic_label(label)
+        if selectable:
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         return label
 
     @staticmethod
@@ -836,7 +844,7 @@ class SettingsWindow(QDialog):
         )
         self.hotkey_test_button.clicked.connect(self._test_hotkey)
         ht.addWidget(self.hotkey_test_button)
-        self.hotkey_test_status = self._hint("", elastic=True)
+        self.hotkey_test_status = self._hint("", elastic=True, selectable=True)
         ht.addWidget(self.hotkey_test_status, 1)
         form.addRow("", hotkey_test)
 
@@ -1328,7 +1336,7 @@ class SettingsWindow(QDialog):
         self.mic_level_bar.setTextVisible(False)
         self.mic_level_bar.setToolTip("Input level while the microphone test records.")
         form.addRow("Level:", self.mic_level_bar)
-        self.mic_status = self._hint("", elastic=True)
+        self.mic_status = self._hint("", elastic=True, selectable=True)
         form.addRow("", self.mic_status)
         layout.addWidget(card)
 
@@ -1560,7 +1568,7 @@ class SettingsWindow(QDialog):
         form.addRow("", test_row)
         # elastic: the line carries a URL, an endpoint reply or an exception —
         # all of them unbreakable words that would widen the whole page.
-        self.a_test_status = self._hint(_A_TEST_IDLE, elastic=True)
+        self.a_test_status = self._hint(_A_TEST_IDLE, elastic=True, selectable=True)
         form.addRow("", self.a_test_status)
         layout.addWidget(conn)
 
@@ -2729,7 +2737,7 @@ class SettingsWindow(QDialog):
         form.addRow("", self.update_check_button)
         layout.addWidget(card)
 
-        self.update_status = self._hint("Not checked yet.", elastic=True)
+        self.update_status = self._hint("Not checked yet.", elastic=True, selectable=True)
         layout.addWidget(self.update_status)
 
         self.update_list = QListWidget()
