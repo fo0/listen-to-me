@@ -3390,6 +3390,31 @@ def _gui_construction():
         assert window.history_export_button.isEnabled()
         assert len(window._history_export_entries) == 2
 
+        # Ctrl+F reaches the search field from anywhere on this page — the key
+        # everyone presses to find something, and the one the Help page's own
+        # find field already assumes this page owns. Scoped to the page, so the
+        # two searches never compete for it, and it selects what is already in
+        # the field so pressing it twice replaces the term instead of appending.
+        from PySide6.QtCore import Qt as _QtFind
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        history_page = window.stack.widget(window._history_index)
+        find_shortcuts = [
+            shortcut
+            for shortcut in history_page.findChildren(QShortcut)
+            if shortcut.key() == QKeySequence(QKeySequence.StandardKey.Find)
+        ]
+        assert len(find_shortcuts) == 1, find_shortcuts
+        assert (
+            find_shortcuts[0].context()
+            == _QtFind.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        window.history_filter_edit.setText("corrupt")
+        window._focus_history_filter()
+        assert window.history_filter_edit.selectedText() == "corrupt"
+        window.history_filter_edit.clear()
+        window._refresh_history()
+
         # "Clear history" on an empty history did nothing at all when clicked —
         # a greyed-out button says so instead.
         class _NoHistory:

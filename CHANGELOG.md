@@ -37,6 +37,11 @@ changes at a glance.
   the "Jump to" list at the very top, so an error message you can read on your
   own screen was not something you could search for. The search wraps around
   and only says "Not found" for a word the page really does not contain.
+- **`Ctrl+F` on the History page** puts the caret straight into the transcript
+  search field, the same key the Help page's find field uses. The field was
+  reachable by mouse only, and it sits above a list a long history has already
+  scrolled past; pressing the shortcut twice replaces the old search term
+  instead of appending to it.
 
 - **The floating icon remembers the monitor** it was left on, not just a screen
   coordinate — so it comes back to the right screen after a restart, after a
