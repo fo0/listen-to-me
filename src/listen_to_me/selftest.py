@@ -3136,11 +3136,38 @@ def _gui_construction():
         window.set_app_state("recording")
         assert "Stop" in window.home.record_button.text()
         assert not window.home.cancel_button.isHidden()
+
+        # The take clock the tray and the floating icon carry, on the hero as
+        # well: the biggest recording control the app has kept a frozen
+        # "Recording" for the whole take. Same format_duration as the other two
+        # surfaces, so one second cannot render three ways.
+        assert window.home.state_label.text() == "Recording — speak now"
+        window.set_app_elapsed(72)
+        assert window.home.state_label.text() == "Recording 1:12 — speak now"
+        # A value that isn't a clock reads 0:00 rather than raising inside
+        # App's poll timer; None means "no tick yet" and keeps the wording the
+        # headline had before the first one.
+        window.set_app_elapsed(-3)
+        assert window.home.state_label.text() == "Recording 0:00 — speak now"
+        window.set_app_elapsed(None)
+        assert window.home.state_label.text() == "Recording — speak now"
+        window.set_app_elapsed(72)
+
         window.set_app_state("processing")
         assert not window.home.record_button.isEnabled()
+        # A tick that lands just after the take ended must not re-label the
+        # hero with a stopped counter.
+        window.set_app_elapsed(99)
+        assert window.home.state_label.text() == "Transcribing…"
         window.set_app_state("idle")
         assert window.home.record_button.isEnabled()
         assert window.home.cancel_button.isHidden()
+        window.set_app_elapsed(99)
+        assert window.home.state_label.text() == "Ready to dictate"
+        # The next take starts from the wording without a clock again.
+        window.set_app_state("recording")
+        assert window.home.state_label.text() == "Recording — speak now"
+        window.set_app_state("idle")
 
         # Record-button debounce: a double-click emits two clicked signals
         # before the event poll runs — only ONE toggle may be posted, or the

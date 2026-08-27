@@ -28,7 +28,11 @@ changes at a glance.
   you have been dictating was invisible until the heads-up 30 seconds before
   the maximum length. The **floating icon carries the same clock** in its
   tooltip, so the take length is on the control that never leaves the screen
-  and not only on the one that can be switched off.
+  and not only on the one that can be switched off. The **Home hero counts the
+  take up as well** ("Recording 1:12 — speak now"): the biggest and most
+  explicit recording control the app has showed a frozen "Recording" for the
+  whole take, so anyone dictating from the open window was the one user without
+  the clock.
 - **The “Recent transcripts” submenu on the floating icon's menu too** — the
   shortcut past Settings → History existed only in the tray, which is exactly
   the icon someone working from the floating control may have turned off.

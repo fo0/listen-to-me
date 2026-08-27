@@ -690,6 +690,19 @@ class SettingsWindow(QDialog):
         except Exception:
             log.debug("could not update the Home state", exc_info=True)
 
+    def set_app_elapsed(self, seconds) -> None:
+        """Put the running take's clock into the Home hero (called by
+        App._tick_recording_clock on the Qt main thread, once a second).
+
+        Separate from `set_app_state` for the same reason the tray keeps the
+        two apart: this fires every second and only one label changes, while a
+        state change rebuilds the hero and re-renders the History page.
+        """
+        try:
+            self.home.set_elapsed(seconds)
+        except Exception:
+            log.debug("could not update the Home recording clock", exc_info=True)
+
     @staticmethod
     def _page(title: str) -> tuple[QWidget, QVBoxLayout]:
         """A scrollable page with a heading; returns (page, content layout)."""
