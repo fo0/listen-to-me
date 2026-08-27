@@ -28,7 +28,11 @@ changes at a glance.
   you have been dictating was invisible until the heads-up 30 seconds before
   the maximum length. The **floating icon carries the same clock** in its
   tooltip, so the take length is on the control that never leaves the screen
-  and not only on the one that can be switched off.
+  and not only on the one that can be switched off. The **Home hero counts the
+  take up as well** ("Recording 1:12 — speak now"): the biggest and most
+  explicit recording control the app has showed a frozen "Recording" for the
+  whole take, so anyone dictating from the open window was the one user without
+  the clock.
 - **The “Recent transcripts” submenu on the floating icon's menu too** — the
   shortcut past Settings → History existed only in the tray, which is exactly
   the icon someone working from the floating control may have turned off.
@@ -37,6 +41,11 @@ changes at a glance.
   the "Jump to" list at the very top, so an error message you can read on your
   own screen was not something you could search for. The search wraps around
   and only says "Not found" for a word the page really does not contain.
+- **`Ctrl+F` on the History page** puts the caret straight into the transcript
+  search field, the same key the Help page's find field uses. The field was
+  reachable by mouse only, and it sits above a list a long history has already
+  scrolled past; pressing the shortcut twice replaces the old search term
+  instead of appending to it.
 
 - **The floating icon remembers the monitor** it was left on, not just a screen
   coordinate — so it comes back to the right screen after a restart, after a
@@ -79,6 +88,11 @@ changes at a glance.
 
 ### Changed
 
+- **The floating icon's right-click menu now follows the app state**, the way
+  the tray menu always has: the first entry says whether it will start or stop
+  the recording instead of the ambiguous "Start / stop recording", and "Cancel
+  recording" is only offered while a take is actually running — clicking it
+  while idle did nothing at all, which reads as a broken entry.
 - **Clicking the tray icon opens the app window** instead of starting a
   recording. A single click does it as well as a double click. Recording is
   what the hotkey is for — it fires from the field the text should land in,

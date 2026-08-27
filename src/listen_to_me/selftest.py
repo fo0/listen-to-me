@@ -2707,6 +2707,57 @@ def _overlay_lists_recent_transcripts():
             overlay.destroy()
 
 
+def _overlay_menu_follows_the_state():
+    """The floating icon's menu says what a click on it will do.
+
+    The toggle entry is labelled after the state — the tray's wording, so the
+    two menus can never describe the same app differently — and "Cancel
+    recording" is only offered while a take is running, because App drops a
+    cancel in any other state and a menu entry that does nothing reads as a
+    broken one. The state is re-read when the menu opens, so an entry can
+    never advertise a state the app has already left."""
+    _ensure_qapp()
+    from PySide6.QtCore import QPoint
+
+    from listen_to_me.overlay import Overlay
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        overlay = Overlay(stub)
+        try:
+            assert overlay._act_toggle.text() == "Start recording"
+            assert not overlay._act_cancel.isVisible()
+
+            # App sets its own state before it feeds the overlay — the stub
+            # follows the same order.
+            stub.state = "recording"
+            overlay.set_state("recording")
+            assert overlay._act_toggle.text() == "Stop recording (insert text)"
+            assert overlay._act_cancel.isVisible()
+
+            stub.state = "processing"
+            overlay.set_state("processing")
+            assert overlay._act_toggle.text() == "Start recording"
+            assert not overlay._act_cancel.isVisible()
+
+            # A state change the overlay never saw (its set_state is fed by
+            # App, the menu is opened by the user) still reaches the entries:
+            # show_menu re-reads the app right before the popup.
+            stub.state = "recording"
+            overlay.show_menu(QPoint(0, 0))
+            overlay._menu.hide()
+            assert overlay._act_toggle.text() == "Stop recording (insert text)"
+            assert overlay._act_cancel.isVisible()
+
+            # Both entries still post the events they always did.
+            stub.posts.clear()
+            overlay._act_toggle.trigger()
+            overlay._act_cancel.trigger()
+            assert stub.posts == [("toggle",), ("cancel",)], stub.posts
+        finally:
+            overlay.destroy()
+
+
 def _tray_counts_the_recording_time():
     """A running take is counted up in the tray status, and the clock survives
     whatever the caller hands it.
@@ -3085,11 +3136,38 @@ def _gui_construction():
         window.set_app_state("recording")
         assert "Stop" in window.home.record_button.text()
         assert not window.home.cancel_button.isHidden()
+
+        # The take clock the tray and the floating icon carry, on the hero as
+        # well: the biggest recording control the app has kept a frozen
+        # "Recording" for the whole take. Same format_duration as the other two
+        # surfaces, so one second cannot render three ways.
+        assert window.home.state_label.text() == "Recording — speak now"
+        window.set_app_elapsed(72)
+        assert window.home.state_label.text() == "Recording 1:12 — speak now"
+        # A value that isn't a clock reads 0:00 rather than raising inside
+        # App's poll timer; None means "no tick yet" and keeps the wording the
+        # headline had before the first one.
+        window.set_app_elapsed(-3)
+        assert window.home.state_label.text() == "Recording 0:00 — speak now"
+        window.set_app_elapsed(None)
+        assert window.home.state_label.text() == "Recording — speak now"
+        window.set_app_elapsed(72)
+
         window.set_app_state("processing")
         assert not window.home.record_button.isEnabled()
+        # A tick that lands just after the take ended must not re-label the
+        # hero with a stopped counter.
+        window.set_app_elapsed(99)
+        assert window.home.state_label.text() == "Transcribing…"
         window.set_app_state("idle")
         assert window.home.record_button.isEnabled()
         assert window.home.cancel_button.isHidden()
+        window.set_app_elapsed(99)
+        assert window.home.state_label.text() == "Ready to dictate"
+        # The next take starts from the wording without a clock again.
+        window.set_app_state("recording")
+        assert window.home.state_label.text() == "Recording — speak now"
+        window.set_app_state("idle")
 
         # Record-button debounce: a double-click emits two clicked signals
         # before the event poll runs — only ONE toggle may be posted, or the
@@ -3338,6 +3416,31 @@ def _gui_construction():
         assert "A stored transcript" in _history_text()
         assert window.history_export_button.isEnabled()
         assert len(window._history_export_entries) == 2
+
+        # Ctrl+F reaches the search field from anywhere on this page — the key
+        # everyone presses to find something, and the one the Help page's own
+        # find field already assumes this page owns. Scoped to the page, so the
+        # two searches never compete for it, and it selects what is already in
+        # the field so pressing it twice replaces the term instead of appending.
+        from PySide6.QtCore import Qt as _QtFind
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        history_page = window.stack.widget(window._history_index)
+        find_shortcuts = [
+            shortcut
+            for shortcut in history_page.findChildren(QShortcut)
+            if shortcut.key() == QKeySequence(QKeySequence.StandardKey.Find)
+        ]
+        assert len(find_shortcuts) == 1, find_shortcuts
+        assert (
+            find_shortcuts[0].context()
+            == _QtFind.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        window.history_filter_edit.setText("corrupt")
+        window._focus_history_filter()
+        assert window.history_filter_edit.selectedText() == "corrupt"
+        window.history_filter_edit.clear()
+        window._refresh_history()
 
         # "Clear history" on an empty history did nothing at all when clicked —
         # a greyed-out button says so instead.
@@ -4077,6 +4180,7 @@ _LIGHT_CHECKS = [
     ("overlay position is anchored to its monitor", _overlay_position_is_anchored_to_its_monitor),
     ("overlay counts the recording time", _overlay_counts_the_recording_time),
     ("overlay lists recent transcripts", _overlay_lists_recent_transcripts),
+    ("overlay menu follows the state", _overlay_menu_follows_the_state),
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("tray lists recent transcripts", _tray_lists_recent_transcripts),

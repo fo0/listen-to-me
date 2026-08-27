@@ -242,11 +242,12 @@ class App:
         sixty times. `_set_state` writes the clock-free label on every
         transition, so leaving RECORDING clears the counter by itself.
 
-        Both surfaces are fed, and each in its own try: the floating icon is
-        the control that never leaves the screen while the user speaks, so a
-        take clock only the tray carries is missing exactly where it is being
-        looked for — and a failure on one of them must not cost the other its
-        update.
+        Every surface is fed, and each in its own try: the floating icon is
+        the control that never leaves the screen while the user speaks, the
+        Home hero is the one in front of whoever dictates from the window, so
+        a take clock only the tray carries is missing exactly where it is being
+        looked for — and a failure on one of them must not cost the others
+        their update.
         """
         if self.state != STATE_RECORDING:
             self._clock_seconds = -1
@@ -264,6 +265,16 @@ class App:
                 self.overlay.set_elapsed(seconds)
             except Exception:
                 log.debug("could not update the overlay recording clock", exc_info=True)
+        if self._settings_window is not None:
+            # Same handling as in _set_state: a window already deleted by
+            # _open_settings raises RuntimeError on attribute access, and a
+            # clock tick must never be what takes the app down.
+            try:
+                self._settings_window.set_app_elapsed(seconds)
+            except RuntimeError:
+                self._settings_window = None
+            except Exception:
+                log.debug("could not update the Home recording clock", exc_info=True)
 
     def _handle(self, kind: str, payload) -> None:
         if kind == "toggle":

@@ -690,6 +690,19 @@ class SettingsWindow(QDialog):
         except Exception:
             log.debug("could not update the Home state", exc_info=True)
 
+    def set_app_elapsed(self, seconds) -> None:
+        """Put the running take's clock into the Home hero (called by
+        App._tick_recording_clock on the Qt main thread, once a second).
+
+        Separate from `set_app_state` for the same reason the tray keeps the
+        two apart: this fires every second and only one label changes, while a
+        state change rebuilds the hero and re-renders the History page.
+        """
+        try:
+            self.home.set_elapsed(seconds)
+        except Exception:
+            log.debug("could not update the Home recording clock", exc_info=True)
+
     @staticmethod
     def _page(title: str) -> tuple[QWidget, QVBoxLayout]:
         """A scrollable page with a heading; returns (page, content layout)."""
@@ -1625,13 +1638,14 @@ class SettingsWindow(QDialog):
         fh.setContentsMargins(0, 0, 0, 0)
         fh.setSpacing(8)
         self.history_filter_edit = QLineEdit()
-        self.history_filter_edit.setPlaceholderText("Search transcripts…")
+        self.history_filter_edit.setPlaceholderText("Search transcripts…  (Ctrl+F)")
         self.history_filter_edit.setClearButtonEnabled(True)
         # No form-row label to borrow a name from — see the progress bars.
         self.history_filter_edit.setAccessibleName("Search transcripts")
         self.history_filter_edit.setToolTip(
             "Show only transcripts containing these words (in any order, "
-            "upper/lower case ignored). Clear the field to see all of them again."
+            "upper/lower case ignored). Ctrl+F puts the caret here from "
+            "anywhere on this page. Clear the field to see all of them again."
         )
         self.history_filter_edit.textChanged.connect(self._on_history_filter_changed)
         fh.addWidget(self.history_filter_edit, 1)
@@ -1675,7 +1689,25 @@ class SettingsWindow(QDialog):
         bottom.addWidget(self.history_clear_button)
         layout.addLayout(bottom)
 
+        # Ctrl+F, the key everyone reaches for when they want to find
+        # something. The Help page has had it since its find field existed and
+        # already assumes this page owns the same key; without it the search
+        # field could only be reached by mouse, and it sits above a scroll area
+        # a long history has already scrolled past. Bound to this page only —
+        # a window-wide shortcut would have to guess which of the two searches
+        # was meant.
+        find_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), page)
+        find_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        find_shortcut.activated.connect(self._focus_history_filter)
+
         return page
+
+    def _focus_history_filter(self) -> None:
+        """Put the caret in the search field and select what is in it, so
+        Ctrl+F twice in a row replaces the old term instead of appending to
+        it — the Help page's find field behaves the same way."""
+        self.history_filter_edit.setFocus()
+        self.history_filter_edit.selectAll()
 
     def _build_help(self, title: str) -> QWidget:
         page, layout = self._page(title)

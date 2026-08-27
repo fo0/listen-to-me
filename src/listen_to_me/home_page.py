@@ -30,6 +30,11 @@ from .glyphs import glyph_icon
 from .keymap import pretty_keys
 from .qtutil import copy_with_feedback, elastic_label
 
+# From the tray, like the floating icon does: the take clock is rendered on
+# three surfaces now and they must never disagree about the same second.
+# (tray.py imports nothing from this module — no cycle.)
+from .tray import format_duration
+
 log = logging.getLogger(__name__)
 
 # How many of the latest transcripts the Home page shows; the full list lives
@@ -107,6 +112,9 @@ class HomePage(QWidget):
         self._app = window.app
         self.cfg = window.cfg
         self._state = "idle"
+        # Seconds of the running take, or None before the first tick of one —
+        # see set_elapsed.
+        self._elapsed = None
         # (input_device config value, label) — device enumeration goes through
         # PortAudio and can stall for hundreds of ms on flaky drivers, so it
         # runs once per device value, not on every Home visit / Apply.
@@ -436,10 +444,41 @@ class HomePage(QWidget):
 
     # ------------------------------------------------------------------ state
 
+    def _recording_state_text(self) -> str:
+        """The hero headline of a running take, with its clock once one has
+        ticked. Same wording and same `format_duration` as the tray and the
+        floating icon, so the three surfaces cannot render one second three
+        ways."""
+        if self._elapsed is None:
+            return "Recording — speak now"
+        return f"Recording {format_duration(self._elapsed)} — speak now"
+
+    def set_elapsed(self, seconds) -> None:
+        """Count the running take up in the hero headline, once a second.
+
+        The tray status and the floating icon have carried this clock since the
+        take-length cap became visible on them; the Home hero — the biggest,
+        most explicit recording control the app has, and the one open in front
+        of someone who dictates from the window — kept a frozen "Recording"
+        for the whole take. Fed by App's 100 ms poll through
+        SettingsWindow.set_app_elapsed.
+
+        Ignored unless a take is actually running: a tick that lands just after
+        one ended must not re-label an idle hero with a stopped counter.
+        """
+        if self._state != "recording":
+            return
+        self._elapsed = seconds
+        self.state_label.setText(self._recording_state_text())
+
     def set_state(self, state: str) -> None:
         """Mirror the app state into the hero card. Called via
         SettingsWindow.set_app_state on every state transition."""
         previous, self._state = self._state, state
+        # A new state owns a fresh clock: leaving "recording" drops the
+        # counter, entering it starts from the wording without one until the
+        # first tick arrives.
+        self._elapsed = None
         if self._hero.property("state") != state:
             # Re-polish so the QSS picks up the state-dependent gradient.
             self._hero.setProperty("state", state)
@@ -453,7 +492,7 @@ class HomePage(QWidget):
             else "Press once to start, press again to insert."
         )
         if state == "recording":
-            self.state_label.setText("Recording — speak now")
+            self.state_label.setText(self._recording_state_text())
             self.hint_label.setText("Stop to transcribe and insert the text at the cursor.")
             self.record_button.setText("Stop && insert")
             self.record_button.setEnabled(True)
