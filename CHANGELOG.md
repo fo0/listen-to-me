@@ -79,6 +79,11 @@ changes at a glance.
 
 ### Changed
 
+- **The floating icon's right-click menu now follows the app state**, the way
+  the tray menu always has: the first entry says whether it will start or stop
+  the recording instead of the ambiguous "Start / stop recording", and "Cancel
+  recording" is only offered while a take is actually running — clicking it
+  while idle did nothing at all, which reads as a broken entry.
 - **Clicking the tray icon opens the app window** instead of starting a
   recording. A single click does it as well as a double click. Recording is
   what the hotkey is for — it fires from the field the text should land in,

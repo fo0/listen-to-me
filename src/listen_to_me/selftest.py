@@ -2707,6 +2707,57 @@ def _overlay_lists_recent_transcripts():
             overlay.destroy()
 
 
+def _overlay_menu_follows_the_state():
+    """The floating icon's menu says what a click on it will do.
+
+    The toggle entry is labelled after the state — the tray's wording, so the
+    two menus can never describe the same app differently — and "Cancel
+    recording" is only offered while a take is running, because App drops a
+    cancel in any other state and a menu entry that does nothing reads as a
+    broken one. The state is re-read when the menu opens, so an entry can
+    never advertise a state the app has already left."""
+    _ensure_qapp()
+    from PySide6.QtCore import QPoint
+
+    from listen_to_me.overlay import Overlay
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        overlay = Overlay(stub)
+        try:
+            assert overlay._act_toggle.text() == "Start recording"
+            assert not overlay._act_cancel.isVisible()
+
+            # App sets its own state before it feeds the overlay — the stub
+            # follows the same order.
+            stub.state = "recording"
+            overlay.set_state("recording")
+            assert overlay._act_toggle.text() == "Stop recording (insert text)"
+            assert overlay._act_cancel.isVisible()
+
+            stub.state = "processing"
+            overlay.set_state("processing")
+            assert overlay._act_toggle.text() == "Start recording"
+            assert not overlay._act_cancel.isVisible()
+
+            # A state change the overlay never saw (its set_state is fed by
+            # App, the menu is opened by the user) still reaches the entries:
+            # show_menu re-reads the app right before the popup.
+            stub.state = "recording"
+            overlay.show_menu(QPoint(0, 0))
+            overlay._menu.hide()
+            assert overlay._act_toggle.text() == "Stop recording (insert text)"
+            assert overlay._act_cancel.isVisible()
+
+            # Both entries still post the events they always did.
+            stub.posts.clear()
+            overlay._act_toggle.trigger()
+            overlay._act_cancel.trigger()
+            assert stub.posts == [("toggle",), ("cancel",)], stub.posts
+        finally:
+            overlay.destroy()
+
+
 def _tray_counts_the_recording_time():
     """A running take is counted up in the tray status, and the clock survives
     whatever the caller hands it.
@@ -4077,6 +4128,7 @@ _LIGHT_CHECKS = [
     ("overlay position is anchored to its monitor", _overlay_position_is_anchored_to_its_monitor),
     ("overlay counts the recording time", _overlay_counts_the_recording_time),
     ("overlay lists recent transcripts", _overlay_lists_recent_transcripts),
+    ("overlay menu follows the state", _overlay_menu_follows_the_state),
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("tray lists recent transcripts", _tray_lists_recent_transcripts),

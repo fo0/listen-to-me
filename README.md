@@ -44,7 +44,10 @@ standalone system-tray app that works in _every_ application.
 - **Floating status icon** — a small animated always-on-top icon you can drag
   anywhere: a wavy equalizer ring that shimmers gently while idle, pulses with
   your live microphone levels while recording, and shows an orange mic glyph
-  while transcribing. Click it to start/stop, right-click for a menu. Hovering
+  while transcribing. Click it to start/stop, right-click for a menu — whose
+  entries follow the state like the tray menu's do, so the first one says
+  whether it starts or stops the take and **Cancel recording** only appears
+  while there is one to cancel. Hovering
   it while you dictate shows **how long the take has been running**
   ("Recording 1:12… click again to stop"), the same clock the tray carries —
   so the maximum recording length is visible on the control that never leaves

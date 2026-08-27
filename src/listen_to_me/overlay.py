@@ -274,8 +274,16 @@ class Overlay:
                 self._watch_screen(screen)
 
         self._menu = QMenu()
-        self._menu.addAction("Start / stop recording", lambda: app.post("toggle"))
-        self._menu.addAction("Cancel recording", lambda: app.post("cancel"))
+        # The two entries that depend on what the app is doing right now. Both
+        # used to be static, which made the menu say things that were not true:
+        # "Start / stop recording" never named which of the two the click would
+        # do, and "Cancel recording" sat there while idle, where App drops it
+        # as a no-op — an entry that does nothing reads as a broken one. The
+        # tray menu has always labelled itself after the state; this is the
+        # same treatment for the icon that never leaves the screen, and the
+        # wording is taken from there so the two menus stay in step.
+        self._act_toggle = self._menu.addAction("Start recording", lambda: app.post("toggle"))
+        self._act_cancel = self._menu.addAction("Cancel recording", lambda: app.post("cancel"))
         self._menu.addAction("Copy last transcript", lambda: app.post("copy_last"))
         # …and the ones before it, exactly as in the tray menu. Reaching the
         # second-newest transcript from here meant opening Settings and walking
@@ -301,6 +309,7 @@ class Overlay:
         self._menu.addAction("Hide floating icon", lambda: app.post("toggle_overlay"))
         self._menu.addSeparator()
         self._menu.addAction("Quit", lambda: app.post("quit"))
+        self._sync_menu_state()
 
         self.apply_always_on_top()
         self._restore_position()
@@ -788,6 +797,27 @@ class Overlay:
         self._elapsed = seconds
         self._apply_status(self._progress_text or self._state_tooltip())
 
+    def _sync_menu_state(self, state: str | None = None) -> None:
+        """Name the toggle entry after what a click on it will do, and offer
+        "Cancel recording" only while there is a take to cancel.
+
+        `state` is the transition being applied, for the call inside
+        `set_state`. Without it the state is read back from the app, which is
+        what the call right before the menu pops up needs: whatever happened
+        since the last transition, the entries then describe the app as it is
+        at the moment they become visible. getattr keeps the self-test's App
+        stub (state-only, like the tray's) working.
+        """
+        if state is None:
+            state = getattr(self.app, "state", self.state)
+        try:
+            self._act_toggle.setText(
+                "Stop recording (insert text)" if state == "recording" else "Start recording"
+            )
+            self._act_cancel.setVisible(state == "recording")
+        except Exception:
+            log.debug("could not update the floating icon menu entries", exc_info=True)
+
     def set_state(self, state: str) -> None:
         self.state = state
         # A new state owns a fresh clock: leaving "recording" clears the
@@ -797,6 +827,8 @@ class Overlay:
         # A download outlives a state change (the model is fetched during
         # "processing"), so it keeps the tooltip until it reports itself done.
         self._apply_status(self._progress_text or self._state_tooltip())
+        # …and the menu, for the case where it is open while the take ends.
+        self._sync_menu_state(state)
         self.win.mic.set_recording(state == "recording")
         self.win.mic.set_processing(state == "processing")
         if state == "recording":
@@ -926,6 +958,9 @@ class Overlay:
             )
 
     def show_menu(self, global_pos) -> None:
+        # Right before it becomes visible, not only on the last state change:
+        # the menu is built once and lives for the whole session.
+        self._sync_menu_state()
         self._menu.popup(global_pos)
 
     def save_position(self) -> None:
