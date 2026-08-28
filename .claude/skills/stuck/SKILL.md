@@ -76,9 +76,12 @@ C) revert the loop work — `/rollback`
 D) defer to BACKLOG and move on
 
 What would you like?
+
+<the handoff prompt for the option you recommend — CLAUDE.md → _Handoff Prompt_>
 ```
 
-Then **stop**. Do NOT take a 4th attempt without user input.
+Then **stop**. Do NOT take a 4th attempt without user input. The handoff prompt is part of the escalation, not a
+replacement for the options: it carries the one option you would pick, ready to send.
 
 ### 4b. Unattended run — same snapshot, no question
 

@@ -22,14 +22,24 @@ Diff-based by default. Full-codebase only on explicit user request (`/security-r
 1. git status + git diff                              → identify changed files
 2. Read CLAUDE.md "Architecture Principles" + Secrets  → understand trust boundaries
 3. Read every changed file completely
-4. Evaluate against the checklist below
+4. Work the current OWASP Top 10 (see Coverage), then the checklist below
 5. Run security-relevant tooling (see Tooling)
 6. Fix findings inline (prefer over defer; security debt compounds)
 7. Output standard Security Review Results table
 8. For NOT-fixed findings → BACKLOG.md with explicit Sev: P0/P1
 ```
 
-## Checklist — OWASP-adapted + this app's real surfaces
+## Coverage — the current OWASP Top 10, category by category
+
+Work the **current** OWASP Top 10 from your own knowledge of it — one deliberate pass per category, in order, over the
+code in scope. The taxonomy is deliberately not copied here: a frozen edition in this file would pin the audit to an
+outdated one. Two obligations make the coverage checkable:
+
+- **Every category gets a verdict.** Nothing to report is `✅ Pass`, not a silent omission. "Looks fine" is not a pass.
+- **Name the edition** in the report footer (`OWASP Top 10 edition: <year>`) and tag every finding with its category id,
+  using the ids that edition actually uses.
+
+## Checklist — this app's real surfaces (beyond the generic taxonomy)
 
 ### Secrets & Data
 
@@ -59,18 +69,18 @@ Diff-based by default. Full-codebase only on explicit user request (`/security-r
 
 ### Dependencies
 
-- [ ] `pip-audit` clean (no known high/critical vulns) if run
+- [ ] Dependency audit clean (no known high/critical vulns) if run
 - [ ] New dep justified; `requirements.txt` and `pyproject.toml` kept in sync
 
 ## Tooling (run if available, never gate on availability)
 
-| Tool                      | Command                      | What it catches                             |
-| ------------------------- | ---------------------------- | ------------------------------------------- |
-| `gitleaks` / `trufflehog` | `gitleaks detect --source .` | Committed secrets                           |
-| `pip-audit`               | `pip-audit`                  | Vulnerable Python deps                      |
-| `bandit`                  | `bandit -r src`              | Python SAST (subprocess, eval, weak crypto) |
+Three classes, each run once with whatever the current standard tool for it is on this stack — **secret scanning**,
+**dependency audit**, **static analysis** (generic pattern-based plus Python's own SAST). Prefer a tool this repo
+already configures over introducing one; installing a tool is a dependency decision (`CLAUDE.md` → _Dependency
+Management_), so an audit never adds one on its own.
 
-If a tool isn't available locally → note in report, do NOT block the review.
+A class with no available tool is named `not run` in the report and the review carries on. **Never block or gate the
+review on tool availability** — the manual pass above is the audit; tools only widen it.
 
 ## Severity & Fixing Rules
 
@@ -83,12 +93,13 @@ If a tool isn't available locally → note in report, do NOT block the review.
 ```
 ### Security Review Results
 
-| # | Area | Sev | Status | Finding | Action |
-|---|------|-----|--------|---------|--------|
+| # | OWASP / Area | Sev | Status | Finding | Action |
+|---|--------------|-----|--------|---------|--------|
 | 1 | Secrets | P0 | ⚠️ Fixed | api_key echoed in a notify() | Redacted from message |
 | ... |
 
-Tools run: <list>
+OWASP Top 10 edition: <year> | Categories with a verdict: <n>/<n>
+Tools run: <list, or "<class>: not run">
 Summary: X findings | Y fixed | Z deferred (with explicit user override) → Backlog
 ```
 
@@ -101,6 +112,6 @@ Footer:
 ## Rules
 
 - **Do not run automatically.** On-demand only.
-- **Do not skip checklist sections** even if "looks fine".
+- **Do not skip a category or a checklist section** even if "looks fine". Every OWASP category gets an explicit verdict, and the report names the taxonomy edition used.
 - **Do not silently lower severity.** If unsure, default to higher.
 - **Do not commit fixes without re-running the affected checks** (autonomy + zero-cost rule still applies).
