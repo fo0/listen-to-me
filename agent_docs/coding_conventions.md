@@ -8,6 +8,14 @@ Offloaded from `CLAUDE.md` (context budget). CLAUDE.md keeps the seven rules tha
 - UI strings are inline English literals. There is **no i18n framework**; don't introduce one without user approval.
 - App log output is English.
 
+### Never-translate term list
+
+Offloaded from `CLAUDE.md → Output Languages`, which keeps the rule; this is the vocabulary it applies to. Inside a German chat sentence these stay English verbatim and the sentence inflects around them — „2 Bugs gefixt", „PR gemerged", never „Programmfehler":
+
+bug · smell · lint · build · commit · merge · rebase · branch · PR · review · refactoring · deployment · rollback · issue · breaking change · hotfix · coverage · flaky test · regression · edge case · stack trace · dependency · tech debt.
+
+Plus everything that names something real: file paths, commands, tool / skill / hook names, status labels, and error strings (quoted verbatim, never re-worded).
+
 ## Module hygiene
 
 - **`from __future__ import annotations`** at the top of every module.

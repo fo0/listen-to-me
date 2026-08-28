@@ -40,4 +40,4 @@ The instances keep their own gates, each with a single source of truth:
 - **Fast mode** (`/fast`): the **same** Opus model with faster output — not a downgrade. Use when latency beats reasoning depth.
 - **Caveman mode** (chat compression): default `full` in every session — rules in `CLAUDE.md → Caveman Mode`. `caveman lite|full|ultra` switches, `stop caveman` ends it for the session; chat only, never generated files.
 - **Orchestrator mode** (`orca`): **the default**, width 5 — declared in `CLAUDE.md → Subagents`, contract in `.claude/skills/orca/SKILL.md`. `/orca <N>` sets the width, `/orca off` drops to plain behavior for that session only; neither carries forward.
-- **Plan mode:** for non-trivial implementation strategy — `Plan` subagent or `EnterPlanMode`. Not for single-step tasks.
+- **Plan mode:** for non-trivial implementation strategy — `Plan` subagent or `EnterPlanMode`. Not for single-step tasks. A plan put up for approval ends the turn on the user, so it carries the block from `CLAUDE.md → Handoff Prompt`.
