@@ -223,10 +223,6 @@ def newer_releases(releases: list[Release], current: tuple[int, ...] | None = No
     return [r for r in releases if r.version > cur]
 
 
-def latest_release(releases: list[Release]) -> Release | None:
-    return releases[0] if releases else None
-
-
 def _require_trusted_url(url: str) -> None:
     """Defence in depth: only ever download over HTTPS from GitHub hosts.
 
