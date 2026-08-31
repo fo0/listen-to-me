@@ -100,12 +100,12 @@ def parse_replacements(spec: str) -> list[tuple[str, str]]:
         if not line or line.startswith("#"):
             continue
         if "=>" not in line:
-            log.warning("replacement rule %d has no “=>” separator, ignored: %.60r", number, line)
+            log.warning("replacement rule on line %d has no “=>” separator, ignored: %.60r", number, line)
             continue
         find, replace = line.split("=>", 1)
         find = find.strip()
         if not find:
-            log.warning("replacement rule %d has an empty search term, ignored", number)
+            log.warning("replacement rule on line %d has an empty search term, ignored", number)
             continue
         rules.append((find, replace.strip()))
         if len(rules) >= _MAX_REPLACEMENT_RULES:

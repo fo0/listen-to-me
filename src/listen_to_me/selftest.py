@@ -550,6 +550,13 @@ def _missing_microphone_falls_back():
     # rather than moving a recording off a microphone that works.
     assert resolve_input_device(3, []) == (3, None)
 
+    # `input_device` has a null default, so the config merge stores whatever is
+    # in the file, and sounddevice also accepts a device *name*. A value that
+    # is not an index is left for PortAudio to resolve instead of being
+    # overruled against a list it cannot be compared against.
+    assert resolve_input_device("USB Headset", devices) == ("USB Headset", None)
+    assert resolve_input_device(True, devices) == (True, None)  # bool is an int subclass
+
     # The live-enumeration path: a raising list_input_devices is caught and
     # logged, never raised into _start_recording.
     import listen_to_me.audio as audio_mod

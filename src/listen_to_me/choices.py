@@ -241,9 +241,16 @@ def resolve_input_device(
     passes the configured index through untouched: it cannot tell "this
     microphone is gone" from "PortAudio could not be asked", and guessing here
     would move a recording off a device that works.
+
+    Only a real index is checked. `input_device` has a `null` default, so the
+    config merge passes anything stored under it through unvalidated, and
+    sounddevice additionally accepts a device *name* — a value that is not an
+    int is therefore not necessarily broken, and is left for PortAudio to
+    resolve rather than being overruled here on a list it cannot be compared
+    against. (`bool` is an int subclass, and `True` is not a device.)
     """
-    if index is None:
-        return None, None
+    if not isinstance(index, int) or isinstance(index, bool):
+        return index, None
     if devices is None:
         try:
             from .audio import list_input_devices
