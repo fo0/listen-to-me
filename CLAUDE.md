@@ -11,7 +11,7 @@ When a session begins, read in this order. Stop early if a file is missing.
 5. `agent_docs/mcp_catalog.md` — only when MCPs come up
 6. `.claude/skills/*/SKILL.md` — only when its trigger fires
 
-> Don't pre-load everything. The Tier-1 SessionStart hook already prints a reminder.
+> Don't pre-load everything. The Tier-1 SessionStart hook already prints a reminder. Tier-2/3 hook snippets for `.claude/settings.json`: `agent_docs/hooks_catalog.md`.
 
 ## Workflow Triggers
 
