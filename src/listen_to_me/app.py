@@ -77,6 +77,84 @@ def length_warning_message(
     )
 
 
+# Hard cap on the rule list. A hand-edited config is untrusted input, and the
+# rules are compiled and applied after every single dictation.
+_MAX_REPLACEMENT_RULES = 500
+
+
+def parse_replacements(spec: str) -> list[tuple[str, str]]:
+    """The `find => replace` rules in `spec`, in the order they are written.
+
+    One rule per line. Blank lines and lines starting with `#` are comments; a
+    line without the `=>` separator is skipped with a warning rather than
+    failing the list, because this is hand-edited text and one typo must not
+    cost the other rules. An empty right-hand side is allowed on purpose — it
+    deletes the word (a stock filler this speaker never wants written out).
+
+    Qt-free and side-effect free so the rule syntax is testable headlessly.
+    """
+    rules: list[tuple[str, str]] = []
+    for number, line in enumerate(str(spec or "").splitlines(), start=1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=>" not in line:
+            log.warning("replacement rule %d has no “=>” separator, ignored: %.60r", number, line)
+            continue
+        find, replace = line.split("=>", 1)
+        find = find.strip()
+        if not find:
+            log.warning("replacement rule %d has an empty search term, ignored", number)
+            continue
+        rules.append((find, replace.strip()))
+        if len(rules) >= _MAX_REPLACEMENT_RULES:
+            log.warning("more than %d replacement rules — the rest is ignored", _MAX_REPLACEMENT_RULES)
+            break
+    return rules
+
+
+def apply_replacements(text: str, spec: str) -> str:
+    """`text` with the user's `find => replace` rules applied, in order.
+
+    Whisper mis-hears the same domain words the same way every time — a product
+    name, a colleague's surname, an acronym — and the initial prompt only
+    *biases* recognition, it cannot guarantee a spelling. These rules are the
+    deterministic second half of that: what the recognizer got wrong anyway is
+    corrected before the text reaches the cursor.
+
+    Matching is case-insensitive and on whole words, and the replacement is
+    inserted exactly as written — one rule therefore catches the word at the
+    start of a sentence as well as inside it, and always produces the spelling
+    the user typed. The word-boundary guards are only added on a side that
+    starts/ends with a word character, so a rule for “z.B.” or “:-)” still
+    matches.
+
+    Never raises: this runs on the worker thread between a finished dictation
+    and its insertion, so a bad rule (a search term that is somehow not
+    compilable even escaped) must cost the correction, never the transcript.
+    """
+    if not text:
+        return text
+    rules = parse_replacements(spec)
+    if not rules:
+        return text
+    import re
+
+    for find, replace in rules:
+        try:
+            pattern = re.escape(find)
+            if find[0].isalnum() or find[0] == "_":
+                pattern = r"\b" + pattern
+            if find[-1].isalnum() or find[-1] == "_":
+                pattern = pattern + r"\b"
+            # A backslash or \1 in the replacement is literal text here, not a
+            # group reference — the user wrote a word, not a regex.
+            text = re.sub(pattern, replace.replace("\\", r"\\"), text, flags=re.IGNORECASE)
+        except Exception:
+            log.exception("replacement rule %r could not be applied", find)
+    return text
+
+
 class App:
     def __init__(self):
         self.cfg = Config()
@@ -531,6 +609,16 @@ class App:
                     except Exception as exc:
                         log.exception("assistant post-processing failed")
                         self.notify(f"Assistant failed ({exc}) — inserting the raw transcript.", force=True)
+            if live is None:
+                # Last, so the user's own rules are the final word — the
+                # assistant rewrites the whole text and would otherwise be free
+                # to undo them. Skipped for live typing for the same reason the
+                # assistant is: part of the text is already at the cursor and
+                # append-only typing cannot take it back, so a correction here
+                # would only reach the tail and leave history disagreeing with
+                # what was actually typed.
+                full_text = apply_replacements(full_text, self.cfg["replacements"])
+                text = full_text
             # Record before inserting so the transcript is kept even if the
             # insertion into the target window fails.
             if self.cfg["history_enabled"]:

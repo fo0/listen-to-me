@@ -14,6 +14,14 @@ changes at a glance.
 
 ### Added
 
+- **Text replacements** (Settings → Whisper) — `heard => written` rules applied
+  to every finished transcript, one per line. Whisper mis-hears the same domain
+  word the same way every time, and the initial prompt only *biases*
+  recognition; these rules fix what it got wrong anyway before the text reaches
+  the cursor. Case is ignored and whole words are matched, so one rule catches
+  the word at the start of a sentence as well as inside it, and the replacement
+  is inserted exactly as written.
+
 - **Pause hotkey** in the tray menu — suspends the global hotkey while a game,
   a remote session or another app needs the same keys, without changing (and
   having to remember) the configured combination. The tray status says it out

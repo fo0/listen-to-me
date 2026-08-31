@@ -1279,6 +1279,30 @@ class SettingsWindow(QDialog):
         ))
         layout.addWidget(prompt)
 
+        # Deliberately its own card, not a second field in the prompt box
+        # above: that one is greyed out for the Parakeet backend (it has no
+        # initial prompt), while these rules run after every backend.
+        replacements = QGroupBox("Text replacements")
+        rv = QVBoxLayout(replacements)
+        self.replacements_edit = QPlainTextEdit(self.cfg["replacements"])
+        self.replacements_edit.setToolTip(
+            "One rule per line: what was heard, “=>”, what should be written "
+            "(e.g. “cuber netes => Kubernetes”). Upper/lower case is ignored "
+            "and whole words are matched; the replacement is inserted exactly "
+            "as written. Lines starting with # are comments."
+        )
+        self.replacements_edit.setAccessibleName("Text replacements")
+        self.replacements_edit.setPlaceholderText("cuber netes => Kubernetes\nposgres => PostgreSQL")
+        self.replacements_edit.setFixedHeight(80)
+        rv.addWidget(self.replacements_edit)
+        rv.addWidget(self._hint(
+            "Applied to every finished transcript, in order, after the assistant — "
+            "so a word this speaker always gets wrong is corrected before the text "
+            "reaches the cursor. An empty right-hand side deletes the word. Not "
+            "applied while live typing is on: that text is already at the cursor."
+        ))
+        layout.addWidget(replacements)
+
         # Wired last: _on_backend_changed also greys out the Whisper-only
         # fields on the General page and the initial prompt above, so every
         # widget it touches must already exist when it first runs.
@@ -3674,6 +3698,7 @@ class SettingsWindow(QDialog):
             "include_prereleases": self.chk_prereleases.isChecked(),
             "insecure_ssl": self.chk_insecure_ssl.isChecked(),
             "initial_prompt": self.initial_prompt_edit.toPlainText().strip(),
+            "replacements": self.replacements_edit.toPlainText().strip(),
             "input_device": self._selected_input_device(),
             "max_seconds": int(self.max_seconds_spin.value()),
             "overlay": {

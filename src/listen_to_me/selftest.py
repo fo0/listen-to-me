@@ -440,6 +440,49 @@ def _recording_length_warning():
     assert length_warning_message(295.0, "300") is not None
 
 
+def _text_replacements():
+    """The user's `find => replace` rules: whole-word and case-insensitive so
+    one rule catches the word wherever it lands, the replacement verbatim so it
+    always produces the spelling that was typed, and never an exception out of
+    the worker thread for a hand-edited rule list."""
+    from listen_to_me.app import apply_replacements, parse_replacements
+    from listen_to_me.config import DEFAULTS
+
+    assert DEFAULTS["replacements"] == ""  # off until the user writes a rule
+
+    # Syntax: one rule per line, comments and blank lines ignored, a line
+    # without the separator skipped instead of failing the whole list.
+    rules = parse_replacements(
+        "# my words\n\ncuber netes => Kubernetes\nposgres=>PostgreSQL\nbroken line\n"
+    )
+    assert rules == [("cuber netes", "Kubernetes"), ("posgres", "PostgreSQL")]
+    assert parse_replacements("") == [] and parse_replacements(None) == []
+    assert parse_replacements("=> nothing to find") == []
+
+    # Case-insensitive, and the replacement is inserted exactly as written —
+    # so the sentence-initial occurrence is corrected too, not just the inner one.
+    out = apply_replacements("Posgres and posgres.", "posgres => PostgreSQL")
+    assert out == "PostgreSQL and PostgreSQL."
+    # Whole words only: a rule must not eat the inside of a longer word.
+    assert apply_replacements("scala scalable", "scala => Scala") == "Scala scalable"
+    # Multi-word search terms and an empty replacement (dropping a filler).
+    assert apply_replacements("cuber netes rocks", "cuber netes => Kubernetes") == "Kubernetes rocks"
+    assert apply_replacements("so like this", "like =>").strip() == "so  this".strip()
+    # Rules run in the order they are written.
+    assert apply_replacements("a", "a => b\nb => c") == "c"
+    # A term that is not a word at either end still matches (no \b guard there).
+    assert apply_replacements("z.b. hier", "z.b. => zum Beispiel") == "zum Beispiel hier"
+    # A backslash in the replacement is literal text, not a regex group escape.
+    assert apply_replacements("path", "path => C:\\tmp") == "C:\\tmp"
+
+    # Nothing configured, empty text, and untrusted junk all leave the
+    # transcript exactly as it was rather than raising into _process.
+    assert apply_replacements("unchanged", "") == "unchanged"
+    assert apply_replacements("", "a => b") == ""
+    for junk in (None, "no separator here", "   ", "=>", "\n\n#\n"):
+        assert apply_replacements("keep me", junk) == "keep me"
+
+
 def _empty_transcript_names_the_microphone():
     """A take that produced no text says *why*: a microphone that delivered no
     signal (or an unusably quiet one) is a device problem the user can fix,
@@ -4133,6 +4176,7 @@ _LIGHT_CHECKS = [
     ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
+    ("text replacements", _text_replacements),
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
     ("recorder events carry their take", _recorder_events_carry_their_take),
     ("assistant config is checked", _assistant_config_is_checked),
