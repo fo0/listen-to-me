@@ -22,6 +22,7 @@ import time
 from . import APP_NAME, REPO_URL, __version__
 from . import assistant, autostart, netutil, singleinstance
 from .audio import SAMPLE_RATE, Recorder
+from .choices import resolve_input_device
 from .config import Config, config_dir
 from .history import TranscriptHistory
 from .hotkeys import Hotkeys
@@ -185,6 +186,10 @@ class App:
         self._recording_id = 0  # invalidates live-preview workers of old takes
         self._recording_started = 0.0  # monotonic start of the running take
         self._length_warned = False  # one max-length heads-up per take
+        # The configured microphone index the "recording with the system
+        # default instead" notice was last shown for, so a mic that stays
+        # unplugged does not repeat it before every single take.
+        self._device_fallback_notified = object()
         self._clock_seconds = -1  # whole second the tray clock currently shows
         # Global hotkey suspended by the user (tray menu → Pause hotkey).
         # Deliberately not a config key — see _toggle_hotkey_pause.
@@ -448,9 +453,16 @@ class App:
         # Reserved before start(): the callbacks are handed to the recorder
         # here, and a stream that dies during start() already fires them.
         take = self._recording_id + 1
+        # PortAudio indices are positional: unplugging the configured
+        # microphone (or plugging anything else in) makes the stored index
+        # point at nothing or at another device. Resolve before opening the
+        # stream so the take survives on the system default instead of dying
+        # with a raw PortAudio error naming no fix.
+        configured = self.cfg["input_device"]
+        device, device_note = resolve_input_device(configured)
         try:
             self.recorder.start(
-                device=self.cfg["input_device"],
+                device=device,
                 max_seconds=self.cfg["max_seconds"],
                 on_limit=lambda: self.post("auto_stop", take),
                 on_ended=lambda: self.post("stream_died", take),
@@ -459,6 +471,19 @@ class App:
             log.exception("could not start recording")
             self.notify(f"Could not start recording: {exc}", force=True)
             return
+        if device_note is not None:
+            log.warning("input device %r is gone — recording with the system default", configured)
+            # Forced (this is a device problem the user has to fix in the
+            # settings), but only once per configured device: the alternative
+            # is an interruption before every dictation until the microphone
+            # comes back.
+            if self._device_fallback_notified != configured:
+                self._device_fallback_notified = configured
+                self.notify(device_note, force=True)
+        else:
+            # Plugged back in — re-arm, so a second disappearance is reported
+            # again instead of being swallowed by the first one's marker.
+            self._device_fallback_notified = object()
         # Bump on every take so a lingering worker from a previous recording
         # sees a changed id and exits, even if this take has no worker. Before
         # the state change: _set_state re-enters RECORDING first, and a stale

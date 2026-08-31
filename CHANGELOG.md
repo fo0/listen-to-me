@@ -22,6 +22,14 @@ changes at a glance.
   the word at the start of a sentence as well as inside it, and the replacement
   is inserted exactly as written.
 
+- **A recording survives a microphone that disappeared.** The selected
+  microphone is stored as a PortAudio device index, and those are positional:
+  unplugging a USB headset (or plugging anything else in) made the stored index
+  point at nothing, and the dictation was lost to a raw PortAudio error naming
+  no fix. The take is now recorded with the system default instead, and a
+  notification says so once per device — never a silent swap of the recording
+  device.
+
 - **Pause hotkey** in the tray menu — suspends the global hotkey while a game,
   a remote session or another app needs the same keys, without changing (and
   having to remember) the configured combination. The tray status says it out

@@ -483,6 +483,44 @@ def _text_replacements():
         assert apply_replacements("keep me", junk) == "keep me"
 
 
+def _missing_microphone_falls_back():
+    """A configured microphone that is no longer there costs the device, not
+    the dictation: PortAudio indices are positional, so the take falls back to
+    the system default — and says so, because a silent swap of the recording
+    device is exactly what must not happen."""
+    from listen_to_me.choices import resolve_input_device
+
+    devices = [(0, "Built-in Microphone"), (3, "USB Headset")]
+
+    # Present, or the system default anyway: record from it, say nothing.
+    assert resolve_input_device(3, devices) == (3, None)
+    assert resolve_input_device(0, devices) == (0, None)
+    assert resolve_input_device(None, devices) == (None, None)
+
+    # Gone: fall back to the system default with an actionable sentence that
+    # names where the microphone is picked again.
+    device, note = resolve_input_device(7, devices)
+    assert device is None
+    assert note and "Settings" in note and "Audio" in note
+    assert "system default" in note
+
+    # An enumeration that failed or came back empty cannot tell "gone" from
+    # "could not ask" — the configured device is passed through untouched
+    # rather than moving a recording off a microphone that works.
+    assert resolve_input_device(3, []) == (3, None)
+
+    # The live-enumeration path: a raising list_input_devices is caught and
+    # logged, never raised into _start_recording.
+    import listen_to_me.audio as audio_mod
+
+    original = audio_mod.list_input_devices
+    try:
+        audio_mod.list_input_devices = lambda: (_ for _ in ()).throw(RuntimeError("no PortAudio"))
+        assert resolve_input_device(3) == (3, None)
+    finally:
+        audio_mod.list_input_devices = original
+
+
 def _empty_transcript_names_the_microphone():
     """A take that produced no text says *why*: a microphone that delivered no
     signal (or an unusably quiet one) is a device problem the user can fix,
@@ -4177,6 +4215,7 @@ _LIGHT_CHECKS = [
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
     ("text replacements", _text_replacements),
+    ("missing microphone falls back", _missing_microphone_falls_back),
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
     ("recorder events carry their take", _recorder_events_carry_their_take),
     ("assistant config is checked", _assistant_config_is_checked),

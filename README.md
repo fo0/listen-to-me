@@ -34,6 +34,12 @@ standalone system-tray app that works in _every_ application.
   and a signal too quiet to recognize are named as the device problems they are,
   instead of every case reading "No speech detected." and sending you back to
   repeat the dictation into a muted microphone.
+- **A microphone that disappeared costs the device, not the dictation** — the
+  selected microphone is stored as a device index, and those shift when a USB
+  headset is unplugged or anything else is plugged in. When the configured one
+  is gone the take is recorded with the **system default** instead of dying
+  with a PortAudio error, and a notification says so once, so the swap is never
+  silent.
 - **Live typing (experimental)** — start typing while you are still speaking:
   parts of the transcript that have become stable are typed at the cursor
   during the recording, the rest follows right after you stop. Strictly
