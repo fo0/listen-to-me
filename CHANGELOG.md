@@ -16,7 +16,7 @@ changes at a glance.
 
 - **Text replacements** (Settings → Whisper) — `heard => written` rules applied
   to every finished transcript, one per line. Whisper mis-hears the same domain
-  word the same way every time, and the initial prompt only *biases*
+  word the same way every time, and the initial prompt only _biases_
   recognition; these rules fix what it got wrong anyway before the text reaches
   the cursor. Case is ignored and whole words are matched, so one rule catches
   the word at the start of a sentence as well as inside it, and the replacement
