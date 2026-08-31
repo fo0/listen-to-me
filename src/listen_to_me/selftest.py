@@ -440,6 +440,135 @@ def _recording_length_warning():
     assert length_warning_message(295.0, "300") is not None
 
 
+def _text_replacements():
+    """The user's `find => replace` rules: whole-word and case-insensitive so
+    one rule catches the word wherever it lands, the replacement verbatim so it
+    always produces the spelling that was typed, and never an exception out of
+    the worker thread for a hand-edited rule list."""
+    from listen_to_me.app import apply_replacements, parse_replacements
+    from listen_to_me.config import DEFAULTS
+
+    assert DEFAULTS["replacements"] == ""  # off until the user writes a rule
+
+    # Syntax: one rule per line, comments and blank lines ignored, a line
+    # without the separator skipped instead of failing the whole list.
+    rules = parse_replacements(
+        "# my words\n\ncuber netes => Kubernetes\nposgres=>PostgreSQL\nbroken line\n"
+    )
+    assert rules == [("cuber netes", "Kubernetes"), ("posgres", "PostgreSQL")]
+    assert parse_replacements("") == [] and parse_replacements(None) == []
+    assert parse_replacements("=> nothing to find") == []
+
+    # Case-insensitive, and the replacement is inserted exactly as written —
+    # so the sentence-initial occurrence is corrected too, not just the inner one.
+    out = apply_replacements("Posgres and posgres.", "posgres => PostgreSQL")
+    assert out == "PostgreSQL and PostgreSQL."
+    # Whole words only: a rule must not eat the inside of a longer word.
+    assert apply_replacements("scala scalable", "scala => Scala") == "Scala scalable"
+    # Multi-word search terms and an empty replacement (dropping a filler).
+    assert apply_replacements("cuber netes rocks", "cuber netes => Kubernetes") == "Kubernetes rocks"
+    assert apply_replacements("so like this", "like =>").strip() == "so  this".strip()
+    # Rules run in the order they are written.
+    assert apply_replacements("a", "a => b\nb => c") == "c"
+    # A term that is not a word at either end still matches (no \b guard there).
+    assert apply_replacements("z.b. hier", "z.b. => zum Beispiel") == "zum Beispiel hier"
+    # A backslash in the replacement is literal text, not a regex group escape.
+    assert apply_replacements("path", "path => C:\\tmp") == "C:\\tmp"
+
+    # Nothing configured, empty text, and untrusted junk all leave the
+    # transcript exactly as it was rather than raising into _process.
+    assert apply_replacements("unchanged", "") == "unchanged"
+    assert apply_replacements("", "a => b") == ""
+    for junk in (None, "no separator here", "   ", "=>", "\n\n#\n"):
+        assert apply_replacements("keep me", junk) == "keep me"
+
+
+def _assistant_failure_is_actionable():
+    """A failing assistant interrupts a real dictation, so its notification has
+    to say what to do — not print the `requests` transport chain. The app's own
+    wording and an HTTP status survive untouched, and every message says the
+    transcript was still inserted."""
+    from listen_to_me.app import assistant_failure_message
+    from listen_to_me.assistant import AssistantError
+
+    try:
+        import requests
+    except ImportError:  # stripped-down install — nothing to translate
+        return
+
+    # The common case by far: the endpoint (a local Ollama) is not running.
+    exc = requests.exceptions.ConnectionError(
+        "HTTPSConnectionPool(host='localhost', port=11434): Max retries exceeded "
+        "with url: /v1/chat/completions (Caused by NewConnectionError(...))"
+    )
+    message = assistant_failure_message(exc)
+    assert "HTTPSConnectionPool" not in message and "NewConnectionError" not in message
+    assert "could not be reached" in message
+    # The transcript is not lost to this — every wording has to say so.
+    assert "raw transcript" in message
+
+    message = assistant_failure_message(requests.exceptions.Timeout())
+    assert "did not answer in time" in message and "raw transcript" in message
+
+    # The app's own reason is already written for the user: pass it through.
+    message = assistant_failure_message(AssistantError("no model name is set (Settings → Assistant)"))
+    assert "no model name is set (Settings → Assistant)" in message
+    assert "raw transcript" in message
+
+    # An exception with no message at all still produces a usable sentence
+    # rather than "Assistant failed:  Inserting…", and a passed-through reason
+    # is punctuated so it does not run into the sentence that follows it.
+    message = assistant_failure_message(RuntimeError())
+    assert message.count("  ") == 0
+    assert "RuntimeError. Inserting" in message
+    assert assistant_failure_message(AssistantError("no model name is set")).count("..") == 0
+
+
+def _missing_microphone_falls_back():
+    """A configured microphone that is no longer there costs the device, not
+    the dictation: PortAudio indices are positional, so the take falls back to
+    the system default — and says so, because a silent swap of the recording
+    device is exactly what must not happen."""
+    from listen_to_me.choices import resolve_input_device
+
+    devices = [(0, "Built-in Microphone"), (3, "USB Headset")]
+
+    # Present, or the system default anyway: record from it, say nothing.
+    assert resolve_input_device(3, devices) == (3, None)
+    assert resolve_input_device(0, devices) == (0, None)
+    assert resolve_input_device(None, devices) == (None, None)
+
+    # Gone: fall back to the system default with an actionable sentence that
+    # names where the microphone is picked again.
+    device, note = resolve_input_device(7, devices)
+    assert device is None
+    assert note and "Settings" in note and "Audio" in note
+    assert "system default" in note
+
+    # An enumeration that failed or came back empty cannot tell "gone" from
+    # "could not ask" — the configured device is passed through untouched
+    # rather than moving a recording off a microphone that works.
+    assert resolve_input_device(3, []) == (3, None)
+
+    # `input_device` has a null default, so the config merge stores whatever is
+    # in the file, and sounddevice also accepts a device *name*. A value that
+    # is not an index is left for PortAudio to resolve instead of being
+    # overruled against a list it cannot be compared against.
+    assert resolve_input_device("USB Headset", devices) == ("USB Headset", None)
+    assert resolve_input_device(True, devices) == (True, None)  # bool is an int subclass
+
+    # The live-enumeration path: a raising list_input_devices is caught and
+    # logged, never raised into _start_recording.
+    import listen_to_me.audio as audio_mod
+
+    original = audio_mod.list_input_devices
+    try:
+        audio_mod.list_input_devices = lambda: (_ for _ in ()).throw(RuntimeError("no PortAudio"))
+        assert resolve_input_device(3) == (3, None)
+    finally:
+        audio_mod.list_input_devices = original
+
+
 def _empty_transcript_names_the_microphone():
     """A take that produced no text says *why*: a microphone that delivered no
     signal (or an unusably quiet one) is a device problem the user can fix,
@@ -4133,6 +4262,9 @@ _LIGHT_CHECKS = [
     ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
+    ("text replacements", _text_replacements),
+    ("missing microphone falls back", _missing_microphone_falls_back),
+    ("assistant failure is actionable", _assistant_failure_is_actionable),
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
     ("recorder events carry their take", _recorder_events_carry_their_take),
     ("assistant config is checked", _assistant_config_is_checked),

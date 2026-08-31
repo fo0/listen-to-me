@@ -14,6 +14,22 @@ changes at a glance.
 
 ### Added
 
+- **Text replacements** (Settings → Whisper) — `heard => written` rules applied
+  to every finished transcript, one per line. Whisper mis-hears the same domain
+  word the same way every time, and the initial prompt only _biases_
+  recognition; these rules fix what it got wrong anyway before the text reaches
+  the cursor. Case is ignored and whole words are matched, so one rule catches
+  the word at the start of a sentence as well as inside it, and the replacement
+  is inserted exactly as written.
+
+- **A recording survives a microphone that disappeared.** The selected
+  microphone is stored as a PortAudio device index, and those are positional:
+  unplugging a USB headset (or plugging anything else in) made the stored index
+  point at nothing, and the dictation was lost to a raw PortAudio error naming
+  no fix. The take is now recorded with the system default instead, and a
+  notification says so once per device — never a silent swap of the recording
+  device.
+
 - **Pause hotkey** in the tray menu — suspends the global hotkey while a game,
   a remote session or another app needs the same keys, without changing (and
   having to remember) the configured combination. The tray status says it out
@@ -81,6 +97,14 @@ changes at a glance.
 
 ### Fixed
 
+- **A failing assistant now says what to do.** The Assistant page's "Test
+  connection" has translated transport failures into one actionable sentence
+  for a while, but the notification after a real dictation still printed the
+  raw `requests` transport chain ("HTTPSConnectionPool(host='localhost',
+  port=11434): Max retries exceeded … NewConnectionError(…)") — a stack-trace
+  fragment in the one place the user is not sitting in the settings window
+  looking for it. Both paths now use the same wording, and the message still
+  says the raw transcript was inserted.
 - A `config.json` with a wrong-typed value (a quoted number, a string where a
   number belongs, `null` where a value belongs) no longer reaches the code that
   uses it: plausible hand-edits are repaired, anything else falls back to that

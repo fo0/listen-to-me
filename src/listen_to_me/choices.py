@@ -223,6 +223,53 @@ def clipboard_copy_from_label(label: str) -> str:
     return CLIPBOARD_COPY_MODES[0][0]
 
 
+def resolve_input_device(
+    index: int | None, devices: list[tuple[int, str]] | None = None
+) -> tuple[int | None, str | None]:
+    """The device to actually record from, plus the sentence to show when that
+    is not the one the user configured (None = nothing to report).
+
+    ``input_device`` is stored as a PortAudio index, and those are positional:
+    unplug the USB headset the app was pointed at — or plug in a webcam — and
+    the index either points at nothing (PortAudio raises, and the dictation is
+    lost with a message naming no fix) or at a device that is simply no longer
+    the same microphone. Falling back to the system default keeps the take,
+    and saying so is what stops it from being a silent swap.
+
+    `devices` is injectable so the rule is testable headlessly; left out, the
+    live list is enumerated. An enumeration that fails or comes back empty
+    passes the configured index through untouched: it cannot tell "this
+    microphone is gone" from "PortAudio could not be asked", and guessing here
+    would move a recording off a device that works.
+
+    Only a real index is checked. `input_device` has a `null` default, so the
+    config merge passes anything stored under it through unvalidated, and
+    sounddevice additionally accepts a device *name* — a value that is not an
+    int is therefore not necessarily broken, and is left for PortAudio to
+    resolve rather than being overruled here on a list it cannot be compared
+    against. (`bool` is an int subclass, and `True` is not a device.)
+    """
+    if not isinstance(index, int) or isinstance(index, bool):
+        return index, None
+    if devices is None:
+        try:
+            from .audio import list_input_devices
+
+            devices = list_input_devices()
+        except Exception:
+            log.exception("could not check whether the selected microphone still exists")
+            return index, None
+    if not devices:
+        return index, None
+    if any(idx == index for idx, _name in devices):
+        return index, None
+    return None, (
+        "The microphone selected in the settings is no longer available — "
+        "recording with the system default instead. Pick it again under "
+        "Settings → Audio."
+    )
+
+
 def input_device_from_label(label: str) -> int | None:
     """Parse the "<index>: <name>" dropdown entry; None = system default
     (also for the inline error entry, which has no numeric prefix)."""

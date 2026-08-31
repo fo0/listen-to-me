@@ -126,6 +126,13 @@ DEFAULTS: dict = {
     },
     # Optional Whisper initial prompt (domain vocabulary hint, not an instruction).
     "initial_prompt": "",
+    # Deterministic find/replace rules applied to every finished transcript,
+    # one "find => replace" per line (blank lines and "#" comments allowed).
+    # Matching is case-insensitive and on whole words; the replacement is
+    # inserted verbatim. Where initial_prompt only biases recognition, this
+    # fixes what the recognizer got wrong anyway — see app.apply_replacements.
+    # Not applied to live typing (that text is already at the cursor).
+    "replacements": "",
     "vad_filter": True,
     # Decoding beam size (faster-whisper backend only): 5 = best accuracy
     # (default), 1 = greedy — roughly 1.5-2x faster at slightly lower accuracy.

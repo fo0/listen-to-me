@@ -22,6 +22,7 @@ import time
 from . import APP_NAME, REPO_URL, __version__
 from . import assistant, autostart, netutil, singleinstance
 from .audio import SAMPLE_RATE, Recorder
+from .choices import resolve_input_device
 from .config import Config, config_dir
 from .history import TranscriptHistory
 from .hotkeys import Hotkeys
@@ -77,6 +78,112 @@ def length_warning_message(
     )
 
 
+# Hard cap on the rule list. A hand-edited config is untrusted input, and the
+# rules are compiled and applied after every single dictation.
+_MAX_REPLACEMENT_RULES = 500
+
+
+def parse_replacements(spec: str) -> list[tuple[str, str]]:
+    """The `find => replace` rules in `spec`, in the order they are written.
+
+    One rule per line. Blank lines and lines starting with `#` are comments; a
+    line without the `=>` separator is skipped with a warning rather than
+    failing the list, because this is hand-edited text and one typo must not
+    cost the other rules. An empty right-hand side is allowed on purpose — it
+    deletes the word (a stock filler this speaker never wants written out).
+
+    Qt-free and side-effect free so the rule syntax is testable headlessly.
+    """
+    rules: list[tuple[str, str]] = []
+    for number, line in enumerate(str(spec or "").splitlines(), start=1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=>" not in line:
+            log.warning("replacement rule on line %d has no “=>” separator, ignored: %.60r", number, line)
+            continue
+        find, replace = line.split("=>", 1)
+        find = find.strip()
+        if not find:
+            log.warning("replacement rule on line %d has an empty search term, ignored", number)
+            continue
+        rules.append((find, replace.strip()))
+        if len(rules) >= _MAX_REPLACEMENT_RULES:
+            log.warning("more than %d replacement rules — the rest is ignored", _MAX_REPLACEMENT_RULES)
+            break
+    return rules
+
+
+def assistant_failure_message(exc: BaseException) -> str:
+    """What to show when the assistant could not clean up a finished dictation.
+
+    The Assistant page's "Test connection" has translated transport failures
+    into one actionable sentence since it existed, but this — the path that
+    fires after a *real* dictation — still put the raw exception in the
+    notification: `requests` renders an endpoint that is simply not running as
+    its whole transport chain ("HTTPSConnectionPool(host='localhost',
+    port=11434): Max retries exceeded with url: … NewConnectionError(…)"), a
+    stack-trace fragment where a next step belongs, in the one place the user
+    is not sitting in the settings window looking for it.
+
+    The app's own wording (`AssistantError`, e.g. a base_url the config check
+    rejected) and an HTTP status from raise_for_status pass through untouched —
+    describe_error only rewrites the transport failures.
+
+    Always closes on where the text went: the transcript is never lost to an
+    assistant failure, it is inserted unrefined.
+    """
+    reason = str(netutil.describe_error(exc)).strip()
+    # The translated sentences end in a full stop; a passed-through exception
+    # message (or a bare class name) does not, and would run straight into the
+    # next sentence.
+    if reason and reason[-1] not in ".!?":
+        reason += "."
+    return f"Assistant failed: {reason} Inserting the raw transcript."
+
+
+def apply_replacements(text: str, spec: str) -> str:
+    """`text` with the user's `find => replace` rules applied, in order.
+
+    Whisper mis-hears the same domain words the same way every time — a product
+    name, a colleague's surname, an acronym — and the initial prompt only
+    *biases* recognition, it cannot guarantee a spelling. These rules are the
+    deterministic second half of that: what the recognizer got wrong anyway is
+    corrected before the text reaches the cursor.
+
+    Matching is case-insensitive and on whole words, and the replacement is
+    inserted exactly as written — one rule therefore catches the word at the
+    start of a sentence as well as inside it, and always produces the spelling
+    the user typed. The word-boundary guards are only added on a side that
+    starts/ends with a word character, so a rule for “z.B.” or “:-)” still
+    matches.
+
+    Never raises: this runs on the worker thread between a finished dictation
+    and its insertion, so a bad rule (a search term that is somehow not
+    compilable even escaped) must cost the correction, never the transcript.
+    """
+    if not text:
+        return text
+    rules = parse_replacements(spec)
+    if not rules:
+        return text
+    import re
+
+    for find, replace in rules:
+        try:
+            pattern = re.escape(find)
+            if find[0].isalnum() or find[0] == "_":
+                pattern = r"\b" + pattern
+            if find[-1].isalnum() or find[-1] == "_":
+                pattern = pattern + r"\b"
+            # A backslash or \1 in the replacement is literal text here, not a
+            # group reference — the user wrote a word, not a regex.
+            text = re.sub(pattern, replace.replace("\\", r"\\"), text, flags=re.IGNORECASE)
+        except Exception:
+            log.exception("replacement rule %r could not be applied", find)
+    return text
+
+
 class App:
     def __init__(self):
         self.cfg = Config()
@@ -107,6 +214,10 @@ class App:
         self._recording_id = 0  # invalidates live-preview workers of old takes
         self._recording_started = 0.0  # monotonic start of the running take
         self._length_warned = False  # one max-length heads-up per take
+        # The configured microphone index the "recording with the system
+        # default instead" notice was last shown for, so a mic that stays
+        # unplugged does not repeat it before every single take.
+        self._device_fallback_notified = object()
         self._clock_seconds = -1  # whole second the tray clock currently shows
         # Global hotkey suspended by the user (tray menu → Pause hotkey).
         # Deliberately not a config key — see _toggle_hotkey_pause.
@@ -370,9 +481,16 @@ class App:
         # Reserved before start(): the callbacks are handed to the recorder
         # here, and a stream that dies during start() already fires them.
         take = self._recording_id + 1
+        # PortAudio indices are positional: unplugging the configured
+        # microphone (or plugging anything else in) makes the stored index
+        # point at nothing or at another device. Resolve before opening the
+        # stream so the take survives on the system default instead of dying
+        # with a raw PortAudio error naming no fix.
+        configured = self.cfg["input_device"]
+        device, device_note = resolve_input_device(configured)
         try:
             self.recorder.start(
-                device=self.cfg["input_device"],
+                device=device,
                 max_seconds=self.cfg["max_seconds"],
                 on_limit=lambda: self.post("auto_stop", take),
                 on_ended=lambda: self.post("stream_died", take),
@@ -381,6 +499,19 @@ class App:
             log.exception("could not start recording")
             self.notify(f"Could not start recording: {exc}", force=True)
             return
+        if device_note is not None:
+            log.warning("input device %r is gone — recording with the system default", configured)
+            # Forced (this is a device problem the user has to fix in the
+            # settings), but only once per configured device: the alternative
+            # is an interruption before every dictation until the microphone
+            # comes back.
+            if self._device_fallback_notified != configured:
+                self._device_fallback_notified = configured
+                self.notify(device_note, force=True)
+        else:
+            # Plugged back in — re-arm, so a second disappearance is reported
+            # again instead of being swallowed by the first one's marker.
+            self._device_fallback_notified = object()
         # Bump on every take so a lingering worker from a previous recording
         # sees a changed id and exits, even if this take has no worker. Before
         # the state change: _set_state re-enters RECORDING first, and a stale
@@ -530,7 +661,17 @@ class App:
                         full_text = text
                     except Exception as exc:
                         log.exception("assistant post-processing failed")
-                        self.notify(f"Assistant failed ({exc}) — inserting the raw transcript.", force=True)
+                        self.notify(assistant_failure_message(exc), force=True)
+            if live is None:
+                # Last, so the user's own rules are the final word — the
+                # assistant rewrites the whole text and would otherwise be free
+                # to undo them. Skipped for live typing for the same reason the
+                # assistant is: part of the text is already at the cursor and
+                # append-only typing cannot take it back, so a correction here
+                # would only reach the tail and leave history disagreeing with
+                # what was actually typed.
+                full_text = apply_replacements(full_text, self.cfg["replacements"])
+                text = full_text
             # Record before inserting so the transcript is kept even if the
             # insertion into the target window fails.
             if self.cfg["history_enabled"]:
