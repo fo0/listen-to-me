@@ -483,6 +483,47 @@ def _text_replacements():
         assert apply_replacements("keep me", junk) == "keep me"
 
 
+def _assistant_failure_is_actionable():
+    """A failing assistant interrupts a real dictation, so its notification has
+    to say what to do — not print the `requests` transport chain. The app's own
+    wording and an HTTP status survive untouched, and every message says the
+    transcript was still inserted."""
+    from listen_to_me.app import assistant_failure_message
+    from listen_to_me.assistant import AssistantError
+
+    try:
+        import requests
+    except ImportError:  # stripped-down install — nothing to translate
+        return
+
+    # The common case by far: the endpoint (a local Ollama) is not running.
+    exc = requests.exceptions.ConnectionError(
+        "HTTPSConnectionPool(host='localhost', port=11434): Max retries exceeded "
+        "with url: /v1/chat/completions (Caused by NewConnectionError(...))"
+    )
+    message = assistant_failure_message(exc)
+    assert "HTTPSConnectionPool" not in message and "NewConnectionError" not in message
+    assert "could not be reached" in message
+    # The transcript is not lost to this — every wording has to say so.
+    assert "raw transcript" in message
+
+    message = assistant_failure_message(requests.exceptions.Timeout())
+    assert "did not answer in time" in message and "raw transcript" in message
+
+    # The app's own reason is already written for the user: pass it through.
+    message = assistant_failure_message(AssistantError("no model name is set (Settings → Assistant)"))
+    assert "no model name is set (Settings → Assistant)" in message
+    assert "raw transcript" in message
+
+    # An exception with no message at all still produces a usable sentence
+    # rather than "Assistant failed:  Inserting…", and a passed-through reason
+    # is punctuated so it does not run into the sentence that follows it.
+    message = assistant_failure_message(RuntimeError())
+    assert message.count("  ") == 0
+    assert "RuntimeError. Inserting" in message
+    assert assistant_failure_message(AssistantError("no model name is set")).count("..") == 0
+
+
 def _missing_microphone_falls_back():
     """A configured microphone that is no longer there costs the device, not
     the dictation: PortAudio indices are positional, so the take falls back to
@@ -4216,6 +4257,7 @@ _LIGHT_CHECKS = [
     ("recording length warning", _recording_length_warning),
     ("text replacements", _text_replacements),
     ("missing microphone falls back", _missing_microphone_falls_back),
+    ("assistant failure is actionable", _assistant_failure_is_actionable),
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
     ("recorder events carry their take", _recorder_events_carry_their_take),
     ("assistant config is checked", _assistant_config_is_checked),

@@ -114,6 +114,34 @@ def parse_replacements(spec: str) -> list[tuple[str, str]]:
     return rules
 
 
+def assistant_failure_message(exc: BaseException) -> str:
+    """What to show when the assistant could not clean up a finished dictation.
+
+    The Assistant page's "Test connection" has translated transport failures
+    into one actionable sentence since it existed, but this — the path that
+    fires after a *real* dictation — still put the raw exception in the
+    notification: `requests` renders an endpoint that is simply not running as
+    its whole transport chain ("HTTPSConnectionPool(host='localhost',
+    port=11434): Max retries exceeded with url: … NewConnectionError(…)"), a
+    stack-trace fragment where a next step belongs, in the one place the user
+    is not sitting in the settings window looking for it.
+
+    The app's own wording (`AssistantError`, e.g. a base_url the config check
+    rejected) and an HTTP status from raise_for_status pass through untouched —
+    describe_error only rewrites the transport failures.
+
+    Always closes on where the text went: the transcript is never lost to an
+    assistant failure, it is inserted unrefined.
+    """
+    reason = str(netutil.describe_error(exc)).strip()
+    # The translated sentences end in a full stop; a passed-through exception
+    # message (or a bare class name) does not, and would run straight into the
+    # next sentence.
+    if reason and reason[-1] not in ".!?":
+        reason += "."
+    return f"Assistant failed: {reason} Inserting the raw transcript."
+
+
 def apply_replacements(text: str, spec: str) -> str:
     """`text` with the user's `find => replace` rules applied, in order.
 
@@ -633,7 +661,7 @@ class App:
                         full_text = text
                     except Exception as exc:
                         log.exception("assistant post-processing failed")
-                        self.notify(f"Assistant failed ({exc}) — inserting the raw transcript.", force=True)
+                        self.notify(assistant_failure_message(exc), force=True)
             if live is None:
                 # Last, so the user's own rules are the final word — the
                 # assistant rewrites the whole text and would otherwise be free

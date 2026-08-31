@@ -97,6 +97,14 @@ changes at a glance.
 
 ### Fixed
 
+- **A failing assistant now says what to do.** The Assistant page's "Test
+  connection" has translated transport failures into one actionable sentence
+  for a while, but the notification after a real dictation still printed the
+  raw `requests` transport chain ("HTTPSConnectionPool(host='localhost',
+  port=11434): Max retries exceeded … NewConnectionError(…)") — a stack-trace
+  fragment in the one place the user is not sitting in the settings window
+  looking for it. Both paths now use the same wording, and the message still
+  says the raw transcript was inserted.
 - A `config.json` with a wrong-typed value (a quoted number, a string where a
   number belongs, `null` where a value belongs) no longer reaches the code that
   uses it: plausible hand-edits are repaired, anything else falls back to that
