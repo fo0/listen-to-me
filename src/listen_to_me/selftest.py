@@ -2418,7 +2418,6 @@ def _download_progress_logic():
         DownloadWatcher,
         directory_size,
         hub_cache_dir,
-        hub_repo_size,
         progress_text,
     )
 

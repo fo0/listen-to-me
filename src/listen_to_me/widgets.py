@@ -13,7 +13,7 @@ from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from .hotkeys import Hotkeys
-from .keymap import MOD_ORDER, MODIFIER_KEY_TOKENS, allowed_standalone, key_token
+from .keymap import MOD_ORDER, MODIFIER_KEY_TOKENS, allowed_standalone, key_token, pretty_keys
 
 log = logging.getLogger(__name__)
 
@@ -151,7 +151,11 @@ class HotkeyCaptureDialog(QDialog):
 
     def _update_display(self) -> None:
         mods = [m for m in MOD_ORDER if m in self._captured]
-        pretty = " + ".join(m.strip("<>").capitalize() for m in mods)
+        # keymap.pretty_keys is the one key-cap renderer — the Home page, tray
+        # and floating icon all go through it. Spelling the caps by hand here
+        # made this the only surface showing the Windows key as "Cmd" while
+        # every other one says "Win".
+        pretty = " + ".join(pretty_keys("+".join(mods)))
         self._display.setText((pretty + " + …") if pretty else "…")
         # Enable OK once a modifier-only combo (>= 2 modifiers) is selected.
         self._ok_button.setEnabled(len(mods) >= 2)

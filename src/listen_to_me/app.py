@@ -239,13 +239,17 @@ class App:
         the tray's showMessage() is always invoked on the Qt main thread."""
         self.post("notify", (message, force))
 
-    def progress(self, label, fraction, done: int = 0, total: int = 0) -> None:
+    def progress(
+        self, label: str | None, fraction: float | None, done: int = 0, total: int = 0
+    ) -> None:
         """Thread-safe progress report for a running download (#110).
 
         The transcribers' download watchers and the updater call this from
         worker threads, so like notify() it only queues — the floating icon
         and the tray are updated by the main-thread drain. `label=None` means
-        the download ended and the display goes back to the plain state icon.
+        the download ended and the display goes back to the plain state icon —
+        which is why `label` is annotated optional: that sentinel is the whole
+        end-of-download protocol, not an accident.
         """
         self.post("progress", None if label is None else (str(label), fraction, done, total))
 

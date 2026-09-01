@@ -173,7 +173,10 @@ class DownloadWatcher:
         self,
         directory,
         total_bytes: int | None,
-        on_progress: Callable[[str, float | None, int, int], None] | None,
+        # `str | None`, not `str`: __exit__ closes every watch with a
+        # label=None call meaning "nothing is downloading any more", so a
+        # callback that only accepts str would not satisfy this contract.
+        on_progress: Callable[[str | None, float | None, int, int], None] | None,
         *,
         label: str = "",
         poll_seconds: float = _POLL_SECONDS,
