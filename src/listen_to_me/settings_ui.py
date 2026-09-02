@@ -83,6 +83,7 @@ from .qtutil import (
     elastic_label,
     flash_button,
     guard_wheel,
+    keep_return_in_field,
 )
 from .widgets import HotkeyCaptureDialog
 
@@ -1672,6 +1673,10 @@ class SettingsWindow(QDialog):
             "anywhere on this page. Clear the field to see all of them again."
         )
         self.history_filter_edit.textChanged.connect(self._on_history_filter_changed)
+        # The list filters as you type, so Enter has nothing left to do here —
+        # except reach the dialog's default button, which is Save: pressing it
+        # after a search term saved every setting and closed the main window.
+        keep_return_in_field(self.history_filter_edit)
         fh.addWidget(self.history_filter_edit, 1)
         self.history_count_label = self._hint("")
         fh.addWidget(self.history_count_label)
@@ -1758,7 +1763,10 @@ class SettingsWindow(QDialog):
         # Typing restarts from the top, so the first match is reached while
         # still typing; Enter and the arrows step on from wherever that landed.
         self.help_find_edit.textChanged.connect(self._on_help_find_changed)
-        self.help_find_edit.returnPressed.connect(lambda: self._find_in_help())
+        # Not returnPressed: QLineEdit ignores the key after emitting it, so
+        # Enter stepped to the next match *and* fell through to Save, closing
+        # the window the tooltip had just promised a search in.
+        keep_return_in_field(self.help_find_edit, self._find_in_help)
         fh.addWidget(self.help_find_edit, 1)
         self.help_find_prev = QPushButton("Previous")
         self.help_find_prev.setAutoDefault(False)

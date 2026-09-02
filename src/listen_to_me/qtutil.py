@@ -1,6 +1,7 @@
 """Small Qt helpers: bridge the Pillow-drawn icons (icons.py) into Qt
 pixmaps/icons, the wheel guard for value widgets on scrollable pages, the
-width cap for combo boxes with unbounded item texts, and the one clipboard
+Return guard for search fields inside a dialog, the width cap for combo
+boxes with unbounded item texts, and the one clipboard
 path every "Copy" in the app uses — plus the button feedback that reports how
 that copy went, and the generic on-the-button confirmation every one-shot
 action uses.
@@ -12,6 +13,7 @@ self-test and make_icon.py import it without pulling in PySide6).
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QIcon, QImage, QPixmap
@@ -55,6 +57,42 @@ def guard_wheel(*widgets) -> None:
     for widget in widgets:
         widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         widget.installEventFilter(_wheel_guard)
+
+
+class _ReturnGuard(QObject):
+    """Runs `on_return` on Return/Enter and stops the key there.
+
+    A QLineEdit *ignores* the Return key, so inside a QDialog the unhandled
+    event travels on to the dialog's default button — Save, in the settings
+    window. The filter runs before the field, so the dialog never gets its
+    turn. Parented to the field, so it lives exactly as long as it does.
+    """
+
+    def __init__(self, edit, on_return: Callable[[], None] | None):
+        super().__init__(edit)
+        self._on_return = on_return
+        edit.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt naming)
+        # Key_Enter is the numeric keypad's own key, not a synonym.
+        if event.type() == QEvent.Type.KeyPress and event.key() in (
+            Qt.Key.Key_Return,
+            Qt.Key.Key_Enter,
+        ):
+            if self._on_return is not None:
+                self._on_return()
+            return True
+        return super().eventFilter(obj, event)
+
+
+def keep_return_in_field(edit, on_return: Callable[[], None] | None = None) -> None:
+    """Stop Return in `edit` from reaching the dialog's default button.
+
+    For a search or find field, where Enter means "search" and never "save
+    everything and close the window". `on_return` is what the key does instead;
+    without it it simply stays in the field.
+    """
+    _ReturnGuard(edit, on_return)
 
 
 def elastic_combo(*combos, min_chars: int = 24) -> None:
