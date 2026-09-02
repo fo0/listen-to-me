@@ -3763,7 +3763,15 @@ class SettingsWindow(QDialog):
 
         # Only enabled mute targets need a valid keybind; a disabled row may be
         # left half-configured without blocking Save.
-        for target in values["integrations"]["targets"]:
+        #
+        # Zipped with the rows they came from (`targets` is built from
+        # `self._target_rows` in order, see _collect): the page can carry a
+        # dozen stacked rows, so opening it is not enough to say *which* one
+        # the message means. The caret goes into the offending field for the
+        # same reason the hotkey and assistant branches above put it there —
+        # focus is otherwise still on Save, and a screen reader never reads
+        # the row the box just named. Focusing also scrolls the row into view.
+        for row, target in zip(self._target_rows, values["integrations"]["targets"]):
             if not target["enabled"]:
                 continue
             if not Hotkeys.validate(target["hotkey"]):
@@ -3775,6 +3783,7 @@ class SettingsWindow(QDialog):
                     f"“{target['hotkey']}” is not a valid combination.\n\n"
                     "Click “Change…” to set it, or turn that app off.",
                 )
+                row.hotkey_edit.setFocus()
                 return False
             if Hotkeys.equal(target["hotkey"], hotkey):
                 self._show_page("Integrations")
@@ -3785,6 +3794,7 @@ class SettingsWindow(QDialog):
                     f"hotkey ({hotkey}).\n\nGive the app a different combination — "
                     "otherwise muting it would also start/stop your recording.",
                 )
+                row.hotkey_edit.setFocus()
                 return False
         return True
 
