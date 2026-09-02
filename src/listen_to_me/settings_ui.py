@@ -1768,14 +1768,15 @@ class SettingsWindow(QDialog):
         # the window the tooltip had just promised a search in.
         keep_return_in_field(self.help_find_edit, self._find_in_help)
         fh.addWidget(self.help_find_edit, 1)
+        # Tooltips are not set here: _set_help_find_enabled owns them, because
+        # what these buttons say depends on whether there is a term to step
+        # through (it runs at the end of this method and on every keystroke).
         self.help_find_prev = QPushButton("Previous")
         self.help_find_prev.setAutoDefault(False)
-        self.help_find_prev.setToolTip("Go to the previous match.")
         self.help_find_prev.clicked.connect(lambda: self._find_in_help(backwards=True))
         fh.addWidget(self.help_find_prev)
         self.help_find_next = QPushButton("Next")
         self.help_find_next.setAutoDefault(False)
-        self.help_find_next.setToolTip("Go to the next match.")
         self.help_find_next.clicked.connect(lambda: self._find_in_help())
         fh.addWidget(self.help_find_next)
         # Both stay disabled until there is something to look for — a button
@@ -1808,10 +1809,22 @@ class SettingsWindow(QDialog):
         self.help_find_edit.selectAll()
 
     def _set_help_find_enabled(self, text: str) -> None:
-        """Enable the step buttons only while there is a term to step through."""
+        """Enable the step buttons only while there is a term to step through,
+        and say why when there isn't.
+
+        Same contract as the history export and the overlay position reset: a
+        greyed-out button whose tooltip still describes what it would do reads
+        as broken rather than as waiting for something.
+        """
         has_term = bool(text)
-        self.help_find_prev.setEnabled(has_term)
-        self.help_find_next.setEnabled(has_term)
+        for button, which in ((self.help_find_prev, "previous"), (self.help_find_next, "next")):
+            button.setEnabled(has_term)
+            button.setToolTip(
+                f"Go to the {which} match."
+                if has_term
+                else "Type what you are looking for in the field on the left first — "
+                "there is nothing to step through yet."
+            )
 
     def _on_help_find_changed(self, text: str) -> None:
         """Search from the top of the document on every keystroke.
