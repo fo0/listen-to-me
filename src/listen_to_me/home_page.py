@@ -85,6 +85,19 @@ class _StatCard(QFrame):
         box.addWidget(self.detail)
         box.addStretch(1)
 
+    def sync_accessible_description(self) -> None:
+        """Carry what the card currently shows into what a screen reader reads.
+
+        The accessible name is the fixed title ("Microphone — open in
+        Settings"); the value and the detail below it are sibling labels of a
+        focusable frame, not a label relation, so a card announced by its name
+        alone never names the microphone, the model or the language it exists
+        to report — the one piece of information the card carries. Called by
+        HomePage._refresh_stats after every value it writes.
+        """
+        parts = (self.value.text().strip(), self.detail.text().strip())
+        self.setAccessibleDescription(" — ".join(part for part in parts if part))
+
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
             self.setFocus(Qt.FocusReason.MouseFocusReason)
@@ -362,6 +375,11 @@ class HomePage(QWidget):
         except (TypeError, ValueError):
             max_seconds = 300
         self.card_mic.detail.setText(f"max. {max_seconds} s per recording")
+        # One pass at the end rather than after each branch above: every card
+        # is written on some path through this method, and a description left
+        # behind by the previous refresh would be read out as the current one.
+        for card in (self.card_model, self.card_language, self.card_mic):
+            card.sync_accessible_description()
 
     def _refresh_recent(self) -> None:
         self._clear_layout(self._recent_layout)
