@@ -42,6 +42,7 @@ log = logging.getLogger(__name__)
 
 _ICON_SIZE = 64
 _DRAG_THRESHOLD = 8  # px of net movement that turns a click into a drag
+_TOGGLE_DEBOUNCE_S = 0.4  # ignore a second click this soon after one (see mouseReleaseEvent)
 _BUBBLE_BG = "#202124"
 _BUBBLE_FG = "#f1f3f4"
 _LIVE_TAIL_CHARS = 240  # live preview shows only the most recent text
@@ -145,6 +146,8 @@ class _FloatingIcon(QWidget):
         self.mic.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._drag_start = None  # (global QPoint at press, window QPoint at press)
         self._dragged = False
+        # Monotonic seconds of the last click that was turned into a toggle.
+        self._last_toggle = 0.0
 
     @property
     def dragging(self) -> bool:
@@ -179,8 +182,17 @@ class _FloatingIcon(QWidget):
         # jitter never latches (toggles) and a real move always does (saves).
         if self._dragged:
             self._overlay.save_position()
-        else:
-            self._overlay.app.post("toggle")
+            return
+        # Debounced like the Home page's record button: a double-click delivers
+        # two releases well before App's 100 ms event poll runs, so both land in
+        # the queue and start + stop the same take — which then dies as
+        # "Recording too short — nothing inserted". The icon is round, small and
+        # the most click-like thing on the screen, so it is double-clicked.
+        now = time.monotonic()
+        if now - self._last_toggle < _TOGGLE_DEBOUNCE_S:
+            return
+        self._last_toggle = now
+        self._overlay.app.post("toggle")
 
 
 class _Bubble(QWidget):
