@@ -3607,9 +3607,30 @@ def _gui_construction():
             assert not window.history_clear_button.isEnabled()
             assert not window.history_export_button.isEnabled()
             assert "No transcripts yet" in _history_text()
+
+            # The Home page renders the same store, and used to promise "your
+            # dictations will show up here" whatever the reason it was empty —
+            # including the one where nothing will ever be stored again.
+            def _home_recent_text() -> str:
+                return " ".join(
+                    label.text()
+                    for label in window.home._recent_frame.findChildren(QLabel)
+                )
+
+            window.home._refresh_recent()
+            assert "No transcripts yet" in _home_recent_text()
+            stub.cfg["history_enabled"] = False
+            try:
+                window.home._refresh_recent()
+                assert "History is off" in _home_recent_text()
+            finally:
+                stub.cfg["history_enabled"] = True
+            # A store that could not be read must not read as an empty one.
+            assert "Could not read" in window.home._empty_recent_text(True)
         finally:
             stub.history = stored_history
             window._refresh_history()
+            window.home._refresh_recent()
         assert window.history_clear_button.isEnabled()
 
         # The Parakeet backend ignores the Whisper preset, the spoken language

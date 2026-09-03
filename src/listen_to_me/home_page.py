@@ -381,15 +381,50 @@ class HomePage(QWidget):
         for card in (self.card_model, self.card_language, self.card_mic):
             card.sync_accessible_description()
 
+    def _empty_recent_text(self, unreadable: bool) -> str:
+        """Which of the three empty states this panel is actually in.
+
+        All three used to read "No transcripts yet — your dictations will show
+        up here", which is wrong twice over. A history that cannot be read
+        looked exactly like one that stored nothing — the same trap the tray's
+        recent-transcripts submenu names out loud, because an app that offers
+        nothing must not look like one that kept nothing. And the promise that
+        dictations will show up here is a plain lie once the history is
+        switched off: nothing will ever be stored, and the setting that decides
+        it is two pages away with nothing pointing at it.
+
+        The History page already tells the last two apart; this is its wording,
+        one panel over, so the two can never describe the same store
+        differently.
+        """
+        if unreadable:
+            return "Could not read the transcript history."
+        try:
+            enabled = bool(self.cfg["history_enabled"])
+        except Exception:
+            # A hand-edited config must not decide this panel's fate: the
+            # optimistic wording is the one that is right on a fresh install.
+            log.debug("could not read history_enabled for the Home page", exc_info=True)
+            enabled = True
+        if not enabled:
+            return (
+                "History is off — new transcripts are not stored. Turn on "
+                "“Keep a history of transcribed text” in Settings → History "
+                "to collect them."
+            )
+        return "No transcripts yet — the text of your next dictation shows up here."
+
     def _refresh_recent(self) -> None:
         self._clear_layout(self._recent_layout)
         entries = []
+        unreadable = False
         try:
             entries = self._app.history.entries()[:_RECENT_LIMIT]
         except Exception:
             log.exception("could not read the transcript history")
+            unreadable = True
         if not entries:
-            empty = QLabel("No transcripts yet — your dictations will show up here.")
+            empty = QLabel(self._empty_recent_text(unreadable))
             empty.setProperty("role", "hint")
             empty.setWordWrap(True)
             self._recent_layout.addWidget(empty)
