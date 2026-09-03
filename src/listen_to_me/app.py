@@ -1061,7 +1061,8 @@ class App:
         if self.hotkey_paused:
             self.hotkeys.stop()
             self.notify(
-                "Hotkey paused — switch it back on in the tray menu when you need it.",
+                "Hotkey paused — switch it back on in the tray or floating-icon "
+                "menu when you need it.",
                 force=True,
             )
         else:
@@ -1353,7 +1354,31 @@ def _setup_logging() -> None:
         log.warning("could not open the log file — logging to stderr only (%s)", file_error)
 
 
-_USAGE = f"""\
+def _usage() -> str:
+    """The `--help` text, naming the config directory this machine really uses.
+
+    Built here rather than baked into a module constant: the directory depends
+    on APPDATA/XDG_CONFIG_HOME, which belongs to the environment of the run
+    asking for help, and resolving it at import time would put that lookup in
+    front of `--version` too.
+
+    Naming the resolved path is the whole point of the line. `--help` is what
+    someone reaches for when the GUI does not come up, and that is exactly when
+    the tray menu's "Open config folder" — the only other place the location is
+    named — cannot be clicked. Sending them to look for "the platform config
+    dir" left them guessing between three different conventions.
+
+    A directory that cannot be resolved falls back to the wording this text
+    always had: help that prints is worth more than help that is exact.
+    """
+    try:
+        location = f"the config dir — on this machine:\n  {config_dir()}\n"
+    except Exception:
+        # No logging is configured yet (main() sets it up further down), and a
+        # help text is not the place to start it — the fallback says the same
+        # thing in general terms and nothing is lost but the exact path.
+        location = "the platform config dir.\n"
+    return f"""\
 {APP_NAME} — push-to-talk voice typing. Started without a flag it runs as a
 tray app; everything else is configured in its settings window, not here.
 
@@ -1365,8 +1390,8 @@ Usage: listen-to-me [--version | --selftest | --help]
                 Needs every runtime dependency.
   -h, --help    Show this help and exit.
 
-Settings live in config.json in the platform config dir; the tray menu's
-"Open config folder" points at it. Full docs: {REPO_URL}"""
+Settings live in config.json in {location}\
+The tray menu's "Open config folder" points at it. Full docs: {REPO_URL}"""
 
 _FLAGS = ("--version", "--selftest", "--help", "-h")
 
@@ -1387,7 +1412,7 @@ def main(argv=None) -> int:
         print("Try --help for the three flags this app has.", file=stream)
         return 2
     if "--help" in args or "-h" in args:
-        print(_USAGE)
+        print(_usage())
         return 0
     if "--version" in args:
         print(f"{APP_NAME} {__version__}")

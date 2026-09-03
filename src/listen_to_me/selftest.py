@@ -642,12 +642,18 @@ def _cli_flags():
             code = main(args)
         return code, out.getvalue(), err.getvalue()
 
+    from listen_to_me.config import config_dir
+
     for flag in ("--help", "-h"):
         code, out, _err = run([flag])
         assert code == 0, f"{flag} exited {code}"
         # Every flag the app accepts has to appear, or the help lies by omission.
         for documented in ("--version", "--selftest", "--help"):
             assert documented in out, f"{flag} does not mention {documented}"
+        # The resolved config directory, not just the phrase for it: --help is
+        # what someone runs when the GUI will not start, i.e. exactly when the
+        # tray menu's "Open config folder" is out of reach.
+        assert str(config_dir()) in out, f"{flag} does not name the config dir"
 
     code, out, _err = run(["--version"])
     assert code == 0 and __version__ in out and APP_NAME in out
@@ -2882,6 +2888,23 @@ def _overlay_menu_follows_the_state():
             overlay._act_toggle.trigger()
             overlay._act_cancel.trigger()
             assert stub.posts == [("toggle",), ("cancel",)], stub.posts
+
+            # "Pause hotkey" carries the app's pause state, re-read when the
+            # menu opens like everything else on it — the tick is the only
+            # thing telling a paused app apart from a broken one, and an App
+            # that refuses the pause (mid-recording) has to be able to put it
+            # back. getattr's default keeps a stub without the flag unticked.
+            stub.state = "idle"
+            overlay.show_menu(QPoint(0, 0))
+            overlay._menu.hide()
+            assert not overlay._act_pause.isChecked()
+            stub.hotkey_paused = True
+            overlay.show_menu(QPoint(0, 0))
+            overlay._menu.hide()
+            assert overlay._act_pause.isChecked()
+            stub.posts.clear()
+            overlay._act_pause.trigger()
+            assert stub.posts == [("toggle_hotkey_pause",)], stub.posts
         finally:
             overlay.destroy()
 
@@ -3584,9 +3607,30 @@ def _gui_construction():
             assert not window.history_clear_button.isEnabled()
             assert not window.history_export_button.isEnabled()
             assert "No transcripts yet" in _history_text()
+
+            # The Home page renders the same store, and used to promise "your
+            # dictations will show up here" whatever the reason it was empty —
+            # including the one where nothing will ever be stored again.
+            def _home_recent_text() -> str:
+                return " ".join(
+                    label.text()
+                    for label in window.home._recent_frame.findChildren(QLabel)
+                )
+
+            window.home._refresh_recent()
+            assert "No transcripts yet" in _home_recent_text()
+            stub.cfg["history_enabled"] = False
+            try:
+                window.home._refresh_recent()
+                assert "History is off" in _home_recent_text()
+            finally:
+                stub.cfg["history_enabled"] = True
+            # A store that could not be read must not read as an empty one.
+            assert "Could not read" in window.home._empty_recent_text(True)
         finally:
             stub.history = stored_history
             window._refresh_history()
+            window.home._refresh_recent()
         assert window.history_clear_button.isEnabled()
 
         # The Parakeet backend ignores the Whisper preset, the spoken language
