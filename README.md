@@ -84,9 +84,11 @@ standalone system-tray app that works in _every_ application.
   ("Idle — press Ctrl+Alt+Space to record"), so a forgotten combination is a
   hover away. While you dictate it **counts the take up** ("Recording 1:12… press
   Ctrl+Alt+Space to stop"), so you can see how long you have been speaking
-  against the maximum recording length. **Pause hotkey** in the same menu
-  suspends the global combination for a game or another app that wants the same
-  keys — your hotkey is kept, and the pause is forgotten on the next start.
+  against the maximum recording length. **Pause hotkey** — in this menu and in
+  the floating icon's right-click menu, so it stays in reach with the tray icon
+  switched off — suspends the global combination for a game or another app that
+  wants the same keys; your hotkey is kept, and the pause is forgotten on the
+  next start.
   Only one instance runs at a time:
   starting the app again simply brings the running instance's settings
   window to the front.
@@ -623,7 +625,7 @@ The app is configured in its settings window, not by flags — there are only th
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `--version`    | Prints the version and exits. Imports no Qt, so it works before the GUI dependencies are installed                                                           |
 | `--selftest`   | Runs the packaging self-test and exits with its result (`0` = pass). Needs all runtime dependencies; also used by the release pipeline against the built exe |
-| `-h`, `--help` | Prints this list and exits                                                                                                                                   |
+| `-h`, `--help` | Prints this list, and the config directory this machine actually uses, then exits — the one place the location is named that does not need the GUI to start  |
 
 Any other argument is refused with exit code `2` instead of quietly starting the
 tray app, so a mistyped flag says so.
