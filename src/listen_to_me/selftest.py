@@ -642,12 +642,18 @@ def _cli_flags():
             code = main(args)
         return code, out.getvalue(), err.getvalue()
 
+    from listen_to_me.config import config_dir
+
     for flag in ("--help", "-h"):
         code, out, _err = run([flag])
         assert code == 0, f"{flag} exited {code}"
         # Every flag the app accepts has to appear, or the help lies by omission.
         for documented in ("--version", "--selftest", "--help"):
             assert documented in out, f"{flag} does not mention {documented}"
+        # The resolved config directory, not just the phrase for it: --help is
+        # what someone runs when the GUI will not start, i.e. exactly when the
+        # tray menu's "Open config folder" is out of reach.
+        assert str(config_dir()) in out, f"{flag} does not name the config dir"
 
     code, out, _err = run(["--version"])
     assert code == 0 and __version__ in out and APP_NAME in out
