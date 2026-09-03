@@ -313,6 +313,22 @@ class Overlay:
         # QMenu ignores its actions' tooltips unless asked.
         self._menu.setToolTipsVisible(True)
         self._menu.addSeparator()
+        # The pause the tray menu has always offered, for the same reason the
+        # recent-transcripts submenu above is duplicated here: someone working
+        # from the floating icon is the one user who may have the tray icon
+        # switched off entirely — or be on a shell that never brought the
+        # notification area up, which is what the icon degrades to. Without it
+        # the only way to free the combination for a game or a remote session
+        # was to open Settings and clear the hotkey, then remember what it was.
+        self._act_pause = self._menu.addAction(
+            "Pause hotkey", lambda: app.post("toggle_hotkey_pause")
+        )
+        self._act_pause.setCheckable(True)
+        self._act_pause.setToolTip(
+            "Stop the global hotkey from firing until you switch it back on — "
+            "for a game or another app that needs the same keys. The "
+            "combination itself is kept, and the pause is forgotten on restart."
+        )
         self._menu.addAction("Settings…", lambda: app.post("settings"))
         # Right here as well as on the Overlay settings page: the icon you want
         # to move back is the one you are already right-clicking, and reaching
@@ -810,8 +826,9 @@ class Overlay:
         self._apply_status(self._progress_text or self._state_tooltip())
 
     def _sync_menu_state(self, state: str | None = None) -> None:
-        """Name the toggle entry after what a click on it will do, and offer
-        "Cancel recording" only while there is a take to cancel.
+        """Name the toggle entry after what a click on it will do, offer
+        "Cancel recording" only while there is a take to cancel, and show
+        whether the global hotkey is currently paused.
 
         `state` is the transition being applied, for the call inside
         `set_state`. Without it the state is read back from the app, which is
@@ -827,6 +844,11 @@ class Overlay:
                 "Stop recording (insert text)" if state == "recording" else "Start recording"
             )
             self._act_cancel.setVisible(state == "recording")
+            # Re-read rather than left to the click that toggled it: App
+            # refuses to pause during a recording, and the tick has to go back
+            # where it was. getattr keeps the self-test's App stub (state-only,
+            # like the tray's) working — same guard as Tray._paused().
+            self._act_pause.setChecked(bool(getattr(self.app, "hotkey_paused", False)))
         except Exception:
             log.debug("could not update the floating icon menu entries", exc_info=True)
 

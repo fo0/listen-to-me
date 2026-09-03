@@ -2888,6 +2888,23 @@ def _overlay_menu_follows_the_state():
             overlay._act_toggle.trigger()
             overlay._act_cancel.trigger()
             assert stub.posts == [("toggle",), ("cancel",)], stub.posts
+
+            # "Pause hotkey" carries the app's pause state, re-read when the
+            # menu opens like everything else on it — the tick is the only
+            # thing telling a paused app apart from a broken one, and an App
+            # that refuses the pause (mid-recording) has to be able to put it
+            # back. getattr's default keeps a stub without the flag unticked.
+            stub.state = "idle"
+            overlay.show_menu(QPoint(0, 0))
+            overlay._menu.hide()
+            assert not overlay._act_pause.isChecked()
+            stub.hotkey_paused = True
+            overlay.show_menu(QPoint(0, 0))
+            overlay._menu.hide()
+            assert overlay._act_pause.isChecked()
+            stub.posts.clear()
+            overlay._act_pause.trigger()
+            assert stub.posts == [("toggle_hotkey_pause",)], stub.posts
         finally:
             overlay.destroy()
 

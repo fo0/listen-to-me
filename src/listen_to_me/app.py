@@ -1061,7 +1061,8 @@ class App:
         if self.hotkey_paused:
             self.hotkeys.stop()
             self.notify(
-                "Hotkey paused — switch it back on in the tray menu when you need it.",
+                "Hotkey paused — switch it back on in the tray or floating-icon "
+                "menu when you need it.",
                 force=True,
             )
         else:
