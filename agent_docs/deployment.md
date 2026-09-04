@@ -32,7 +32,7 @@ Never by tag (#22). A tag can be moved to point at different code, and `release.
 - Format: `uses: owner/repo@<40-hex-sha> # vX.Y.Z`
 - To bump one, resolve the new SHA first: `git ls-remote --tags https://github.com/<owner>/<repo>`. For an annotated tag take the `^{}` line — that is the commit.
 - Update the trailing comment with the new version.
-- There is no Dependabot here, so bumps are manual and deliberate.
+- Dependabot proposes these bumps weekly and groups them into one PR (`.github/dependabot.yml`); it rewrites the SHA **and** the trailing version comment together, which is this same procedure. Review the pair before merging — a bump made by hand still follows the steps above.
 
 ## Rollback
 

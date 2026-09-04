@@ -22,8 +22,9 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-    # Four actions across three workflows, so a normal week is small. The cap is
-    # here for the first few weeks, when years of skipped updates land at once.
+    # Five distinct actions across three workflows (eight `uses:` entries), so a
+    # normal week is small. The cap is here for the first few weeks, when years
+    # of skipped updates land at once.
     open-pull-requests-limit: 5
     # One pull request for all of them. Each bump is a single SHA plus its
     # version comment, they are reviewed the same way against the same kind of
@@ -33,9 +34,14 @@ updates:
         patterns:
           - "*"
 
-  # Python — covers requirements.txt and pyproject.toml, which declare the same
-  # eight runtime dependencies and must stay in sync. Both sit at the root, so a
-  # single pip entry updates both in the same pull request and the sync holds.
+  # Python — covers requirements.txt and pyproject.toml. Both sit at the root, so
+  # the eight core dependencies they each declare move together in one pull
+  # request and the sync CLAUDE.md requires holds on its own. The three extras
+  # are the exception: pyproject.toml declares openvino-genai, huggingface_hub
+  # and onnx-asr under [project.optional-dependencies], while requirements.txt
+  # carries them only as commented-out mirror lines that Dependabot cannot see.
+  # A bump to one of those touches pyproject.toml alone and the comment drifts —
+  # re-sync it by hand when that happens.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:

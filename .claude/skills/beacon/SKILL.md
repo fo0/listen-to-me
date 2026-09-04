@@ -23,10 +23,10 @@ them; ONLY the safe subset when running autonomously.
 
 ## 2 · Start from tracked proposals (GitHub-connected projects)
 
-- Call `compat_proposals` with `project:"fo0/listen-to-me"`. **Expect nothing:** this repo runs
-  no Dependabot/Renovate, bumps are manual (`agent_docs/deployment.md`). Skip when the tool is
-  missing or `github.connected` is false.
-- If it ever does return a proposal: treat it as a candidate for step 4 — prepared, not
+- Call `compat_proposals` with `project:"fo0/listen-to-me"`. **Expect proposals:** Dependabot runs
+  weekly for `pip` and `github-actions` (`.github/dependabot.yml`, `agent_docs/deployment.md`).
+  Skip when the tool is missing or `github.connected` is false.
+- A returned proposal: treat it as a candidate for step 4 — prepared, not
   pre-approved (beacon’s verdict stays a veto, `compat_plan` below still applies) — and never
   merge or close that PR yourself; land the bump through this repo’s own branch/PR flow
   (steps 5–6) and record the outcome with `compat_decide` either way.
