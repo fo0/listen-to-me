@@ -1,0 +1,69 @@
+version: 2
+
+# Until this file existed the repository took part in no dependency automation
+# at all: every version floor in requirements.txt / pyproject.toml and every
+# action SHA in .github/workflows/ aged silently, with nothing to report that a
+# new release had shipped. Two ecosystems cover everything this repository
+# actually declares — there is no package.json and no lock file of any kind, so
+# nothing else is left to track.
+#
+# Dependabot's default subject line ("Bump x from a to b") is already imperative
+# and capitalized, which is this repository's commit convention, so no
+# commit-message override is configured.
+
+updates:
+  # GitHub Actions — the clearest win of the two. Actions here are pinned by
+  # commit SHA and never by tag (#22). That is the safe choice, but it is also a
+  # silent one: a pinned SHA keeps working long after the version it names has
+  # been superseded, so nothing ever signals that an update exists. Dependabot
+  # rewrites the SHA *and* the trailing `# vX.Y.Z` comment together, which is
+  # exactly the bump procedure the pin convention already requires by hand.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Five distinct actions across three workflows (eight `uses:` entries), so a
+    # normal week is small. The cap is here for the first few weeks, when years
+    # of skipped updates land at once.
+    open-pull-requests-limit: 5
+    # One pull request for all of them. Each bump is a single SHA plus its
+    # version comment, they are reviewed the same way against the same kind of
+    # release notes, and CI runs once instead of four times for one verdict.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Python — covers requirements.txt and pyproject.toml. Both sit at the root, so
+  # the eight core dependencies they each declare move together in one pull
+  # request and the sync CLAUDE.md requires holds on its own. The three extras
+  # are the exception: pyproject.toml declares openvino-genai, huggingface_hub
+  # and onnx-asr under [project.optional-dependencies], while requirements.txt
+  # carries them only as commented-out mirror lines that Dependabot cannot see.
+  # A bump to one of those touches pyproject.toml alone and the comment drifts —
+  # re-sync it by hand when that happens.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    # Every dependency is an open-ended lower bound (`faster-whisper>=1.2.1`)
+    # and there is no lock file, so a new release already satisfies the existing
+    # range and the default strategy would find nothing to change. `increase`
+    # raises the floor instead, which is what turns an upstream release into a
+    # visible pull request here. Constraints other than the floor are preserved,
+    # so the `numpy>=1.24,<3` ceiling stays and numpy 3.x is never proposed.
+    versioning-strategy: "increase"
+    # Minor and patch bumps ride together: they are floor moves, and reviewing
+    # eight separate one-line pull requests a week buys nothing. Majors fall
+    # outside the group on purpose and arrive one per pull request — a PySide6,
+    # numpy or faster-whisper major is where this project's risk actually sits,
+    # and the gate is a compile pass plus a headless Qt smoke test, so a break
+    # has to stay attributable to a single dependency.
+    groups:
+      python-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

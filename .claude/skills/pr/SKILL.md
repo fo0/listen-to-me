@@ -22,7 +22,7 @@ gh auth status && gh repo view --json name,owner
 
 No `gh`? Use the equivalent `mcp__github__*` tool for every `gh` call below — that is the normal path in web/remote sessions and is not a reason to stop (`agent_docs/mcp_catalog.md` → the `github` row). Never create or merge a PR by hand in the browser instead.
 
-> **Dependency bots:** this repo has no Dependabot, Renovate, Snyk or pyup configured (`agent_docs/deployment.md` — bumps are manual). Should a bot PR ever appear, route it like any other PR and run `/beacon` for the compatibility verdict; the merge rule under `/pr merge` covers it with no separate workflow.
+> **Dependency bots:** Dependabot runs weekly for `pip` and `github-actions` (`.github/dependabot.yml`, `agent_docs/deployment.md`); Renovate, Snyk and pyup are not configured. Route a bot PR like any other PR and run `/beacon` for the compatibility verdict; the merge rule under `/pr merge` covers it with no separate workflow.
 
 ## Auto-Routing (default `/pr`)
 
