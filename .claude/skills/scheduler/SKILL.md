@@ -2,6 +2,8 @@
 name: scheduler
 description: "Use when work should happen later or repeatedly — 'schedule', 'routine', 'nightly', 'every morning', 'cron', 'remind me later', 'check back in an hour', 'watch this PR', '/scheduler'. Picks the right scheduler for the lifetime the work needs (cloud routine / session loop / desktop task), creates, lists, updates and deletes jobs, and cleans up every job the agent created for its own bookkeeping before the run ends."
 argument-hint: "[list|new|clean]"
+metadata:
+  origin: claude-code-optimizer
 ---
 
 # Scheduler — Routines, Loops and Cron Jobs
@@ -19,6 +21,11 @@ Sub-commands (bare `/scheduler` routes by what the request asks for):
 | `list`   | Every job visible from this surface — `CronList`, plus `list_triggers` where the MCP is present |
 | `new`    | Create one, after picking the layer in step 1                                                   |
 | `clean`  | Run the cleanup contract now instead of at the end of the run                                   |
+
+## Scope Boundaries
+
+**Owns:** _when_ work runs and on which surface, and the cleanup contract for jobs the agent created for its own bookkeeping.
+**Does not own:** _how_ the work is divided once it runs (`orca`), what a bare `/loop` actually does (`.claude/loop.md`), or the cross-turn stop condition — that is Claude Code's own `/goal`.
 
 ## 1. Pick the layer by lifetime — this is the whole decision
 

@@ -2,8 +2,8 @@
 
 This file documents:
 
-1. **Common MCPs** the agent may encounter in any Claude Code environment.
-2. **This project's intended MCPs** — declared by the user, not detected from the host.
+1. **This project's intended MCPs** — declared by the user, not detected from the host.
+2. The mechanics that are **not** general knowledge: which servers survive into an unattended run, and how to stop trigger tools from prompting.
 
 > **Cross-machine rule:** the optimizer never auto-detects which MCPs are installed locally. The catalog reflects intent + reference, not host probe. If a listed MCP isn't installed on the current machine, the agent silently falls back to non-MCP equivalents (Read / Bash / WebFetch / etc.) and notes once: `MCP <name> not available locally — falling back to standard tools.`
 
@@ -16,21 +16,9 @@ This file documents:
 | `github`             | PRs, issues, CI status, releases via the GitHub API                                                                 | **The `gh` fallback, canonical:** every `gh` command in `.claude/skills/{pr,ci,rollback}/SKILL.md` may be executed with the equivalent `mcp__github__*` tool. Claude Code web/remote sessions have no `gh` CLI, so there that is the only path — a missing `gh` is not a reason to stop. What stays forbidden either way: creating or merging a PR by hand in the browser, and merging outside the rule in CLAUDE.md → Deployment (an explicit user command, or an owner-authorized routine meeting its non-destructive + green-verification conditions). PR-activity subscribe/unsubscribe registers under this server on the web surface. |
 | `claude-code-remote` | Web/remote session management — scheduled Routines/triggers, `send_later` self check-ins, PR-activity subscriptions | The whole server is pre-approved in `.claude/settings.json` → `permissions.allow` via one `mcp__<server>__*` glob per spelling. See _Prompt-free triggers_ below.                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
-## Common MCPs (reference — not necessarily used here)
+## Servers the agent will meet anyway
 
-| MCP                             | Typical use                                                                                                                                                                                                                        |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `gitnexus`                      | Code intelligence — symbol graph, impact, refactor (OFF in this project's manifest)                                                                                                                                                |
-| `filesystem`                    | Sandboxed file access beyond CWD                                                                                                                                                                                                   |
-| `github`                        | Issue / PR / repo metadata via API (alternative to `gh`)                                                                                                                                                                           |
-| `claude-code-remote`            | Claude Code web/remote session management — Routines/triggers, `send_later`, PR-activity subscriptions. PR-activity subscribe/unsubscribe may register under the `github` MCP server instead — the allowlist covers both spellings |
-| `postgres` / `mysql` / `sqlite` | Live DB schema introspection + read queries                                                                                                                                                                                        |
-| `puppeteer` / `playwright`      | Headless browser, used for UI automation, scraping, e2e                                                                                                                                                                            |
-| `fetch`                         | HTTP fetch wrapper                                                                                                                                                                                                                 |
-| `slack`                         | Read/post messages — for ops integrations                                                                                                                                                                                          |
-| `sentry`                        | Error tracking lookup                                                                                                                                                                                                              |
-| `notion` / `linear` / `jira`    | Work tracking integrations                                                                                                                                                                                                         |
-| `aws` / `gcp` / `azure`         | Cloud resource queries (use carefully — non-zero cost)                                                                                                                                                                             |
+The two rows above are the only servers whose behavior is not general knowledge — the `gh` fallback and the trust-gated allowlist are repo decisions, not tool descriptions. Every other server (filesystem, database, browser-automation, error-tracking, work-tracking, cloud-provider …) needs no catalog here: what it does is evident from its name and tool list at the moment it is connected, and a list of them in this file would only go stale. Two rules cover them all — **fall back silently** when a server is absent (the cross-machine rule above), and **never call a cost-incurring one** unbidden (Selection Heuristic, rule 4).
 
 ## Prompt-free triggers everywhere (one-time, optional)
 
@@ -121,7 +109,7 @@ Neither path is a hard requirement — Selection Heuristic rule 3 still holds. A
 ## Selection Heuristic for the Agent
 
 1. **Project MCPs first.** If the project intends an MCP for a task, use it.
-2. **Common-MCP fallback.** For tasks that fit a common MCP, try it; if unavailable, fall back to standard tools.
+2. **Otherwise try the fitting connected server**, whatever it is; if it is absent, fall back to standard tools and say so once.
 3. **Never make MCP usage a hard requirement.** All workflows must work without MCPs (autonomy + cross-machine rule).
 4. **Never call cost-incurring MCPs** (cloud, paid APIs) unless explicitly requested by the user.
 
@@ -130,3 +118,5 @@ Neither path is a hard requirement — Selection Heuristic rule 3 still holds. A
 1. Add a row to the **Project MCPs** table above with purpose + notes.
 2. If the MCP needs setup, document the install/auth steps in CLAUDE.md "External Integrations" section.
 3. If a workflow becomes MCP-dependent, add a fallback path that works without it.
+
+<!-- Generated by claude-code-optimizer v1.37.0 -->

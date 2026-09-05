@@ -1,6 +1,8 @@
 ---
 name: stuck
 description: "Use when the agent is in a fix-retry loop, an error keeps recurring after multiple attempts, or the user says 'stuck', 'loop', 'going in circles', '/stuck'. Snapshot what was tried, surface to user, never silent-retry past 3 attempts."
+metadata:
+  origin: claude-code-optimizer
 ---
 
 # Stuck — Loop / Dead-End Recovery
@@ -13,6 +15,11 @@ description: "Use when the agent is in a fix-retry loop, an error keeps recurrin
   - Same error after 3rd attempt → STOP, invoke this skill
   - Same file edited 5+ times in one session for the same defect
 - A check passes locally but fails in CI 2+ consecutive runs without a code change in between (likely flake)
+
+## Scope Boundaries
+
+**Owns:** breaking a fix-retry loop — snapshot, attempt log, diagnosis of the loop type, escalation.
+**Does not own:** undoing the damage (`rollback`), the review that would have caught the defect (`review`), the decision to abandon the approach — that one is escalated, never taken here.
 
 ## Workflow
 
