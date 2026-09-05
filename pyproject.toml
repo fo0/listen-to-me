@@ -24,7 +24,7 @@ dependencies = [
 # Intel GPU/NPU transcription backend (Settings → Whisper → Backend = OpenVINO).
 openvino = [
     "openvino-genai>=2025.2",
-    "huggingface_hub>=0.23",
+    "huggingface_hub>=1.29.0",
 ]
 # NVIDIA Parakeet transcription backend (Settings → Whisper → Backend = Parakeet).
 # [cpu] pulls the CPU onnxruntime wheel; install onnxruntime-gpu yourself for CUDA.
