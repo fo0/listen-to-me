@@ -17,7 +17,7 @@ dependencies = [
     "Pillow>=10.0",
     "pynput>=1.7.7",
     "pyperclip>=1.11.0",
-    "requests>=2.31",
+    "requests>=2.34.2",
 ]
 
 [project.optional-dependencies]
