@@ -5,7 +5,7 @@ PySide6>=6.11.2
 Pillow>=10.0
 pynput>=1.7.7
 pyperclip>=1.11.0
-requests>=2.31
+requests>=2.34.2
 # Optional Intel GPU/NPU backend — not installed by default; use
 # `pip install openvino-genai` / `pip install -e ".[openvino]"` (or uncomment):
 # openvino-genai>=2025.2
