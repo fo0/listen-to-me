@@ -1,7 +1,7 @@
 faster-whisper>=1.2.1
 sounddevice>=0.4.6
 numpy>=1.24,<3
-PySide6>=6.6
+PySide6>=6.11.2
 Pillow>=10.0
 pynput>=1.7.7
 pyperclip>=1.8.2
