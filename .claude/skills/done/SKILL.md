@@ -1,6 +1,8 @@
 ---
 name: done
 description: "Use when the user signals work completion with 'done', 'fertig', 'finished', 'abschluss', '/done'. Detects current branch (main vs feature), runs closure checks defined in CLAUDE.md, handles commit and push based on branch context, closes related GitHub issues, and reports a strict short summary."
+metadata:
+  origin: claude-code-optimizer
 ---
 
 # Done — Work Closure
@@ -9,6 +11,11 @@ description: "Use when the user signals work completion with 'done', 'fertig', '
 
 - User says "done", "fertig", "finished", "abschluss", "/done"
 - End of a feature, bugfix, or task when ready to wrap up
+
+## Scope Boundaries
+
+**Owns:** closing a piece of work out — format, the automated-check chain, scope check, commit, push, issue close.
+**Does not own:** the review itself (`review`), the PR object (`pr`), remote build state (`ci`). It _suggests_ those and never runs them — that fence is what keeps `/done` predictable enough to type without reading it first.
 
 ## Workflow
 
@@ -25,19 +32,28 @@ Classify:
 
 ### 2. Read CLAUDE.md closure requirements
 
-- **Commands section** → identify the automated checks (this project: `compileall` + Qt offscreen smoke; no lint/format/typecheck)
+- **Commands section** → identify the automated checks, in the canonical order stated there (this project: Prettier for Markdown, then `compileall` + Qt offscreen smoke; no Python lint/format/typecheck)
 - **Git Conventions** → commit format (imperative subject), branch rules, merge strategy
 - **Documentation Rules** → verify affected docs (CLAUDE.md, README.md, MEMORY.md, SCRATCHPAD.md, BACKLOG.md, config table) are up to date
 
 ### 3. Auto-format (write mode)
 
-Run the project's format-write command from the CLAUDE.md Commands block. **This project has NO formatter configured — skip this step.** (If a formatter is added later and listed in CLAUDE.md, run it here before the checks and stage the result into the upcoming commit with `git add -u`.)
+Run **this project's** format-write command, exactly as CLAUDE.md → _Commands_ names it. There is no Python formatter; Markdown is the one formatted surface — when any `.md` file changed, run it before the rest of the chain, or the drift reaches CI and fails `docs-format.yml` there:
+
+```bash
+npx --yes prettier@3.9.6 --write "**/*.md"   # no install, no package.json — version pinned in docs-format.yml
+```
+
+- No `.md` file changed → skip this step.
+- If formatting changed files, **stage them with `git add -u` so they go into the upcoming commit (step 6)** — do NOT split formatting into its own commit.
+- Re-run `git status --porcelain` after formatting to see what changed.
 
 ### 4. Run automated checks
 
-Execute the project's checks from CLAUDE.md:
+Execute the project's check chain from CLAUDE.md → _Commands_, in the order stated there:
 
 ```bash
+npx --yes prettier@3.9.6 --check "**/*.md"   # only when Markdown changed — matches docs-format.yml
 python -m compileall -q src scripts
 QT_QPA_PLATFORM=offscreen PYTHONPATH=src python -c "import sys; from listen_to_me.selftest import gui_smoke; sys.exit(gui_smoke())"
 ```
@@ -63,7 +79,7 @@ Over 20,000 / 16,000 / 8,000 chars → offload per `agent_docs/context_budget.md
 
 - Follow the project's commit convention: imperative capitalized subject, optional `area:` prefix, **not** Conventional Commits.
 - Reference the GitHub issue number if applicable (e.g. `Fix crash on empty audio #42`).
-- **Main branch:** if the uncommitted diff is large/unfocused → ask user before committing.
+- **Main branch:** if the uncommitted diff is large/unfocused → ask user before committing. Unattended (`$CLAUDE_CODE_REMOTE=true`) nobody answers: leave it uncommitted, report the `git diff --stat` as the open point, and finish the steps that do not depend on it (CLAUDE.md → _Autonomy_).
 
 ### 7. Push
 
@@ -89,16 +105,16 @@ After push on a feature branch, suggest follow-ups — do NOT run them automatic
 Strict format, strict limits:
 
 ```
-✅ <branch>: <what was done — max 3 lines>
+✅ <branch>: <what was done>
 
-→ Next: <max 2 lines, only if something is open; omit entirely if nothing pending>
+→ Next: <only if something is open; omit entirely if nothing pending>
 ```
 
 ## Rules
 
-- **This project has no formatter/linter/typechecker** — the check step is `compileall` + the Qt smoke test. Do not add tooling to make a check pass.
+- **Format-write always runs before the checks** when Markdown changed — never commit unformatted `.md` files; `docs-format.yml` is unforgiving. Python has no formatter/linter/typechecker here: the check step is `compileall` + the Qt smoke test. Do not add tooling to make a check pass.
 - **Never push to `main` with failing checks.** Hard stop.
 - **Never force-push** without explicit user request.
-- **Ambiguous state on main** (large uncommitted diff, unclear scope) → ask first.
-- **Report line limits are hard.** 3 lines for summary, 2 lines for next. No preamble, no postamble.
+- **Ambiguous state on main** (large uncommitted diff, unclear scope) → ask first; unattended → uncommitted plus a report line (step 6).
+- **The report is the two lines above and nothing else.** No preamble, no postamble, nothing the commit message already says; the `Next:` line only when something is open.
 - If nothing to commit AND nothing to push AND no open issue → single-line confirmation: `✅ <branch>: already clean, nothing to do.`

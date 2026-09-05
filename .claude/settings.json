@@ -7,6 +7,8 @@
       "mcp__claude_code_remote__*",
       "mcp__github__subscribe_pr_activity",
       "mcp__github__unsubscribe_pr_activity",
+      "Bash(pip install -e .)",
+      "Bash(pip install -r requirements.txt)",
       "Bash(python -m compileall:*)",
       "Bash(QT_QPA_PLATFORM=offscreen PYTHONPATH=src python -c:*)",
       "Bash(python -m listen_to_me --version)",

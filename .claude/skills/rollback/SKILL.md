@@ -1,6 +1,8 @@
 ---
 name: rollback
 description: "Use when the user wants to undo a broken commit, push, or PR — triggered by /rollback, 'rollback', 'revert that', 'undo last commit', 'undo the push', 'restore branch'. Auto-detects the rollback target from current state (last commit / pushed range / open PR / merged PR) and chooses the safest reversal path. Never destroys history without explicit confirmation."
+metadata:
+  origin: claude-code-optimizer
 ---
 
 # Rollback — Recovery Workflow
@@ -9,6 +11,11 @@ description: "Use when the user wants to undo a broken commit, push, or PR — t
 
 - User says "/rollback", "rollback", "revert", "undo", "restore"
 - A broken commit / merged bad PR / pushed defect / corrupted branch needs reverting
+
+## Scope Boundaries
+
+**Owns:** reversing git state that already exists — uncommitted changes, local commits, pushed commits, an open or merged PR, a deleted branch.
+**Does not own:** diagnosing _why_ it broke (`stuck`), fixing a red build forward instead of backward (`ci`), reversing a release (CLAUDE.md → _Deployment_). Reaching for it to escape a confusing state rather than a broken one is the wrong skill: that is `stuck`.
 
 ## Auto-Detect Target
 
@@ -34,7 +41,15 @@ Decision matrix:
 | Merged PR causing breakage         | Phase E (revert PR via gh)                              |
 | Branch deleted by mistake          | Phase F (restore from reflog / origin)                  |
 
-Always **print the detected state and proposed action before executing**, then wait for confirmation.
+Always **print the detected state and proposed action before executing**, then wait for confirmation:
+
+```
+Detected: pushed 2 commits to claude/x; latest broke the check job.
+Proposed: git revert HEAD~1..HEAD && git push (no force).
+Proceed? (yes/no)
+```
+
+**Unattended** (`$CLAUDE_CODE_REMOTE=true`): nobody answers `Proceed?`, and a run that waits for it is a dead run (CLAUDE.md → _Autonomy_). The phases split by what they destroy. Phases C, D, E and F add commits or restore a ref — they run without the prompt, and the detection line above becomes a report line. Phases A and B and every force operation destroy work: they run unattended only when the instruction that invoked this skill ordered exactly that (the `stuck` skill's unattended step ordering the loop work discarded is one); otherwise skip, report the proposed command, and continue with what does not depend on it.
 
 ## Phase A — Discard uncommitted changes
 
@@ -67,27 +82,29 @@ git push                                  # no force
 
 ## Phase D — Revert on main
 
-Always use `git revert` on main. Never `git reset --hard` on main without explicit user override.
+Always use `git revert` on the default branch. Never `git reset --hard` there without explicit user override. "Main" is whatever this repo's default branch is called — resolve the name, never assume it:
 
 ```bash
+BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)   # MCP: the repo's default_branch
 git revert --no-edit <bad-sha>
-git push origin main
+git push origin "$BASE"
 ```
 
 If revert produces a conflict → stop, ask user to resolve manually.
 
 ## Phase E — Revert merged PR
 
-`gh` has no `pr revert` subcommand — build the revert PR manually. A revert **PR** is preferred over a direct push to main.
+`gh` has no `pr revert` subcommand — build the revert PR manually. A revert **PR** is preferred over a direct push to the default branch: it survives branch protection and keeps the change reviewable.
 
 ```bash
 PR=<number>
-gh pr view "$PR" --json mergeCommit,baseRefName,headRefName
-git checkout main && git pull
+BASE=$(gh pr view "$PR" --json baseRefName --jq .baseRefName)     # the branch the PR merged into — never assume `main`
+SHA=$(gh pr view "$PR" --json mergeCommit --jq .mergeCommit.oid)
+git checkout "$BASE" && git pull
 git checkout -b revert-pr-$PR
-git revert -m 1 <merge-commit-sha>      # -m 1 = keep mainline parent
+git revert -m 1 "$SHA"                  # -m 1 = keep mainline parent
 git push -u origin revert-pr-$PR
-gh pr create --title "Revert PR #$PR" --body "Reverts #$PR — <reason>"
+gh pr create --base "$BASE" --title "Revert PR #$PR" --body "Reverts #$PR — <reason>"
 gh pr comment "$PR" --body "Reverted via #<new-pr-number> — <reason>"
 ```
 
@@ -105,7 +122,7 @@ git push -u origin <name>                # if remote was also gone
 - **Never `git push --force` on main.** Default is revert + new commit.
 - **Never delete a branch** as part of rollback — only restore / revert.
 - **Always print a dry-run diff** of what the rollback will change before executing.
-- **Always confirm with the user before destructive ops** (`reset --hard`, `force-push`, branch delete).
+- **Always confirm with the user before destructive ops** (`reset --hard`, `force-push`, branch delete). Unattended, the confirmation cannot happen, so the op is skipped and reported (_Unattended_ under Auto-Detect Target) — never assumed.
 - **Checks must pass after rollback.** If the rollback itself breaks the build, stop and surface.
 
 ## After Rollback
