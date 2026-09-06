@@ -158,7 +158,9 @@ def target_problem(target) -> str | None:
         return '"name" is not text'
     if not isinstance(target.get("hotkey"), str):
         return '"hotkey" is not text'
-    if target.get("mode") not in _TARGET_MODES:
+    # A missing mode is the hold default (_activate reads it the same way);
+    # only a value that is neither mode is malformed.
+    if target.get("mode", "hold") not in _TARGET_MODES:
         return '"mode" is not "hold" or "toggle"'
     return None
 

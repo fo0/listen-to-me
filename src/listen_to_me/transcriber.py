@@ -306,7 +306,10 @@ class Transcriber:
                 with _download_watcher(model_name, model_dir, progress):
                     self._model = load()
         except Exception as exc:
-            if self._maybe_force_cpu(device, exc, notify):
+            # Judged by the device the load really went to: a load that
+            # resolve_runtime() already placed on the CPU must not be
+            # re-labelled a GPU failure because its error text says "cuda".
+            if self._maybe_force_cpu(run_device if run_device != "auto" else device, exc, notify):
                 # Retry on the CPU. notify=None: _maybe_force_cpu already told the
                 # user we switched, so don't repeat the "Loading model…" toast.
                 # No progress either — the model is on disk by now.
@@ -421,7 +424,9 @@ class Transcriber:
         cause was the missing CUDA libraries. Returns True when the caller should
         retry, False when it should re-raise."""
         with self._lock:
-            if not self._maybe_force_cpu(self._effective_device(), exc, notify):
+            # The loaded model's resolved device when known — see the load path.
+            device = self._runtime[0] if self._runtime else self._effective_device()
+            if not self._maybe_force_cpu(device, exc, notify):
                 return False
             self._ensure_loaded_locked(notify)
         return True

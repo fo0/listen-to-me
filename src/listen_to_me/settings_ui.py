@@ -3997,7 +3997,10 @@ class SettingsWindow(QDialog):
         # and then failed silently — a log line was the only trace. The hint
         # under the box says so while editing; Save says it once more and
         # refuses, like an invalid hotkey.
-        if values["live_typing"]:
+        # Only for faster-whisper: on the other backends live typing is inert
+        # (the box is greyed out but keeps its value), so refusing would block
+        # Save for a setting that cannot even be changed there.
+        if values["live_typing"] and values["backend"] == "faster-whisper":
             problem = self._live_typing_problem(hotkey, values["hotkey_mode"])
             if problem is not None:
                 self._show_page("General")

@@ -26,7 +26,7 @@ from .choices import resolve_input_device
 from .config import Config, clamp_setting, config_dir
 from .history import TranscriptHistory
 from .hotkeys import Hotkeys
-from .injector import Injector, sanitize_typed_text
+from .injector import Injector, ModifierHeldError, sanitize_typed_text
 from .integrations import MuteIntegrations
 from .livetype import LiveTyper
 from .transcriber import _PREVIEW_WINDOW_SECONDS, create_transcriber, is_cuda_library_error
@@ -783,6 +783,21 @@ class App:
         """
         try:
             on_clipboard = self.injector.insert(text)
+        except ModifierHeldError:
+            # User behaviour, not a fault: a modifier stayed physically down for
+            # the whole settle wait, so nothing was sent. A warning, not a
+            # traceback — and the message names the cause the user can fix.
+            log.warning("transcript not inserted — a modifier key was held down")
+            where = (
+                "it is on the clipboard, press Ctrl+V"
+                if self._copy_for_recovery(text)
+                else "copy it from Settings → History"
+            )
+            self.notify(
+                f"A modifier key was held down, so the text was not inserted — {where}.",
+                force=True,
+            )
+            return
         except Exception as exc:
             # The transcript itself worked — say so instead of letting this
             # surface as "Transcription failed", and point at the place the

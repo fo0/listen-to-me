@@ -39,9 +39,9 @@ small models the difference is minor.</p>
 driver plus the CUDA&nbsp;12 runtime library <b>cuBLAS</b>. Either install the
 CUDA Toolkit, or place the required DLLs next to <code>ListenToMe-*.exe</code>
 or in a folder on your <code>PATH</code>. cuDNN is <b>no longer required</b> for
-this backend &mdash; the CTranslate2 wheels since 4.6.3 (what this build uses)
-are built without it; only an older CTranslate2 from a source install still
-needs cuDNN&nbsp;9 for CUDA&nbsp;12.</p>
+this backend &mdash; the CTranslate2 wheels since 4.6.3 (what pip resolves today)
+are built without it; only an older, pinned CTranslate2 in a source install
+still needs cuDNN&nbsp;9 for CUDA&nbsp;12.</p>
 
 <p><b>Download links</b></p>
 <ul>

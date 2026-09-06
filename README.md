@@ -496,8 +496,8 @@ installed, GPU transcription fails.
   12.x](https://developer.nvidia.com/cuda-downloads), or drop the DLLs from the
   [`nvidia-cublas-cu12`](https://pypi.org/project/nvidia-cublas-cu12/) wheel next
   to the `.exe` or on your `PATH`. **cuDNN is no longer required** for this
-  backend: the CTranslate2 wheels since 4.6.3 (what the portable build uses) are
-  built without it; only an older CTranslate2 from a source install still needs
+  backend: the CTranslate2 wheels since 4.6.3 (what pip resolves today) are built
+  without it; only an older, pinned CTranslate2 in a source install still needs
   [cuDNN 9 for CUDA 12](https://developer.nvidia.com/cudnn) (also available as
   the [`nvidia-cudnn-cu12`](https://pypi.org/project/nvidia-cudnn-cu12/) wheel).
   See the [faster-whisper GPU notes](https://github.com/SYSTRAN/faster-whisper#gpu).
