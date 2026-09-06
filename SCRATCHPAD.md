@@ -4,7 +4,7 @@ Temporary working context. **Clean up aggressively — delete when resolved.** R
 
 ## Current Work
 
-_(none)_
+- **PR #168 `claude/app-quality-model-optimization-7eel5p` (2026-09-06) — awaiting merge.** Quality pass: compute_type "auto" → int8 on the CPU / float16 on CUDA (`transcriber.resolve_runtime`), `runtime` on every backend + "Running on:" status row, Settings page "Whisper" → "Engine" with the model chooser, OpenVINO compile cache, ORT CUDA DLL preload, hold-mode mute guard, config clamping/redaction, updater byte cap, dropped-buffer count. Overall review applied (2e0b57d); CI green; deferred P2s in BACKLOG #29–#34. Model research delta: `docs/research/2026-09-stt-engine-delta.md` (no preset beats the shipped ones). Delete this entry once merged.
 
 > Finished work does not belong here. What a merged branch produced is recorded in `BACKLOG.md → Done`, `agent_docs/key-patterns.md`, `MEMORY.md` and the git history — don't re-add closed branches to this section.
 
@@ -14,6 +14,7 @@ _(none)_
 
 ## Research Notes
 
+- **STT engine delta (2026-09-06):** `docs/research/2026-09-stt-engine-delta.md`. Headline: no new model beats a shipped preset (turbo-german / distil-3.5 / Parakeet v3 all still current); the wins are runtime — CT2 wheels ≥ 4.6.3 need cuBLAS only (no cuDNN), onnxruntime-gpu ≥ 1.27 is CUDA 13, OpenVINO `CACHE_DIR` cuts GPU/NPU load from minutes to seconds. Optional small German model: `canary-180m-flash` via onnx-asr (BACKLOG).
 - **Faster STT models + near-realtime translation** (2026-07-23): full report in `docs/research/2026-07-faster-stt-and-translation.md` (branch `claude/faster-translation-models-y5nn6p`). Headlines: `primeline/whisper-large-v3-turbo-german` = −28 % German WER at identical speed (string-only preset add); official `distil-whisper/distil-large-v3.5-ct2` upgrades the EN distil preset; Parakeet-TDT-0.6b-v3 via `onnx-asr` ≈ 20× faster with German ≥ turbo (candidate 3rd backend); the app has NO translation feature yet — cheapest real one is Whisper `task="translate"` (→EN only; **broken on turbo/distil** — silently returns source language) then Opus-MT de↔en on the already-shipped CTranslate2 (<150 ms CPU). License traps: CrisperWhisper/NLLB/SeamlessM4T/Tower+ are CC-BY-NC — never ship. No Whisper large-v4 exists.
 - **Hardware acceleration beyond CUDA** (2026-07-20): CTranslate2/faster-whisper supports NVIDIA CUDA + CPU only — no Intel GPU, no NPU, no ROCm planned. Best path for Intel iGPU/Arc/NPU: **OpenVINO GenAI `WhisperPipeline`** (`pip install openvino-genai`, device `"CPU"|"GPU"|"NPU"`, pre-converted models on HF under `OpenVINO/whisper-*-ov`, NPU works out of the box since 2025.1) — since shipped as the `openvino` backend. Alternative for vendor-neutral GPU (incl. AMD): whisper.cpp via `pywhispercpp` with Vulkan — but PyPI wheels are CPU-only, would need own CI wheel build; no NPU. ONNX Runtime DirectML is in maintenance mode (successor: Windows ML) — not worth adopting. AMD Ryzen AI NPU needs its own heavyweight SW stack; Qualcomm NPU needs an ARM64 build — both out of scope.
 

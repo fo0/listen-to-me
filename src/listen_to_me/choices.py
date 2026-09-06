@@ -22,7 +22,7 @@ GERMAN_TURBO_CT2 = "jimmymeister/whisper-large-v3-turbo-german-ct2"
 MODEL_CHOICES = [
     ("tiny", "fastest, lowest accuracy, ~75 MB"),
     ("base", "very fast, basic accuracy, ~140 MB"),
-    ("small", "recommended — good balance of speed and accuracy, ~460 MB"),
+    ("small", "recommended — good balance of speed and accuracy, ~490 MB"),
     ("medium", "high accuracy, noticeably slower, ~1.5 GB"),
     ("large-v3", "best accuracy, slow without a GPU, ~3 GB"),
     ("large-v3-turbo", "near large-v3 accuracy at much higher speed, ~1.6 GB"),

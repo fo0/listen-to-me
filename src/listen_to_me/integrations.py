@@ -34,6 +34,14 @@ it a moment later pulls the shared Ctrl out from under the keybind again. So
 each combination waits for the keyboard to go quiet first — see
 ``_wait_for_quiet_modifiers``.
 
+That wait cannot succeed while the recording hotkey is in *hold* mode: the
+hotkey stays down for the whole take, so a toggle-mode keybind would be tapped
+straight through it — widened by the held modifiers, and with its release
+landing on the app's own hold listener, which reads a shared modifier going up
+as the user letting go and ends the recording. Such targets are skipped for
+the take instead, with a notification saying why — see
+``_hold_mode_skip_reason``.
+
 pynput is imported lazily inside the methods so importing this module (and the
 rest of the app) stays cheap and never needs an X display until a mute target
 is actually enabled and a recording starts.
@@ -45,6 +53,7 @@ import logging
 import sys
 import threading
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -57,7 +66,9 @@ log = logging.getLogger(__name__)
 # hold-mode recording hotkey, which stays down for the whole take — muting late
 # and imperfectly still beats not muting at all.
 _SETTLE_TIMEOUT_S = 1.0
-_SETTLE_POLL_S = 0.01
+# The per-target modes a stored target may name — anything else is a hand-edit
+# gone wrong, not a third mode.
+_TARGET_MODES = ("hold", "toggle")
 # How long a tapped combination stays down. A press and release in the same
 # instant is a chord no one can observe: a target that samples the keyboard
 # rather than hooking every event can fall straight through the gap.
@@ -113,20 +124,78 @@ def _wait_for_quiet_modifiers(timeout: float = _SETTLE_TIMEOUT_S) -> bool:
 
     Off Windows `modifiers_down()` can't poll the physical state and reports
     False, so this returns at once and behaves exactly as before.
-    """
-    from .injector import modifiers_down
 
-    deadline = time.monotonic() + timeout
-    while modifiers_down():
-        if time.monotonic() >= deadline:
-            log.info(
-                "mute integration: modifier still held after %.1fs — sending the "
-                "keybind anyway; it may reach the target as a wider combination",
-                timeout,
-            )
-            return False
-        time.sleep(_SETTLE_POLL_S)
-    return True
+    The polling itself lives in ``injector.wait_for_quiet_modifiers`` — the
+    paste and typing paths wait for the very same reason; this wrapper only
+    adds the mute-specific log line.
+    """
+    from .injector import wait_for_quiet_modifiers
+
+    if wait_for_quiet_modifiers(timeout):
+        return True
+    log.info(
+        "mute integration: modifier still held after %.1fs — sending the "
+        "keybind anyway; it may reach the target as a wider combination",
+        timeout,
+    )
+    return False
+
+
+def target_problem(target) -> str | None:
+    """Why a stored mute target cannot be used, or None when its shape is sound.
+
+    The targets list is stored wholesale, so ``config._coerce`` never looks
+    inside it — a hand-edited ``"hotkey": 120`` used to raise
+    ``AttributeError`` on ``.strip()`` inside ``_active_targets``, on *every*
+    state change, and because that read every target at once, one broken entry
+    silenced all of them. Pure so the rule is checkable without pynput.
+    """
+    if not isinstance(target, dict):
+        return "not an object"
+    if not isinstance(target.get("enabled"), bool):
+        return '"enabled" is not true/false'
+    if not isinstance(target.get("name", ""), str):
+        return '"name" is not text'
+    if not isinstance(target.get("hotkey"), str):
+        return '"hotkey" is not text'
+    # A missing mode is the hold default (_activate reads it the same way);
+    # only a value that is neither mode is malformed.
+    if target.get("mode", "hold") not in _TARGET_MODES:
+        return '"mode" is not "hold" or "toggle"'
+    return None
+
+
+def _hold_mode_skip_reason(
+    hotkey_keys: set, hotkey_has_modifier: bool, keybind_keys, mode: str
+) -> str | None:
+    """Why a mute keybind must not go out while a *hold-mode* recording hotkey is
+    held, or None when it is safe to send. Pure: the parsed hotkey keys and
+    ``Hotkeys.combo_flags``' modifier verdict come in, no pynput is touched.
+
+    Only toggle-mode targets are affected — a tap presses AND releases every
+    key of its chord while the hotkey is still down:
+
+    - A key shared with the hotkey (the default Ctrl+Alt+Space next to
+      Discord's Ctrl+Shift+M share Ctrl) is released by the tap, and the hold
+      listener (``hotkeys.Hotkeys._handle_release``) cannot tell a synthesized
+      release from the user's — the recording ends a second after it started.
+    - A chord sharing no key is still tapped underneath the hotkey's held
+      modifiers and reaches the target widened (Shift+M arrives as
+      Ctrl+Alt+Shift+M), so it does not match either. Only a hotkey without
+      modifiers (e.g. <f9>) leaves the chord as configured.
+
+    A hold-mode target only presses at start and releases at stop — after the
+    recording has already ended — so it keeps working in either case. This is
+    the mute-side twin of ``App._live_typing_gate``, which keeps live typing
+    off in hold mode for the same shared-keyboard reason.
+    """
+    if mode != "toggle":
+        return None
+    if hotkey_keys.intersection(keybind_keys):
+        return "its shortcut shares keys with the recording hotkey"
+    if hotkey_has_modifier:
+        return "its shortcut would be tapped while the recording hotkey's modifier keys are held"
+    return None
 
 
 def _synth_keys(keys: list, key_code_cls) -> list:
@@ -189,8 +258,11 @@ class MuteIntegrations:
     check holds the lock all the way through its key sequence.
     """
 
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, notify: Callable[[str], None] | None = None):
         self.cfg = cfg
+        # Thread-safe user notification (App.notify posts to the main thread);
+        # None keeps the module usable in the selftest without an App.
+        self._notify = notify
         self._controller = None
         # pynput keys currently held down (hold-mode targets), in press order.
         self._held: list = []
@@ -199,6 +271,12 @@ class MuteIntegrations:
         self._active = False
         self._generation = 0
         self._lock = threading.Lock()
+        # Once-per-session latches: a broken target is read on every state
+        # change and a hold-mode conflict on every take — repeating either
+        # would bury the log and nag before every dictation.
+        self._malformed_reported: set[int] = set()
+        self._malformed_notified = False
+        self._hold_mode_skipped: set[str] = set()
 
     # ------------------------------------------------------- config helpers
 
@@ -218,12 +296,40 @@ class MuteIntegrations:
         if not settings.get("mute_while_recording", False):
             return []
         targets = []
-        for target in settings.get("targets") or []:
-            if not isinstance(target, dict) or not target.get("enabled"):
+        stored = settings.get("targets")
+        for index, target in enumerate(stored if isinstance(stored, list) else []):
+            if isinstance(target, dict) and target.get("enabled") is False:
+                continue  # off — whatever else is in there does nothing
+            problem = target_problem(target)
+            if problem is not None:
+                self._report_malformed(index, target, problem)
                 continue
-            if (target.get("hotkey") or "").strip():
+            if target["hotkey"].strip():
                 targets.append(target)
         return targets
+
+    def _report_malformed(self, index: int, target, problem: str) -> None:
+        """Say once per session that a stored target was skipped for its shape.
+
+        Skipping alone would be the silent no-op the user cannot see: the
+        Integrations page shows the entry, the master switch is on, and the
+        target simply never mutes.
+        """
+        label = f"#{index + 1}"
+        if isinstance(target, dict) and isinstance(target.get("name"), str) and target["name"]:
+            label += f" ({target['name']})"
+        if index not in self._malformed_reported:
+            self._malformed_reported.add(index)
+            log.warning(
+                "mute integration: target %s in config.json is malformed (%s) — skipping it",
+                label, problem,
+            )
+        if not self._malformed_notified and self._notify is not None:
+            self._malformed_notified = True
+            self._notify(
+                f"Mute target {label} in config.json is malformed ({problem}) and was "
+                "skipped — fix it under Settings → Integrations."
+            )
 
     # ------------------------------------------------------------ lifecycle
 
@@ -334,19 +440,35 @@ class MuteIntegrations:
                 log.info("mute integration: undoing a stop this recording overtook")
                 self._undo()
 
-            activated = 0
+            hold_hotkey = self._hold_mode_hotkey(HotKey)
+            activated = skipped = 0
             sent: list[set] = []
             for target in targets:
                 name = target.get("name") or "target"
                 try:
                     combo = (target.get("hotkey") or "").strip()
-                    keys = _synth_keys(HotKey.parse(combo), KeyCode)
+                    parsed = HotKey.parse(combo)
+                    keys = _synth_keys(parsed, KeyCode)
                 except (ValueError, KeyError):
                     log.warning(
                         "mute integration: invalid keybind %r for %s — skipping",
                         target.get("hotkey"), name,
                     )
                     continue
+                mode = "toggle" if target.get("mode") == "toggle" else "hold"
+                if hold_hotkey is not None:
+                    # GUARD, not the fix. The full fix is (a) a pynput
+                    # win32_event_filter that drops LLKHF_INJECTED events while
+                    # a tap is in flight, so our own release never reaches the
+                    # hold listener, plus (b) releasing and re-pressing the
+                    # extra held modifiers around the tap so the chord arrives
+                    # unwidened — both Windows-only and untested here, hence
+                    # the skip-and-say-why for now.
+                    reason = _hold_mode_skip_reason(hold_hotkey[0], hold_hotkey[1], parsed, mode)
+                    if reason is not None:
+                        self._skip_in_hold_mode(name, reason)
+                        skipped += 1
+                        continue
                 if any(set(keys) == already for already in sent):
                     # Several apps can listen for the same combination — Discord
                     # and Teams both default to Ctrl+Shift+M. One press reaches
@@ -358,7 +480,6 @@ class MuteIntegrations:
                     )
                     continue
                 sent.append(set(keys))
-                mode = "toggle" if target.get("mode") == "toggle" else "hold"
                 try:
                     if mode == "hold":
                         for key in keys:
@@ -370,9 +491,51 @@ class MuteIntegrations:
                     activated += 1
                 except Exception:
                     log.exception("mute integration: could not activate %s", name)
-            log.info("mute integration: activated %d target(s) for recording", activated)
+            log.info(
+                "mute integration: activated %d target(s) for recording%s",
+                activated,
+                f" ({skipped} skipped in hold mode)" if skipped else "",
+            )
         finally:
             lock.release()
+
+    def _hold_mode_hotkey(self, hotkey_cls) -> tuple[set, bool] | None:
+        """(parsed keys, has_modifier) of the recording hotkey while it runs in
+        hold mode — the keys that are necessarily held for the whole take.
+        None in toggle mode (the hotkey is let go before any keybind goes out)
+        and for a combo that does not parse (nothing was registered, so
+        nothing is held)."""
+        if self.cfg["hotkey_mode"] != "hold":
+            return None
+        combo = str(self.cfg["hotkey"] or "")
+        try:
+            keys = set(hotkey_cls.parse(combo))
+        except (ValueError, KeyError):
+            return None
+        from .hotkeys import Hotkeys
+
+        has_modifier, _has_typable = Hotkeys.combo_flags(combo)
+        return keys, has_modifier
+
+    def _skip_in_hold_mode(self, name: str, reason: str) -> None:
+        """Log and notify — once per target and session — that a toggle keybind
+        was not sent because the hold-mode recording hotkey would corrupt it.
+        Once, because this fires on every take until the user changes either
+        the hotkey or the target's mode, and the fix is a settings change."""
+        if name in self._hold_mode_skipped:
+            log.debug("mute integration: %s skipped again in hold mode", name)
+            return
+        self._hold_mode_skipped.add(name)
+        log.warning(
+            "mute integration: mute for %s is skipped in hold mode — %s; use a "
+            "hotkey without modifiers (e.g. <f9>) or toggle mode",
+            name, reason,
+        )
+        if self._notify is not None:
+            self._notify(
+                f"Mute for {name} is skipped in hold mode: {reason} — use a hotkey "
+                "without modifiers (e.g. <f9>) or toggle mode."
+            )
 
     def _deactivate(self, generation: int, settle: bool = True) -> None:
         """Worker: release held keybinds and re-tap toggle ones."""

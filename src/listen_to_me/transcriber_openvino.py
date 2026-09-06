@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from pathlib import Path
 
 from .audio import SAMPLE_RATE
 from .choices import OPENVINO_UNSUPPORTED_MODELS, openvino_alternative
@@ -28,7 +29,7 @@ log = logging.getLogger(__name__)
 _INSTALL_HINT = (
     "The OpenVINO backend needs the optional openvino-genai package. "
     "Install it with: pip install openvino-genai — or set "
-    "Backend = faster-whisper in Settings → Whisper."
+    "Backend = faster-whisper in Settings → Engine."
 )
 
 
@@ -51,7 +52,7 @@ def openvino_model_repo(model: str, precision: str) -> str:
         raise ValueError(
             f"The model '{model}' has no OpenVINO conversion — pick "
             f"'{openvino_alternative(model)}' (or another model) in Settings → "
-            "Whisper. Only if you need this exact model, switch Backend back to "
+            "Engine. Only if you need this exact model, switch Backend back to "
             "faster-whisper, which can run it."
         )
     if "/" in model or os.sep in model:
@@ -107,6 +108,37 @@ def _model_is_cached(repo: str, model_dir) -> bool:
         return False
 
 
+def _pipeline_properties(device: str, model_dir) -> dict:
+    """OpenVINO properties for a pipeline on `device`.
+
+    A GPU or NPU compiles the model on every load — tens of seconds up to
+    minutes for large-v3-turbo on an NPU — and OpenVINO can cache the compiled
+    blob: with ``CACHE_DIR`` the next start of the same model/device/driver is
+    a file read (openvino.genai#1992 measured minutes → seconds on the NPU).
+    The CPU plugin compiles fast and its blob would only cost disk, so it gets
+    none. The cache sits under the user's own config dir — or next to a custom
+    model folder — never under the shared temp dir (see theme._asset_dir for
+    what a guessable path there costs). A cache dir that cannot be created is
+    a warning and a slower load, never a failed one.
+    """
+    if device == "CPU":
+        return {}
+    from .config import config_dir
+
+    root = Path(str(model_dir)) if model_dir else config_dir() / "cache"
+    cache = root / "openvino-cache"
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        log.warning(
+            "could not create the OpenVINO compile cache %s — loading without it",
+            cache,
+            exc_info=True,
+        )
+        return {}
+    return {"CACHE_DIR": str(cache)}
+
+
 class OpenVinoTranscriber:
     backend = "openvino"
 
@@ -153,6 +185,17 @@ class OpenVinoTranscriber:
     @property
     def loaded(self) -> bool:
         return self._pipe is not None and self._key == self._current_key()
+
+    @property
+    def runtime(self) -> tuple[str, str] | None:
+        """(device, precision) the loaded pipeline actually runs with — e.g.
+        ("GPU", "int8"): what "auto" resolved to, or the CPU after a session
+        fallback. None while nothing is loaded. Same contract as
+        Transcriber.runtime, so the Settings status card shows the effective
+        device for every backend."""
+        if not self.loaded or self._device is None or self._key is None:
+            return None
+        return self._device, self._key[1]
 
     def _resolve_device(self, configured: str) -> str:
         """Turn the configured device into an OpenVINO device string.
@@ -220,7 +263,7 @@ class OpenVinoTranscriber:
                 "openvino_*.xml files (a CTranslate2 or Transformers model "
                 "cannot be loaded by this backend). Pick an OpenVINO IR repo "
                 "such as OpenVINO/whisper-small-int8-ov, or switch Backend to "
-                "faster-whisper in Settings → Whisper."
+                "faster-whisper in Settings → Engine."
             )
         if notify is not None:
             if cached:
@@ -260,8 +303,23 @@ class OpenVinoTranscriber:
                 with watcher:
                     path = download()
         device = self._resolve_device(device_cfg)
+        properties = _pipeline_properties(device, model_dir)
         try:
-            self._pipe = openvino_genai.WhisperPipeline(path, device)
+            try:
+                self._pipe = openvino_genai.WhisperPipeline(path, device, **properties)
+            except Exception:
+                if not properties:
+                    raise
+                # A plugin or driver that rejects the cache property must not
+                # read as "device unusable": retry once bare, and only then
+                # let the device fallback judge the failure.
+                log.warning(
+                    "OpenVINO %s failed to load with %s — retrying without the compile cache",
+                    device,
+                    sorted(properties),
+                    exc_info=True,
+                )
+                self._pipe = openvino_genai.WhisperPipeline(path, device)
         except Exception as exc:
             if custom and _looks_like_openvino_model(path) is False:
                 # A wrong-format custom model that slipped past the download
@@ -274,7 +332,7 @@ class OpenVinoTranscriber:
                     "model cannot be loaded by this backend). Pick an "
                     "OpenVINO IR repo such as OpenVINO/whisper-small-int8-ov, "
                     "or switch Backend to faster-whisper in Settings → "
-                    "Whisper."
+                    "Engine."
                 ) from exc
             if self._maybe_force_cpu(device, exc, notify):
                 self._ensure_loaded_locked(None)  # retry on the CPU, no re-notify
@@ -312,7 +370,7 @@ class OpenVinoTranscriber:
             notify(
                 f"Intel {device} acceleration unavailable — switched to CPU for "
                 "this session. Check your Intel GPU/NPU driver, or set "
-                "Intel device = CPU in Settings → Whisper.",
+                "Intel device = CPU in Settings → Engine.",
                 True,  # force: important even when notifications are off
             )
         return True

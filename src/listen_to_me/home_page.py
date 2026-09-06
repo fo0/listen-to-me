@@ -208,8 +208,8 @@ class HomePage(QWidget):
         layout.addWidget(self._section("At a glance"))
         stats = QHBoxLayout()
         stats.setSpacing(10)
-        self.card_model = _StatCard("Engine & model", lambda: window._show_page("Whisper"))
-        self.card_language = _StatCard("Language", lambda: window._show_page("General"))
+        self.card_model = _StatCard("Engine & model", lambda: window._show_page("Engine"))
+        self.card_language = _StatCard("Language", lambda: window._show_page("Engine"))
         self.card_mic = _StatCard("Microphone", lambda: window._show_page("Audio"))
         for card in (self.card_model, self.card_language, self.card_mic):
             card.setToolTip("Click to change this in Settings.")
@@ -222,7 +222,7 @@ class HomePage(QWidget):
         actions.setSpacing(10)
         quick = [
             ("keyboard", "Change hotkey", "General", "Pick the global key combination and its mode."),
-            ("wave", "Model && engine", "Whisper", "Choose the speech model, backend and device."),
+            ("wave", "Model && engine", "Engine", "Choose the speech model, backend and device."),
             ("mic", "Test microphone", "Audio", "Record 3 seconds and check the input level."),
             ("layers", "Overlay && preview", "Overlay", "The floating icon and transcript preview."),
             ("download", "Check for updates", "Updates", "See and install newer releases."),

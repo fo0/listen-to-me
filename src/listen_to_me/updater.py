@@ -41,6 +41,14 @@ _API_URL = "https://api.github.com/repos/{owner_repo}/releases"
 _DOWNLOAD_CHUNK = 256 * 1024
 # Fallback for a request that names no timeout of its own (see _get).
 _DEFAULT_TIMEOUT = 30.0
+# Byte cap for a download whose asset size the API did not report (see
+# download_cap). The exe is ~200 MB; a transfer several times that is not a
+# release of this app, whatever the server says.
+_MAX_DOWNLOAD_BYTES = 1024 ** 3
+# Headroom over the reported asset size before a transfer is cut off — a proxy
+# that re-encodes the body must not fail a download the size check would have
+# caught anyway (verify_download compares the exact size afterwards).
+_DOWNLOAD_SLACK = 0.05
 
 
 def _owner_repo() -> str:
@@ -269,39 +277,84 @@ class DownloadCancelled(Exception):
     distinct from a real failure so the UI can say "cancelled", not "failed"."""
 
 
+class DownloadTooLarge(ValueError):
+    """Raised by download_asset when the transfer would exceed its byte cap —
+    before the first chunk when Content-Length says so, else the moment the
+    streamed bytes pass it. The partial file is already gone."""
+
+
+def download_cap(asset_size: int | None) -> int:
+    """The byte cap for downloading an asset the releases API reports as
+    `asset_size` bytes: the size plus a little slack, or the hard ceiling when
+    the API named no usable size. Callers pass it as ``max_bytes``."""
+    try:
+        size = int(asset_size or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size <= 0:
+        return _MAX_DOWNLOAD_BYTES
+    return int(size * (1 + _DOWNLOAD_SLACK))
+
+
 def download_asset(
     url: str,
     dest: Path,
     progress_cb: Callable[[int, int], None] | None = None,
     timeout: float = 30.0,
     is_cancelled: Callable[[], bool] | None = None,
+    max_bytes: int | None = None,
 ) -> Path:
     """Stream a release asset to `dest`. progress_cb(done, total) is called as it
     downloads (total is 0 when the server sends no Content-Length).
     ``is_cancelled`` (optional) is polled between chunks; returning True aborts
     with DownloadCancelled — the caller cleans up the partial file. Raises
-    ``UpdateTrustError`` when the certificate could not be verified."""
+    ``UpdateTrustError`` when the certificate could not be verified.
+
+    ``max_bytes`` bounds the transfer (``download_cap(release.asset_size)``;
+    None means the hard ceiling): the size is known before a byte moves, so a
+    body that announces more, or keeps streaming past it, is cut off with
+    ``DownloadTooLarge`` (a ValueError) and the partial file is deleted —
+    otherwise a misbehaving server or proxy could fill the disk next to the
+    running exe."""
     _require_trusted_url(url)
 
     dest = Path(dest)
-    with _get(url, stream=True, timeout=timeout) as resp:
-        # requests follows redirects — including cross-host and https→http
-        # ones — so re-check the URL the transfer actually came from, not just
-        # the one we started at.
-        _require_trusted_url(resp.url)
-        resp.raise_for_status()
-        total = int(resp.headers.get("Content-Length") or 0)
-        done = 0
-        with open(dest, "wb") as fh:
-            for chunk in resp.iter_content(chunk_size=_DOWNLOAD_CHUNK):
-                if is_cancelled is not None and is_cancelled():
-                    raise DownloadCancelled()
-                if not chunk:
-                    continue
-                fh.write(chunk)
-                done += len(chunk)
-                if progress_cb is not None:
-                    progress_cb(done, total)
+    cap = _MAX_DOWNLOAD_BYTES if max_bytes is None else int(max_bytes)
+    try:
+        with _get(url, stream=True, timeout=timeout) as resp:
+            # requests follows redirects — including cross-host and https→http
+            # ones — so re-check the URL the transfer actually came from, not
+            # just the one we started at.
+            _require_trusted_url(resp.url)
+            resp.raise_for_status()
+            total = int(resp.headers.get("Content-Length") or 0)
+            if total > cap:
+                raise DownloadTooLarge(
+                    f"refusing to download {total} bytes — more than the {cap} byte "
+                    "limit for this release"
+                )
+            done = 0
+            with open(dest, "wb") as fh:
+                for chunk in resp.iter_content(chunk_size=_DOWNLOAD_CHUNK):
+                    if is_cancelled is not None and is_cancelled():
+                        raise DownloadCancelled()
+                    if not chunk:
+                        continue
+                    done += len(chunk)
+                    if done > cap:
+                        raise DownloadTooLarge(
+                            f"download exceeded the {cap} byte limit for this release — "
+                            f"stopped after {done} bytes"
+                        )
+                    fh.write(chunk)
+                    if progress_cb is not None:
+                        progress_cb(done, total)
+    except DownloadTooLarge:
+        try:
+            dest.unlink(missing_ok=True)
+        except OSError:
+            log.warning("could not remove the oversized download %s", dest)
+        raise
     return dest
 
 

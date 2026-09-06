@@ -10,8 +10,14 @@ from __future__ import annotations
 import logging
 
 from . import netutil
+from .config import clamp_setting
 
 log = logging.getLogger(__name__)
+
+# The ranges the Settings → Assistant spin boxes offer; hand-edited values
+# outside them are clamped at the request (see config.clamp_setting).
+_TIMEOUT_RANGE = (5, 600)
+_TEMPERATURE_RANGE = (0.0, 2.0)
 
 
 class AssistantError(RuntimeError):
@@ -104,9 +110,16 @@ def refine(text: str, acfg: dict) -> str:
     headers = {"Content-Type": "application/json"}
     if acfg.get("api_key"):
         headers["Authorization"] = f"Bearer {acfg['api_key']}"
+    # Clamped, not rejected: a `timeout` of 0 raises deep inside urllib3 on
+    # every dictation and a temperature of 7 is refused by the server — both
+    # after the user already spoke. The clamp names the key once in the log.
+    temperature = clamp_setting(
+        "assistant.temperature", acfg.get("temperature", 0.2), *_TEMPERATURE_RANGE
+    )
+    timeout = clamp_setting("assistant.timeout", acfg.get("timeout", 120), *_TIMEOUT_RANGE)
     payload = {
         "model": acfg["model"],
-        "temperature": float(acfg.get("temperature", 0.2)),
+        "temperature": float(temperature),
         "messages": [
             {"role": "system", "content": acfg["system_prompt"]},
             {"role": "user", "content": text},
@@ -116,7 +129,7 @@ def refine(text: str, acfg: dict) -> str:
         url,
         json=payload,
         headers=headers,
-        timeout=float(acfg.get("timeout", 120)),
+        timeout=float(timeout),
         verify=netutil.verify(),
     )
     response.raise_for_status()

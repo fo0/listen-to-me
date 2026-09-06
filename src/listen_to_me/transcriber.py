@@ -30,6 +30,65 @@ _CUDA_TRANSIENT_MARKERS = ("out of memory", "outofmemory")
 # these to "auto" so the reload doesn't fail again for a different reason.
 _GPU_ONLY_COMPUTE = ("float16", "int8_float16")
 
+# What "auto" means for the compute type, best candidate first, per device.
+# Neither of CTranslate2's own answers fits a dictation app: its "auto" picks
+# the *fastest* supported type (int8_float16 on a GPU — a precision loss the
+# GPU has no need for), and faster-whisper's default, "default", keeps the
+# *converted* type — float16 for every Systran/distil preset, which no CPU can
+# run, so CTranslate2 silently widens it to float32, the slowest CPU path of
+# all. That was this app's "auto" until 2026-09: every default installation
+# without an NVIDIA GPU transcribed in float32. On the CPU int8 is 2–4× faster
+# at a WER difference below noise; on a GPU float16 keeps the full accuracy.
+# The candidates are checked against what the installed CTranslate2 reports
+# as supported (float16 needs compute capability ≥ 7.0, int8 needs an
+# instruction set the CPU has), never assumed.
+_AUTO_COMPUTE_PREFERENCE = {
+    "cpu": ("int8", "int8_float32", "float32"),
+    "cuda": ("float16", "int8_float16", "int8", "float32"),
+}
+
+
+def resolve_runtime(device: str, compute_type: str) -> tuple[str, str]:
+    """The (device, compute_type) pair actually handed to CTranslate2.
+
+    ``device="auto"`` becomes ``"cuda"`` when CTranslate2 sees a CUDA GPU,
+    else ``"cpu"``; ``compute_type="auto"`` becomes the first entry of
+    _AUTO_COMPUTE_PREFERENCE that device supports. Explicit choices pass
+    through untouched. Whenever CTranslate2 cannot be asked — not installed,
+    a CUDA runtime that throws on the probe — the pair is handed on as
+    ``"auto"`` / ``"default"``, i.e. CTranslate2's own resolution (the old
+    behaviour), so a failed probe can never prevent a load that would have
+    worked. Never raises.
+    """
+    passthrough = "default" if compute_type == "auto" else compute_type
+    try:
+        import ctranslate2
+    except Exception:
+        log.debug("ctranslate2 unavailable for the runtime probe", exc_info=True)
+        return device, passthrough
+    if device == "auto":
+        try:
+            count = int(ctranslate2.get_cuda_device_count())
+            # Worth a line in the log: "no GPU" and "GPU present but cuBLAS
+            # missing" look identical to the user, and this is what tells
+            # them apart when the CUDA fallback fires later.
+            log.info("ctranslate2 sees %d CUDA device(s)", count)
+            device = "cuda" if count > 0 else "cpu"
+        except Exception:
+            log.debug("CUDA device probe failed — leaving the device to CTranslate2", exc_info=True)
+            return "auto", passthrough
+    if compute_type != "auto":
+        return device, compute_type
+    try:
+        supported = set(ctranslate2.get_supported_compute_types(device))
+    except Exception:
+        log.debug("compute type probe failed on %s — using CTranslate2's default", device, exc_info=True)
+        return device, "default"
+    for candidate in _AUTO_COMPUTE_PREFERENCE.get(device, ()):
+        if candidate in supported:
+            return device, candidate
+    return device, "default"
+
 
 def is_cuda_library_error(exc) -> bool:
     """Whether `exc` means the NVIDIA CUDA GPU is unavailable (missing/unloadable
@@ -142,6 +201,17 @@ class Transcriber:
         # it — with no re-notify on unrelated saves. Not persisted; a restart
         # clears it too.
         self._cpu_fallback_for: tuple | None = None
+        # (device, compute_type) the loaded model actually runs with — the
+        # config's "auto" values resolved by resolve_runtime(). None until a
+        # model is loaded; reset whenever the model is dropped.
+        self._runtime: tuple[str, str] | None = None
+
+    @property
+    def runtime(self) -> tuple[str, str] | None:
+        """(device, compute_type) of the currently loaded model, e.g.
+        ("cpu", "int8") for the default config on a machine without a GPU —
+        what "auto" resolved to. None while nothing is loaded."""
+        return self._runtime if self.loaded else None
 
     @property
     def _forced_cpu(self) -> bool:
@@ -202,6 +272,9 @@ class Transcriber:
         if self._model is not None and key == self._key:
             return
         model_name, device, compute_type, model_dir = key
+        # Resolved once per load, right here, so the log line below and the
+        # `runtime` property describe the pair the model really runs with.
+        run_device, run_compute = resolve_runtime(device, compute_type)
         cached = _model_is_cached(model_name, model_dir)
         if notify is not None:
             if cached:
@@ -216,8 +289,8 @@ class Transcriber:
         def load():
             return WhisperModel(
                 model_name,
-                device=device,
-                compute_type="default" if compute_type == "auto" else compute_type,
+                device=run_device,
+                compute_type=run_compute,
                 download_root=str(model_dir) if model_dir else None,
                 # Already cached → load straight from disk, skipping the network
                 # revision check so restarts are fast and work fully offline.
@@ -233,7 +306,10 @@ class Transcriber:
                 with _download_watcher(model_name, model_dir, progress):
                     self._model = load()
         except Exception as exc:
-            if self._maybe_force_cpu(device, exc, notify):
+            # Judged by the device the load really went to: a load that
+            # resolve_runtime() already placed on the CPU must not be
+            # re-labelled a GPU failure because its error text says "cuda".
+            if self._maybe_force_cpu(run_device if run_device != "auto" else device, exc, notify):
                 # Retry on the CPU. notify=None: _maybe_force_cpu already told the
                 # user we switched, so don't repeat the "Loading model…" toast.
                 # No progress either — the model is on disk by now.
@@ -241,10 +317,13 @@ class Transcriber:
                 return
             raise
         self._key = key
+        self._runtime = (run_device, run_compute)
         log.info(
-            "whisper model %s: %s / %s / %s (dir=%s)",
+            "whisper model %s: %s / %s / %s (dir=%s) — running on %s as %s",
             "loaded from cache" if cached else "downloaded",
             *key,
+            run_device,
+            run_compute,
         )
 
     def _maybe_force_cpu(self, device: str, exc: Exception, notify) -> bool:
@@ -262,11 +341,12 @@ class Transcriber:
         self._cpu_fallback_for = (self.cfg["device"], self.cfg["compute_type"])
         self._model = None
         self._key = None
+        self._runtime = None
         if notify is not None:
             notify(
                 "GPU acceleration unavailable — switched to CPU for this "
                 "session. Open the tray menu → Help to enable your GPU, or set "
-                "Device = CPU in Settings → Whisper.",
+                "Device = CPU in Settings → Engine.",
                 True,  # force: important even when notifications are off
             )
         return True
@@ -344,7 +424,9 @@ class Transcriber:
         cause was the missing CUDA libraries. Returns True when the caller should
         retry, False when it should re-raise."""
         with self._lock:
-            if not self._maybe_force_cpu(self._effective_device(), exc, notify):
+            # The loaded model's resolved device when known — see the load path.
+            device = self._runtime[0] if self._runtime else self._effective_device()
+            if not self._maybe_force_cpu(device, exc, notify):
                 return False
             self._ensure_loaded_locked(notify)
         return True

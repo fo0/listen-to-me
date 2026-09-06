@@ -56,6 +56,10 @@ DEFAULTS: dict = {
     # (The openvino backend has its own openvino_device below.)
     "device": "auto",
     # CTranslate2 compute type: auto / int8 / int8_float16 / float16 / float32.
+    # "auto" = int8 on the CPU, float16 on a GPU that supports it — resolved
+    # against the installed CTranslate2 (transcriber.resolve_runtime), never
+    # CTranslate2's "default", which runs the float16 presets as float32 on
+    # a CPU.
     "compute_type": "auto",
     # OpenVINO device (openvino backend): auto / cpu / gpu / npu.
     # "auto" prefers the GPU, then the NPU, then the CPU.
@@ -244,6 +248,16 @@ def _finite_number(default, value):
     return coerced
 
 
+# Name fragments of config keys whose value must never reach the log: the
+# assistant API key today, and whatever a later option calls its credential.
+_SENSITIVE_KEY_MARKERS = ("api_key", "token", "secret", "password")
+
+
+def _is_sensitive_key(key: str) -> bool:
+    lowered = str(key).lower()
+    return any(marker in lowered for marker in _SENSITIVE_KEY_MARKERS)
+
+
 def _coerce(key: str, default, value):
     """`value` narrowed to the type its default implies — or `default` when the
     stored value cannot be used at all.
@@ -284,11 +298,56 @@ def _coerce(key: str, default, value):
                 return coerced
     elif isinstance(value, type(default)):
         return value
+    if _is_sensitive_key(key):
+        # The value is the secret (or a mangled attempt at one): type and
+        # length say what is wrong without copying it into the log file.
+        log.warning(
+            "config key %r holds an unusable %s value (%d chars), expected %s — "
+            "keeping the default",
+            key, type(value).__name__, len(str(value)), type(default).__name__,
+        )
+        return default
     log.warning(
         "config key %r holds unusable %s value %.60r, expected %s — keeping the default %r",
         key, type(value).__name__, value, type(default).__name__, default,
     )
     return default
+
+
+# Keys clamp_setting() has already warned about in this process.
+_clamp_warned: set[str] = set()
+
+
+def clamp_setting(key: str, value, low, high):
+    """`value` held to the [low, high] range the Settings page offers for `key`.
+
+    ``_coerce`` fixes the *type* of a stored scalar, not its range: a
+    hand-edited ``"max_seconds": 1e9`` is a perfectly good number that lets the
+    recorder's chunk list grow for eleven days, and ``"timeout": 0`` raises
+    inside urllib3 on every dictation. The consumer clamps at the point of
+    use, so the value is fixed where it would fail — and says so once per key
+    and process, because most consumers read their key on every take.
+
+    A value that cannot be compared (a type ``_coerce`` let through for a
+    key whose default carries none) is returned untouched: the consumer's own
+    conversion is what reports that case.
+    """
+    try:
+        if value < low:
+            clamped = low
+        elif value > high:
+            clamped = high
+        else:
+            return value
+    except TypeError:
+        return value
+    if key not in _clamp_warned:
+        _clamp_warned.add(key)
+        log.warning(
+            "config key %r is %r, outside the %s–%s range — using %r",
+            key, value, low, high, clamped,
+        )
+    return clamped
 
 
 def _merge(base: dict, override: dict) -> dict:

@@ -1945,6 +1945,670 @@ def _transcriber_cpu_fallback():
         assert t2._maybe_force_cpu("cpu", RuntimeError("cublas missing"), None) is False
 
 
+def _compute_type_resolution():
+    """"auto" for device/compute type resolves against what CTranslate2
+    reports — int8 on the CPU (never the float32 that "default" widened the
+    float16 presets to), float16 on a GPU that supports it — and every probe
+    failure falls back to CTranslate2's own resolution instead of raising.
+    Uses a fake ctranslate2 module so the check needs no GPU and no real
+    install."""
+    import sys
+    import types
+
+    from listen_to_me.transcriber import resolve_runtime
+
+    def fake(gpus: int, **supported):
+        mod = types.ModuleType("ctranslate2")
+        mod.get_cuda_device_count = lambda: gpus
+        mod.get_supported_compute_types = lambda device, index=0: supported[device]
+        return mod
+
+    previous = sys.modules.get("ctranslate2")
+    try:
+        cpu_only = {"cpu": ["float32", "int16", "int8", "int8_float32"]}
+        sys.modules["ctranslate2"] = fake(0, **cpu_only)
+        assert resolve_runtime("auto", "auto") == ("cpu", "int8")
+        assert resolve_runtime("cpu", "auto") == ("cpu", "int8")
+        assert resolve_runtime("cpu", "float32") == ("cpu", "float32")  # explicit wins
+        assert resolve_runtime("cuda", "float16") == ("cuda", "float16")  # not probed
+        # A CPU without int8 support gets float32, never a type it lacks.
+        sys.modules["ctranslate2"] = fake(0, cpu=["float32", "int16"])
+        assert resolve_runtime("auto", "auto") == ("cpu", "float32")
+
+        # A GPU takes float16 when supported (accuracy), int8 on an old card.
+        sys.modules["ctranslate2"] = fake(
+            1, cuda=["float32", "float16", "int8_float16", "int8"], **cpu_only
+        )
+        assert resolve_runtime("auto", "auto") == ("cuda", "float16")
+        assert resolve_runtime("cpu", "auto") == ("cpu", "int8")  # forced CPU keeps int8
+        sys.modules["ctranslate2"] = fake(1, cuda=["float32", "int8"], **cpu_only)
+        assert resolve_runtime("auto", "auto") == ("cuda", "int8")
+
+        # Probe failures hand the decision back to CTranslate2 — the previous
+        # behaviour — instead of failing a load that would have worked.
+        def broken(*_a, **_k):
+            raise RuntimeError("CUDA driver version is insufficient")
+
+        mod = fake(0, **cpu_only)
+        mod.get_cuda_device_count = broken
+        sys.modules["ctranslate2"] = mod
+        assert resolve_runtime("auto", "auto") == ("auto", "default")
+        assert resolve_runtime("auto", "int8") == ("auto", "int8")
+        mod = fake(0, **cpu_only)
+        mod.get_supported_compute_types = broken
+        sys.modules["ctranslate2"] = mod
+        assert resolve_runtime("cpu", "auto") == ("cpu", "default")
+        sys.modules["ctranslate2"] = None  # import fails → nothing resolved
+        assert resolve_runtime("auto", "auto") == ("auto", "default")
+    finally:
+        if previous is None:
+            sys.modules.pop("ctranslate2", None)
+        else:
+            sys.modules["ctranslate2"] = previous
+
+
+def _openvino_pipeline_properties():
+    """The OpenVINO compile cache is requested for the GPU/NPU only, lives
+    under the custom model folder when one is set (the config dir otherwise),
+    and an uncreatable cache dir degrades to no properties instead of raising.
+    Pure path logic — openvino stays unimported."""
+    from listen_to_me.transcriber_openvino import _pipeline_properties
+
+    assert _pipeline_properties("CPU", None) == {}
+    with tempfile.TemporaryDirectory() as tmp:
+        props = _pipeline_properties("GPU", tmp)
+        cache = Path(props["CACHE_DIR"])
+        assert cache.is_dir() and cache.parent == Path(tmp) and cache.name == "openvino-cache"
+        assert _pipeline_properties("NPU", tmp)["CACHE_DIR"] == str(cache)
+        # A file where the cache dir should go → mkdir fails → no properties.
+        blocker = Path(tmp) / "blocked"
+        blocker.write_text("not a directory")
+        assert _pipeline_properties("GPU", blocker) == {}
+
+
+def _config_redacts_secrets_in_warnings():
+    """An unusable value under a credential key is reported by type and length
+    only. `_coerce` logs the stored value verbatim so a hand-edit can be found
+    in the log — under `assistant.api_key` that verbatim value IS the secret
+    (or a mangled attempt at one), copied into a world-readable log file."""
+    import json
+    import logging
+
+    from listen_to_me import config
+    from listen_to_me.config import DEFAULTS, Config
+
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Capture()
+    config.log.addHandler(handler)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.json"
+            path.write_text(
+                json.dumps({"assistant": {"api_key": ["sk-live-SECRET-VALUE"], "timeout": "abc"}}),
+                encoding="utf-8",
+            )
+            cfg = Config(path=path)
+    finally:
+        config.log.removeHandler(handler)
+    assert cfg["assistant"]["api_key"] == DEFAULTS["assistant"]["api_key"]
+    assert "SECRET-VALUE" not in "\n".join(records), records
+    assert any("api_key" in m and "list" in m for m in records), records
+    # Not a blanket rule: a harmless key still names its value, which is what
+    # makes the warning actionable for every other hand-edit.
+    assert any("timeout" in m and "'abc'" in m for m in records), records
+    for key in ("api_key", "auth_token", "client_secret", "Password", "hf_token"):
+        assert config._is_sensitive_key(key), key
+    assert not config._is_sensitive_key("max_seconds")
+
+
+def _config_clamps_out_of_range_values():
+    """A stored number outside the range the Settings page offers is clamped
+    where it is consumed — once per key in the log — instead of failing later:
+    `"max_seconds": 1e9` grew the recorder's chunk list without bound,
+    `"timeout": 0` raised inside urllib3 on every dictation. The assistant is
+    exercised through a faked `requests` (absent in the light CI env)."""
+    import logging
+    import types
+
+    from listen_to_me import assistant, config
+    from listen_to_me.config import clamp_setting
+
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Capture()
+    config.log.addHandler(handler)
+    for key in ("selftest.max", "selftest.temp", "assistant.timeout", "assistant.temperature"):
+        config._clamp_warned.discard(key)
+    try:
+        assert clamp_setting("selftest.max", 1e9, 10, 3600) == 3600
+        assert clamp_setting("selftest.max", 3, 10, 3600) == 10
+        assert clamp_setting("selftest.max", 300, 10, 3600) == 300
+        assert clamp_setting("selftest.temp", 7, 0.0, 2.0) == 2.0
+        assert clamp_setting("selftest.temp", -1, 0.0, 2.0) == 0.0
+        # Not comparable: untouched and unreported — the consumer's own
+        # conversion is what says so.
+        assert clamp_setting("selftest.text", "abc", 5, 600) == "abc"
+        assert [m for m in records if "selftest.max" in m and "3600" in m], records
+        assert len([m for m in records if "selftest.max" in m]) == 1, "once per key"
+        assert not [m for m in records if "selftest.text" in m]
+
+        sent: list[dict] = []
+
+        class _Response:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"choices": [{"message": {"content": "refined"}}]}
+
+        def _post(url, json=None, headers=None, timeout=None, verify=None):
+            sent.append({"payload": json, "timeout": timeout})
+            return _Response()
+
+        fake = types.ModuleType("requests")
+        fake.post = _post
+        saved = sys.modules.get("requests")
+        sys.modules["requests"] = fake
+        try:
+            acfg = {
+                "base_url": "http://localhost:11434/v1",
+                "model": "llama3.2",
+                "system_prompt": "fix it",
+                "temperature": 9,
+                "timeout": 0,
+            }
+            assert assistant.refine("hello", acfg) == "refined"
+            assert sent[0]["timeout"] == 5.0, sent
+            assert sent[0]["payload"]["temperature"] == 2.0, sent
+            assert isinstance(sent[0]["timeout"], float)
+        finally:
+            if saved is None:
+                sys.modules.pop("requests", None)
+            else:
+                sys.modules["requests"] = saved
+        assert [m for m in records if "assistant.timeout" in m], records
+        assert [m for m in records if "assistant.temperature" in m], records
+    finally:
+        config.log.removeHandler(handler)
+
+
+def _mute_targets_are_validated():
+    """A malformed mute target costs itself, not the feature. The targets list
+    is stored wholesale (no `_coerce` inside it), and `"hotkey": 120` in ONE
+    target used to raise on `.strip()` for every state change — so no target
+    muted at all, with nothing but a stack trace in the log. Each broken entry
+    is skipped with one warning, and the user hears about it once."""
+    import logging
+
+    from listen_to_me import integrations
+    from listen_to_me.config import Config
+    from listen_to_me.integrations import MuteIntegrations, target_problem
+
+    good = {"name": "Discord", "enabled": True, "mode": "toggle", "hotkey": "<ctrl>+<shift>+m"}
+    assert target_problem(good) is None
+    assert target_problem({**good, "mode": "hold"}) is None
+    for broken in (
+        {**good, "hotkey": 120},
+        {**good, "mode": "sometimes"},
+        {**good, "mode": None},
+        {**good, "enabled": "yes"},
+        {**good, "enabled": 1},
+        {**good, "name": 7},
+        "Discord",
+        None,
+    ):
+        assert target_problem(broken), f"accepted {broken!r}"
+
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    notices: list[str] = []
+    handler = _Capture()
+    integrations.log.addHandler(handler)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(path=Path(tmp) / "config.json")
+            cfg["integrations"]["mute_while_recording"] = True
+            cfg["integrations"]["targets"] = [
+                {**good, "hotkey": 120},  # the AttributeError case
+                good,
+                {**good, "name": "Zoom", "enabled": "yes"},
+                {**good, "name": "Slack", "enabled": False, "hotkey": None},  # off: nobody's business
+                "OBS",
+                {**good, "name": "Teams", "hotkey": "   "},  # no keybind: nothing to send, no complaint
+            ]
+            mute = MuteIntegrations(cfg, notify=notices.append)
+            assert mute._active_targets() == [good]
+            assert mute._active_targets() == [good]  # a second read: same answer, no second report
+            cfg["integrations"]["targets"] = "Discord"  # not even a list
+            assert mute._active_targets() == []
+    finally:
+        integrations.log.removeHandler(handler)
+    warnings = [m for m in records if "malformed" in m]
+    assert len(warnings) == 3, warnings
+    assert any("#1 (Discord)" in m and '"hotkey"' in m for m in warnings), warnings
+    assert len(notices) == 1 and "Settings → Integrations" in notices[0], notices
+
+
+def _mute_keybind_hold_mode_guard():
+    """A toggle-mode mute keybind is not tapped while a hold-mode recording
+    hotkey with modifiers is held — it would end the recording or reach the
+    target widened. A tap presses AND releases its whole chord while the hotkey
+    is still down: the shipped defaults (Ctrl+Alt+Space, Discord's
+    Ctrl+Shift+M) share Ctrl, so the tap's Ctrl release hits the app's own hold
+    listener and the take ends a second after it started; a chord sharing no
+    key is delivered as Ctrl+Alt+<chord>. Hold-mode targets only press at start
+    and release after the take, so they keep working. The decision is a pure
+    function; the worker body runs against a faked pynput."""
+    import enum
+    import types
+
+    from listen_to_me.config import Config
+    from listen_to_me.integrations import MuteIntegrations, _hold_mode_skip_reason as reason
+
+    ctrl, alt, shift, space, m, f9 = "ctrl", "alt", "shift", "space", "m", "f9"
+    default = {ctrl, alt, space}
+    assert reason(default, True, [ctrl, shift, m], "toggle"), "shared Ctrl: the release ends the take"
+    assert reason(default, True, [shift, m], "toggle"), "no shared key, but tapped under Ctrl+Alt"
+    assert reason({f9}, False, [ctrl, shift, m], "toggle") is None, "the recommended setup"
+    assert reason({f9}, False, [ctrl, f9], "toggle"), "shares F9 with a modifier-free hotkey"
+    assert reason(default, True, [ctrl, shift, m], "hold") is None, "hold targets keep working"
+    assert reason(default, True, [shift, m], "hold") is None
+
+    class _KeyCode:
+        def __init__(self, vk=None, char=None):
+            self.vk, self.char = vk, char
+
+        @classmethod
+        def from_vk(cls, vk):
+            return cls(vk=vk)
+
+        def __eq__(self, other):
+            return isinstance(other, _KeyCode) and (self.vk, self.char) == (other.vk, other.char)
+
+        def __hash__(self):
+            return hash((self.vk, self.char))
+
+        def __repr__(self):
+            return f"KeyCode(vk={self.vk}, char={self.char!r})"
+
+    class _Key(enum.Enum):
+        ctrl = _KeyCode(vk=0xA2)
+        alt = _KeyCode(vk=0xA4)
+        shift = _KeyCode(vk=0xA0)
+        space = _KeyCode(vk=0x20)
+        f9 = _KeyCode(vk=0x78)
+
+    class _HotKey:
+        @staticmethod
+        def parse(combo):
+            keys = []
+            for token in combo.split("+"):
+                token = token.strip()
+                if token.startswith("<") and token.endswith(">"):
+                    if not hasattr(_Key, token[1:-1]):
+                        raise ValueError(token)
+                    keys.append(getattr(_Key, token[1:-1]))
+                elif len(token) == 1:
+                    keys.append(_KeyCode(char=token))
+                else:
+                    raise ValueError(token)
+            return keys
+
+    events: list = []
+
+    class _Controller:
+        def press(self, key):
+            events.append(("press", key))
+
+        def release(self, key):
+            events.append(("release", key))
+
+    keyboard = types.ModuleType("pynput.keyboard")
+    keyboard.Controller, keyboard.HotKey, keyboard.Key, keyboard.KeyCode = (
+        _Controller, _HotKey, _Key, _KeyCode,
+    )
+    pynput = types.ModuleType("pynput")
+    pynput.keyboard = keyboard
+    saved = {name: sys.modules.get(name) for name in ("pynput", "pynput.keyboard")}
+    sys.modules["pynput"], sys.modules["pynput.keyboard"] = pynput, keyboard
+
+    def pressed():
+        return [key for kind, key in events if kind == "press"]
+
+    def activate(mute, targets):
+        events.clear()
+        mute.reset()  # synchronous: releases a previous run's keys
+        with mute._lock:
+            generation = mute._bump()
+        events.clear()
+        mute._activate(generation, targets)
+
+    notices: list[str] = []
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(path=Path(tmp) / "config.json")
+            cfg["hotkey_mode"] = "hold"  # with the default <ctrl>+<alt>+<space>
+            cfg["integrations"]["mute_while_recording"] = True
+            cfg["integrations"]["targets"] = [
+                {"name": "Discord", "enabled": True, "mode": "toggle", "hotkey": "<ctrl>+<shift>+m"},
+                {"name": "Zoom", "enabled": True, "mode": "toggle", "hotkey": "<shift>+a"},
+                {"name": "OBS", "enabled": True, "mode": "hold", "hotkey": "<shift>+<f9>"},
+            ]
+            mute = MuteIntegrations(cfg, notify=notices.append)
+            targets = mute._active_targets()
+            assert len(targets) == 3
+
+            activate(mute, targets)
+            assert pressed() == [_Key.shift, _Key.f9], events  # the hold target, nothing else
+            assert not [e for e in events if e[0] == "release"], "nothing may be tapped"
+            assert mute._toggles == [] and len(mute._held) == 2
+            assert len(notices) == 2, notices
+            for notice, name in zip(notices, ("Discord", "Zoom")):
+                assert notice.startswith(f"Mute for {name} is skipped in hold mode"), notice
+                assert "<f9>" in notice and "toggle mode" in notice, notice
+            assert "shares keys" in notices[0] and "modifier keys are held" in notices[1], notices
+
+            activate(mute, targets)  # the next take: skipped again, said once
+            assert pressed() == [_Key.shift, _Key.f9]
+            assert len(notices) == 2, "the notification must not repeat per take"
+
+            # Toggle mode releases the hotkey before the keybind goes out — no guard.
+            cfg["hotkey_mode"] = "toggle"
+            activate(mute, targets)
+            assert len(mute._toggles) == 2 and ("release", _Key.ctrl) in events, events
+
+            # Hold mode with a modifier-free hotkey: the chords go out as configured.
+            cfg["hotkey_mode"], cfg["hotkey"] = "hold", "<f9>"
+            activate(mute, targets)
+            assert len(mute._toggles) == 2 and len(mute._held) == 2, events
+            assert len(notices) == 2
+            mute.reset()
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
+def _injector_waits_for_quiet_modifiers():
+    """Ctrl+V and simulated typing wait for the stop-hotkey chord to be let go,
+    like every other injection path already did — and refuse rather than send
+    a chord the held keys would corrupt (Ctrl+Alt+V pastes nothing, typed text
+    under Ctrl is shortcuts). The transcript stays on the clipboard for the
+    caller's "press Ctrl+V" message, unless `clipboard_copy = "off"` promised
+    it would not. pynput and pyperclip are faked (no X display on CI)."""
+    import contextlib
+    import threading
+    import time
+    import types
+
+    from listen_to_me import injector
+    from listen_to_me.injector import Injector, ModifierHeldError, wait_for_quiet_modifiers
+
+    events: list = []
+
+    class _Controller:
+        def press(self, key):
+            events.append(("press", key))
+
+        def release(self, key):
+            events.append(("release", key))
+
+        def type(self, text):
+            events.append(("type", text))
+
+        @contextlib.contextmanager
+        def pressed(self, *keys):
+            for key in keys:
+                self.press(key)
+            try:
+                yield
+            finally:
+                for key in reversed(keys):
+                    self.release(key)
+
+    class _Clipboard:
+        stored = "before"
+
+        def copy(self, text):
+            self.stored = text
+
+        def paste(self):
+            return self.stored
+
+    keyboard = types.ModuleType("pynput.keyboard")
+    keyboard.Controller = _Controller
+    keyboard.Key = types.SimpleNamespace(ctrl="ctrl", cmd="cmd")
+    pynput = types.ModuleType("pynput")
+    pynput.keyboard = keyboard
+    clip = _Clipboard()
+    saved = {name: sys.modules.get(name) for name in ("pynput", "pynput.keyboard", "pyperclip")}
+    sys.modules.update({"pynput": pynput, "pynput.keyboard": keyboard, "pyperclip": clip})
+    original_down = injector.modifiers_down
+    original_timeout = injector._INSERT_SETTLE_TIMEOUT_S
+    cfg = {"injection_mode": "paste", "restore_clipboard": True, "clipboard_copy": "on_failure"}
+
+    def refused(config, text="hello"):
+        try:
+            Injector(config).insert(text)
+        except ModifierHeldError:
+            return True
+        return False
+
+    try:
+        injector._INSERT_SETTLE_TIMEOUT_S = 0.05
+        injector.modifiers_down = lambda: True
+        # Held past the timeout: no chord, no typing fallback (it would run into
+        # the same key), and the transcript is left for the recovery message.
+        assert refused(cfg), "a chord was sent under a held modifier"
+        assert events == [], events
+        assert clip.stored == "hello", "the transcript must stay on the clipboard"
+        clip.stored = "before"
+        assert refused({**cfg, "clipboard_copy": "off"})
+        assert clip.stored == "before", '"off" promises dictated text never lingers'
+        assert refused({**cfg, "injection_mode": "type"})
+        assert events == [], "typing under a held modifier is shortcuts, not text"
+
+        # Let go in time: the chord goes out and the old content is put back.
+        injector._INSERT_SETTLE_TIMEOUT_S = 2.0
+        held = [True]
+        injector.modifiers_down = lambda: held[0]
+        threading.Timer(0.02, lambda: held.__setitem__(0, False)).start()
+        clip.stored = "before"
+        assert Injector(cfg).insert("hello") is False  # restored → not on the clipboard
+        modifier = "cmd" if sys.platform == "darwin" else "ctrl"
+        assert events[:2] == [("press", modifier), ("press", "v")], events
+        assert clip.stored == "before"
+
+        # A quiet keyboard (and every non-Windows run) waits not at all.
+        injector.modifiers_down = lambda: False
+        started = time.monotonic()
+        assert wait_for_quiet_modifiers(5.0) is True
+        assert time.monotonic() - started < 0.05
+    finally:
+        injector.modifiers_down = original_down
+        injector._INSERT_SETTLE_TIMEOUT_S = original_timeout
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
+def _updater_caps_the_download_size():
+    """A release download is bounded by the size the API reported (plus slack)
+    or by a hard ceiling: a body that announces more is refused before the
+    first byte, one that keeps streaming past the cap is cut off — and the
+    partial file is gone either way, so a misbehaving server or proxy cannot
+    fill the disk next to the running exe. requests is faked (light CI env)."""
+    import types
+
+    from listen_to_me import updater
+
+    asset_url = "https://github.com/fo0/listen-to-me/releases/download/v1/ListenToMe.exe"
+    responses: list = []
+
+    class _Response:
+        def __init__(self, headers, chunks):
+            self.headers, self.chunks, self.url = headers, chunks, asset_url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size=0):
+            return iter(self.chunks)
+
+    fake = types.ModuleType("requests")
+    fake.get = lambda url, **kwargs: responses.pop(0)
+    fake.exceptions = types.SimpleNamespace(SSLError=type("SSLError", (Exception,), {}))
+    saved = sys.modules.get("requests")
+    sys.modules["requests"] = fake
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "asset.exe"
+            responses.append(_Response({"Content-Length": "2000"}, [b"x" * 2000]))
+            try:
+                updater.download_asset(asset_url, dest, max_bytes=1000)
+                raise AssertionError("an oversized Content-Length was accepted")
+            except ValueError as exc:
+                assert "2000" in str(exc) and "1000" in str(exc), exc
+            assert not dest.exists(), "nothing may be written for a refused download"
+
+            responses.append(_Response({}, [b"x" * 600, b"x" * 600]))  # no Content-Length
+            try:
+                updater.download_asset(asset_url, dest, max_bytes=1000)
+                raise AssertionError("a body streaming past the cap was accepted")
+            except ValueError:
+                pass
+            assert not dest.exists(), "the partial file must be removed"
+
+            responses.append(_Response({"Content-Length": "12"}, [b"listen-to-me"]))
+            cap = updater.download_cap(12)
+            assert updater.download_asset(asset_url, dest, max_bytes=cap) == dest
+            assert dest.read_bytes() == b"listen-to-me"
+    finally:
+        if saved is None:
+            sys.modules.pop("requests", None)
+        else:
+            sys.modules["requests"] = saved
+    assert updater.download_cap(1000) == 1050
+    for unusable in (None, 0, -5, "x"):
+        assert updater.download_cap(unusable) == updater._MAX_DOWNLOAD_BYTES, unusable
+    assert issubclass(updater.DownloadTooLarge, ValueError)  # existing callers catch that
+
+
+def _recorder_counts_dropped_buffers():
+    """PortAudio's input-overflow status means frames the device produced were
+    lost — words missing from the transcript with no trace but a DEBUG line.
+    One WARNING per take, a count the caller can name next to an empty
+    transcript, and a fresh count for the next take. sounddevice is faked and
+    the buffers are stand-ins, so this runs without numpy or a microphone."""
+    import logging
+    import sys as _sys
+    import types
+
+    from listen_to_me import audio
+    from listen_to_me.audio import Recorder
+
+    class _Stream:
+        def __init__(self, callback=None, **_kwargs):
+            self.callback = callback
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def close(self):
+            pass
+
+    class _Buffer:  # what the callback keeps: anything with .copy()
+        def copy(self):
+            return self
+
+    class _Status:
+        def __bool__(self):
+            return True
+
+        def __str__(self):
+            return "input overflow"
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    opened: list[_Stream] = []
+
+    def _input_stream(**kwargs):
+        stream = _Stream(**kwargs)
+        opened.append(stream)
+        return stream
+
+    fake = types.ModuleType("sounddevice")
+    fake.InputStream = _input_stream
+    fake.CallbackStop = RuntimeError
+    previous = _sys.modules.get("sounddevice")
+    _sys.modules["sounddevice"] = fake
+    handler = _Capture()
+    audio.log.addHandler(handler)
+    try:
+        recorder = Recorder()
+        assert recorder.dropped_buffers == 0
+        recorder.start(max_seconds=30)
+        callback = opened[-1].callback
+        callback(_Buffer(), 160, None, None)  # a clean buffer counts nothing
+        for _ in range(3):
+            callback(_Buffer(), 160, None, _Status())
+        assert recorder.dropped_buffers == 3
+        warnings = [r for r in records if r.levelno == logging.WARNING and "dropped" in r.getMessage()]
+        assert len(warnings) == 1, [r.getMessage() for r in records]
+        assert "input overflow" in warnings[0].getMessage()
+        recorder._stream = None  # the fake stream holds nothing; skip stop()'s numpy path
+        recorder._chunks = []
+        assert recorder.dropped_buffers == 3, "the count must survive until the next take"
+        recorder.start(max_seconds=30)
+        assert recorder.dropped_buffers == 0, "start() must reset the count"
+        callback = opened[-1].callback
+        callback(_Buffer(), 160, None, _Status())
+        assert len([r for r in records if r.levelno == logging.WARNING]) == 2, "one per take"
+        recorder._stream = None
+        recorder._chunks = []
+        # The memory backstop: a cap above the Settings maximum is held there.
+        recorder.start(max_seconds=10**9)
+        assert recorder._max_frames == audio.MAX_RECORDING_SECONDS * audio.SAMPLE_RATE
+        recorder._stream = None
+        recorder._chunks = []
+    finally:
+        audio.log.removeHandler(handler)
+        if previous is None:
+            del _sys.modules["sounddevice"]
+        else:
+            _sys.modules["sounddevice"] = previous
+
+
 def _openvino_backend_logic():
     """The OpenVINO backend maps model presets to the pre-converted Hugging
     Face repos, refuses the presets that have no OpenVINO conversion, is picked
@@ -2527,6 +3191,7 @@ class _StubApp:
         # never make the main window unconstructable.
         self.history.add("An entry with a corrupt timestamp.", timestamp=1e300)
         self.hotkeys = _StubHotkeys()
+        self.transcriber = _StubTranscriber()
         self.posts: list = []  # events the UI posted (asserted by the tests)
         self.progress_reports: list = []  # App.progress() calls (download display)
         self.state = "idle"
@@ -2549,6 +3214,15 @@ class _StubApp:
 
     def apply_settings(self):
         pass
+
+
+class _StubTranscriber:
+    """What the Settings window reads off App.transcriber: the backend and the
+    (device, precision) pair of the loaded model — None while nothing is."""
+
+    def __init__(self):
+        self.backend = "faster-whisper"
+        self.runtime: tuple | None = None
 
 
 class _StubHotkeys:
@@ -3643,10 +4317,82 @@ def _gui_construction():
         assert not window.chk_live_typing.isEnabled()
         # …and the card says WHY, or the greyed-out fields just look broken.
         assert "Parakeet" in window._speech_hint.text()
+        # Same for the live-typing box on the General page, which used to
+        # explain itself in the tooltip only.
+        assert not window._live_typing_hint.isHidden()
+        assert "Parakeet" in window._live_typing_hint.text(), window._live_typing_hint.text()
         window.backend_combo.setCurrentIndex(0)  # back to faster-whisper
         assert window.language_combo.isEnabled() and window.initial_prompt_edit.isEnabled()
         assert window.model_combo.isEnabled() and window.chk_live_typing.isEnabled()
         assert "Parakeet" not in window._speech_hint.text()
+        assert window._live_typing_hint.isHidden()
+
+        # Live typing + hold mode + a modifier chord (or a bare character key):
+        # App skips live typing for such a take with nothing but a log line.
+        # The General page says so under the box while the combination is
+        # entered, and Save refuses it the way it refuses an invalid hotkey.
+        # The real parser imports pynput, which the light run must not (no X
+        # display on the CI runner), so Hotkeys is stood in for with the
+        # verdicts _hotkey_default_valid checks against the real one.
+        from listen_to_me import settings_ui as _settings_module
+
+        class _FakeHotkeys:
+            flags = {
+                "<ctrl>+<alt>+<space>": (True, True),
+                "<f9>": (False, False),
+                "a": (False, True),
+            }
+
+            @classmethod
+            def validate(cls, combo):
+                return combo in cls.flags
+
+            @classmethod
+            def combo_flags(cls, combo):
+                return cls.flags.get(combo, (True, True))
+
+            @staticmethod
+            def equal(combo_a, combo_b):
+                return combo_a == combo_b
+
+        class _FakeCriticalBox:
+            StandardButton = _settings_module.QMessageBox.StandardButton
+            shown: list = []
+
+            @classmethod
+            def critical(cls, *args, **_kwargs):
+                cls.shown.append(args[-1])
+
+        real_hotkeys, real_box = _settings_module.Hotkeys, _settings_module.QMessageBox
+        _settings_module.Hotkeys, _settings_module.QMessageBox = _FakeHotkeys, _FakeCriticalBox
+        saved_hotkey = window.hotkey_edit.text()
+        try:
+            problem = window._live_typing_problem
+            assert problem("<ctrl>+<alt>+<space>", "toggle") is None
+            assert problem("<ctrl>+<alt>+<space>", "hold") is not None
+            assert problem("<f9>", "hold") is None
+            assert problem("a", "toggle") is not None
+            assert problem("not a hotkey", "hold") is None  # the hotkey check owns that error
+            window.chk_live_typing.setChecked(True)
+            window.rb_hold.setChecked(True)
+            assert not window._live_typing_hint.isHidden()
+            assert "modifier" in window._live_typing_hint.text(), window._live_typing_hint.text()
+            values = window._collect()
+            assert values["live_typing"] and values["hotkey_mode"] == "hold"
+            assert window._validate(values) is False
+            assert _FakeCriticalBox.shown and "modifier" in _FakeCriticalBox.shown[0]
+            window.hotkey_edit.setText("<f9>")  # modifier-free: allowed again
+            assert window._live_typing_hint.isHidden()
+            assert window._validate(window._collect()) is True
+            window.hotkey_edit.setText(saved_hotkey)
+            window.rb_toggle.setChecked(True)
+            window.chk_live_typing.setChecked(False)
+        finally:
+            _settings_module.Hotkeys, _settings_module.QMessageBox = real_hotkeys, real_box
+            window.hotkey_edit.setText(saved_hotkey)
+            window.rb_toggle.setChecked(True)
+            window.chk_live_typing.setChecked(False)
+        assert window._live_typing_hint.isHidden()
 
         # A live OS light/dark switch repaints the code-drawn icons (the palette
         # and QSS are theme.py's job): they used to keep the colours they were
@@ -3657,7 +4403,7 @@ def _gui_construction():
         assert quick_button.icon().pixmap(20, 20).toImage() != themed
         window._on_color_scheme_changed()
         assert not quick_button.icon().isNull()
-        assert not window.nav.item(window._nav_row["Whisper"]).icon().isNull()
+        assert not window.nav.item(window._nav_row["Engine"]).icon().isNull()
         assert window._help_browser.toPlainText().strip()
 
         # This is the app's main window, not a preferences dialog: a plain
@@ -3807,7 +4553,7 @@ def _gui_construction():
         # at the right edge (one over-long combo item once did this to
         # General). Visit every page at the default window size and check the
         # scroll content ends up no wider than its viewport. First-visit side
-        # effects stay suppressed: the Whisper hardware probe would race the
+        # effects stay suppressed: the Engine hardware probe would race the
         # stale-generation asserts below, the Updates check would hit the
         # network.
         from PySide6.QtWidgets import QScrollArea
@@ -3838,7 +4584,7 @@ def _gui_construction():
             window.home.card_model.value, Qt.MouseButton.LeftButton, pos=_QPoint(2, 2)
         )
         app.processEvents()
-        assert window.stack.currentIndex() == window._whisper_index
+        assert window.stack.currentIndex() == window._engine_index
 
         window._show_page("General")
         window.hide()
@@ -3848,6 +4594,13 @@ def _gui_construction():
         assert fmt_cuda({"available": True, "count": 1, "error": None}).startswith("✓")
         assert fmt_cuda({"available": False, "count": 0, "error": None}).startswith("✗")
         assert fmt_cuda({"available": False, "count": 0, "error": "no ctranslate2"}).startswith("✗")
+        # The verdict names the backend it is about — "faster-whisper can use
+        # it" under a Parakeet setup read as if the selected engine could not.
+        gpu = {"available": True, "count": 1, "error": None}
+        assert "the faster-whisper backend" in fmt_cuda(gpu)
+        assert "the Parakeet backend" in fmt_cuda(gpu, "parakeet")
+        assert "Parakeet" in fmt_cuda({"available": False, "count": 0, "error": None}, "parakeet")
+        assert "OpenVINO" in fmt_cuda(gpu, "openvino")
         fmt_ov = window._format_openvino_status
         assert fmt_ov({"installed": False, "devices": [], "error": None}).startswith("✗")
         ov_ok = fmt_ov(
@@ -3867,11 +4620,33 @@ def _gui_construction():
             "cuda": {"available": False, "count": 0, "error": None},
             "openvino": {"installed": False, "devices": [], "error": None},
             "model": {"target": "small", "cached": False, "error": None},
+            "backend": "faster-whisper",
         }
         window._on_hw_done(1, probe)  # stale → dropped
         assert window.hw_cuda_label.text() == "Not checked yet."
         window._on_hw_done(2, probe)
         assert window.hw_cuda_label.text().startswith("✗") and not window._hw_busy
+
+        # "Running on": the device + precision the loaded model really uses,
+        # read off the app's transcriber on the main thread — nothing to show
+        # before the first load, afterwards the resolved pair, flagged when the
+        # config left the choice to "auto" (the question the line answers).
+        assert "nothing loaded yet" in window.hw_runtime_label.text()
+        stub.transcriber.runtime = ("cpu", "int8")
+        window._refresh_runtime_status()
+        running = window.hw_runtime_label.text()
+        assert running == "CPU · int8 (auto)", running
+        stub.cfg.data["device"], stub.cfg.data["compute_type"] = "cpu", "int8"
+        window._refresh_runtime_status()
+        assert window.hw_runtime_label.text() == "CPU · int8", window.hw_runtime_label.text()
+        stub.cfg.data["device"], stub.cfg.data["compute_type"] = "auto", "auto"
+        stub.transcriber.runtime = None
+        window._refresh_runtime_status()
+        assert "nothing loaded yet" in window.hw_runtime_label.text()
+        fmt_runtime = window._format_runtime_status
+        assert fmt_runtime(("GPU", "int8"), ("auto", "int8")) == "GPU · int8 (auto)"
+        assert fmt_runtime(("cuda", "float16"), ("cuda", "float16")) == "CUDA · float16"
+        assert "engine" in fmt_runtime(("auto", "default"), ("auto", "auto"))
 
         # The clipping guard above only ever renders short strings, which is
         # why this trap survived it: a wrapping QLabel reports its longest
@@ -3890,6 +4665,7 @@ def _gui_construction():
             "CUDA status": window.hw_cuda_label,
             "OpenVINO status": window.hw_ov_label,
             "model status": window.hw_model_label,
+            "running on": window.hw_runtime_label,
             "transcription test": window.diag_status,
             "microphone test": window.mic_status,
             "hotkey test": window.hotkey_test_status,
@@ -4324,6 +5100,13 @@ _LIGHT_CHECKS = [
     ("mute keybind survives a superseded stop", _mute_keybind_survives_a_superseded_stop),
     ("mute keybind worker failure is logged", _mute_keybind_worker_failure_is_logged),
     ("mute presets are usable", _mute_presets_are_usable),
+    ("mute targets are validated", _mute_targets_are_validated),
+    ("mute keybind hold-mode guard", _mute_keybind_hold_mode_guard),
+    ("injector waits for quiet modifiers", _injector_waits_for_quiet_modifiers),
+    ("config redacts secrets in warnings", _config_redacts_secrets_in_warnings),
+    ("config clamps out-of-range values", _config_clamps_out_of_range_values),
+    ("updater caps the download size", _updater_caps_the_download_size),
+    ("recorder counts dropped buffers", _recorder_counts_dropped_buffers),
     ("single-instance guard", _single_instance_guard),
     ("activation port is exclusive", _activation_port_is_exclusive),
     ("live typing logic", _live_typing_logic),
@@ -4340,6 +5123,8 @@ _LIGHT_CHECKS = [
     ("transcriber cache probe", _transcriber_cache_probe),
     ("CUDA error detection", _cuda_error_detection),
     ("transcriber CPU fallback", _transcriber_cpu_fallback),
+    ("compute type resolution", _compute_type_resolution),
+    ("openvino pipeline properties", _openvino_pipeline_properties),
     ("openvino backend logic", _openvino_backend_logic),
     ("parakeet backend logic", _parakeet_backend_logic),
     ("diagnostics engine", _diagnostics_engine),

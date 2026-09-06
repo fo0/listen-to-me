@@ -2,7 +2,7 @@
 
 Shown once when no config file exists yet (Config.first_run). It collects only
 the settings a new user must get right — recording hotkey, spoken language,
-Whisper model, transcription backend + device, microphone, and startup
+speech model, transcription backend + device, microphone, and startup
 behaviour — and writes them into the config on Finish. Everything else keeps
 its default and stays editable in the settings window later.
 """
@@ -142,7 +142,7 @@ class OnboardingWizard(QWizard):
     def _build_speech_page(self) -> QWizardPage:
         page = _Page(
             "Speech recognition",
-            "What you speak and which Whisper model transcribes it — locally, no cloud.",
+            "What you speak and which speech model transcribes it — locally, no cloud.",
         )
         form = QFormLayout(page)
         self.language_combo = QComboBox()
@@ -167,7 +167,7 @@ class OnboardingWizard(QWizard):
         )
         # Long preset labels must not force the fixed-size wizard wider (see qtutil).
         elastic_combo(self.model_combo)
-        form.addRow("Whisper model:", self.model_combo)
+        form.addRow("Model:", self.model_combo)
         form.addRow(_hint(
             "The model is downloaded automatically on first use — nothing to install now."
         ))
@@ -176,7 +176,7 @@ class OnboardingWizard(QWizard):
     def _build_engine_page(self) -> QWizardPage:
         page = _Page(
             "Transcription engine",
-            "Which backend and hardware run the Whisper model.",
+            "Which backend and hardware run the speech model.",
         )
         form = QFormLayout(page)
         self.backend_combo = QComboBox()
@@ -184,9 +184,9 @@ class OnboardingWizard(QWizard):
         self.backend_combo.setCurrentText(backend_label(self.cfg["backend"]))
         self.backend_combo.setToolTip(
             "faster-whisper accelerates on NVIDIA GPUs (CUDA); OpenVINO on Intel "
-            "GPUs and NPUs; Parakeet is a non-Whisper engine that transcribes many "
-            "times faster (the Whisper model choice doesn't apply to it). Unsure? "
-            "Keep faster-whisper — it also runs on any CPU."
+            "GPUs and NPUs; Parakeet is a separate engine (NVIDIA Parakeet TDT) that "
+            "transcribes many times faster — the model chosen on the previous page "
+            "doesn't apply to it. Unsure? Keep faster-whisper — it also runs on any CPU."
         )
         form.addRow("Backend:", self.backend_combo)
 
@@ -208,8 +208,8 @@ class OnboardingWizard(QWizard):
 
         form.addRow(_hint(
             "auto is the safe choice — the app falls back to the CPU whenever "
-            "the selected hardware is unavailable. Compute type and other "
-            "engine details live in Settings → Whisper."
+            "the selected hardware is unavailable. Precision and other engine "
+            "details live in Settings → Engine."
         ))
         # Filled by _on_backend_changed for Parakeet: it ignores the model and
         # language just picked on the previous page, and a wizard that accepts
@@ -381,7 +381,7 @@ class OnboardingWizard(QWizard):
 
         if backend == "parakeet":
             note = (
-                "Note: Parakeet ignores the Whisper model and the spoken language "
+                "Note: Parakeet ignores the model and the spoken language "
                 "from the previous page — it runs one fixed model and detects the "
                 "language itself (25 supported). Go Back and choose another backend "
                 "to use them; your selections are kept either way."

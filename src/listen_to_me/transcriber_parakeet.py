@@ -42,7 +42,7 @@ _MODEL_DIRNAME = "parakeet-tdt-0.6b-v3-onnx"
 _INSTALL_HINT = (
     "The Parakeet backend needs the optional onnx-asr package. Install it "
     'with: pip install "onnx-asr[cpu,hub]" — or set Backend = faster-whisper '
-    "in Settings → Whisper."
+    "in Settings → Engine."
 )
 
 
@@ -85,6 +85,15 @@ def _download_watcher(quantization: str | None, model_dir, progress):
     )
 
 
+# Short labels for the status card / log: the provider that leads the list
+# is the one ONNX Runtime places the session on.
+_PROVIDER_LABELS = {
+    "CUDAExecutionProvider": "cuda",
+    "DmlExecutionProvider": "directml",
+    "CPUExecutionProvider": "cpu",
+}
+
+
 def _resolve_providers(device: str) -> list[str]:
     """ONNX Runtime execution providers for the configured device.
 
@@ -107,6 +116,28 @@ def _resolve_providers(device: str) -> list[str]:
     providers: list[str] = [p for p in preferred if p in available]
     providers.append("CPUExecutionProvider")
     return providers
+
+
+def _preload_cuda_dlls() -> None:
+    """Let ONNX Runtime find pip-installed CUDA / cuDNN libraries.
+
+    onnxruntime-gpu bundles no CUDA. On Windows the DLLs must be on PATH —
+    unless ``onnxruntime.preload_dlls()`` (ORT ≥ 1.21) loads the copies the
+    ``nvidia-*`` wheels install first, which is the one torch-free way to make
+    ``pip install "onnxruntime-gpu[cuda,cudnn]"`` just work. Without it the
+    CUDA provider fails at session creation with a missing-DLL error that the
+    session fallback then blames on the GPU. Older builds lack the function
+    and every failure here is a debug line: the provider list already decides
+    what runs, this only improves its odds.
+    """
+    try:
+        import onnxruntime
+
+        preload = getattr(onnxruntime, "preload_dlls", None)
+        if preload is not None:
+            preload(cuda=True, cudnn=True)
+    except Exception:
+        log.debug("onnxruntime.preload_dlls failed", exc_info=True)
 
 
 def _model_is_cached(quantization: str | None, model_dir) -> bool:
@@ -159,6 +190,17 @@ class ParakeetTranscriber:
     @property
     def loaded(self) -> bool:
         return self._model is not None and self._key == self._current_key()
+
+    @property
+    def runtime(self) -> tuple[str, str] | None:
+        """(device, precision) of the loaded model — the leading execution
+        provider the session was created with ("cuda" / "directml" / "cpu")
+        and the ONNX variant ("int8" / "fp32"). None while nothing is loaded.
+        Same contract as Transcriber.runtime."""
+        if not self.loaded or not self._providers or self._key is None:
+            return None
+        provider = self._providers[0]
+        return _PROVIDER_LABELS.get(provider, provider), _quantization(self._key[1]) or "fp32"
 
     # ------------------------------------------------------------ loading
 
@@ -214,9 +256,12 @@ class ParakeetTranscriber:
                     "Device = CUDA is set, but the installed onnxruntime has "
                     "no CUDA support — Parakeet runs on the CPU. Install "
                     "onnxruntime-gpu, or set Device = CPU in Settings → "
-                    "Whisper.",
+                    "Engine.",
                     True,  # force: important even when notifications are off
                 )
+        if "CUDAExecutionProvider" in providers:
+            _preload_cuda_dlls()
+
         def load(chosen):
             return onnx_asr.load_model(
                 MODEL_NAME,
@@ -260,7 +305,7 @@ class ParakeetTranscriber:
                 notify(
                     "GPU acceleration unavailable for Parakeet — switched to "
                     "CPU for this session. Check the NVIDIA driver/CUDA "
-                    "libraries, or set Device = CPU in Settings → Whisper.",
+                    "libraries, or set Device = CPU in Settings → Engine.",
                     True,  # force: important even when notifications are off
                 )
             providers = ["CPUExecutionProvider"]
@@ -322,7 +367,7 @@ class ParakeetTranscriber:
                 notify(
                     "GPU acceleration unavailable for Parakeet — switched to "
                     "CPU for this session. Check the NVIDIA driver/CUDA "
-                    "libraries, or set Device = CPU in Settings → Whisper.",
+                    "libraries, or set Device = CPU in Settings → Engine.",
                     True,  # force: important even when notifications are off
                 )
             self._ensure_loaded_locked(None)
