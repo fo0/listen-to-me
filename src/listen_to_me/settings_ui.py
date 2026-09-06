@@ -4,6 +4,7 @@ settings pages as grouped cards."""
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 import webbrowser
@@ -93,7 +94,7 @@ log = logging.getLogger(__name__)
 _NAV_GLYPHS = {
     "Home": "home",
     "General": "sliders",
-    "Whisper": "wave",
+    "Engine": "wave",
     "Audio": "mic",
     "Overlay": "layers",
     "Integrations": "link",
@@ -148,7 +149,7 @@ class _DiagSignals(QObject):
 # How long the hotkey test waits for the combination before giving up.
 _HOTKEY_TEST_TIMEOUT_MS = 10_000
 
-# Status line under the Whisper page's model/transcription test buttons while
+# Status line under the Engine page's model/transcription test buttons while
 # nothing runs — restored whenever a "please wait" note is cleared.
 _DIAG_STATUS_IDLE = "Both buttons use the values currently entered — no Save needed."
 # Shown on the page that is NOT running the diagnostic: its test buttons are
@@ -172,7 +173,7 @@ _INSTALL_DISABLED_TIP = "Pick a release from the list above first — run “Che
 _A_TEST_LABEL = "Test connection"
 _A_TESTING_LABEL = "Testing…"
 # Status line under the button while nothing runs — the same promise the
-# Whisper page's diagnostics make.
+# Engine page's diagnostics make.
 _A_TEST_IDLE = "Uses the values entered above — no Save needed."
 # What the test sends. Deliberately shaped like raw dictation (no punctuation,
 # a filler word), so the reply shows not just that the endpoint answers but
@@ -186,8 +187,10 @@ _A_TEST_PREVIEW_CHARS = 160
 # The choice lists (models, languages, backends, …) live in choices.py, shared
 # with the first-run onboarding wizard.
 
-# The one destructive button in this window — spelled out, and with the "…"
-# that promises a confirmation step before anything happens.
+# The destructive button on the General page — spelled out, and with the "…"
+# that promises a confirmation step before anything happens. The same rule
+# names every other button here that asks first (Clear history…, Delete…,
+# Install selected…); a bare label means the click acts at once.
 _FACTORY_RESET_LABEL = "Reset to factory settings…"
 
 # Every preset label the model dropdown can hold. The list is re-filtered per
@@ -386,7 +389,7 @@ class SettingsWindow(QDialog):
         self._asig.test_failed.connect(self._on_assistant_test_failed)
         self._assistant_busy = False
 
-        # Diagnostics state (Download model / Test transcription on the Whisper
+        # Diagnostics state (Download model / Test transcription on the Engine
         # page, Test microphone on the Audio page, Test hotkey on General),
         # wired before the pages are built below.
         self._diag = DiagnosticsEngine()
@@ -412,7 +415,7 @@ class SettingsWindow(QDialog):
         self._diag_cancel_event: threading.Event | None = None
         self._hotkey_paused = False  # app listener paused for a mic-owning test
         self._capturing = False  # the modal hotkey picker owns the listener
-        # Hardware/model status probe (Whisper page status card).
+        # Hardware/model status probe (Engine page status card).
         self._hw_gen = 0
         self._hw_busy = False
         self._status_probed = False  # first probe runs when the page is opened
@@ -423,6 +426,11 @@ class SettingsWindow(QDialog):
         # Model named when a download started — the label its progress reports
         # carry, so a combo changed mid-download doesn't relabel them.
         self._model_download_label = ""
+        # The values the last model download / transcription test ran with:
+        # the diagnostics engine loads its own transcriber from them, and the
+        # "Running on" line needs the same values to tell "auto" apart from an
+        # explicit choice (see _refresh_runtime_status).
+        self._diag_last_snapshot: dict | None = None
         self._hotkey_test: Hotkeys | None = None
         # Bumped on every test start so a stale timeout timer from an earlier
         # (already finished) test can't cancel a later one.
@@ -456,7 +464,7 @@ class SettingsWindow(QDialog):
             ]),
             ("Settings", [
                 ("General", self._build_general),
-                ("Whisper", self._build_whisper),
+                ("Engine", self._build_engine),
                 ("Audio", self._build_audio),
                 ("Overlay", self._build_overlay),
                 ("Integrations", self._build_integrations),
@@ -493,7 +501,7 @@ class SettingsWindow(QDialog):
 
         self._home_index = self._page_index["Home"]
         self._history_index = self._page_index["History"]
-        self._whisper_index = self._page_index["Whisper"]
+        self._engine_index = self._page_index["Engine"]
         self._updates_index = self._page_index["Updates"]
         self._help_index = self._page_index["Help"]
         self.nav.currentRowChanged.connect(self._on_page_changed)
@@ -501,8 +509,7 @@ class SettingsWindow(QDialog):
 
         # Re-check the "Selected model" status line when an input it depends on
         # changes — debounced so typing in the model-folder field probes once,
-        # not per keystroke. Connected after every page is built (the model
-        # combo lives on General, the rest on Whisper).
+        # not per keystroke. Connected after every page is built.
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
         self._status_timer.setInterval(600)
@@ -518,6 +525,7 @@ class SettingsWindow(QDialog):
         self.model_combo.currentTextChanged.connect(self._on_status_inputs_changed)
         self.backend_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
         self.ov_precision_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
+        self.pk_quant_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
         self.model_dir_edit.textChanged.connect(self._on_status_inputs_changed)
 
         # Footer with the version and the action buttons.
@@ -680,6 +688,11 @@ class SettingsWindow(QDialog):
         try:
             self.home.set_state(state)
             if state == "idle":
+                # …and it loaded the model if this was the first take, so the
+                # Engine page's "Running on" line has an answer now. Cheap
+                # (a property read), so only the on-screen case bothers.
+                if self.isVisible() and self.stack.currentIndex() == self._engine_index:
+                    self._refresh_runtime_status()
                 # A finished dictation may have added a transcript. If the
                 # History page is on screen right now, re-render it live;
                 # otherwise just mark it stale so its next visit re-renders
@@ -888,42 +901,19 @@ class SettingsWindow(QDialog):
             "with a hold (push-to-talk) hotkey it needs a modifier-free key such as F9.",
         )
         iv.addWidget(self.chk_live_typing)
+        # Why the box is greyed out (backend) or why live typing would stay
+        # off with the hotkey entered (hold mode + a modifier / typable key):
+        # App skips the feature for such a take with nothing but a log line,
+        # so this is where the user learns about it before dictating. Text
+        # and visibility are owned by _update_live_typing_hint.
+        self._live_typing_hint = self._hint("")
+        self._live_typing_hint.setVisible(False)
+        iv.addWidget(self._live_typing_hint)
+        self.chk_live_typing.toggled.connect(self._update_live_typing_hint)
+        self.rb_hold.toggled.connect(self._update_live_typing_hint)
+        self.hotkey_edit.textChanged.connect(self._update_live_typing_hint)
         form.addRow("Insert text by:", insert)
         layout.addWidget(rec)
-
-        speech, sform = self._card("Speech recognition")
-        self.language_combo = QComboBox()
-        self.language_combo.addItems([language_label(code) for code, _ in LANGUAGES])
-        self._select_combo(self.language_combo, language_label(self.cfg["language"]))
-        self.language_combo.setToolTip(
-            "The language you dictate in. Fixing it improves accuracy and speed over auto-detect."
-        )
-        sform.addRow("Spoken language:", self.language_combo)
-
-        # Read-only on purpose: when this combo was editable (for custom model
-        # ids), accidental typing was saved verbatim as the model id and only
-        # failed at model load. Custom CTranslate2 ids now go through the
-        # explicit "Custom model id…" sentinel entry (_on_model_activated).
-        self.model_combo = QComboBox()
-        # Listed for the *saved* backend — the backend combo lives on the
-        # Whisper page, which is built after this one; _on_backend_changed
-        # re-lists it (and every later switch) through _reload_model_combo.
-        self._fill_model_combo(self.cfg["backend"], self.cfg["model"])
-        self._model_index = self.model_combo.currentIndex()
-        self.model_combo.activated.connect(self._on_model_activated)
-        self.model_combo.setToolTip(
-            "The speech-recognition model. Bigger = more accurate but slower and larger. "
-            "“Custom model id…” accepts any CTranslate2 model id from Hugging Face."
-        )
-        # Long preset labels / custom model ids must not dictate the page's
-        # minimum width — that clips every card at the right edge (see qtutil).
-        elastic_combo(self.model_combo)
-        sform.addRow("Whisper model:", self.model_combo)
-        # Text swapped by _on_backend_changed: greying these fields out without
-        # saying why would just look broken.
-        self._speech_hint = self._hint("")
-        sform.addRow(self._speech_hint)
-        layout.addWidget(speech)
 
         behavior = QGroupBox("Behavior")
         bv = QVBoxLayout(behavior)
@@ -975,6 +965,15 @@ class SettingsWindow(QDialog):
         bv.addWidget(self._clipboard_hint)
         for chk in (self.chk_notifications, self.chk_beep):
             bv.addWidget(chk)
+        if sys.platform != "win32":
+            # App._beep plays through winsound and returns early on every
+            # other platform, so here the box would tick a no-op. Grey it out
+            # and say why; the stored value is kept for a config that moves.
+            self.chk_beep.setEnabled(False)
+            bv.addWidget(self._hint(
+                "Not available on this system — the beep uses the Windows sound "
+                "API, so this option only has an effect on Windows."
+            ))
         # Wired after both widgets exist; the initial call sets the hint/state.
         self.clipboard_combo.currentIndexChanged.connect(self._on_clipboard_mode_changed)
         self._on_clipboard_mode_changed()
@@ -1037,7 +1036,7 @@ class SettingsWindow(QDialog):
         self.factory_reset_button.setToolTip(
             "Put every setting back to the value it shipped with and start the setup "
             "wizard from the first launch again. Your transcript history and the "
-            "already downloaded Whisper models are kept."
+            "already downloaded speech models are kept."
         )
         self.factory_reset_button.clicked.connect(self._factory_reset)
         reset_row = QWidget()
@@ -1056,10 +1055,10 @@ class SettingsWindow(QDialog):
         layout.addStretch(1)
         return page
 
-    def _build_whisper(self, title: str) -> QWidget:
+    def _build_engine(self, title: str) -> QWidget:
         page, layout = self._page(title)
 
-        engine, form = self._card("Engine")
+        engine, form = self._card("Backend && model")
         self.backend_combo = QComboBox()
         self.backend_combo.addItems([label for _, label in BACKENDS])
         self._select_combo(self.backend_combo, backend_label(self.cfg["backend"]))
@@ -1074,6 +1073,38 @@ class SettingsWindow(QDialog):
         )
         form.addRow("Backend:", self.backend_combo)
 
+        # Read-only on purpose: when this combo was editable (for custom model
+        # ids), accidental typing was saved verbatim as the model id and only
+        # failed at model load. Custom CTranslate2 ids now go through the
+        # explicit "Custom model id…" sentinel entry (_on_model_activated).
+        self.model_combo = QComboBox()
+        # Listed for the *saved* backend here; _on_backend_changed — wired at
+        # the end of this page, and on every later switch — re-lists it
+        # through _reload_model_combo.
+        self._fill_model_combo(self.cfg["backend"], self.cfg["model"])
+        self._model_index = self.model_combo.currentIndex()
+        self.model_combo.activated.connect(self._on_model_activated)
+        self.model_combo.setToolTip(
+            "The speech-recognition model. Bigger = more accurate but slower and larger. "
+            "“Custom model id…” accepts any CTranslate2 model id from Hugging Face."
+        )
+        # Long preset labels / custom model ids must not dictate the page's
+        # minimum width — that clips every card at the right edge (see qtutil).
+        elastic_combo(self.model_combo)
+        form.addRow("Model:", self.model_combo)
+
+        self.language_combo = QComboBox()
+        self.language_combo.addItems([language_label(code) for code, _ in LANGUAGES])
+        self._select_combo(self.language_combo, language_label(self.cfg["language"]))
+        self.language_combo.setToolTip(
+            "The language you dictate in. Fixing it improves accuracy and speed over auto-detect."
+        )
+        form.addRow("Spoken language:", self.language_combo)
+        # Text swapped by _on_backend_changed: greying these fields out without
+        # saying why would just look broken.
+        self._speech_hint = self._hint("")
+        form.addRow(self._speech_hint)
+
         self.device_combo = QComboBox()
         self.device_combo.addItems(DEVICES)
         self._select_combo(self.device_combo, self.cfg["device"])
@@ -1086,11 +1117,15 @@ class SettingsWindow(QDialog):
         self.compute_combo.addItems(COMPUTE_TYPES)
         self._select_combo(self.compute_combo, self.cfg["compute_type"])
         self.compute_combo.setToolTip(
-            "Numeric precision. auto = int8 on the CPU (2–4× faster than float32, "
-            "same accuracy in practice) and float16 on a GPU. int8 is fastest on "
-            "CPU; float16 needs a GPU; float32 is the slow reference."
+            "faster-whisper's numeric precision (the CTranslate2 compute type). "
+            "auto = int8 on the CPU (2–4× faster than float32, same accuracy in "
+            "practice) and float16 on a GPU. int8 is fastest on CPU; float16 needs "
+            "a GPU; float32 is the slow reference."
         )
-        form.addRow("Compute type:", self.compute_combo)
+        # One "Precision:" label for all three backend-specific rows below —
+        # only one of them is ever visible, and each tooltip says what its
+        # backend means by it.
+        form.addRow("Precision:", self.compute_combo)
 
         self.beam_spin = QSpinBox()
         self.beam_spin.setRange(1, 10)
@@ -1115,21 +1150,22 @@ class SettingsWindow(QDialog):
         self.ov_precision_combo.addItems(OPENVINO_PRECISIONS)
         self._select_combo(self.ov_precision_combo, self.cfg["openvino_precision"])
         self.ov_precision_combo.setToolTip(
-            "Which pre-converted variant of the model to download: int8 is small and fast "
-            "(recommended), fp16 the most accurate, int4 the smallest. Changing this "
-            "downloads the model again in the new precision."
+            "OpenVINO model precision — which pre-converted variant of the model to "
+            "download: int8 is small and fast (recommended), fp16 the most accurate, "
+            "int4 the smallest. Changing this downloads the model again in the new "
+            "precision."
         )
-        form.addRow("Model precision:", self.ov_precision_combo)
+        form.addRow("Precision:", self.ov_precision_combo)
 
         self.pk_quant_combo = QComboBox()
         self.pk_quant_combo.addItems(PARAKEET_QUANTIZATIONS)
         self._select_combo(self.pk_quant_combo, self.cfg["parakeet_quantization"])
         self.pk_quant_combo.setToolTip(
-            "Which ONNX variant of the Parakeet model to download: int8 is small and "
-            "fast on the CPU (recommended), fp32 the most accurate — best with a GPU. "
-            "Changing this downloads the model again."
+            "Parakeet precision — which ONNX variant of the model to download: int8 "
+            "is small and fast on the CPU (recommended), fp32 the most accurate — "
+            "best with a GPU. Changing this downloads the model again."
         )
-        form.addRow("Parakeet precision:", self.pk_quant_combo)
+        form.addRow("Precision:", self.pk_quant_combo)
 
         self.chk_vad = self._checkbox(
             "Filter silence with VAD (recommended)",
@@ -1158,6 +1194,10 @@ class SettingsWindow(QDialog):
         sform.addRow("Intel (OpenVINO):", self.hw_ov_label)
         self.hw_model_label = self._status_value("Not checked yet.")
         sform.addRow("Selected model:", self.hw_model_label)
+        # What the loaded model really runs with — the pair "auto" resolved
+        # to. Read from the transcriber on the main thread, never probed.
+        self.hw_runtime_label = self._status_value("")
+        sform.addRow("Running on:", self.hw_runtime_label)
         status_row = QWidget()
         sh = QHBoxLayout(status_row)
         sh.setContentsMargins(0, 0, 0, 0)
@@ -1189,8 +1229,8 @@ class SettingsWindow(QDialog):
         # it, which would break the "Use default" button and cache relocation.
         self.model_dir_edit.setPlaceholderText(str(default_model_dir()))
         self.model_dir_edit.setToolTip(
-            "Where Whisper models are downloaded to and loaded from. "
-            "Leave empty to use the Hugging Face cache shown below."
+            "Where speech models are downloaded to and loaded from. Empty = the "
+            "Hugging Face cache, whose path is shown greyed out in the field."
         )
         # Only a group-box title above it — that is not an accessible name.
         self.model_dir_edit.setAccessibleName("Model download folder")
@@ -1201,7 +1241,7 @@ class SettingsWindow(QDialog):
         browse.clicked.connect(self._browse_model_dir)
         default_btn = QPushButton("Use default")
         default_btn.setToolTip(
-            "Clear the field and go back to the Hugging Face cache shown below."
+            "Clear the field and go back to the Hugging Face cache (the greyed-out path)."
         )
         default_btn.setAutoDefault(False)
         default_btn.clicked.connect(lambda: self.model_dir_edit.setText(""))
@@ -1215,9 +1255,12 @@ class SettingsWindow(QDialog):
         for b in (browse, default_btn, open_btn):
             dh.addWidget(b)
         fv.addWidget(dir_row)
+        # The default path itself is in the field's placeholder, not repeated
+        # here: two copies of a long path drift and widen the page.
         fv.addWidget(self._hint(
-            "Models are fetched from Hugging Face on first use and stored here.\n"
-            f"Empty = default cache: {default_model_dir()}", elastic=True
+            "Models are fetched from Hugging Face on first use and stored here. "
+            "Leave the field empty for the default Hugging Face cache — its path "
+            "is the greyed-out text in the field."
         ))
         layout.addWidget(folder)
 
@@ -1230,7 +1273,7 @@ class SettingsWindow(QDialog):
         self.model_download_button.setToolTip(
             "Fetch the selected model now (first use downloads, later runs load "
             "from disk) instead of waiting for your first recording. Uses the "
-            "values above and the model from the General page — no Save needed."
+            "values above — no Save needed."
         )
         self.model_download_button.clicked.connect(self._download_model)
         tools_row.addWidget(self.model_download_button)
@@ -1277,8 +1320,8 @@ class SettingsWindow(QDialog):
         self.initial_prompt_edit.setFixedHeight(80)
         pv.addWidget(self.initial_prompt_edit)
         pv.addWidget(self._hint(
-            "Names, jargon and spellings Whisper should prefer — not an instruction prompt. "
-            "Use the Assistant page for rewriting/cleanup."
+            "Biases recognition towards these words — it is not an instruction "
+            "prompt. Use the Assistant page for rewriting/cleanup."
         ))
         layout.addWidget(prompt)
 
@@ -1306,11 +1349,13 @@ class SettingsWindow(QDialog):
         ))
         layout.addWidget(replacements)
 
-        # Wired last: _on_backend_changed also greys out the Whisper-only
-        # fields on the General page and the initial prompt above, so every
-        # widget it touches must already exist when it first runs.
+        # Wired last: _on_backend_changed also greys out the model/language
+        # rows, the initial prompt above and the live-typing option on the
+        # General page, so every widget it touches must already exist when it
+        # first runs.
         self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self._on_backend_changed()
+        self._refresh_runtime_status()
 
         layout.addStretch(1)
         return page
@@ -1380,7 +1425,6 @@ class SettingsWindow(QDialog):
         form.addRow("", self.mic_status)
         layout.addWidget(card)
 
-        layout.addWidget(self._hint("Recording stops automatically when the limit is reached."))
         layout.addStretch(1)
         return page
 
@@ -1394,7 +1438,7 @@ class SettingsWindow(QDialog):
         self.chk_o_enabled = self._checkbox(
             "Show floating microphone icon",
             ocfg["enabled"],
-            "A small round icon showing the state. Click = start/stop, drag = move, right-click = menu.",
+            "A small round icon that shows the recording state and doubles as a start/stop button.",
         )
         cv.addWidget(self.chk_o_enabled)
         cv.addWidget(self._hint("Click = start/stop • drag = move (position is saved) • right-click = menu."))
@@ -1415,7 +1459,7 @@ class SettingsWindow(QDialog):
         self.chk_o_live = self._checkbox(
             "Live transcript preview while recording (experimental)",
             ocfg["live_preview"],
-            "Transcribes in the background while you speak and shows a rolling preview. Costs extra CPU.",
+            "A rolling preview of the recognized text next to the icon while you speak.",
         )
         cv.addWidget(self.chk_o_live)
         cv.addWidget(self._hint(
@@ -1432,8 +1476,7 @@ class SettingsWindow(QDialog):
         self.overlay_reset_button = QPushButton("Reset position")
         self.overlay_reset_button.setAutoDefault(False)
         self.overlay_reset_button.setToolTip(
-            "Move the floating icon back to the bottom right of the main screen. "
-            "Applies immediately — no Save needed."
+            "Move the floating icon back to the bottom right of the main screen."
         )
         self.overlay_reset_button.clicked.connect(self._reset_overlay_position)
         rh.addWidget(self.overlay_reset_button)
@@ -1446,7 +1489,8 @@ class SettingsWindow(QDialog):
         pform.addRow(self._hint(
             "The icon remembers the monitor you drag it to and returns there "
             "after a restart. Use this if it ended up somewhere you cannot "
-            "reach — e.g. half off the screen, or on a monitor you no longer have."
+            "reach — e.g. half off the screen, or on a monitor you no longer have. "
+            "Applies immediately — no Save needed."
         ))
         self._refresh_overlay_reset_button()
         layout.addWidget(position)
@@ -1468,7 +1512,7 @@ class SettingsWindow(QDialog):
 
         self.chk_mute_enabled = self._checkbox(
             "Mute other apps while recording",
-            icfg.get("mute_while_recording", True),
+            icfg.get("mute_while_recording", False),
             "Master switch. While you dictate, each enabled app below is sent its "
             "mute keybind so your dictation isn't transmitted into a voice call — "
             "then restored the moment the recording stops.",
@@ -1650,7 +1694,7 @@ class SettingsWindow(QDialog):
         self.history_max_spin.setSingleStep(10)
         self.history_max_spin.setValue(self._to_int(self.cfg["history_max"], 200))
         self.history_max_spin.setToolTip("How many of the most recent transcripts to keep. Older ones are dropped.")
-        form.addRow("Keep last:", self.history_max_spin)
+        form.addRow("Transcripts to keep:", self.history_max_spin)
         layout.addWidget(top)
 
         layout.addWidget(self._hint(
@@ -1713,7 +1757,7 @@ class SettingsWindow(QDialog):
         # Enabled state is set by _refresh_history, which always runs before this
         # page can be reached (lazy first render): clicking it on an empty
         # history used to do nothing at all, which reads as a broken button.
-        self.history_clear_button = QPushButton("Clear history")
+        self.history_clear_button = QPushButton("Clear history…")
         self.history_clear_button.setProperty("destructive", True)
         self.history_clear_button.setToolTip("Permanently delete every stored transcript.")
         self.history_clear_button.clicked.connect(self._clear_history)
@@ -1973,11 +2017,15 @@ class SettingsWindow(QDialog):
         # Build the transcript rows only when the History page is first shown.
         if index == self._history_index and not self._history_rendered:
             self._refresh_history()
-        # Probe the hardware/model status the first time the Whisper page is
-        # opened (not at construction: the probe imports heavy libraries).
-        if index == self._whisper_index and not self._status_probed:
-            self._status_probed = True
-            self._refresh_hw_status()
+        if index == self._engine_index:
+            # Every visit: a recording since the last look may have loaded the
+            # model, and this is a property read, not a probe.
+            self._refresh_runtime_status()
+            # Probe the hardware/model status the first time the Engine page
+            # is opened (not at construction: the probe imports heavy libraries).
+            if not self._status_probed:
+                self._status_probed = True
+                self._refresh_hw_status()
         # Check for updates the first time the Updates page is opened.
         if index == self._updates_index and not self._updates_auto_checked:
             self._updates_auto_checked = True
@@ -2087,8 +2135,7 @@ class SettingsWindow(QDialog):
         enabled = bool(self.cfg["overlay"]["enabled"])
         self.overlay_reset_button.setEnabled(enabled)
         self.overlay_reset_button.setToolTip(
-            "Move the floating icon back to the bottom right of the main screen. "
-            "Applies immediately — no Save needed."
+            "Move the floating icon back to the bottom right of the main screen."
             if enabled
             else "The floating icon is switched off — turn it on above and "
             "apply, then there is a position to reset."
@@ -2129,7 +2176,7 @@ class SettingsWindow(QDialog):
             "the app integrations all go back to the values the app shipped "
             "with, autostart is switched off, and the setup wizard from the "
             "first launch opens again.\n\n"
-            "Your transcript history and the Whisper models already downloaded "
+            "Your transcript history and the speech models already downloaded "
             "are kept. Unsaved changes in this window are discarded, and the "
             "reset itself cannot be undone.",
             QMessageBox.StandardButton.Reset | QMessageBox.StandardButton.Cancel,
@@ -2420,6 +2467,7 @@ class SettingsWindow(QDialog):
             return
         snapshot = self._diag_snapshot()
         gen, _cancel = self._begin_diag("model")
+        self._diag_last_snapshot = snapshot
         self._model_download_label = str(snapshot["model"])
         self.diag_progress.setRange(0, 100)
         self.diag_progress.setValue(0)
@@ -2486,9 +2534,7 @@ class SettingsWindow(QDialog):
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
         self.diag_status.setText(message)
-        # The model just landed on disk — flip the status card's model line.
-        if self._status_probed:
-            self._status_timer.start()
+        self._after_model_diagnostic()
 
     def _on_model_failed(self, gen: int, message: str) -> None:
         if gen != self._diag_gen:
@@ -2496,6 +2542,16 @@ class SettingsWindow(QDialog):
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
         self.diag_status.setText(f"Model download/load failed: {message}")
+        self._after_model_diagnostic()
+
+    def _after_model_diagnostic(self) -> None:
+        """Bookkeeping shared by every end of a model download or transcription
+        test, success or failure: the model may just have landed on disk (the
+        status card's model line flips), and the diagnostics engine may just
+        have loaded it (the "Running on" line has its answer)."""
+        if self._status_probed:
+            self._status_timer.start()
+        self._refresh_runtime_status()
 
     def _test_transcription(self) -> None:
         if self._diag_busy:
@@ -2506,6 +2562,7 @@ class SettingsWindow(QDialog):
         snapshot = self._diag_snapshot()
         device = self._selected_input_device()
         gen, cancel = self._begin_diag("tx")
+        self._diag_last_snapshot = snapshot
         self._model_download_label = str(snapshot["model"])
         self.diag_progress.setRange(0, 0)  # indeterminate while the model loads
         self.diag_progress.setVisible(True)
@@ -2555,6 +2612,7 @@ class SettingsWindow(QDialog):
                 "No speech detected in the test recording — try the microphone "
                 "test on the Audio page."
             )
+        self._after_model_diagnostic()
 
     def _on_tx_failed(self, gen: int, message: str) -> None:
         if gen != self._diag_gen:
@@ -2562,6 +2620,7 @@ class SettingsWindow(QDialog):
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
         self.diag_status.setText(f"Transcription test failed: {message}")
+        self._after_model_diagnostic()
 
     def _test_microphone(self) -> None:
         if self._diag_busy:
@@ -2702,7 +2761,7 @@ class SettingsWindow(QDialog):
 
     def _refresh_hw_status(self) -> None:
         """Probe CUDA/OpenVINO/model-cache on a worker thread and fill the
-        Whisper page's status card. Guarded like the other diagnostics: one
+        Engine page's status card. Guarded like the other diagnostics: one
         probe at a time, stale results dropped via the generation."""
         if self._hw_busy:
             return
@@ -2718,7 +2777,11 @@ class SettingsWindow(QDialog):
             from . import diagnostics
 
             # hardware_status never raises — each probe reports its own error.
-            self._dsig.hw_done.emit(gen, diagnostics.hardware_status(snapshot))
+            result = diagnostics.hardware_status(snapshot)
+            # The backend the probe was taken for: _format_cuda_status names
+            # it, and the combo may have moved on before the result lands.
+            result["backend"] = snapshot["backend"]
+            self._dsig.hw_done.emit(gen, result)
 
         threading.Thread(target=work, name="diag-hw", daemon=True).start()
 
@@ -2739,21 +2802,117 @@ class SettingsWindow(QDialog):
             return
         self._hw_busy = False
         self.hw_refresh_button.setEnabled(True)
-        self.hw_cuda_label.setText(self._format_cuda_status(result["cuda"]))
+        # A result from before the backend was recorded (or a synthetic one)
+        # falls back to the current selection.
+        backend = result.get("backend") or self._selected_backend()
+        self.hw_cuda_label.setText(self._format_cuda_status(result["cuda"], backend))
         self.hw_ov_label.setText(self._format_openvino_status(result["openvino"]))
         self.hw_model_label.setText(self._format_model_status(result["model"]))
+        self._refresh_runtime_status()
+
+    def _refresh_runtime_status(self) -> None:
+        """Fill the "Running on" line from what is actually loaded.
+
+        Main thread only, no probe: every transcriber keeps the resolved
+        (device, precision) pair of its loaded model, so this is a property
+        read. The app's own transcriber comes first — it is what a recording
+        uses, and it reports nothing loaded again the moment a saved change
+        invalidates its model, which is exactly when a reload is due. Failing
+        that, the diagnostics engine's transcriber: "Download / load model"
+        and "Test transcription" load their own from the values entered, and
+        after pressing one the resolved pair is the answer the user was after
+        — labelled as such, because the app still loads its own copy on the
+        first recording.
+        """
+        runtime = self._runtime_of(getattr(self.app, "transcriber", None))
+        if runtime is not None:
+            text = self._format_runtime_status(runtime, self._configured_runtime(self.cfg))
+        else:
+            # DiagnosticsEngine.runtime mirrors the transcribers' property, so
+            # the same reader serves both.
+            diag_runtime = self._runtime_of(self._diag)
+            snapshot = self._diag_last_snapshot
+            if diag_runtime is not None and snapshot is not None:
+                text = self._format_runtime_status(
+                    diag_runtime, self._configured_runtime(snapshot)
+                ) + (
+                    " — as loaded by the test below; the app loads its own model on "
+                    "the first recording."
+                )
+            else:
+                text = self._format_runtime_status(None, ("", ""))
+        self.hw_runtime_label.setText(text)
 
     @staticmethod
-    def _format_cuda_status(info: dict) -> str:
+    def _runtime_of(transcriber) -> tuple[str, str] | None:
+        """The (device, precision) pair a transcriber reports for its loaded
+        model — None for no object, nothing loaded, or an object without the
+        property (a self-test stub, an older backend)."""
+        if transcriber is None:
+            return None
+        try:
+            runtime = getattr(transcriber, "runtime", None)
+        except Exception:
+            log.debug("could not read the transcriber runtime", exc_info=True)
+            return None
+        if not (isinstance(runtime, tuple) and len(runtime) == 2):
+            return None
+        return str(runtime[0]), str(runtime[1])
+
+    @staticmethod
+    def _configured_runtime(cfg) -> tuple[str, str]:
+        """The (device, precision) pair the config (or a diagnostics snapshot —
+        both index the same keys) asks for, per backend: the values whose
+        "auto" the loaded model resolved."""
+        backend = str(cfg["backend"])
+        if backend == "openvino":
+            return str(cfg["openvino_device"]), str(cfg["openvino_precision"])
+        if backend == "parakeet":
+            return str(cfg["device"]), str(cfg["parakeet_quantization"])
+        return str(cfg["device"]), str(cfg["compute_type"])
+
+    @staticmethod
+    def _format_runtime_status(
+        runtime: tuple[str, str] | None, configured: tuple[str, str]
+    ) -> str:
+        """"CPU · int8", plus "(auto)" when the config left the choice to the
+        app — that is the case the line exists for: what did auto pick?"""
+        if runtime is None:
+            return (
+                "nothing loaded yet — the model loads on the first recording "
+                "(or use “Download / load model” below)"
+            )
+        device, precision = runtime
+        # A CTranslate2 probe that failed hands the choice back to the engine
+        # (resolve_runtime returns the config's "auto"/"default" verbatim).
+        shown_device = "chosen by the engine" if device.lower() == "auto" else device.upper()
+        shown_precision = "engine default" if precision == "default" else precision
+        text = f"{shown_device} · {shown_precision}"
+        if any(value.lower() == "auto" for value in configured):
+            text += " (auto)"
+        return text
+
+    @staticmethod
+    def _format_cuda_status(info: dict, backend: str = "faster-whisper") -> str:
+        """The CUDA line, naming the backend the verdict is about: "the
+        faster-whisper backend can use it" under a Parakeet setup read as if
+        the selected engine could not."""
+        if backend == "openvino":
+            who, verb = "the faster-whisper and Parakeet backends", "run"
+        elif backend == "parakeet":
+            who, verb = "the Parakeet backend", "runs"
+        else:
+            who, verb = "the faster-whisper backend", "runs"
         if info["available"]:
             count = info["count"]
             gpus = f"{count} CUDA GPU{'s' if count != 1 else ''}"
-            return f"✓ {gpus} found — the faster-whisper backend can use it."
+            aside = " (OpenVINO runs on Intel devices instead)" if backend == "openvino" else ""
+            return f"✓ {gpus} found — {who} can use it{aside}."
         if info["error"]:
             return f"✗ could not check: {info['error']}"
         return (
-            "✗ no NVIDIA GPU / CUDA runtime found — the faster-whisper "
-            "backend runs on the CPU (see Help to enable the GPU)."
+            f"✗ no NVIDIA GPU / CUDA runtime found — {who} {verb} on the CPU "
+            "(see Help to enable the GPU)."
         )
 
     @staticmethod
@@ -2860,7 +3019,7 @@ class SettingsWindow(QDialog):
         )
         self.update_cancel_button.clicked.connect(self._cancel_update_download)
         actions.addWidget(self.update_cancel_button)
-        self.update_button = QPushButton("Install selected")
+        self.update_button = QPushButton("Install selected…")
         self.update_button.setProperty("accent", True)
         self.update_button.setAutoDefault(False)
         self._disable_install_button(_INSTALL_DISABLED_TIP)
@@ -2963,7 +3122,7 @@ class SettingsWindow(QDialog):
         from . import updater
 
         if updater.can_self_update() and release.asset_url:
-            self.update_button.setText("Download && install")
+            self.update_button.setText("Download && install…")
             self.update_button.setToolTip("Download this version and restart to apply it.")
         else:
             self.update_button.setText("Open release page")
@@ -3085,6 +3244,9 @@ class SettingsWindow(QDialog):
                     dest,
                     progress_cb=lambda done, total: self._usig.progress.emit(done, total),
                     is_cancelled=cancel.is_set,
+                    # The releases API named the asset size: anything past it
+                    # (plus slack) is not the file we were promised.
+                    max_bytes=updater.download_cap(release.asset_size),
                 )
                 if cancel.is_set():
                     # Cancel raced the last chunk — still counts as cancelled.
@@ -3330,7 +3492,7 @@ class SettingsWindow(QDialog):
         copy_btn.setAccessibleName(f"Copy the transcript {which}")
         copy_btn.clicked.connect(lambda _checked=False, t=text, b=copy_btn: self._copy_history(t, b))
         header.addWidget(copy_btn)
-        delete_btn = QPushButton("Delete")
+        delete_btn = QPushButton("Delete…")
         delete_btn.setProperty("destructive", True)
         delete_btn.setAccessibleName(f"Delete the transcript {which}")
         delete_btn.setToolTip(
@@ -3526,9 +3688,10 @@ class SettingsWindow(QDialog):
         self.initial_prompt_edit.setEnabled(not parakeet)
         self._speech_hint.setText(self._speech_hint_text(backend, swapped_out))
         # Live typing (General page) needs faster-whisper's segment timestamps,
-        # so the option is greyed out for the other backends — its tooltip
-        # explains the requirement. The stored value is kept either way.
+        # so the option is greyed out for the other backends — the hint under
+        # it says so. The stored value is kept either way.
         self.chk_live_typing.setEnabled(fw)
+        self._update_live_typing_hint()
 
     def _selected_model(self) -> str:
         label = self.model_combo.currentText()
@@ -3548,13 +3711,12 @@ class SettingsWindow(QDialog):
             return (
                 "The Parakeet backend ignores both: it runs one fixed model and "
                 "always detects the spoken language itself. Choose a different "
-                "backend on the Whisper page to use them again — your selections "
-                "are kept."
+                "backend above to use them again — your selections are kept."
             )
         if backend == "openvino":
             listed = (
                 "Only models with a pre-converted OpenVINO version are listed; "
-                "the rest need Backend = faster-whisper on the Whisper page."
+                "the rest need Backend = faster-whisper."
             )
             if swapped_out is None:
                 return listed
@@ -3564,10 +3726,77 @@ class SettingsWindow(QDialog):
                 "choice comes back when you leave this backend."
             )
         return (
-            "Downloaded automatically on first use (folder on the Whisper page). "
+            "Downloaded automatically on first use into the model folder below. "
             "Pick a preset, or choose “Custom model id…” to use any CTranslate2 "
             "model from Hugging Face."
         )
+
+    @staticmethod
+    def _live_typing_problem(hotkey: str, mode: str) -> str | None:
+        """Why live typing could not run with this hotkey and mode (None = it
+        can) — the rule of App._live_typing_gate, which otherwise skips the
+        feature for the take with nothing but a log line.
+
+        Hold mode needs a key the app neither holds a chord with (a modifier)
+        nor presses itself while typing (a character key or Space) — either
+        would end the recording mid-sentence; toggle mode only rules out a
+        bare typable key. An invalid combination reports nothing: the hotkey
+        check owns that error.
+        """
+        if not Hotkeys.validate(hotkey):
+            return None
+        try:
+            has_modifier, has_typable = Hotkeys.combo_flags(hotkey)
+        except Exception:
+            log.exception("could not analyze the hotkey combo %r", hotkey)
+            return None
+        if mode == "hold":
+            if has_modifier:
+                return (
+                    f"“{hotkey}” contains a modifier key (Ctrl/Alt/Shift/Win). In hold "
+                    "(push-to-talk) mode live typing needs a modifier-free key such as F9."
+                )
+            if has_typable:
+                return (
+                    f"“{hotkey}” contains a key that typing itself presses (a character "
+                    "key or Space), which would end a hold-mode recording mid-sentence. "
+                    "Use a key such as F9."
+                )
+        elif has_typable and not has_modifier:
+            return (
+                f"“{hotkey}” is a bare character key that live typing itself would press, "
+                "stopping the recording mid-sentence. Add a modifier or use a key such as F9."
+            )
+        return None
+
+    def _update_live_typing_hint(self, *_args) -> None:
+        """Say under the live-typing box why it is greyed out or would stay
+        off, instead of leaving that to the tooltip and a log line.
+
+        Two reasons, one label: the backend (the box is disabled, and a
+        greyed-out control with no visible reason reads as broken — same rule
+        as the Parakeet note under the model rows) and the hotkey (see
+        _live_typing_problem). Hidden when neither applies. Slot for several
+        signals whose arguments are not needed, hence *_args.
+        """
+        if getattr(self, "backend_combo", None) is None:
+            return  # General is built before Engine; _on_backend_changed calls again
+        backend = self._selected_backend()
+        text = ""
+        if backend != "faster-whisper":
+            name = {"openvino": "OpenVINO", "parakeet": "Parakeet"}.get(backend, backend)
+            text = (
+                f"Not available with the {name} backend — live typing needs the "
+                "segment timing only faster-whisper provides. Your choice is kept; "
+                "pick faster-whisper on the Engine page to use it."
+            )
+        elif self.chk_live_typing.isChecked():
+            mode = "hold" if self.rb_hold.isChecked() else "toggle"
+            problem = self._live_typing_problem(self.hotkey_edit.text().strip(), mode)
+            if problem is not None:
+                text = f"Live typing would stay off: {problem} Save refuses this combination."
+        self._live_typing_hint.setText(text)
+        self._live_typing_hint.setVisible(bool(text))
 
     def _fill_model_combo(self, backend: str, model: str) -> None:
         """(Re)list the model dropdown for `backend` and select `model`.
@@ -3644,7 +3873,7 @@ class SettingsWindow(QDialog):
         is_preset = any(previous == model for model, _ in MODEL_CHOICES)
         text, ok = QInputDialog.getText(
             self,
-            "Custom Whisper model",
+            "Custom model id",
             "CTranslate2 model id on Hugging Face,\n"
             f"e.g. {GERMAN_TURBO_CT2}:",
             text="" if is_preset else previous,
@@ -3663,7 +3892,7 @@ class SettingsWindow(QDialog):
                 f"“{model}” has no pre-converted OpenVINO version, so the "
                 "OpenVINO backend cannot load it.\n\nUse "
                 f"“{openvino_alternative(model)}” instead, or set Backend = "
-                "faster-whisper on the Whisper page to keep this model.",
+                "faster-whisper to keep this model.",
             )
             self.model_combo.setCurrentIndex(self._model_index)
             return
@@ -3763,6 +3992,27 @@ class SettingsWindow(QDialog):
             self.hotkey_edit.setFocus()
             return False
 
+        # Live typing that App would skip for every take (hold mode with a
+        # modifier chord, or a bare character key) used to be accepted here
+        # and then failed silently — a log line was the only trace. The hint
+        # under the box says so while editing; Save says it once more and
+        # refuses, like an invalid hotkey.
+        if values["live_typing"]:
+            problem = self._live_typing_problem(hotkey, values["hotkey_mode"])
+            if problem is not None:
+                self._show_page("General")
+                QMessageBox.critical(
+                    self,
+                    APP_NAME,
+                    "Live typing is switched on, but it could not run with this "
+                    f"hotkey: {problem}\n\n"
+                    "Change the hotkey or the hotkey mode, or turn live typing off — "
+                    "otherwise every recording would quietly insert the text at the "
+                    "end instead.",
+                )
+                self.hotkey_edit.setFocus()
+                return False
+
         # An enabled assistant with no usable endpoint is the one setting that
         # cannot report itself: it runs after a dictation, on a worker thread,
         # and the user meets the problem as a raw requests error attached to a
@@ -3855,6 +4105,9 @@ class SettingsWindow(QDialog):
             )
         self.app.apply_settings()
         self._saved_snapshot = self._collect()
+        # A saved device/precision/model change invalidates the loaded model
+        # (or swapped the transcriber), so the "Running on" line changes too.
+        self._refresh_runtime_status()
         self._refresh_autostart_status()  # apply_settings just (re)wrote the entry
         # The floating icon was just created or destroyed by apply_settings, so
         # whether there is a position to reset has changed with it.

@@ -1,6 +1,6 @@
 """Self-diagnosis actions for the Settings window: model download, microphone
 test, end-to-end transcription test and the hardware/model status probes
-behind the Whisper page's status card.
+behind the Engine page's status card.
 
 Qt-free on purpose: everything here runs on a worker thread and reports back
 through plain callables, which the Settings window marshals onto the Qt main
@@ -228,6 +228,16 @@ class DiagnosticsEngine:
     def __init__(self):
         self._transcriber = None
         self._key: tuple | None = None
+
+    @property
+    def runtime(self) -> tuple[str, str] | None:
+        """(device, precision) of the model the last diagnostic loaded — what
+        the Settings "Running on" line shows after "Download / load model"
+        while the app's own transcriber has not loaded anything yet. None
+        when no diagnostic has run or its transcriber holds no model."""
+        if self._transcriber is None:
+            return None
+        return getattr(self._transcriber, "runtime", None)
 
     def _transcriber_for(self, snapshot: dict):
         from .transcriber import create_transcriber

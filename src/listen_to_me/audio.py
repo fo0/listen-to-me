@@ -15,6 +15,12 @@ log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000  # what Whisper expects
 
+# Memory backstop for one take, matching the top of the Settings range for
+# max_seconds. The recorder keeps every captured chunk in RAM until stop(), so
+# a cap it never reaches is an unbounded list — the config consumer (app.py)
+# clamps the setting; this catches any other caller.
+MAX_RECORDING_SECONDS = 3600
+
 # Band split (Hz) and the band RMS that maps to a full-scale level — tuned so
 # normal speech sweeps the overlay animation over most of its range. The low
 # band starts above 0 Hz so a microphone's DC offset and subsonic rumble don't
@@ -56,10 +62,22 @@ class Recorder:
         self._on_limit: Callable[[], None] | None = None
         self._on_ended: Callable[[], None] | None = None
         self._lock = threading.Lock()
+        # Callback invocations of the running (or last) take that reported a
+        # PortAudio status flag — input overflow, i.e. frames the device
+        # produced while the callback was late. Reset by start(), kept past
+        # stop() so the caller can mention it next to an empty transcript.
+        self._dropped = 0
+        self._status_warned = False
 
     @property
     def active(self) -> bool:
         return self._stream is not None
+
+    @property
+    def dropped_buffers(self) -> int:
+        """How many audio buffers PortAudio flagged (dropped frames) during the
+        running or most recent take."""
+        return self._dropped
 
     def start(
         self,
@@ -79,13 +97,36 @@ class Recorder:
 
         self._chunks = []
         self._frames = 0
-        self._max_frames = max(1, int(max_seconds)) * SAMPLE_RATE
+        seconds = max(1, int(max_seconds))
+        if seconds > MAX_RECORDING_SECONDS:
+            log.warning(
+                "max_seconds %d exceeds the %d s ceiling — the recording stops there",
+                seconds, MAX_RECORDING_SECONDS,
+            )
+            seconds = MAX_RECORDING_SECONDS
+        self._max_frames = seconds * SAMPLE_RATE
         self._on_limit = on_limit
         self._on_ended = on_ended
+        self._dropped = 0
+        self._status_warned = False
 
         def callback(indata, frames, time_info, status):
             if status:
-                log.debug("audio status: %s", status)
+                # Input overflow means the device produced frames while this
+                # callback was late — they are gone, and the transcript will
+                # miss words. One WARNING per take: on an overloaded machine
+                # the flag repeats on every callback, and the count carries
+                # the rest of the story (see dropped_buffers).
+                self._dropped += 1
+                if self._status_warned:
+                    log.debug("audio status: %s", status)
+                else:
+                    self._status_warned = True
+                    log.warning(
+                        "audio status: %s — audio buffers are being dropped, the "
+                        "transcript may miss words (the system is overloaded)",
+                        status,
+                    )
             with self._lock:
                 self._chunks.append(indata.copy())
                 self._frames += frames
@@ -205,7 +246,11 @@ class Recorder:
         if not chunks:
             return np.zeros(0, dtype="float32")
         audio = np.concatenate(chunks).flatten()
-        log.info("recording stopped: %.1fs", len(audio) / SAMPLE_RATE)
+        log.info(
+            "recording stopped: %.1fs%s",
+            len(audio) / SAMPLE_RATE,
+            f" ({self._dropped} audio buffers dropped)" if self._dropped else "",
+        )
         return audio
 
 

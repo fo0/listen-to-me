@@ -31,24 +31,27 @@ are missing, so transcription keeps working — you will see a one-time notice t
 it switched to CPU for the session. The steps below are only needed if you want
 to make CPU the permanent choice, or to run on the GPU on purpose.</p>
 
-<p><b>Quick fix — works on any PC.</b> Open <b>Settings → Whisper → Device</b> and
+<p><b>Quick fix — works on any PC.</b> Open <b>Settings → Engine → Device</b> and
 set it to <b>CPU</b>. No CUDA required. It is a bit slower but reliable; for the
 small models the difference is minor.</p>
 
 <p><b>Use the GPU (NVIDIA graphics cards only).</b> You need a recent NVIDIA
-driver plus the CUDA&nbsp;12 runtime libraries (<b>cuBLAS</b> and
-<b>cuDNN&nbsp;9 for CUDA&nbsp;12</b>). Either install the CUDA Toolkit, or place
-the required DLLs next to <code>ListenToMe-*.exe</code> or in a folder on your
-<code>PATH</code>.</p>
+driver plus the CUDA&nbsp;12 runtime library <b>cuBLAS</b>. Either install the
+CUDA Toolkit, or place the required DLLs next to <code>ListenToMe-*.exe</code>
+or in a folder on your <code>PATH</code>. cuDNN is <b>no longer required</b> for
+this backend &mdash; the CTranslate2 wheels since 4.6.3 (what this build uses)
+are built without it; only an older CTranslate2 from a source install still
+needs cuDNN&nbsp;9 for CUDA&nbsp;12.</p>
 
 <p><b>Download links</b></p>
 <ul>
 <li>NVIDIA drivers &mdash; <a href="https://www.nvidia.com/Download/index.aspx">nvidia.com/Download</a></li>
 <li>CUDA Toolkit 12.x &mdash; <a href="https://developer.nvidia.com/cuda-downloads">developer.nvidia.com/cuda-downloads</a></li>
-<li>cuDNN (for CUDA&nbsp;12) &mdash; <a href="https://developer.nvidia.com/cudnn">developer.nvidia.com/cudnn</a></li>
-<li>Advanced &mdash; the DLLs also ship in the PyPI wheels
-<a href="https://pypi.org/project/nvidia-cublas-cu12/">nvidia-cublas-cu12</a> and
-<a href="https://pypi.org/project/nvidia-cudnn-cu12/">nvidia-cudnn-cu12</a></li>
+<li>Advanced &mdash; the DLL also ships in the PyPI wheel
+<a href="https://pypi.org/project/nvidia-cublas-cu12/">nvidia-cublas-cu12</a>
+(cuDNN, only for CTranslate2 &lt; 4.6.3:
+<a href="https://developer.nvidia.com/cudnn">developer.nvidia.com/cudnn</a> or
+<a href="https://pypi.org/project/nvidia-cudnn-cu12/">nvidia-cudnn-cu12</a>)</li>
 <li>faster-whisper GPU requirements &mdash;
 <a href="https://github.com/SYSTRAN/faster-whisper#gpu">github.com/SYSTRAN/faster-whisper</a></li>
 </ul>
@@ -67,7 +70,7 @@ yet.</p>
 most Intel CPUs, Arc graphics cards and the NPU (&ldquo;AI&nbsp;Boost&rdquo; in
 Core&nbsp;Ultra processors) &mdash; through the <b>OpenVINO</b> backend.</p>
 <ul>
-<li>Open <b>Settings → Whisper → Backend</b> and select
+<li>Open <b>Settings → Engine → Backend</b> and select
 <b>OpenVINO — Intel GPU / NPU / CPU</b>. <b>Intel device = auto</b> prefers the
 GPU, then the NPU, then the CPU.</li>
 <li>The model is downloaded again for this backend (pre-converted
@@ -179,7 +182,7 @@ one-time setup that can take a few minutes for the larger models) and then
 loaded from a local cache on every later run &mdash; there is no second
 download.</p>
 <ul>
-<li>See or change the folder in <b>Settings → Whisper → Model download folder</b>
+<li>See or change the folder in <b>Settings → Engine → Model download folder</b>
 (empty = the default Hugging Face cache, shown there).</li>
 <li>Smaller models (<code>tiny</code>, <code>base</code>, <code>small</code>) are
 fast on the CPU; <code>medium</code> and <code>large-v3</code> are much happier
@@ -248,7 +251,7 @@ notification &mdash; your dictation is never lost.</li>
 <li>Hotkey, model, backend, microphone, floating icon, assistant and the app
 integrations all go back to their defaults, and <b>autostart is switched
 off</b>.</li>
-<li><b>Kept:</b> your transcript history and every Whisper model already
+<li><b>Kept:</b> your transcript history and every speech model already
 downloaded &mdash; the setup does not download anything again.</li>
 <li>Cancelling the wizard still leaves the defaults in place; the reset itself
 cannot be undone.</li>

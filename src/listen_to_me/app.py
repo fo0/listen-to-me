@@ -23,7 +23,7 @@ from . import APP_NAME, REPO_URL, __version__
 from . import assistant, autostart, netutil, singleinstance
 from .audio import SAMPLE_RATE, Recorder
 from .choices import resolve_input_device
-from .config import Config, config_dir
+from .config import Config, clamp_setting, config_dir
 from .history import TranscriptHistory
 from .hotkeys import Hotkeys
 from .injector import Injector, sanitize_typed_text
@@ -195,9 +195,14 @@ class App:
         self.recorder = Recorder()
         self.transcriber = create_transcriber(self.cfg)
         self.injector = Injector(self.cfg)
-        self.integrations = MuteIntegrations(self.cfg)
+        # Forced notifications: a mute target that is skipped is a settings
+        # problem the user has to fix, not a status message to suppress.
+        self.integrations = MuteIntegrations(
+            self.cfg, notify=lambda message: self.notify(message, force=True)
+        )
         self.history = TranscriptHistory(
-            self.cfg.path.parent / "history.json", max_entries=self.cfg["history_max"]
+            self.cfg.path.parent / "history.json",
+            max_entries=clamp_setting("history_max", self.cfg["history_max"], 10, 5000),
         )
         self.hotkeys = Hotkeys(
             lambda: self.post("hotkey_press"), lambda: self.post("hotkey_release")
@@ -338,7 +343,8 @@ class App:
         if self._length_warned or self.state != STATE_RECORDING:
             return
         message = length_warning_message(
-            time.monotonic() - self._recording_started, self.cfg["max_seconds"]
+            time.monotonic() - self._recording_started,
+            clamp_setting("max_seconds", self.cfg["max_seconds"], 10, 3600),
         )
         if message is None:
             return
@@ -495,7 +501,7 @@ class App:
         try:
             self.recorder.start(
                 device=device,
-                max_seconds=self.cfg["max_seconds"],
+                max_seconds=clamp_setting("max_seconds", self.cfg["max_seconds"], 10, 3600),
                 on_limit=lambda: self.post("auto_stop", take),
                 on_ended=lambda: self.post("stream_died", take),
             )
@@ -723,7 +729,7 @@ class App:
                 # recover from: give an actionable message, not the raw DLL name.
                 self.notify(
                     "GPU transcription needs the NVIDIA CUDA 12 libraries. "
-                    "Set Device = CPU in Settings → Whisper, or see the tray "
+                    "Set Device = CPU in Settings → Engine, or see the tray "
                     "menu → Help / Troubleshooting.",
                     force=True,
                 )
@@ -749,7 +755,20 @@ class App:
             verdict = str(clip_stats(audio)["verdict"])
         except Exception:
             log.debug("could not classify the recorded audio", exc_info=True)
-        self.notify(no_speech_message(verdict), force=verdict in ("silent", "quiet"))
+        message = no_speech_message(verdict)
+        # Dropped audio buffers (PortAudio input overflow) are a third reason
+        # for an empty transcript, and the one the recorder can actually
+        # count: named here, where the user is already being told the take
+        # came back empty, and only then — a take that transcribed fine needs
+        # no notification about it (the recorder logged it).
+        dropped = self.recorder.dropped_buffers
+        if dropped:
+            log.warning("%d audio buffers were dropped during this recording", dropped)
+            message += (
+                f" {dropped} audio buffers were dropped during the recording — the "
+                "system was overloaded."
+            )
+        self.notify(message, force=verdict in ("silent", "quiet"))
 
     def _insert_transcript(self, text: str) -> None:
         """Insert `text` at the cursor and say where it ended up.
@@ -1088,7 +1107,7 @@ class App:
         # repair_block: saving the settings is the explicit user action that
         # may switch a Windows-disabled entry back on (see autostart.sync).
         self._sync_autostart(repair_block=True)
-        self.history.max_entries = max(1, int(self.cfg["history_max"]))
+        self.history.max_entries = clamp_setting("history_max", self.cfg["history_max"], 10, 5000)
         self.tray.set_state(self.state)
         if self.overlay is not None:
             # Order matters: the always-on-top flag rebuilds the native window

@@ -18,6 +18,23 @@ log = logging.getLogger(__name__)
 # chord/shortcut when physically held: Shift, Ctrl, Alt, LWin, RWin.
 _WIN32_MODIFIER_VKS = (0x10, 0x11, 0x12, 0x5B, 0x5C)
 
+# How often wait_for_quiet_modifiers() re-polls the physical modifier state.
+_SETTLE_POLL_S = 0.01
+# How long a finished transcript waits for the stop-hotkey chord to be let go
+# before Ctrl+V / simulated typing is refused. Releasing a chord takes tens of
+# milliseconds; a modifier held for seconds means the user is doing something
+# else with the keyboard, and a chord sent into that fires whatever shortcut
+# it completes there.
+_INSERT_SETTLE_TIMEOUT_S = 2.0
+
+
+class ModifierHeldError(RuntimeError):
+    """Raised by the insertion paths when a modifier key stayed physically held
+    past the settle timeout, so no chord or keystroke was sent. The transcript
+    is on the clipboard (paste mode) or still in the caller's hands (type
+    mode); ``App._insert_transcript`` turns this into the forced "press Ctrl+V /
+    see History" notification."""
+
 
 def sanitize_typed_text(text: str) -> str:
     """Reduce `text` to plain typeable characters.
@@ -60,6 +77,36 @@ def modifiers_down() -> bool:
         return False
 
 
+def wait_for_quiet_modifiers(timeout: float, poll: float = _SETTLE_POLL_S) -> bool:
+    """Block until no modifier key is physically held, or `timeout` passes.
+    True when the keyboard went quiet, False when it timed out.
+
+    Shared by every injection that sends a chord into the *shared* keyboard
+    state: Ctrl+V for a paste, simulated typing, and the mute keybinds of
+    ``integrations.py``. Whatever the user still holds — typically the
+    recording hotkey that just started or stopped the take — is part of the
+    combination the focused application sees, so a chord sent underneath it
+    is a different chord (Ctrl+Alt+V instead of Ctrl+V), and typed text turns
+    into shortcuts. Waiting the few dozen milliseconds it takes to lift a
+    finger is what makes the difference; the ceiling keeps a caller from
+    hanging on a key held for other reasons.
+
+    AutoHotkey solves the same problem by releasing held modifiers itself and
+    pressing them back afterwards. Not here: a hold-mode recording hotkey
+    would read its own modifier going up as "the user let go" and stop the
+    recording (see ``integrations.py``).
+
+    Off Windows ``modifiers_down()`` can't poll the physical state and reports
+    False, so this returns at once — behaviour there is unchanged.
+    """
+    deadline = time.monotonic() + timeout
+    while modifiers_down():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(poll)
+    return True
+
+
 class Injector:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -80,6 +127,11 @@ class Injector:
         Returns whether the transcript is on the clipboard afterwards — either
         because paste mode left it there or because `clipboard_copy = "always"`
         put it there on purpose.
+
+        Raises ``ModifierHeldError`` when a modifier key stayed physically held
+        past the settle timeout on either path: the chord or keystrokes were
+        not sent, and typing is no fallback for that (it would run into the
+        same held key). The caller reports where the text can be recovered.
         """
         if not text:
             return False
@@ -91,6 +143,8 @@ class Injector:
         else:
             try:
                 on_clipboard = self._paste(text, keep=keep)
+            except ModifierHeldError:
+                raise
             except Exception:
                 log.exception("clipboard paste failed — falling back to typing")
                 self._type(text)
@@ -136,6 +190,15 @@ class Injector:
     def _type(self, text: str) -> None:
         from pynput.keyboard import Controller
 
+        # Typed under a held Ctrl/Alt/Win every character is a shortcut in the
+        # focused window; the live-typing path (type_plain) pauses for the same
+        # reason. Refusing is the only safe outcome once the wait runs out.
+        if not wait_for_quiet_modifiers(_INSERT_SETTLE_TIMEOUT_S):
+            log.warning(
+                "modifier key still held after %.1fs — %d chars not typed",
+                _INSERT_SETTLE_TIMEOUT_S, len(text),
+            )
+            raise ModifierHeldError("a modifier key was held down")
         # pynput maps \n and \t to real Enter/Tab presses — in a chat box or a
         # terminal that submits instead of typing. Whisper output is flat, but
         # assistant output arrives verbatim, so every simulated-typing path
@@ -207,6 +270,28 @@ class Injector:
 
         pyperclip.copy(text)
         time.sleep(0.15)  # give the clipboard time to settle
+
+        # The chord goes into the shared keyboard state: with the stop hotkey
+        # still held, Ctrl+V arrives as Ctrl+Alt+V (or whatever the hotkey
+        # adds) and pastes nothing — or triggers something else. Every other
+        # injection path already waits for the keys to be let go; this one
+        # sent the chord blind.
+        if not wait_for_quiet_modifiers(_INSERT_SETTLE_TIMEOUT_S):
+            log.warning(
+                "modifier key still held after %.1fs — Ctrl+V not sent, the "
+                "transcript stays on the clipboard",
+                _INSERT_SETTLE_TIMEOUT_S,
+            )
+            if previous is not None and self.clipboard_mode() == "off":
+                # "off" promises that dictated text never lingers on the
+                # clipboard: put the old content back exactly as a completed
+                # paste would have. Every other policy leaves the transcript
+                # there — it is the recovery the caller points the user at.
+                try:
+                    pyperclip.copy(previous)
+                except Exception:
+                    log.debug("could not restore clipboard", exc_info=True)
+            raise ModifierHeldError("a modifier key was held down")
 
         keyboard = Controller()
         modifier = Key.cmd if sys.platform == "darwin" else Key.ctrl
