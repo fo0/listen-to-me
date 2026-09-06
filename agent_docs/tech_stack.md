@@ -6,7 +6,7 @@ the version reasoning.
 | Component         | Technology                                                                                 | Version                                |
 | ----------------- | ------------------------------------------------------------------------------------------ | -------------------------------------- |
 | Language          | Python                                                                                     | >=3.10 (CI + dev on 3.11/3.12)         |
-| GUI Framework     | PySide6 (Qt 6)                                                                             | >=6.6                                  |
+| GUI Framework     | PySide6 (Qt 6)                                                                             | >=6.11.2                               |
 | Speech-to-text    | faster-whisper (CTranslate2); optional `[openvino]` / `[parakeet]` extras, both in the exe | >=1.2.1                                |
 | Audio · hotkeys   | sounddevice (PortAudio) · pynput                                                           | >=0.4.6 / >=1.7.7                      |
 | Build · packaging | setuptools (`pyproject.toml`) · PyInstaller one-file (CI)                                  | >=68                                   |

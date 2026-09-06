@@ -67,7 +67,7 @@ Three lifetimes — **Routines** (cloud, durable, ≥1 h), **`/loop` + `Cron*`**
 
 ## Tech Stack
 
-Python >=3.10 (CI 3.12) · PySide6 (Qt 6) >=6.6 · faster-whisper >=1.2.1 (+ optional OpenVINO / Parakeet backends) · sounddevice · pynput · pip + setuptools, PyInstaller one-file in CI. **No linter, formatter, type-checker or test framework for Python** — Prettier (via `npx`) formats Markdown only. Full table, version reasoning, packaging asymmetry: `agent_docs/tech_stack.md`; dep bounds: `requirements.txt`.
+Python >=3.10 (CI 3.12) · PySide6 (Qt 6) >=6.11.2 · faster-whisper >=1.2.1 (+ optional OpenVINO / Parakeet backends) · sounddevice · pynput · pip + setuptools, PyInstaller one-file in CI. **No linter, formatter, type-checker or test framework for Python** — Prettier (via `npx`) formats Markdown only. Full table, version reasoning, packaging asymmetry: `agent_docs/tech_stack.md`; dep bounds: `requirements.txt`.
 
 ## Project Overview
 
