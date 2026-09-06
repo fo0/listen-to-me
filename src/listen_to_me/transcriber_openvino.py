@@ -28,7 +28,7 @@ log = logging.getLogger(__name__)
 _INSTALL_HINT = (
     "The OpenVINO backend needs the optional openvino-genai package. "
     "Install it with: pip install openvino-genai — or set "
-    "Backend = faster-whisper in Settings → Whisper."
+    "Backend = faster-whisper in Settings → Engine."
 )
 
 
@@ -51,7 +51,7 @@ def openvino_model_repo(model: str, precision: str) -> str:
         raise ValueError(
             f"The model '{model}' has no OpenVINO conversion — pick "
             f"'{openvino_alternative(model)}' (or another model) in Settings → "
-            "Whisper. Only if you need this exact model, switch Backend back to "
+            "Engine. Only if you need this exact model, switch Backend back to "
             "faster-whisper, which can run it."
         )
     if "/" in model or os.sep in model:
@@ -154,6 +154,17 @@ class OpenVinoTranscriber:
     def loaded(self) -> bool:
         return self._pipe is not None and self._key == self._current_key()
 
+    @property
+    def runtime(self) -> tuple[str, str] | None:
+        """(device, precision) the loaded pipeline actually runs with — e.g.
+        ("GPU", "int8"): what "auto" resolved to, or the CPU after a session
+        fallback. None while nothing is loaded. Same contract as
+        Transcriber.runtime, so the Settings status card shows the effective
+        device for every backend."""
+        if not self.loaded or self._device is None or self._key is None:
+            return None
+        return self._device, self._key[1]
+
     def _resolve_device(self, configured: str) -> str:
         """Turn the configured device into an OpenVINO device string.
 
@@ -220,7 +231,7 @@ class OpenVinoTranscriber:
                 "openvino_*.xml files (a CTranslate2 or Transformers model "
                 "cannot be loaded by this backend). Pick an OpenVINO IR repo "
                 "such as OpenVINO/whisper-small-int8-ov, or switch Backend to "
-                "faster-whisper in Settings → Whisper."
+                "faster-whisper in Settings → Engine."
             )
         if notify is not None:
             if cached:
@@ -274,7 +285,7 @@ class OpenVinoTranscriber:
                     "model cannot be loaded by this backend). Pick an "
                     "OpenVINO IR repo such as OpenVINO/whisper-small-int8-ov, "
                     "or switch Backend to faster-whisper in Settings → "
-                    "Whisper."
+                    "Engine."
                 ) from exc
             if self._maybe_force_cpu(device, exc, notify):
                 self._ensure_loaded_locked(None)  # retry on the CPU, no re-notify
@@ -312,7 +323,7 @@ class OpenVinoTranscriber:
             notify(
                 f"Intel {device} acceleration unavailable — switched to CPU for "
                 "this session. Check your Intel GPU/NPU driver, or set "
-                "Intel device = CPU in Settings → Whisper.",
+                "Intel device = CPU in Settings → Engine.",
                 True,  # force: important even when notifications are off
             )
         return True

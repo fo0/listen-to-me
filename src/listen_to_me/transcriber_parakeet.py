@@ -42,7 +42,7 @@ _MODEL_DIRNAME = "parakeet-tdt-0.6b-v3-onnx"
 _INSTALL_HINT = (
     "The Parakeet backend needs the optional onnx-asr package. Install it "
     'with: pip install "onnx-asr[cpu,hub]" — or set Backend = faster-whisper '
-    "in Settings → Whisper."
+    "in Settings → Engine."
 )
 
 
@@ -83,6 +83,15 @@ def _download_watcher(quantization: str | None, model_dir, progress):
         progress,
         label=f"Downloading {MODEL_NAME}",
     )
+
+
+# Short labels for the status card / log: the provider that leads the list
+# is the one ONNX Runtime places the session on.
+_PROVIDER_LABELS = {
+    "CUDAExecutionProvider": "cuda",
+    "DmlExecutionProvider": "directml",
+    "CPUExecutionProvider": "cpu",
+}
 
 
 def _resolve_providers(device: str) -> list[str]:
@@ -160,6 +169,17 @@ class ParakeetTranscriber:
     def loaded(self) -> bool:
         return self._model is not None and self._key == self._current_key()
 
+    @property
+    def runtime(self) -> tuple[str, str] | None:
+        """(device, precision) of the loaded model — the leading execution
+        provider the session was created with ("cuda" / "directml" / "cpu")
+        and the ONNX variant ("int8" / "fp32"). None while nothing is loaded.
+        Same contract as Transcriber.runtime."""
+        if not self.loaded or not self._providers or self._key is None:
+            return None
+        provider = self._providers[0]
+        return _PROVIDER_LABELS.get(provider, provider), _quantization(self._key[1]) or "fp32"
+
     # ------------------------------------------------------------ loading
 
     def ensure_loaded(self, notify=None, progress=None) -> None:
@@ -214,7 +234,7 @@ class ParakeetTranscriber:
                     "Device = CUDA is set, but the installed onnxruntime has "
                     "no CUDA support — Parakeet runs on the CPU. Install "
                     "onnxruntime-gpu, or set Device = CPU in Settings → "
-                    "Whisper.",
+                    "Engine.",
                     True,  # force: important even when notifications are off
                 )
         def load(chosen):
@@ -260,7 +280,7 @@ class ParakeetTranscriber:
                 notify(
                     "GPU acceleration unavailable for Parakeet — switched to "
                     "CPU for this session. Check the NVIDIA driver/CUDA "
-                    "libraries, or set Device = CPU in Settings → Whisper.",
+                    "libraries, or set Device = CPU in Settings → Engine.",
                     True,  # force: important even when notifications are off
                 )
             providers = ["CPUExecutionProvider"]
@@ -322,7 +342,7 @@ class ParakeetTranscriber:
                 notify(
                     "GPU acceleration unavailable for Parakeet — switched to "
                     "CPU for this session. Check the NVIDIA driver/CUDA "
-                    "libraries, or set Device = CPU in Settings → Whisper.",
+                    "libraries, or set Device = CPU in Settings → Engine.",
                     True,  # force: important even when notifications are off
                 )
             self._ensure_loaded_locked(None)

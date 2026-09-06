@@ -56,6 +56,10 @@ DEFAULTS: dict = {
     # (The openvino backend has its own openvino_device below.)
     "device": "auto",
     # CTranslate2 compute type: auto / int8 / int8_float16 / float16 / float32.
+    # "auto" = int8 on the CPU, float16 on a GPU that supports it — resolved
+    # against the installed CTranslate2 (transcriber.resolve_runtime), never
+    # CTranslate2's "default", which runs the float16 presets as float32 on
+    # a CPU.
     "compute_type": "auto",
     # OpenVINO device (openvino backend): auto / cpu / gpu / npu.
     # "auto" prefers the GPU, then the NPU, then the CPU.

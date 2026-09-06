@@ -1945,6 +1945,68 @@ def _transcriber_cpu_fallback():
         assert t2._maybe_force_cpu("cpu", RuntimeError("cublas missing"), None) is False
 
 
+def _compute_type_resolution():
+    """"auto" for device/compute type resolves against what CTranslate2
+    reports — int8 on the CPU (never the float32 that "default" widened the
+    float16 presets to), float16 on a GPU that supports it — and every probe
+    failure falls back to CTranslate2's own resolution instead of raising.
+    Uses a fake ctranslate2 module so the check needs no GPU and no real
+    install."""
+    import sys
+    import types
+
+    from listen_to_me.transcriber import resolve_runtime
+
+    def fake(gpus: int, **supported):
+        mod = types.ModuleType("ctranslate2")
+        mod.get_cuda_device_count = lambda: gpus
+        mod.get_supported_compute_types = lambda device, index=0: supported[device]
+        return mod
+
+    previous = sys.modules.get("ctranslate2")
+    try:
+        cpu_only = {"cpu": ["float32", "int16", "int8", "int8_float32"]}
+        sys.modules["ctranslate2"] = fake(0, **cpu_only)
+        assert resolve_runtime("auto", "auto") == ("cpu", "int8")
+        assert resolve_runtime("cpu", "auto") == ("cpu", "int8")
+        assert resolve_runtime("cpu", "float32") == ("cpu", "float32")  # explicit wins
+        assert resolve_runtime("cuda", "float16") == ("cuda", "float16")  # not probed
+        # A CPU without int8 support gets float32, never a type it lacks.
+        sys.modules["ctranslate2"] = fake(0, cpu=["float32", "int16"])
+        assert resolve_runtime("auto", "auto") == ("cpu", "float32")
+
+        # A GPU takes float16 when supported (accuracy), int8 on an old card.
+        sys.modules["ctranslate2"] = fake(
+            1, cuda=["float32", "float16", "int8_float16", "int8"], **cpu_only
+        )
+        assert resolve_runtime("auto", "auto") == ("cuda", "float16")
+        assert resolve_runtime("cpu", "auto") == ("cpu", "int8")  # forced CPU keeps int8
+        sys.modules["ctranslate2"] = fake(1, cuda=["float32", "int8"], **cpu_only)
+        assert resolve_runtime("auto", "auto") == ("cuda", "int8")
+
+        # Probe failures hand the decision back to CTranslate2 — the previous
+        # behaviour — instead of failing a load that would have worked.
+        def broken(*_a, **_k):
+            raise RuntimeError("CUDA driver version is insufficient")
+
+        mod = fake(0, **cpu_only)
+        mod.get_cuda_device_count = broken
+        sys.modules["ctranslate2"] = mod
+        assert resolve_runtime("auto", "auto") == ("auto", "default")
+        assert resolve_runtime("auto", "int8") == ("auto", "int8")
+        mod = fake(0, **cpu_only)
+        mod.get_supported_compute_types = broken
+        sys.modules["ctranslate2"] = mod
+        assert resolve_runtime("cpu", "auto") == ("cpu", "default")
+        sys.modules["ctranslate2"] = None  # import fails → nothing resolved
+        assert resolve_runtime("auto", "auto") == ("auto", "default")
+    finally:
+        if previous is None:
+            sys.modules.pop("ctranslate2", None)
+        else:
+            sys.modules["ctranslate2"] = previous
+
+
 def _openvino_backend_logic():
     """The OpenVINO backend maps model presets to the pre-converted Hugging
     Face repos, refuses the presets that have no OpenVINO conversion, is picked
@@ -4340,6 +4402,7 @@ _LIGHT_CHECKS = [
     ("transcriber cache probe", _transcriber_cache_probe),
     ("CUDA error detection", _cuda_error_detection),
     ("transcriber CPU fallback", _transcriber_cpu_fallback),
+    ("compute type resolution", _compute_type_resolution),
     ("openvino backend logic", _openvino_backend_logic),
     ("parakeet backend logic", _parakeet_backend_logic),
     ("diagnostics engine", _diagnostics_engine),

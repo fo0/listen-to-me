@@ -4,7 +4,7 @@ Temporary working context. **Clean up aggressively — delete when resolved.** R
 
 ## Current Work
 
-_(none)_
+- **App quality pass (`claude/app-quality-model-optimization-7eel5p`, 2026-09-06):** Settings UX review + backend bug hunt + STT model/driver research. Landed so far: `transcriber.resolve_runtime()` — the app's `compute_type = "auto"` used to map to CTranslate2's `"default"`, which runs the float16 Systran presets as **float32 on the CPU**; it now resolves to int8 on the CPU / float16 on a CUDA GPU against what CTranslate2 reports as supported (selftest `compute type resolution`). Every backend exposes `runtime -> (device, precision) | None` for the status card. Settings page "Whisper" → "Engine" (model chooser moves there). Open: fold in the reviewer findings, BACKLOG the deferred P2s, model-preset changes from the research.
 
 > Finished work does not belong here. What a merged branch produced is recorded in `BACKLOG.md → Done`, `agent_docs/key-patterns.md`, `MEMORY.md` and the git history — don't re-add closed branches to this section.
 

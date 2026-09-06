@@ -1086,7 +1086,9 @@ class SettingsWindow(QDialog):
         self.compute_combo.addItems(COMPUTE_TYPES)
         self._select_combo(self.compute_combo, self.cfg["compute_type"])
         self.compute_combo.setToolTip(
-            "Numeric precision. int8 is fastest on CPU; float16 needs a GPU; float32 is the slow reference."
+            "Numeric precision. auto = int8 on the CPU (2–4× faster than float32, "
+            "same accuracy in practice) and float16 on a GPU. int8 is fastest on "
+            "CPU; float16 needs a GPU; float32 is the slow reference."
         )
         form.addRow("Compute type:", self.compute_combo)
 
