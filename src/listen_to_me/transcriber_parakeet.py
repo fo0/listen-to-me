@@ -118,6 +118,28 @@ def _resolve_providers(device: str) -> list[str]:
     return providers
 
 
+def _preload_cuda_dlls() -> None:
+    """Let ONNX Runtime find pip-installed CUDA / cuDNN libraries.
+
+    onnxruntime-gpu bundles no CUDA. On Windows the DLLs must be on PATH —
+    unless ``onnxruntime.preload_dlls()`` (ORT ≥ 1.21) loads the copies the
+    ``nvidia-*`` wheels install first, which is the one torch-free way to make
+    ``pip install "onnxruntime-gpu[cuda,cudnn]"`` just work. Without it the
+    CUDA provider fails at session creation with a missing-DLL error that the
+    session fallback then blames on the GPU. Older builds lack the function
+    and every failure here is a debug line: the provider list already decides
+    what runs, this only improves its odds.
+    """
+    try:
+        import onnxruntime
+
+        preload = getattr(onnxruntime, "preload_dlls", None)
+        if preload is not None:
+            preload(cuda=True, cudnn=True)
+    except Exception:
+        log.debug("onnxruntime.preload_dlls failed", exc_info=True)
+
+
 def _model_is_cached(quantization: str | None, model_dir) -> bool:
     """Whether the Parakeet model is already on disk, so loading won't download.
 
@@ -237,6 +259,9 @@ class ParakeetTranscriber:
                     "Engine.",
                     True,  # force: important even when notifications are off
                 )
+        if "CUDAExecutionProvider" in providers:
+            _preload_cuda_dlls()
+
         def load(chosen):
             return onnx_asr.load_model(
                 MODEL_NAME,

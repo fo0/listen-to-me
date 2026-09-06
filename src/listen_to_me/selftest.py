@@ -2007,6 +2007,25 @@ def _compute_type_resolution():
             sys.modules["ctranslate2"] = previous
 
 
+def _openvino_pipeline_properties():
+    """The OpenVINO compile cache is requested for the GPU/NPU only, lives
+    under the custom model folder when one is set (the config dir otherwise),
+    and an uncreatable cache dir degrades to no properties instead of raising.
+    Pure path logic — openvino stays unimported."""
+    from listen_to_me.transcriber_openvino import _pipeline_properties
+
+    assert _pipeline_properties("CPU", None) == {}
+    with tempfile.TemporaryDirectory() as tmp:
+        props = _pipeline_properties("GPU", tmp)
+        cache = Path(props["CACHE_DIR"])
+        assert cache.is_dir() and cache.parent == Path(tmp) and cache.name == "openvino-cache"
+        assert _pipeline_properties("NPU", tmp)["CACHE_DIR"] == str(cache)
+        # A file where the cache dir should go → mkdir fails → no properties.
+        blocker = Path(tmp) / "blocked"
+        blocker.write_text("not a directory")
+        assert _pipeline_properties("GPU", blocker) == {}
+
+
 def _openvino_backend_logic():
     """The OpenVINO backend maps model presets to the pre-converted Hugging
     Face repos, refuses the presets that have no OpenVINO conversion, is picked
@@ -4403,6 +4422,7 @@ _LIGHT_CHECKS = [
     ("CUDA error detection", _cuda_error_detection),
     ("transcriber CPU fallback", _transcriber_cpu_fallback),
     ("compute type resolution", _compute_type_resolution),
+    ("openvino pipeline properties", _openvino_pipeline_properties),
     ("openvino backend logic", _openvino_backend_logic),
     ("parakeet backend logic", _parakeet_backend_logic),
     ("diagnostics engine", _diagnostics_engine),

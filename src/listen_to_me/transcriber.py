@@ -68,7 +68,12 @@ def resolve_runtime(device: str, compute_type: str) -> tuple[str, str]:
         return device, passthrough
     if device == "auto":
         try:
-            device = "cuda" if int(ctranslate2.get_cuda_device_count()) > 0 else "cpu"
+            count = int(ctranslate2.get_cuda_device_count())
+            # Worth a line in the log: "no GPU" and "GPU present but cuBLAS
+            # missing" look identical to the user, and this is what tells
+            # them apart when the CUDA fallback fires later.
+            log.info("ctranslate2 sees %d CUDA device(s)", count)
+            device = "cuda" if count > 0 else "cpu"
         except Exception:
             log.debug("CUDA device probe failed — leaving the device to CTranslate2", exc_info=True)
             return "auto", passthrough
