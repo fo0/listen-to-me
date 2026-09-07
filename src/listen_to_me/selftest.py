@@ -2165,7 +2165,9 @@ def _config_clamps_out_of_range_values():
     where it is consumed — once per key in the log — instead of failing later:
     `"max_seconds": 1e9` grew the recorder's chunk list without bound,
     `"timeout": 0` raised inside urllib3 on every dictation. The assistant is
-    exercised through a faked `requests` (absent in the light CI env)."""
+    exercised through a faked `requests` (absent in the light CI env) — the same
+    fake also covers the bounds around its response body, since the clamped
+    timeout is what they are measured against."""
     import logging
     import types
 
@@ -2196,16 +2198,23 @@ def _config_clamps_out_of_range_values():
         assert not [m for m in records if "selftest.text" in m]
 
         sent: list[dict] = []
+        body = b'{"choices": [{"message": {"content": "refined"}}]}'
 
         class _Response:
             def raise_for_status(self):
                 pass
 
-            def json(self):
-                return {"choices": [{"message": {"content": "refined"}}]}
+            def iter_content(self, size):
+                # In two pieces, so the size cap and the deadline are both
+                # checked more than once per response.
+                yield body[:10]
+                yield body[10:]
 
-        def _post(url, json=None, headers=None, timeout=None, verify=None):
-            sent.append({"payload": json, "timeout": timeout})
+            def close(self):
+                pass
+
+        def _post(url, json=None, headers=None, timeout=None, verify=None, stream=None):
+            sent.append({"payload": json, "timeout": timeout, "stream": stream})
             return _Response()
 
         fake = types.ModuleType("requests")
@@ -2224,6 +2233,26 @@ def _config_clamps_out_of_range_values():
             assert sent[0]["timeout"] == 5.0, sent
             assert sent[0]["payload"]["temperature"] == 2.0, sent
             assert isinstance(sent[0]["timeout"], float)
+            # Streamed, or neither the size cap nor the wall clock below can
+            # apply — requests would have buffered the whole body already.
+            assert sent[0]["stream"] is True, sent
+            # A body that never stops is refused instead of parking the
+            # `process` worker (and with it App.state) forever.
+            body = b"x" * (assistant._MAX_RESPONSE_BYTES + 1)
+            try:
+                assistant.refine("hello", acfg)
+            except assistant.AssistantError as exc:
+                assert "exceeded" in str(exc), exc
+            else:
+                raise AssertionError("refine accepted an unbounded response body")
+            # A body that is not JSON at all names the assistant, not urllib3.
+            body = b"<html>502 Bad Gateway</html>"
+            try:
+                assistant.refine("hello", acfg)
+            except assistant.AssistantError as exc:
+                assert "did not return JSON" in str(exc), exc
+            else:
+                raise AssertionError("refine accepted a non-JSON response")
         finally:
             if saved is None:
                 sys.modules.pop("requests", None)
