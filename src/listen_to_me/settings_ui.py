@@ -4032,7 +4032,14 @@ class SettingsWindow(QDialog):
         Save would then quietly drop the user's microphone.
         """
         if not self._devices_loaded:
-            return self.cfg["input_device"]
+            stored = self.cfg["input_device"]
+            # `input_device` defaults to None, and config.py passes a key with a
+            # None default through untouched — so a hand-edited "abc" would be
+            # written straight back. An index or nothing is what the rest of the
+            # app reads, exactly like input_device_from_label returns.
+            if isinstance(stored, bool) or not isinstance(stored, int):
+                return None
+            return stored
         return input_device_from_label(self.input_combo.currentText())
 
     # -------------------------------------------------------- save / apply

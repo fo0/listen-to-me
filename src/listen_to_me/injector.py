@@ -323,20 +323,19 @@ class Injector:
             try:
                 # Restore only while the clipboard still holds our transcript.
                 pyperclip.copy(previous)
-                # The one line that says the window was closed. "Pasted the
-                # wrong text" is otherwise indistinguishable from a target
-                # that ignored Ctrl+V, and this is the only place that knows
-                # a restore happened and how long the target had.
-                log.debug(
-                    "restored the previous clipboard %.1fs after Ctrl+V",
-                    _PASTE_READ_WINDOW_S,
-                )
-                return False
             except Exception:
                 # The read-back above proved the transcript IS still there —
                 # a failed restore must not hide that recovery from the user.
                 log.debug("could not restore clipboard", exc_info=True)
                 return True
+            # The one line that says the window was closed. "It pasted the
+            # wrong text" is otherwise indistinguishable from a target that
+            # ignored Ctrl+V, and this is the only place that knows a restore
+            # happened and how long the target had before it.
+            log.debug(
+                "restored the previous clipboard %.1fs after Ctrl+V", _PASTE_READ_WINDOW_S
+            )
+            return False
         if previous == "" and self.clipboard_mode() == "off":
             # Restore was configured but the old content was non-text
             # (pyperclip reads images/files as ""), so there is nothing to put
