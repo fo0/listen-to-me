@@ -1341,6 +1341,16 @@ class SettingsWindow(QDialog):
         self.replacements_edit.setPlaceholderText("cuber netes => Kubernetes\nposgres => PostgreSQL")
         self.replacements_edit.setFixedHeight(80)
         rv.addWidget(self.replacements_edit)
+        # A mistyped rule (“->” instead of “=>”, an empty left-hand side) was
+        # skipped into the log file and nowhere else: the field looked exactly
+        # like one whose rules all work, and the next dictation that came out
+        # uncorrected was the first hint. This line says how many rules are in
+        # force and names the lines that were thrown away, while they are being
+        # typed. `elastic` because it is composed at runtime.
+        self.replacements_status = self._hint("", elastic=True)
+        rv.addWidget(self.replacements_status)
+        self.replacements_edit.textChanged.connect(self._refresh_replacements_status)
+        self._refresh_replacements_status()
         rv.addWidget(self._hint(
             "Applied to every finished transcript, in order, after the assistant — "
             "so a word this speaker always gets wrong is corrected before the text "
@@ -1359,6 +1369,29 @@ class SettingsWindow(QDialog):
 
         layout.addStretch(1)
         return page
+
+    def _refresh_replacements_status(self) -> None:
+        """Re-render the line under the Text replacements field.
+
+        Runs on every keystroke: `describe_replacements` walks the lines the
+        field holds and compiles nothing, and the list is capped at a few
+        hundred rules — cheap enough that a debounce timer would only add a way
+        for the status to be stale. Imported inside the method rather than at
+        module level because `app` imports this module.
+
+        The same sentence goes on the field's accessible description: a hint
+        that is a sibling label is not announced together with the widget it
+        describes, and this one is the only feedback there is about which of
+        the typed rules actually took.
+        """
+        from .app import describe_replacements
+
+        status = describe_replacements(self.replacements_edit.toPlainText())
+        self.replacements_status.setText(status)
+        # Hidden rather than left empty, so the card does not keep a blank
+        # line's worth of space for a field nobody has written in yet.
+        self.replacements_status.setVisible(bool(status))
+        self.replacements_edit.setAccessibleDescription(status)
 
     def _build_audio(self, title: str) -> QWidget:
         page, layout = self._page(title)

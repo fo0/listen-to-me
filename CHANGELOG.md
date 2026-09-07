@@ -14,6 +14,15 @@ changes at a glance.
 
 ### Added
 
+- **The Text replacements field says which of its rules took effect.** A rule
+  with a typo — an arrow written as `->`, a line with nothing on its left-hand
+  side — was skipped with a warning that only ever reached the log file, so
+  the field looked exactly like one whose rules all work and the next
+  uncorrected dictation was the first hint. A line under the field now counts
+  the active rules and names the ignored ones while they are being typed
+  (`2 rules active · 1 line ignored: line 4 has no “=>”.`), capped at three
+  named lines plus a count so a pasted-in list of junk stays one line.
+
 - **Copy all** on the History page — puts every transcript the list currently
   shows on the clipboard in one block, newest first and each with its date,
   which is exactly what **Export…** would have written to a file. The search

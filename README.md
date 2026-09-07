@@ -369,7 +369,12 @@ tee ess => TypeScript
   written out.
 - Rules are applied **in the order they are written**, after the assistant, so
   your rules are the final word. Lines starting with `#` are comments; a line
-  without `=>` is ignored (with a note in the log) instead of breaking the rest.
+  without `=>` is ignored instead of breaking the rest.
+- **The line under the field says what actually took effect** — how many rules
+  are active, and which lines were thrown away and why (`2 rules active · 1
+line ignored: line 4 has no “=>”.`). An arrow typed as `->`, or a rule with
+  nothing on its left-hand side, is otherwise indistinguishable from one that
+  works until a dictation comes out uncorrected.
 - Not applied while `live_typing` is on: that text is already at the cursor and
   append-only typing cannot take it back.
 

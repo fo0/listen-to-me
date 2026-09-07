@@ -526,6 +526,57 @@ def _text_replacements():
         assert apply_replacements("keep me", junk) == "keep me"
 
 
+def _replacement_rules_report_what_was_skipped():
+    """The line the Settings page shows under the Text replacements field.
+
+    A mistyped rule used to be dropped with a log warning only, so the field
+    looked exactly like one whose rules all work. The status names how many
+    rules are in force and which lines were thrown away — and collecting them
+    must not change what parse_replacements returns."""
+    from listen_to_me.app import (
+        _MAX_REPLACEMENT_RULES,
+        _MAX_REPORTED_ISSUES,
+        describe_replacements,
+        parse_replacements,
+    )
+
+    # An untouched field says nothing — the placeholder explains the syntax.
+    for empty in ("", "   ", None, "# only a comment\n\n"):
+        assert describe_replacements(empty) == ""
+
+    # All good: the count, and nothing else.
+    assert describe_replacements("a => b") == "1 rule active."
+    assert describe_replacements("a => b\nc => d") == "2 rules active."
+
+    # The two ways a line is thrown away, each naming its line number.
+    one_bad = describe_replacements("a => b\nposgres -> PostgreSQL")
+    assert one_bad.startswith("1 rule active · 1 line ignored:")
+    assert "line 2 has no “=>”" in one_bad
+    two_bad = describe_replacements("broken\n=> nothing to find\na => b")
+    assert "2 lines ignored" in two_bad and "line 1" in two_bad and "line 2" in two_bad
+    # Blank lines and comments are not "ignored lines" — they are syntax.
+    assert describe_replacements("# note\n\na => b") == "1 rule active."
+
+    # A pasted list of junk stays one line: the first few are named, the rest counted.
+    many = describe_replacements("\n".join(f"bad line {n}" for n in range(1, 9)))
+    assert "8 lines ignored" in many and "and 5 more" in many
+    for named in range(1, _MAX_REPORTED_ISSUES + 1):
+        assert f"line {named} has" in many
+    assert f"line {_MAX_REPORTED_ISSUES + 1} has" not in many  # counted, not named
+
+    # The cap is its own sentence rather than an "ignored line" — the parser
+    # stops at it and cannot know how many lines followed.
+    capped = describe_replacements("\n".join(f"w{n} => x" for n in range(_MAX_REPLACEMENT_RULES + 5)))
+    assert capped == f"{_MAX_REPLACEMENT_RULES} rules active. Only the first {_MAX_REPLACEMENT_RULES} rules are used."
+
+    # The issue list is append-only bookkeeping: the rules are the same with
+    # and without it, which is what lets the status share the parser.
+    spec = "a => b\nbroken\nc=>d"
+    issues: list[str] = []
+    assert parse_replacements(spec, issues) == parse_replacements(spec)
+    assert len(issues) == 1
+
+
 def _assistant_failure_is_actionable():
     """A failing assistant interrupts a real dictation, so its notification has
     to say what to do — not print the `requests` transport chain. The app's own
@@ -5126,6 +5177,7 @@ _LIGHT_CHECKS = [
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
     ("text replacements", _text_replacements),
+    ("replacement rules report what was skipped", _replacement_rules_report_what_was_skipped),
     ("missing microphone falls back", _missing_microphone_falls_back),
     ("assistant failure is actionable", _assistant_failure_is_actionable),
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
