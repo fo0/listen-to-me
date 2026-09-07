@@ -27,6 +27,16 @@ _SETTLE_POLL_S = 0.01
 # it completes there.
 _INSERT_SETTLE_TIMEOUT_S = 2.0
 
+# How long the transcript stays on the clipboard after Ctrl+V went out, before
+# the previous content is put back. There is no way to observe that the target
+# has serviced WM_PASTE — a local text field reads the clipboard within a few
+# milliseconds, but an RDP/Citrix session or a busy Electron app can take
+# noticeably longer, and one that reads *after* the restore pastes the old
+# clipboard content where the dictation should have gone. Half a second is the
+# cheap half of that trade: the clipboard belongs to the transcript a little
+# longer, and every realistic target has read it by then.
+_PASTE_READ_WINDOW_S = 0.5
+
 
 class ModifierHeldError(RuntimeError):
     """Raised by the insertion paths when a modifier key stayed physically held
@@ -299,7 +309,7 @@ class Injector:
             keyboard.press("v")
             keyboard.release("v")
 
-        time.sleep(0.3)  # let the target application read the clipboard first
+        time.sleep(_PASTE_READ_WINDOW_S)  # let the target read the clipboard first
         if previous:
             try:
                 still_ours = _clip_text_equal(pyperclip.paste(), text)
@@ -313,6 +323,14 @@ class Injector:
             try:
                 # Restore only while the clipboard still holds our transcript.
                 pyperclip.copy(previous)
+                # The one line that says the window was closed. "Pasted the
+                # wrong text" is otherwise indistinguishable from a target
+                # that ignored Ctrl+V, and this is the only place that knows
+                # a restore happened and how long the target had.
+                log.debug(
+                    "restored the previous clipboard %.1fs after Ctrl+V",
+                    _PASTE_READ_WINDOW_S,
+                )
                 return False
             except Exception:
                 # The read-back above proved the transcript IS still there —
