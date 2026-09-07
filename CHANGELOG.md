@@ -14,6 +14,15 @@ changes at a glance.
 
 ### Added
 
+- **The History search finds a date, not just a word.** Every row on
+  Settings → History carries a `YYYY-MM-DD HH:MM` stamp, but the search field
+  only ever looked at the transcript text — and a dictation does not repeat its
+  own date, so "what did I dictate last Friday" was the one obvious question
+  the field could not answer. A term made only of digits, `-` and `:`
+  (`2026-09-05`, `2026-09`, `14:`) is now matched against that stamp as well.
+  Ordinary words are still matched against the text alone, a single digit
+  stays a word, and nothing a query found before stops being found.
+
 - **Text replacements** (Settings → Whisper) — `heard => written` rules applied
   to every finished transcript, one per line. Whisper mis-hears the same domain
   word the same way every time, and the initial prompt only _biases_

@@ -1709,13 +1709,15 @@ class SettingsWindow(QDialog):
         fh.setContentsMargins(0, 0, 0, 0)
         fh.setSpacing(8)
         self.history_filter_edit = QLineEdit()
-        self.history_filter_edit.setPlaceholderText("Search transcripts…  (Ctrl+F)")
+        self.history_filter_edit.setPlaceholderText("Search transcripts or a date…  (Ctrl+F)")
         self.history_filter_edit.setClearButtonEnabled(True)
         # No form-row label to borrow a name from — see the progress bars.
         self.history_filter_edit.setAccessibleName("Search transcripts")
         self.history_filter_edit.setToolTip(
             "Show only transcripts containing these words (in any order, "
-            "upper/lower case ignored). Ctrl+F puts the caret here from "
+            "upper/lower case ignored). A term made of digits, “-” and “:” "
+            "also matches the date and time shown on each row, so “2026-09-05” "
+            "finds that day's dictations. Ctrl+F puts the caret here from "
             "anywhere on this page. Clear the field to see all of them again."
         )
         self.history_filter_edit.textChanged.connect(self._on_history_filter_changed)
@@ -3440,7 +3442,7 @@ class SettingsWindow(QDialog):
             # name the search term and how to get back to the full list.
             # (The export set was already cleared above with these entries.)
             self._history_layout.insertWidget(0, self._hint(
-                f"No transcript contains “{query}”. Clear the search field above "
+                f"No transcript matches “{query}”. Clear the search field above "
                 "to see all of them again."
             ))
             return

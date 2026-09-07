@@ -21,9 +21,42 @@ log = logging.getLogger(__name__)
 DEFAULT_MAX_ENTRIES = 200
 
 
+# The characters a search term may consist of to be matched against an entry's
+# timestamp as well: digits plus the two separators the stamp renders.
+_STAMP_TERM_CHARS = frozenset("0123456789-:")
+
+
+def _is_stamp_term(term: str) -> bool:
+    """Whether `term` reads like a fragment of a ``YYYY-MM-DD HH:MM`` stamp.
+
+    True for "2026-09", "09-05" or "14:" — a term of at least two characters
+    that contains a digit and uses nothing but digits, "-" and ":". Everything
+    else keeps matching the transcript text only.
+
+    The length and digit guards are the point: a bare "9" is far more likely a
+    word from a dictation than a search for September, and matching every term
+    against the stamp would quietly return every transcript of that month for
+    it. A term that looks like a date can still match the text too — the stamp
+    is an additional place to look, never a replacement.
+    """
+    return (
+        len(term) >= 2
+        and any(char.isdigit() for char in term)
+        and all(char in _STAMP_TERM_CHARS for char in term)
+    )
+
+
 def filter_entries(entries: list[dict], query: str) -> list[dict]:
-    """The entries whose text contains every whitespace-separated term of
-    `query`, case-insensitively; an empty query returns `entries` unchanged.
+    """The entries matching every whitespace-separated term of `query`,
+    case-insensitively; an empty query returns `entries` unchanged.
+
+    A term matches when the transcript text contains it — or, for a term that
+    reads like a date or clock fragment (see `_is_stamp_term`), when the
+    entry's rendered ``YYYY-MM-DD HH:MM`` stamp does. Every row on the History
+    page shows that stamp, so "what did I dictate on 2026-09-05" was the one
+    obvious question the search field could not answer; the transcript itself
+    never repeats its own date. Purely additive: a query that matched an entry
+    before still matches it.
 
     Kept here (Qt-free) rather than in the History page so the matching rule is
     testable headlessly. AND over terms, order-independent: a user looking for
@@ -35,7 +68,21 @@ def filter_entries(entries: list[dict], query: str) -> list[dict]:
     matched = []
     for entry in entries:
         text = str(entry.get("text", "")).casefold()
-        if all(term in text for term in terms):
+        # Rendered on demand: only a date-like term ever needs the stamp, and
+        # entry_timestamp() formats one per call.
+        stamp: str | None = None
+        hit = True
+        for term in terms:
+            if term in text:
+                continue
+            if _is_stamp_term(term):
+                if stamp is None:
+                    stamp = entry_timestamp(entry)
+                if term in stamp:
+                    continue
+            hit = False
+            break
+        if hit:
             matched.append(entry)
     return matched
 

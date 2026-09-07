@@ -411,6 +411,49 @@ def _history_search_matching():
     assert filter_entries([{"text": None}], "x") == []
 
 
+def _history_search_matches_the_date():
+    """Searching the History page by the date a transcript carries.
+
+    Every row shows a ``YYYY-MM-DD HH:MM`` stamp, so a date-shaped term is
+    matched against that stamp as well as against the text. The guards matter
+    as much as the feature: an ordinary word must never be matched against the
+    stamp, and no query that found an entry before may stop finding it."""
+    import time as _time
+
+    from listen_to_me.history import _is_stamp_term, entry_timestamp, filter_entries
+
+    # Built from a real local timestamp, because the stamp is rendered in local
+    # time — a hard-coded date string would fail in another time zone.
+    when = _time.mktime((2026, 9, 5, 14, 30, 0, 0, 0, -1))
+    other = _time.mktime((2025, 3, 17, 9, 5, 0, 0, 0, -1))
+    entries = [
+        {"time": when, "text": "Sprint review notes"},
+        {"time": other, "text": "Older dictation about the 2026 budget"},
+    ]
+    day = entry_timestamp(entries[0])[:10]  # "2026-09-05"
+    month = day[:7]  # "2026-09"
+
+    def texts(query):
+        return [e["text"] for e in filter_entries(entries, query)]
+
+    assert texts(day) == [entries[0]["text"]]  # the whole day
+    assert texts(month) == [entries[0]["text"]]  # a month prefix
+    # A date term still matches the text as well — "2026" is written into the
+    # second transcript and is the year of the first.
+    assert len(texts("2026")) == 2
+    # AND over terms holds across the two places: date plus a word.
+    assert texts(f"{day} sprint") == [entries[0]["text"]]
+    assert texts(f"{day} budget") == []
+    # A word is never matched against a stamp, and a single digit is a word.
+    assert _is_stamp_term("2026-09") and _is_stamp_term("14:") and _is_stamp_term("09")
+    assert not _is_stamp_term("9") and not _is_stamp_term("-") and not _is_stamp_term("--")
+    assert not _is_stamp_term("v2026-09") and not _is_stamp_term("")
+    # An entry whose timestamp cannot be rendered keeps working: it simply has
+    # no stamp to match, and must not raise out of the search.
+    assert filter_entries([{"time": "junk", "text": "kept"}], day) == []
+    assert filter_entries([{"time": "junk", "text": "kept"}], "kept")[0]["text"] == "kept"
+
+
 def _recording_length_warning():
     """The heads-up before the maximum recording length: exactly once, only in
     the closing seconds, never for a cap that is short on purpose, and never an
@@ -5077,6 +5120,7 @@ _LIGHT_CHECKS = [
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
+    ("history search matches the date", _history_search_matches_the_date),
     ("history deletes one entry", _history_delete_one_entry),
     ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
