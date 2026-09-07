@@ -7,7 +7,9 @@ OpenWebUI, or a hosted API.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
 
 from . import netutil
 from .config import clamp_setting
@@ -19,9 +21,46 @@ log = logging.getLogger(__name__)
 _TIMEOUT_RANGE = (5, 600)
 _TEMPERATURE_RANGE = (0.0, 2.0)
 
+# How much of a response is ever read, and in which pieces. `requests`' own
+# `timeout` bounds a single socket read, not the transfer, and `Response.json()`
+# buffers a body of any size — so an endpoint that dribbles one byte every few
+# seconds, or answers with a gigabyte, never trips the timeout and parks the
+# `process` worker thread for good. `App.state` then stays "processing" until
+# the app is restarted, and every hotkey press until then is refused. The
+# configured timeout therefore doubles as a wall clock over the whole read.
+# 1 MiB is far above a refined dictation (a few KiB) and far below anything
+# that could exhaust memory.
+_MAX_RESPONSE_BYTES = 1024 * 1024
+_READ_CHUNK_BYTES = 8192
+
 
 class AssistantError(RuntimeError):
     pass
+
+
+def _read_body(response, deadline: float) -> bytes:
+    """The response body, capped at `_MAX_RESPONSE_BYTES` and given up on once
+    `deadline` (a `time.monotonic()` value) has passed.
+
+    Both limits raise `AssistantError`, which is what the caller in
+    ``app._process`` already turns into "assistant failed" plus the raw
+    transcript — the dictation still lands at the cursor.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    for chunk in response.iter_content(_READ_CHUNK_BYTES):
+        if chunk:
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > _MAX_RESPONSE_BYTES:
+                raise AssistantError(
+                    f"the assistant response exceeded {_MAX_RESPONSE_BYTES // 1024} KiB"
+                )
+        # Checked per chunk, including the empty keep-alive ones: a stalled
+        # transfer is exactly a stream that keeps arriving without finishing.
+        if time.monotonic() > deadline:
+            raise AssistantError("the assistant did not finish its response in time")
+    return b"".join(chunks)
 
 
 def config_problem(acfg: dict) -> tuple[str, str] | None:
@@ -125,15 +164,31 @@ def refine(text: str, acfg: dict) -> str:
             {"role": "user", "content": text},
         ],
     }
+    deadline = time.monotonic() + float(timeout)
     response = requests.post(
         url,
         json=payload,
         headers=headers,
         timeout=float(timeout),
         verify=netutil.verify(),
+        # Streamed on purpose: it is what makes the body boundable in size and
+        # against the deadline (see _read_body). Without it requests buffers
+        # the whole response before this line returns.
+        stream=True,
     )
-    response.raise_for_status()
-    data = response.json()
+    try:
+        response.raise_for_status()
+        raw = _read_body(response, deadline)
+    finally:
+        response.close()
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError as exc:
+        # An HTML error page from a reverse proxy, or a base_url pointing at
+        # something that is not an API at all. `requests` raised its own
+        # decode error here before; naming it as an assistant problem keeps
+        # the notification actionable.
+        raise AssistantError(f"the assistant did not return JSON: {raw[:200]!r}") from exc
     try:
         result = data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError, AttributeError) as exc:

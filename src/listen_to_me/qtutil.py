@@ -1,7 +1,8 @@
 """Small Qt helpers: bridge the Pillow-drawn icons (icons.py) into Qt
 pixmaps/icons, the wheel guard for value widgets on scrollable pages, the
 Return guard for search fields inside a dialog, the width cap for combo
-boxes with unbounded item texts, and the one clipboard
+boxes with unbounded item texts, the font-derived height for boxes that
+should show a fixed number of lines, and the one clipboard
 path every "Copy" in the app uses — plus the button feedback that reports how
 that copy went, and the generic on-the-button confirmation every one-shot
 action uses.
@@ -150,6 +151,22 @@ def elastic_label(*labels, min_chars: int = 24) -> None:
         policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
         label.setSizePolicy(policy)
         label.setMinimumWidth(min_chars * label.fontMetrics().averageCharWidth())
+
+
+def text_rows_height(widget, rows: int, *, extra: int = 12) -> int:
+    """A pixel height that holds `rows` lines of `widget`'s own font.
+
+    A hard `setFixedHeight(80)` is four lines at the default font and two at
+    150 % text scaling: everything the user types past that is reachable only
+    by scrolling a box that looks like it should show it. Reading the height
+    off the widget's own `fontMetrics()` keeps the box the same *number of
+    lines* whatever the font, which is what the layout was drawn for.
+
+    `extra` covers the frame and the document margin a QPlainTextEdit adds
+    around its lines — a couple of pixels either way is invisible, a clipped
+    last line is not.
+    """
+    return widget.fontMetrics().lineSpacing() * max(1, rows) + extra
 
 
 def copy_to_clipboard(text: str) -> bool:

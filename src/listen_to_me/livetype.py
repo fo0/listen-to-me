@@ -123,8 +123,13 @@ class LiveTyper:
         Called right after the join: from here on the worker types nothing, not
         even if it outlived the join timeout in a hung decode/injection and
         resumes afterwards — it would type its `pending` a second time
-        otherwise (duplicate words). Blocks for at most one in-flight flush, so
-        the returned state is never read mid-write.
+        otherwise (duplicate words).
+
+        Never waits on the keyboard: `_flush_pending` types outside
+        `_hand_lock`, so this returns immediately even while a burst is still
+        going out — the callers are the Qt main thread. Text that is out at
+        that moment is not returned here (and not typed a second time either);
+        `_flush_pending` explains why that is the right way round.
         """
         with self._hand_lock:
             self._handed_over = True
@@ -204,18 +209,40 @@ class LiveTyper:
         """Type whatever is committed but not yet typed. Leaves the rest in
         `pending` when a held modifier interrupts — retried next tick, and
         app._process picks up any final leftover (and owns it exclusively once
-        hand_over() ran)."""
+        hand_over() ran).
+
+        The text is taken out of `pending` under `_hand_lock` and typed
+        *outside* it. `type_plain` is one keyboard round trip per character, so
+        holding the lock across it made every hand_over() caller wait for the
+        whole burst — and all three of them run on the Qt main thread
+        (`App._finish_recording`, `App._cancel_recording`, `App._quit`), so a
+        200-character chunk froze the GUI for its duration and a blocked
+        SendInput (a UAC secure desktop owning the input queue) hung the app
+        outright, quit included.
+
+        The trade-off is deliberate: a hand_over() landing while the text is
+        out returns without it. Only the worker could say how much of the burst
+        already reached the keyboard, and typing that part a second time from
+        app._process is the one thing append-only live typing must never do
+        (see hand_over). Nothing is lost from the transcript either way —
+        `committed_text` carries the whole chunk into the final text, the
+        history and the notification.
+        """
         with self._hand_lock:
             if self._handed_over:
                 return  # app._process owns the remaining text now
             if not self.pending:
                 return
-            text = (" " if self.typed_any else "") + self.pending
-            try:
-                rest = self.app.injector.type_plain(text)
-            except Exception:
-                log.exception("live typing: keyboard injection failed — keeping text pending")
-                return
+            claimed, self.pending = self.pending, ""
+            text = (" " if self.typed_any else "") + claimed
+        try:
+            rest = self.app.injector.type_plain(text)
+        except Exception:
+            log.exception("live typing: keyboard injection failed — keeping text pending")
+            rest = text
+        with self._hand_lock:
+            if self._handed_over:
+                return  # handed over mid-burst — see the docstring
             if rest != text:
                 self.typed_any = True
-            self.pending = rest.lstrip(" ")
+            self.pending = _join(rest.lstrip(" "), self.pending)

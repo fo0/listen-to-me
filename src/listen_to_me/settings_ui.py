@@ -10,7 +10,13 @@ import time
 import webbrowser
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor, QTextDocument
+from PySide6.QtGui import (
+    QGuiApplication,
+    QKeySequence,
+    QShortcut,
+    QTextCursor,
+    QTextDocument,
+)
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QButtonGroup,
@@ -56,6 +62,7 @@ from .choices import (
     OPENVINO_DEVICES,
     OPENVINO_PRECISIONS,
     PARAKEET_QUANTIZATIONS,
+    SYSTEM_DEFAULT_DEVICE,
     backend_from_label,
     backend_label,
     clipboard_copy_from_label,
@@ -85,6 +92,7 @@ from .qtutil import (
     flash_button,
     guard_wheel,
     keep_return_in_field,
+    text_rows_height,
 )
 from .widgets import HotkeyCaptureDialog
 
@@ -348,6 +356,12 @@ class SettingsWindow(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.resize(980, 720)
         self.setMinimumSize(840, 600)
+        # Both are desktop-monitor sizes; showEvent brings them down to what
+        # the screen actually offers (see _clamp_to_screen).
+        self._screen_clamped = False
+        # Whether input_combo holds the enumerated devices or only the
+        # placeholder (see _load_devices / _selected_input_device).
+        self._devices_loaded = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -502,6 +516,7 @@ class SettingsWindow(QDialog):
         self._home_index = self._page_index["Home"]
         self._history_index = self._page_index["History"]
         self._engine_index = self._page_index["Engine"]
+        self._audio_index = self._page_index["Audio"]
         self._updates_index = self._page_index["Updates"]
         self._help_index = self._page_index["Help"]
         self.nav.currentRowChanged.connect(self._on_page_changed)
@@ -1317,7 +1332,7 @@ class SettingsWindow(QDialog):
             "It biases recognition — it is NOT an instruction prompt."
         )
         self.initial_prompt_edit.setAccessibleName("Initial prompt (domain vocabulary hint)")
-        self.initial_prompt_edit.setFixedHeight(80)
+        self.initial_prompt_edit.setFixedHeight(text_rows_height(self.initial_prompt_edit, 4))
         pv.addWidget(self.initial_prompt_edit)
         pv.addWidget(self._hint(
             "Biases recognition towards these words — it is not an instruction "
@@ -1339,7 +1354,7 @@ class SettingsWindow(QDialog):
         )
         self.replacements_edit.setAccessibleName("Text replacements")
         self.replacements_edit.setPlaceholderText("cuber netes => Kubernetes\nposgres => PostgreSQL")
-        self.replacements_edit.setFixedHeight(80)
+        self.replacements_edit.setFixedHeight(text_rows_height(self.replacements_edit, 4))
         rv.addWidget(self.replacements_edit)
         # A mistyped rule (“->” instead of “=>”, an empty left-hand side) was
         # skipped into the log file and nowhere else: the field looked exactly
@@ -1418,7 +1433,15 @@ class SettingsWindow(QDialog):
         refresh.clicked.connect(self._rescan_devices)
         dh.addWidget(refresh)
         form.addRow("Input device:", device_row)
-        self._load_devices()
+        # Not enumerated here: input_device_choices() goes through PortAudio,
+        # which the Home page already documents as able to stall for hundreds
+        # of ms, and this runs while the window is still being constructed —
+        # before anything is on screen. The real list is loaded the first time
+        # the Audio page is opened (see _on_page_changed); until then the
+        # dropdown shows the placeholder and _selected_input_device() answers
+        # from the config, so saving without ever visiting this page writes
+        # back the device that is stored.
+        self.input_combo.addItem(SYSTEM_DEFAULT_DEVICE)
 
         self.max_seconds_spin = QSpinBox()
         self.max_seconds_spin.setRange(10, 3600)
@@ -1705,7 +1728,7 @@ class SettingsWindow(QDialog):
             "whatever the model returns is inserted instead of the raw transcript."
         )
         self.a_prompt_edit.setAccessibleName("Assistant system prompt")
-        self.a_prompt_edit.setMinimumHeight(160)
+        self.a_prompt_edit.setMinimumHeight(text_rows_height(self.a_prompt_edit, 8))
         pv.addWidget(self.a_prompt_edit)
         layout.addWidget(prompt, 1)
 
@@ -2061,6 +2084,17 @@ class SettingsWindow(QDialog):
         # Build the transcript rows only when the History page is first shown.
         if index == self._history_index and not self._history_rendered:
             self._refresh_history()
+        # Enumerate the microphones the first time the Audio page is shown —
+        # PortAudio can stall, and at construction time nothing is on screen
+        # yet to explain the wait.
+        if index == self._audio_index and not self._devices_loaded:
+            self._load_devices()
+            # The deferred load can land on a different value than the config
+            # holds: a configured microphone that is currently unplugged
+            # resolves to "System default". Nobody edited anything, so the
+            # snapshot has to follow, or merely opening the Audio page and
+            # closing the window would ask about unsaved changes.
+            self._saved_snapshot["input_device"] = self._selected_input_device()
         if index == self._engine_index:
             # Every visit: a recording since the last look may have loaded the
             # model, and this is a property read, not a probe.
@@ -2138,8 +2172,9 @@ class SettingsWindow(QDialog):
         # Refresh keeps an unsaved on-screen choice: repopulating from the
         # saved config would silently revert the device the user just picked.
         stored = self.cfg["input_device"]
-        if self.input_combo.count():
+        if self._devices_loaded and self.input_combo.count():
             stored = self._selected_input_device()
+        self._devices_loaded = True
         values, current = input_device_choices(stored)
         self.input_combo.clear()
         self.input_combo.addItems(values)
@@ -3026,7 +3061,7 @@ class SettingsWindow(QDialog):
 
         self.update_list = QListWidget()
         self.update_list.setAccessibleName("Available releases")
-        self.update_list.setMaximumHeight(140)
+        self.update_list.setMaximumHeight(text_rows_height(self.update_list, 7))
         self.update_list.currentRowChanged.connect(self._on_release_selected)
         self.update_list.setToolTip(
             "Newer releases, newest first. Pick one to read its changelog — you can jump "
@@ -3995,6 +4030,22 @@ class SettingsWindow(QDialog):
         self._model_index = row
 
     def _selected_input_device(self):
+        """The configured input device index, or None for "System default".
+
+        Reads the dropdown only once it holds the real device list. Before
+        that it shows a placeholder, and answering from it would report
+        "System default" for a window whose Audio page was never opened —
+        Save would then quietly drop the user's microphone.
+        """
+        if not self._devices_loaded:
+            stored = self.cfg["input_device"]
+            # `input_device` defaults to None, and config.py passes a key with a
+            # None default through untouched — so a hand-edited "abc" would be
+            # written straight back. An index or nothing is what the rest of the
+            # app reads, exactly like input_device_from_label returns.
+            if isinstance(stored, bool) or not isinstance(stored, int):
+                return None
+            return stored
         return input_device_from_label(self.input_combo.currentText())
 
     # -------------------------------------------------------- save / apply
@@ -4225,6 +4276,47 @@ class SettingsWindow(QDialog):
         swap waiting for the process to exit, until someone answers it."""
         self._force_close = True
         self.close()
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().showEvent(event)
+        # Only on the way in, and only once: the user is free to drag the
+        # window bigger than its screen afterwards, and re-clamping on every
+        # show would undo that.
+        if not self._screen_clamped:
+            self._screen_clamped = True
+            self._clamp_to_screen()
+
+    def _clamp_to_screen(self) -> None:
+        """Keep the window inside the screen it opens on.
+
+        The 980×720 default and the 840×600 minimum are sized for a desktop
+        monitor. A 1366×768 laptop at 125 % scaling reports 614 logical pixels
+        of usable height, so both push the bottom of the window — and with it
+        the Save/Cancel row — under the taskbar, where it cannot be reached.
+        The minimum has to come down with it: Qt does not honour a resize
+        below its own minimum.
+
+        Height only, deliberately. The pages sit in scroll areas, so a window
+        shorter than its content costs a scroll and nothing else, while a
+        window narrower than the 840 the forms are laid out for clips them
+        outright — the worse of the two on a screen that is genuinely too
+        small either way.
+
+        Best effort by design: `screen()` only names a screen once the window
+        has been mapped, which is why this runs from showEvent and returns
+        without doing anything when Qt cannot name one.
+        """
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        max_h = screen.availableGeometry().height()
+        if max_h <= 0:
+            return
+        if self.minimumHeight() > max_h:
+            self.setMinimumSize(self.minimumWidth(), max_h)
+        if self.height() > max_h:
+            log.info("settings window height clamped to the available %dpx", max_h)
+            self.resize(self.width(), max_h)
 
     def reject(self) -> None:
         """Cancel / Esc / the window's close button: confirm before silently
