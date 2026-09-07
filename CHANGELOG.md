@@ -14,6 +14,32 @@ changes at a glance.
 
 ### Added
 
+- **The Text replacements field says which of its rules took effect.** A rule
+  with a typo — an arrow written as `->`, a line with nothing on its left-hand
+  side — was skipped with a warning that only ever reached the log file, so
+  the field looked exactly like one whose rules all work and the next
+  uncorrected dictation was the first hint. A line under the field now counts
+  the active rules and names the ignored ones while they are being typed
+  (`2 rules active · 1 line ignored: line 4 has no “=>”.`), capped at three
+  named lines plus a count so a pasted-in list of junk stays one line.
+
+- **Copy all** on the History page — puts every transcript the list currently
+  shows on the clipboard in one block, newest first and each with its date,
+  which is exactly what **Export…** would have written to a file. The search
+  filter applies to both, so a handful of dictations found by a word or a date
+  goes straight into a mail or a note; before this, getting more than one
+  transcript out meant exporting to a file and opening it, or pressing the
+  per-row **Copy** button once per transcript.
+
+- **The History search finds a date, not just a word.** Every row on
+  Settings → History carries a `YYYY-MM-DD HH:MM` stamp, but the search field
+  only ever looked at the transcript text — and a dictation does not repeat its
+  own date, so "what did I dictate last Friday" was the one obvious question
+  the field could not answer. A term made only of digits, `-` and `:`
+  (`2026-09-05`, `2026-09`, `14:`) is now matched against that stamp as well.
+  Ordinary words are still matched against the text alone, a single digit
+  stays a word, and nothing a query found before stops being found.
+
 - **Text replacements** (Settings → Whisper) — `heard => written` rules applied
   to every finished transcript, one per line. Whisper mis-hears the same domain
   word the same way every time, and the initial prompt only _biases_

@@ -411,6 +411,49 @@ def _history_search_matching():
     assert filter_entries([{"text": None}], "x") == []
 
 
+def _history_search_matches_the_date():
+    """Searching the History page by the date a transcript carries.
+
+    Every row shows a ``YYYY-MM-DD HH:MM`` stamp, so a date-shaped term is
+    matched against that stamp as well as against the text. The guards matter
+    as much as the feature: an ordinary word must never be matched against the
+    stamp, and no query that found an entry before may stop finding it."""
+    import time as _time
+
+    from listen_to_me.history import _is_stamp_term, entry_timestamp, filter_entries
+
+    # Built from a real local timestamp, because the stamp is rendered in local
+    # time — a hard-coded date string would fail in another time zone.
+    when = _time.mktime((2026, 9, 5, 14, 30, 0, 0, 0, -1))
+    other = _time.mktime((2025, 3, 17, 9, 5, 0, 0, 0, -1))
+    entries = [
+        {"time": when, "text": "Sprint review notes"},
+        {"time": other, "text": "Older dictation about the 2026 budget"},
+    ]
+    day = entry_timestamp(entries[0])[:10]  # "2026-09-05"
+    month = day[:7]  # "2026-09"
+
+    def texts(query):
+        return [e["text"] for e in filter_entries(entries, query)]
+
+    assert texts(day) == [entries[0]["text"]]  # the whole day
+    assert texts(month) == [entries[0]["text"]]  # a month prefix
+    # A date term still matches the text as well — "2026" is written into the
+    # second transcript and is the year of the first.
+    assert len(texts("2026")) == 2
+    # AND over terms holds across the two places: date plus a word.
+    assert texts(f"{day} sprint") == [entries[0]["text"]]
+    assert texts(f"{day} budget") == []
+    # A word is never matched against a stamp, and a single digit is a word.
+    assert _is_stamp_term("2026-09") and _is_stamp_term("14:") and _is_stamp_term("09")
+    assert not _is_stamp_term("9") and not _is_stamp_term("-") and not _is_stamp_term("--")
+    assert not _is_stamp_term("v2026-09") and not _is_stamp_term("")
+    # An entry whose timestamp cannot be rendered keeps working: it simply has
+    # no stamp to match, and must not raise out of the search.
+    assert filter_entries([{"time": "junk", "text": "kept"}], day) == []
+    assert filter_entries([{"time": "junk", "text": "kept"}], "kept")[0]["text"] == "kept"
+
+
 def _recording_length_warning():
     """The heads-up before the maximum recording length: exactly once, only in
     the closing seconds, never for a cap that is short on purpose, and never an
@@ -481,6 +524,57 @@ def _text_replacements():
     assert apply_replacements("", "a => b") == ""
     for junk in (None, "no separator here", "   ", "=>", "\n\n#\n"):
         assert apply_replacements("keep me", junk) == "keep me"
+
+
+def _replacement_rules_report_what_was_skipped():
+    """The line the Settings page shows under the Text replacements field.
+
+    A mistyped rule used to be dropped with a log warning only, so the field
+    looked exactly like one whose rules all work. The status names how many
+    rules are in force and which lines were thrown away — and collecting them
+    must not change what parse_replacements returns."""
+    from listen_to_me.app import (
+        _MAX_REPLACEMENT_RULES,
+        _MAX_REPORTED_ISSUES,
+        describe_replacements,
+        parse_replacements,
+    )
+
+    # An untouched field says nothing — the placeholder explains the syntax.
+    for empty in ("", "   ", None, "# only a comment\n\n"):
+        assert describe_replacements(empty) == ""
+
+    # All good: the count, and nothing else.
+    assert describe_replacements("a => b") == "1 rule active."
+    assert describe_replacements("a => b\nc => d") == "2 rules active."
+
+    # The two ways a line is thrown away, each naming its line number.
+    one_bad = describe_replacements("a => b\nposgres -> PostgreSQL")
+    assert one_bad.startswith("1 rule active · 1 line ignored:")
+    assert "line 2 has no “=>”" in one_bad
+    two_bad = describe_replacements("broken\n=> nothing to find\na => b")
+    assert "2 lines ignored" in two_bad and "line 1" in two_bad and "line 2" in two_bad
+    # Blank lines and comments are not "ignored lines" — they are syntax.
+    assert describe_replacements("# note\n\na => b") == "1 rule active."
+
+    # A pasted list of junk stays one line: the first few are named, the rest counted.
+    many = describe_replacements("\n".join(f"bad line {n}" for n in range(1, 9)))
+    assert "8 lines ignored" in many and "and 5 more" in many
+    for named in range(1, _MAX_REPORTED_ISSUES + 1):
+        assert f"line {named} has" in many
+    assert f"line {_MAX_REPORTED_ISSUES + 1} has" not in many  # counted, not named
+
+    # The cap is its own sentence rather than an "ignored line" — the parser
+    # stops at it and cannot know how many lines followed.
+    capped = describe_replacements("\n".join(f"w{n} => x" for n in range(_MAX_REPLACEMENT_RULES + 5)))
+    assert capped == f"{_MAX_REPLACEMENT_RULES} rules active. Only the first {_MAX_REPLACEMENT_RULES} rules are used."
+
+    # The issue list is append-only bookkeeping: the rules are the same with
+    # and without it, which is what lets the status share the parser.
+    spec = "a => b\nbroken\nc=>d"
+    issues: list[str] = []
+    assert parse_replacements(spec, issues) == parse_replacements(spec)
+    assert len(issues) == 1
 
 
 def _assistant_failure_is_actionable():
@@ -4230,16 +4324,21 @@ def _gui_construction():
         assert "1 of 2" in window.history_count_label.text()
         window.history_filter_edit.setText("nothing-matches-this")
         window._refresh_history()
-        assert "No transcript contains" in _history_text()
+        # "matches", not "contains": a term can now match the row's date as
+        # well as its text, so the empty state must not promise otherwise.
+        assert "No transcript matches" in _history_text()
         assert window.history_clear_button.isEnabled()  # entries exist, only hidden
-        # "Export…" writes what is listed, so a filtered-to-empty list has
-        # nothing to write — an enabled button would produce an empty file.
+        # "Export…" writes what is listed and "Copy all" copies it, so a
+        # filtered-to-empty list has nothing to hand out — an enabled Export
+        # would produce an empty file, an enabled Copy all a silent no-op.
         assert not window.history_export_button.isEnabled()
+        assert not window.history_copy_all_button.isEnabled()
         window.history_filter_edit.clear()
         window._refresh_history()
         assert "2 transcripts" in window.history_count_label.text()
         assert "A stored transcript" in _history_text()
         assert window.history_export_button.isEnabled()
+        assert window.history_copy_all_button.isEnabled()
         assert len(window._history_export_entries) == 2
 
         # Ctrl+F reaches the search field from anywhere on this page — the key
@@ -4280,6 +4379,7 @@ def _gui_construction():
             window._refresh_history()
             assert not window.history_clear_button.isEnabled()
             assert not window.history_export_button.isEnabled()
+            assert not window.history_copy_all_button.isEnabled()
             assert "No transcripts yet" in _history_text()
 
             # The Home page renders the same store, and used to promise "your
@@ -4326,6 +4426,22 @@ def _gui_construction():
         assert window.model_combo.isEnabled() and window.chk_live_typing.isEnabled()
         assert "Parakeet" not in window._speech_hint.text()
         assert window._live_typing_hint.isHidden()
+
+        # The Text replacements field reports what its rules actually do, live
+        # while they are typed. An untouched field stays silent, a working rule
+        # is counted, and a mistyped one is named instead of being dropped into
+        # the log file only — which is the whole point of the line.
+        window.replacements_edit.setPlainText("")
+        assert window.replacements_status.isHidden()
+        window.replacements_edit.setPlainText("posgres => PostgreSQL")
+        assert not window.replacements_status.isHidden()
+        assert window.replacements_status.text() == "1 rule active."
+        window.replacements_edit.setPlainText("posgres => PostgreSQL\ncuber netes -> Kubernetes")
+        status = window.replacements_status.text()
+        assert "1 rule active" in status and "line 2 has no “=>”" in status, status
+        # Announced with the field, not only as a label beside it.
+        assert window.replacements_edit.accessibleDescription() == status
+        window.replacements_edit.setPlainText("")
 
         # Live typing + hold mode + a modifier chord (or a bare character key):
         # App skips live typing for such a take with nothing but a log line.
@@ -5077,11 +5193,13 @@ _LIGHT_CHECKS = [
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
+    ("history search matches the date", _history_search_matches_the_date),
     ("history deletes one entry", _history_delete_one_entry),
     ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
     ("text replacements", _text_replacements),
+    ("replacement rules report what was skipped", _replacement_rules_report_what_was_skipped),
     ("missing microphone falls back", _missing_microphone_falls_back),
     ("assistant failure is actionable", _assistant_failure_is_actionable),
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),

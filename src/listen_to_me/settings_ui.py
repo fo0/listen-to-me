@@ -1341,6 +1341,16 @@ class SettingsWindow(QDialog):
         self.replacements_edit.setPlaceholderText("cuber netes => Kubernetes\nposgres => PostgreSQL")
         self.replacements_edit.setFixedHeight(80)
         rv.addWidget(self.replacements_edit)
+        # A mistyped rule (“->” instead of “=>”, an empty left-hand side) was
+        # skipped into the log file and nowhere else: the field looked exactly
+        # like one whose rules all work, and the next dictation that came out
+        # uncorrected was the first hint. This line says how many rules are in
+        # force and names the lines that were thrown away, while they are being
+        # typed. `elastic` because it is composed at runtime.
+        self.replacements_status = self._hint("", elastic=True)
+        rv.addWidget(self.replacements_status)
+        self.replacements_edit.textChanged.connect(self._refresh_replacements_status)
+        self._refresh_replacements_status()
         rv.addWidget(self._hint(
             "Applied to every finished transcript, in order, after the assistant — "
             "so a word this speaker always gets wrong is corrected before the text "
@@ -1359,6 +1369,29 @@ class SettingsWindow(QDialog):
 
         layout.addStretch(1)
         return page
+
+    def _refresh_replacements_status(self) -> None:
+        """Re-render the line under the Text replacements field.
+
+        Runs on every keystroke: `describe_replacements` walks the lines the
+        field holds and compiles nothing, and the list is capped at a few
+        hundred rules — cheap enough that a debounce timer would only add a way
+        for the status to be stale. Imported inside the method rather than at
+        module level because `app` imports this module.
+
+        The same sentence goes on the field's accessible description: a hint
+        that is a sibling label is not announced together with the widget it
+        describes, and this one is the only feedback there is about which of
+        the typed rules actually took.
+        """
+        from .app import describe_replacements
+
+        status = describe_replacements(self.replacements_edit.toPlainText())
+        self.replacements_status.setText(status)
+        # Hidden rather than left empty, so the card does not keep a blank
+        # line's worth of space for a field nobody has written in yet.
+        self.replacements_status.setVisible(bool(status))
+        self.replacements_edit.setAccessibleDescription(status)
 
     def _build_audio(self, title: str) -> QWidget:
         page, layout = self._page(title)
@@ -1709,13 +1742,15 @@ class SettingsWindow(QDialog):
         fh.setContentsMargins(0, 0, 0, 0)
         fh.setSpacing(8)
         self.history_filter_edit = QLineEdit()
-        self.history_filter_edit.setPlaceholderText("Search transcripts…  (Ctrl+F)")
+        self.history_filter_edit.setPlaceholderText("Search transcripts or a date…  (Ctrl+F)")
         self.history_filter_edit.setClearButtonEnabled(True)
         # No form-row label to borrow a name from — see the progress bars.
         self.history_filter_edit.setAccessibleName("Search transcripts")
         self.history_filter_edit.setToolTip(
             "Show only transcripts containing these words (in any order, "
-            "upper/lower case ignored). Ctrl+F puts the caret here from "
+            "upper/lower case ignored). A term made of digits, “-” and “:” "
+            "also matches the date and time shown on each row, so “2026-09-05” "
+            "finds that day's dictations. Ctrl+F puts the caret here from "
             "anywhere on this page. Clear the field to see all of them again."
         )
         self.history_filter_edit.textChanged.connect(self._on_history_filter_changed)
@@ -1749,10 +1784,19 @@ class SettingsWindow(QDialog):
         # the filter for the export.
         self.history_export_button = QPushButton("Export…")
         self.history_export_button.clicked.connect(self._export_history)
-        # Disabled until the first render says there is something to write —
-        # the page builds before the list is rendered (it is lazy).
-        self._set_history_export([], "")
         bottom.addWidget(self.history_export_button)
+        # The same set, one keystroke away instead of through a file: a
+        # searched-down handful of transcripts usually wants to land in a mail
+        # or a note, and until now that meant Export… → pick a folder → name a
+        # file → open it → copy from there, or the per-row Copy button once per
+        # transcript.
+        self.history_copy_all_button = QPushButton("Copy all")
+        self.history_copy_all_button.clicked.connect(self._copy_all_history)
+        bottom.addWidget(self.history_copy_all_button)
+        # Disabled until the first render says there is something to write —
+        # the page builds before the list is rendered (it is lazy). Set after
+        # both buttons exist, because it labels and enables them together.
+        self._set_history_export([], "")
         bottom.addStretch(1)
         # Enabled state is set by _refresh_history, which always runs before this
         # page can be reached (lazy first render): clicking it on an empty
@@ -3440,7 +3484,7 @@ class SettingsWindow(QDialog):
             # name the search term and how to get back to the full list.
             # (The export set was already cleared above with these entries.)
             self._history_layout.insertWidget(0, self._hint(
-                f"No transcript contains “{query}”. Clear the search field above "
+                f"No transcript matches “{query}”. Clear the search field above "
                 "to see all of them again."
             ))
             return
@@ -3520,30 +3564,69 @@ class SettingsWindow(QDialog):
         copy_with_feedback(text, button)
 
     def _set_history_export(self, entries: list[dict], query: str) -> None:
-        """Remember what an export would write and label the button after it.
+        """Remember what an export would write and label both buttons after it.
 
-        Kept in step with the rendered list from one place, so "Export…" can
-        never write a different set of transcripts than the one on screen —
-        including the filtered one, which is what makes the search field
-        useful for exporting a single project's dictations.
+        Kept in step with the rendered list from one place, so neither
+        "Export…" nor "Copy all" can ever hand out a different set of
+        transcripts than the one on screen — including the filtered one, which
+        is what makes the search field useful for exporting or copying a single
+        project's dictations.
         """
         self._history_export_entries = list(entries)
         self.history_export_button.setEnabled(bool(entries))
+        self.history_copy_all_button.setEnabled(bool(entries))
         if not entries:
             self.history_export_button.setToolTip(
                 "Nothing to export — no transcript is listed."
             )
+            self.history_copy_all_button.setToolTip(
+                "Nothing to copy — no transcript is listed."
+            )
         elif query:
+            plural = "s" if len(entries) != 1 else ""
             self.history_export_button.setToolTip(
-                f"Save the {len(entries)} matching transcript"
-                f"{'s' if len(entries) != 1 else ''} to a text file. "
-                "Clear the search field to export all of them."
+                f"Save the {len(entries)} matching transcript{plural} to a text "
+                "file. Clear the search field to export all of them."
+            )
+            self.history_copy_all_button.setToolTip(
+                f"Copy the {len(entries)} matching transcript{plural} to the "
+                "clipboard as one block, newest first, each with its date. "
+                "Clear the search field to copy all of them."
             )
         else:
+            plural = "s" if len(entries) != 1 else ""
             self.history_export_button.setToolTip(
-                f"Save all {len(entries)} transcript"
-                f"{'s' if len(entries) != 1 else ''} to a text file, newest first."
+                f"Save all {len(entries)} transcript{plural} to a text file, newest first."
             )
+            self.history_copy_all_button.setToolTip(
+                f"Copy all {len(entries)} transcript{plural} to the clipboard as "
+                "one block, newest first, each with its date."
+            )
+
+    def _copy_all_history(self) -> None:
+        """Put every listed transcript on the clipboard in one block.
+
+        The same set and the same rendering as "Export…" (`format_entries`), so
+        the two can never disagree about what "the listed transcripts" means —
+        only the destination differs. Reports a failed clipboard write on the
+        button itself, like every other Copy in this window.
+        """
+        entries = list(self._history_export_entries)
+        if not entries:
+            return
+        from .history import format_entries
+
+        text = format_entries(entries)
+        if not text:
+            # Every listed entry had empty text — possible only for a
+            # hand-edited history file, and a silent no-op would read as a
+            # broken button.
+            QMessageBox.warning(
+                self, APP_NAME, "The listed transcripts contain no text to copy."
+            )
+            return
+        if copy_with_feedback(text, self.history_copy_all_button, label="Copy all"):
+            log.info("copied %d transcripts to the clipboard", len(entries))
 
     def _export_history(self) -> None:
         """Write the listed transcripts to a text file the user picks.

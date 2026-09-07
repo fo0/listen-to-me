@@ -81,9 +81,13 @@ def length_warning_message(
 # Hard cap on the rule list. A hand-edited config is untrusted input, and the
 # rules are compiled and applied after every single dictation.
 _MAX_REPLACEMENT_RULES = 500
+# How many skipped lines describe_replacements names before it counts the rest:
+# the status is one line under a text field, and a rule list pasted in from
+# somewhere else can have dozens of bad lines.
+_MAX_REPORTED_ISSUES = 3
 
 
-def parse_replacements(spec: str) -> list[tuple[str, str]]:
+def parse_replacements(spec: str, issues: list[str] | None = None) -> list[tuple[str, str]]:
     """The `find => replace` rules in `spec`, in the order they are written.
 
     One rule per line. Blank lines and lines starting with `#` are comments; a
@@ -91,6 +95,15 @@ def parse_replacements(spec: str) -> list[tuple[str, str]]:
     failing the list, because this is hand-edited text and one typo must not
     cost the other rules. An empty right-hand side is allowed on purpose — it
     deletes the word (a stock filler this speaker never wants written out).
+
+    Pass a list as `issues` to collect the lines that were skipped, as short
+    phrases naming each one ("line 4 has no “=>”"). The skips only ever reached
+    the log file, which is not where anyone editing the rules is looking — see
+    `describe_replacements`, the one caller that wants them. The list is
+    appended to and never read here, so the rules a call returns are exactly
+    the same with and without it. Only per-line problems land in it; hitting
+    the rule cap is not one of them, and `describe_replacements` reports that
+    from the rule count instead.
 
     Qt-free and side-effect free so the rule syntax is testable headlessly.
     """
@@ -101,17 +114,55 @@ def parse_replacements(spec: str) -> list[tuple[str, str]]:
             continue
         if "=>" not in line:
             log.warning("replacement rule on line %d has no “=>” separator, ignored: %.60r", number, line)
+            if issues is not None:
+                issues.append(f"line {number} has no “=>”")
             continue
         find, replace = line.split("=>", 1)
         find = find.strip()
         if not find:
             log.warning("replacement rule on line %d has an empty search term, ignored", number)
+            if issues is not None:
+                issues.append(f"line {number} has nothing to search for")
             continue
         rules.append((find, replace.strip()))
         if len(rules) >= _MAX_REPLACEMENT_RULES:
             log.warning("more than %d replacement rules — the rest is ignored", _MAX_REPLACEMENT_RULES)
             break
     return rules
+
+
+def describe_replacements(spec: str) -> str:
+    """The one-line status for the Text replacements field: how many rules are
+    in force, and which lines were thrown away.
+
+    A rule with a typo — an arrow written as `->`, a line whose left-hand side
+    is empty — is skipped silently as far as the user is concerned: the warning
+    goes to the log file, and the field looks exactly like one whose rules all
+    work. The next dictation is then the first hint that a correction never
+    happened, and the line that caused it is not named anywhere. This is that
+    line, shown under the field while it is being edited.
+
+    Empty for an empty field: a field nobody has written in yet needs its
+    placeholder, not a count of zero.
+    """
+    issues: list[str] = []
+    rules = parse_replacements(spec, issues)
+    if not rules and not issues:
+        return ""
+    status = f"{len(rules)} rule{'' if len(rules) == 1 else 's'} active"
+    if issues:
+        shown = issues[:_MAX_REPORTED_ISSUES]
+        listed = ", ".join(shown)
+        hidden = len(issues) - len(shown)
+        if hidden:
+            listed += f", and {hidden} more"
+        status += f" · {len(issues)} line{'' if len(issues) == 1 else 's'} ignored: {listed}"
+    status += "."
+    if len(rules) >= _MAX_REPLACEMENT_RULES:
+        # Its own sentence, not one of the ignored lines: the parser stops
+        # counting at the cap, so it does not know how many lines came after it.
+        status += f" Only the first {_MAX_REPLACEMENT_RULES} rules are used."
+    return status
 
 
 def assistant_failure_message(exc: BaseException) -> str:
