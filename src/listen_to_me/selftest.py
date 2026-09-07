@@ -4324,16 +4324,21 @@ def _gui_construction():
         assert "1 of 2" in window.history_count_label.text()
         window.history_filter_edit.setText("nothing-matches-this")
         window._refresh_history()
-        assert "No transcript contains" in _history_text()
+        # "matches", not "contains": a term can now match the row's date as
+        # well as its text, so the empty state must not promise otherwise.
+        assert "No transcript matches" in _history_text()
         assert window.history_clear_button.isEnabled()  # entries exist, only hidden
-        # "Export…" writes what is listed, so a filtered-to-empty list has
-        # nothing to write — an enabled button would produce an empty file.
+        # "Export…" writes what is listed and "Copy all" copies it, so a
+        # filtered-to-empty list has nothing to hand out — an enabled Export
+        # would produce an empty file, an enabled Copy all a silent no-op.
         assert not window.history_export_button.isEnabled()
+        assert not window.history_copy_all_button.isEnabled()
         window.history_filter_edit.clear()
         window._refresh_history()
         assert "2 transcripts" in window.history_count_label.text()
         assert "A stored transcript" in _history_text()
         assert window.history_export_button.isEnabled()
+        assert window.history_copy_all_button.isEnabled()
         assert len(window._history_export_entries) == 2
 
         # Ctrl+F reaches the search field from anywhere on this page — the key
@@ -4374,6 +4379,7 @@ def _gui_construction():
             window._refresh_history()
             assert not window.history_clear_button.isEnabled()
             assert not window.history_export_button.isEnabled()
+            assert not window.history_copy_all_button.isEnabled()
             assert "No transcripts yet" in _history_text()
 
             # The Home page renders the same store, and used to promise "your
@@ -4420,6 +4426,22 @@ def _gui_construction():
         assert window.model_combo.isEnabled() and window.chk_live_typing.isEnabled()
         assert "Parakeet" not in window._speech_hint.text()
         assert window._live_typing_hint.isHidden()
+
+        # The Text replacements field reports what its rules actually do, live
+        # while they are typed. An untouched field stays silent, a working rule
+        # is counted, and a mistyped one is named instead of being dropped into
+        # the log file only — which is the whole point of the line.
+        window.replacements_edit.setPlainText("")
+        assert window.replacements_status.isHidden()
+        window.replacements_edit.setPlainText("posgres => PostgreSQL")
+        assert not window.replacements_status.isHidden()
+        assert window.replacements_status.text() == "1 rule active."
+        window.replacements_edit.setPlainText("posgres => PostgreSQL\ncuber netes -> Kubernetes")
+        status = window.replacements_status.text()
+        assert "1 rule active" in status and "line 2 has no “=>”" in status, status
+        # Announced with the field, not only as a label beside it.
+        assert window.replacements_edit.accessibleDescription() == status
+        window.replacements_edit.setPlainText("")
 
         # Live typing + hold mode + a modifier chord (or a bare character key):
         # App skips live typing for such a take with nothing but a log line.
