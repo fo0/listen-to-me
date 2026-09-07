@@ -2089,6 +2089,12 @@ class SettingsWindow(QDialog):
         # yet to explain the wait.
         if index == self._audio_index and not self._devices_loaded:
             self._load_devices()
+            # The deferred load can land on a different value than the config
+            # holds: a configured microphone that is currently unplugged
+            # resolves to "System default". Nobody edited anything, so the
+            # snapshot has to follow, or merely opening the Audio page and
+            # closing the window would ask about unsaved changes.
+            self._saved_snapshot["input_device"] = self._selected_input_device()
         if index == self._engine_index:
             # Every visit: a recording since the last look may have loaded the
             # model, and this is a property read, not a probe.
