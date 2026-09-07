@@ -10,7 +10,13 @@ import time
 import webbrowser
 
 from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QShortcut, QTextCursor, QTextDocument
+from PySide6.QtGui import (
+    QGuiApplication,
+    QKeySequence,
+    QShortcut,
+    QTextCursor,
+    QTextDocument,
+)
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QButtonGroup,
@@ -349,6 +355,9 @@ class SettingsWindow(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.resize(980, 720)
         self.setMinimumSize(840, 600)
+        # Both are desktop-monitor sizes; showEvent brings them down to what
+        # the screen actually offers (see _clamp_to_screen).
+        self._screen_clamped = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -4226,6 +4235,47 @@ class SettingsWindow(QDialog):
         swap waiting for the process to exit, until someone answers it."""
         self._force_close = True
         self.close()
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().showEvent(event)
+        # Only on the way in, and only once: the user is free to drag the
+        # window bigger than its screen afterwards, and re-clamping on every
+        # show would undo that.
+        if not self._screen_clamped:
+            self._screen_clamped = True
+            self._clamp_to_screen()
+
+    def _clamp_to_screen(self) -> None:
+        """Keep the window inside the screen it opens on.
+
+        The 980×720 default and the 840×600 minimum are sized for a desktop
+        monitor. A 1366×768 laptop at 125 % scaling reports 614 logical pixels
+        of usable height, so both push the bottom of the window — and with it
+        the Save/Cancel row — under the taskbar, where it cannot be reached.
+        The minimum has to come down with it: Qt does not honour a resize
+        below its own minimum.
+
+        Height only, deliberately. The pages sit in scroll areas, so a window
+        shorter than its content costs a scroll and nothing else, while a
+        window narrower than the 840 the forms are laid out for clips them
+        outright — the worse of the two on a screen that is genuinely too
+        small either way.
+
+        Best effort by design: `screen()` only names a screen once the window
+        has been mapped, which is why this runs from showEvent and returns
+        without doing anything when Qt cannot name one.
+        """
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        max_h = screen.availableGeometry().height()
+        if max_h <= 0:
+            return
+        if self.minimumHeight() > max_h:
+            self.setMinimumSize(self.minimumWidth(), max_h)
+        if self.height() > max_h:
+            log.info("settings window height clamped to the available %dpx", max_h)
+            self.resize(self.width(), max_h)
 
     def reject(self) -> None:
         """Cancel / Esc / the window's close button: confirm before silently

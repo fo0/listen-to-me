@@ -4731,6 +4731,21 @@ def _gui_construction():
         app.processEvents()
         assert window.stack.currentIndex() == window._engine_index
 
+        # A window taller than its screen is brought back inside it, minimum
+        # included — a 1366x768 laptop at 125 % scaling offers 614 logical
+        # pixels of height, which puts the Save/Cancel row under the taskbar.
+        # Height only: the pages sit in scroll areas, so a short window costs a
+        # scroll, while a narrow one clips the forms (asserted just above).
+        avail_h = window.screen().availableGeometry().height()
+        window.setMinimumSize(window.minimumWidth(), avail_h + 200)
+        window.resize(window.width(), avail_h + 200)
+        window._screen_clamped = False
+        window._clamp_to_screen()
+        app.processEvents()
+        assert window.minimumHeight() <= avail_h, window.minimumHeight()
+        assert window.height() <= avail_h, window.height()
+        window.setMinimumSize(840, 600)
+
         window._show_page("General")
         window.hide()
 
