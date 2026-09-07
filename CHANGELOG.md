@@ -14,6 +14,14 @@ changes at a glance.
 
 ### Added
 
+- **Copy all** on the History page — puts every transcript the list currently
+  shows on the clipboard in one block, newest first and each with its date,
+  which is exactly what **Export…** would have written to a file. The search
+  filter applies to both, so a handful of dictations found by a word or a date
+  goes straight into a mail or a note; before this, getting more than one
+  transcript out meant exporting to a file and opening it, or pressing the
+  per-row **Copy** button once per transcript.
+
 - **The History search finds a date, not just a word.** Every row on
   Settings → History carries a `YYYY-MM-DD HH:MM` stamp, but the search field
   only ever looked at the transcript text — and a dictation does not repeat its

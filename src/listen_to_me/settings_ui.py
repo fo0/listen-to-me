@@ -1751,10 +1751,19 @@ class SettingsWindow(QDialog):
         # the filter for the export.
         self.history_export_button = QPushButton("Export…")
         self.history_export_button.clicked.connect(self._export_history)
-        # Disabled until the first render says there is something to write —
-        # the page builds before the list is rendered (it is lazy).
-        self._set_history_export([], "")
         bottom.addWidget(self.history_export_button)
+        # The same set, one keystroke away instead of through a file: a
+        # searched-down handful of transcripts usually wants to land in a mail
+        # or a note, and until now that meant Export… → pick a folder → name a
+        # file → open it → copy from there, or the per-row Copy button once per
+        # transcript.
+        self.history_copy_all_button = QPushButton("Copy all")
+        self.history_copy_all_button.clicked.connect(self._copy_all_history)
+        bottom.addWidget(self.history_copy_all_button)
+        # Disabled until the first render says there is something to write —
+        # the page builds before the list is rendered (it is lazy). Set after
+        # both buttons exist, because it labels and enables them together.
+        self._set_history_export([], "")
         bottom.addStretch(1)
         # Enabled state is set by _refresh_history, which always runs before this
         # page can be reached (lazy first render): clicking it on an empty
@@ -3522,30 +3531,69 @@ class SettingsWindow(QDialog):
         copy_with_feedback(text, button)
 
     def _set_history_export(self, entries: list[dict], query: str) -> None:
-        """Remember what an export would write and label the button after it.
+        """Remember what an export would write and label both buttons after it.
 
-        Kept in step with the rendered list from one place, so "Export…" can
-        never write a different set of transcripts than the one on screen —
-        including the filtered one, which is what makes the search field
-        useful for exporting a single project's dictations.
+        Kept in step with the rendered list from one place, so neither
+        "Export…" nor "Copy all" can ever hand out a different set of
+        transcripts than the one on screen — including the filtered one, which
+        is what makes the search field useful for exporting or copying a single
+        project's dictations.
         """
         self._history_export_entries = list(entries)
         self.history_export_button.setEnabled(bool(entries))
+        self.history_copy_all_button.setEnabled(bool(entries))
         if not entries:
             self.history_export_button.setToolTip(
                 "Nothing to export — no transcript is listed."
             )
+            self.history_copy_all_button.setToolTip(
+                "Nothing to copy — no transcript is listed."
+            )
         elif query:
+            plural = "s" if len(entries) != 1 else ""
             self.history_export_button.setToolTip(
-                f"Save the {len(entries)} matching transcript"
-                f"{'s' if len(entries) != 1 else ''} to a text file. "
-                "Clear the search field to export all of them."
+                f"Save the {len(entries)} matching transcript{plural} to a text "
+                "file. Clear the search field to export all of them."
+            )
+            self.history_copy_all_button.setToolTip(
+                f"Copy the {len(entries)} matching transcript{plural} to the "
+                "clipboard as one block, newest first, each with its date. "
+                "Clear the search field to copy all of them."
             )
         else:
+            plural = "s" if len(entries) != 1 else ""
             self.history_export_button.setToolTip(
-                f"Save all {len(entries)} transcript"
-                f"{'s' if len(entries) != 1 else ''} to a text file, newest first."
+                f"Save all {len(entries)} transcript{plural} to a text file, newest first."
             )
+            self.history_copy_all_button.setToolTip(
+                f"Copy all {len(entries)} transcript{plural} to the clipboard as "
+                "one block, newest first, each with its date."
+            )
+
+    def _copy_all_history(self) -> None:
+        """Put every listed transcript on the clipboard in one block.
+
+        The same set and the same rendering as "Export…" (`format_entries`), so
+        the two can never disagree about what "the listed transcripts" means —
+        only the destination differs. Reports a failed clipboard write on the
+        button itself, like every other Copy in this window.
+        """
+        entries = list(self._history_export_entries)
+        if not entries:
+            return
+        from .history import format_entries
+
+        text = format_entries(entries)
+        if not text:
+            # Every listed entry had empty text — possible only for a
+            # hand-edited history file, and a silent no-op would read as a
+            # broken button.
+            QMessageBox.warning(
+                self, APP_NAME, "The listed transcripts contain no text to copy."
+            )
+            return
+        if copy_with_feedback(text, self.history_copy_all_button, label="Copy all"):
+            log.info("copied %d transcripts to the clipboard", len(entries))
 
     def _export_history(self) -> None:
         """Write the listed transcripts to a text file the user picks.
