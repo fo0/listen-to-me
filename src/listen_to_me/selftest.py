@@ -4065,6 +4065,20 @@ def _gui_construction():
         assert window.nav.currentRow() == window._nav_row["Home"]
         assert window.stack.currentIndex() == window._home_index
 
+        # The microphone list is enumerated on the first visit to the Audio
+        # page, not during construction (PortAudio can stall for hundreds of
+        # ms before anything is on screen). Until then the dropdown holds only
+        # the placeholder, so the *config* has to answer for it — reading the
+        # placeholder would make Save drop the stored microphone.
+        assert window._devices_loaded is False
+        window.cfg["input_device"] = 3
+        assert window._selected_input_device() == 3
+        window.cfg["input_device"] = None
+        window._show_page("Audio")
+        app.processEvents()
+        assert window._devices_loaded is True
+        window._show_page("Home")
+
         # Home hub: the hotkey renders as key caps, the stored transcript is
         # listed, and the hero mirrors every app state (posted by App via
         # set_app_state). isHidden() not isVisible(): the window isn't shown.

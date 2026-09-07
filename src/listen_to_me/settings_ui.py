@@ -62,6 +62,7 @@ from .choices import (
     OPENVINO_DEVICES,
     OPENVINO_PRECISIONS,
     PARAKEET_QUANTIZATIONS,
+    SYSTEM_DEFAULT_DEVICE,
     backend_from_label,
     backend_label,
     clipboard_copy_from_label,
@@ -358,6 +359,9 @@ class SettingsWindow(QDialog):
         # Both are desktop-monitor sizes; showEvent brings them down to what
         # the screen actually offers (see _clamp_to_screen).
         self._screen_clamped = False
+        # Whether input_combo holds the enumerated devices or only the
+        # placeholder (see _load_devices / _selected_input_device).
+        self._devices_loaded = False
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -512,6 +516,7 @@ class SettingsWindow(QDialog):
         self._home_index = self._page_index["Home"]
         self._history_index = self._page_index["History"]
         self._engine_index = self._page_index["Engine"]
+        self._audio_index = self._page_index["Audio"]
         self._updates_index = self._page_index["Updates"]
         self._help_index = self._page_index["Help"]
         self.nav.currentRowChanged.connect(self._on_page_changed)
@@ -1428,7 +1433,15 @@ class SettingsWindow(QDialog):
         refresh.clicked.connect(self._rescan_devices)
         dh.addWidget(refresh)
         form.addRow("Input device:", device_row)
-        self._load_devices()
+        # Not enumerated here: input_device_choices() goes through PortAudio,
+        # which the Home page already documents as able to stall for hundreds
+        # of ms, and this runs while the window is still being constructed —
+        # before anything is on screen. The real list is loaded the first time
+        # the Audio page is opened (see _on_page_changed); until then the
+        # dropdown shows the placeholder and _selected_input_device() answers
+        # from the config, so saving without ever visiting this page writes
+        # back the device that is stored.
+        self.input_combo.addItem(SYSTEM_DEFAULT_DEVICE)
 
         self.max_seconds_spin = QSpinBox()
         self.max_seconds_spin.setRange(10, 3600)
@@ -2071,6 +2084,11 @@ class SettingsWindow(QDialog):
         # Build the transcript rows only when the History page is first shown.
         if index == self._history_index and not self._history_rendered:
             self._refresh_history()
+        # Enumerate the microphones the first time the Audio page is shown —
+        # PortAudio can stall, and at construction time nothing is on screen
+        # yet to explain the wait.
+        if index == self._audio_index and not self._devices_loaded:
+            self._load_devices()
         if index == self._engine_index:
             # Every visit: a recording since the last look may have loaded the
             # model, and this is a property read, not a probe.
@@ -2148,8 +2166,9 @@ class SettingsWindow(QDialog):
         # Refresh keeps an unsaved on-screen choice: repopulating from the
         # saved config would silently revert the device the user just picked.
         stored = self.cfg["input_device"]
-        if self.input_combo.count():
+        if self._devices_loaded and self.input_combo.count():
             stored = self._selected_input_device()
+        self._devices_loaded = True
         values, current = input_device_choices(stored)
         self.input_combo.clear()
         self.input_combo.addItems(values)
@@ -4005,6 +4024,15 @@ class SettingsWindow(QDialog):
         self._model_index = row
 
     def _selected_input_device(self):
+        """The configured input device index, or None for "System default".
+
+        Reads the dropdown only once it holds the real device list. Before
+        that it shows a placeholder, and answering from it would report
+        "System default" for a window whose Audio page was never opened —
+        Save would then quietly drop the user's microphone.
+        """
+        if not self._devices_loaded:
+            return self.cfg["input_device"]
         return input_device_from_label(self.input_combo.currentText())
 
     # -------------------------------------------------------- save / apply
