@@ -188,6 +188,26 @@ def _hold_mode_skip_reason(
     recording has already ended — so it keeps working in either case. This is
     the mute-side twin of ``App._live_typing_gate``, which keeps live typing
     off in hold mode for the same shared-keyboard reason.
+
+    Skipping is a workaround, not the fix (BACKLOG #21/#34). The complete one
+    has two halves and needs both:
+
+    - Stop the app's own hotkey listener from reading the injected releases as
+      the user letting go. On Windows that is the ``LLKHF_INJECTED`` flag in
+      the low-level hook, reachable through pynput's ``win32_event_filter``,
+      and it must be armed only while a tap is going out — a filter left on
+      would also swallow the events of other automation the user runs on
+      purpose. X11 has no equivalent: XTest events carry no injection flag, so
+      that side needs its own answer (a synthesized-event bookkeeping window,
+      or leaving X11 on the skip).
+    - Deliver the chord as configured anyway, by releasing the hotkey's still
+      held modifiers, tapping, then pressing them back — the AutoHotkey
+      approach ``injector.wait_for_quiet_modifiers`` deliberately does not take
+      for the injection paths, because there the released modifier belongs to
+      the user's own fingers.
+
+    Neither half is verifiable from an agent session: both are keyboard-hook
+    behaviour on a real Windows desktop.
     """
     if mode != "toggle":
         return None
