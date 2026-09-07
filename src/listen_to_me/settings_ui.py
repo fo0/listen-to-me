@@ -85,6 +85,7 @@ from .qtutil import (
     flash_button,
     guard_wheel,
     keep_return_in_field,
+    text_rows_height,
 )
 from .widgets import HotkeyCaptureDialog
 
@@ -1317,7 +1318,7 @@ class SettingsWindow(QDialog):
             "It biases recognition — it is NOT an instruction prompt."
         )
         self.initial_prompt_edit.setAccessibleName("Initial prompt (domain vocabulary hint)")
-        self.initial_prompt_edit.setFixedHeight(80)
+        self.initial_prompt_edit.setFixedHeight(text_rows_height(self.initial_prompt_edit, 4))
         pv.addWidget(self.initial_prompt_edit)
         pv.addWidget(self._hint(
             "Biases recognition towards these words — it is not an instruction "
@@ -1339,7 +1340,7 @@ class SettingsWindow(QDialog):
         )
         self.replacements_edit.setAccessibleName("Text replacements")
         self.replacements_edit.setPlaceholderText("cuber netes => Kubernetes\nposgres => PostgreSQL")
-        self.replacements_edit.setFixedHeight(80)
+        self.replacements_edit.setFixedHeight(text_rows_height(self.replacements_edit, 4))
         rv.addWidget(self.replacements_edit)
         # A mistyped rule (“->” instead of “=>”, an empty left-hand side) was
         # skipped into the log file and nowhere else: the field looked exactly
@@ -1705,7 +1706,7 @@ class SettingsWindow(QDialog):
             "whatever the model returns is inserted instead of the raw transcript."
         )
         self.a_prompt_edit.setAccessibleName("Assistant system prompt")
-        self.a_prompt_edit.setMinimumHeight(160)
+        self.a_prompt_edit.setMinimumHeight(text_rows_height(self.a_prompt_edit, 8))
         pv.addWidget(self.a_prompt_edit)
         layout.addWidget(prompt, 1)
 
@@ -3026,7 +3027,7 @@ class SettingsWindow(QDialog):
 
         self.update_list = QListWidget()
         self.update_list.setAccessibleName("Available releases")
-        self.update_list.setMaximumHeight(140)
+        self.update_list.setMaximumHeight(text_rows_height(self.update_list, 7))
         self.update_list.currentRowChanged.connect(self._on_release_selected)
         self.update_list.setToolTip(
             "Newer releases, newest first. Pick one to read its changelog — you can jump "
