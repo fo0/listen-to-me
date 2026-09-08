@@ -116,20 +116,21 @@ the objective turns out to be the wrong one → say so and stop · a decision on
 block from `CLAUDE.md → Handoff Prompt`.
 
 **Step 0 — is this an objective run at all?** Before restating anything, check the objective against the selection
-table in `CLAUDE.md → Handoff Prompt` — that table is canonical and is not restated here. Its goal row fires when the
-**user wrote the stop condition** (`until …`, `bis …`), that condition is one your own output demonstrates, and nothing
-is left to decide; how long the work will take is not the axis, and an objective that merely looks large is still
-this. Meets all three → it is a `/goal`, not this: say so in one sentence, hand over the ready-to-send
-`/goal <done-condition>` as its own message — the condition alone, within the character cap that section states,
-never the prompt block behind it — and stop, **at the start, not after a run that was going to end there anyway.**
+table in `CLAUDE.md → Handoff Prompt` — that table is canonical and is not restated here. Its goal row is the
+**default** and fires when the stop condition is one your own output demonstrates and nothing is left to decide;
+how long the work will take is not the axis, and an objective that merely looks large is still this. Meets it →
+it is a `/goal`, not this: say so in one sentence, hand over **one** ready-to-send `/goal …` block on a single
+line — the whole briefing behind the command, within the character cap that section states, never split in
+two — and stop, **at the start, not after a run that was going to end there anyway.**
 A user who typed `/orca` is asking for the work, not for this command; naming the better one costs them one line
-and saves the run. Anything that fails one of those three tests is an objective run, so continue.
+and saves the run. An objective that trips one of that section's three disqualifiers is an objective run, so continue.
 
 **What an objective run is not: `/goal`.** It carries the objective through the run it starts. Claude Code's `/goal`
 is a _cross-turn_ evaluator — a session-scoped prompt Stop hook that re-checks a condition after every turn — and no
 skill can set one: a built-in slash command is not model-invocable, and a Stop hook written into settings mid-session
-does not reach the session that wrote it. The two never both get sent: a `/goal` turn orchestrates anyway, because
-that is this project's default, and only a non-default width needs `/orca <N>` sent ahead of it.
+does not reach the session that wrote it. The two never both get sent — and there is no exception, not even width:
+a `/goal` turn orchestrates anyway, because that is this project's default, and a non-default width is a sentence
+_inside_ that one line (`work at width 3`), never an `/orca <N>` sent ahead of it. A handoff is one paste.
 **Never generate a skill named `goal` to close this gap** — it would shadow the built-in.
 
 ## Rules
