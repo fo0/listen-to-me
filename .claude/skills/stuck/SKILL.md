@@ -84,11 +84,12 @@ D) defer to BACKLOG and move on
 
 What would you like?
 
-<the handoff prompt for the option you recommend — CLAUDE.md → _Handoff Prompt_>
+<one single-line handoff prompt for the option you recommend — CLAUDE.md → _Handoff Prompt_>
 ```
 
 Then **stop**. Do NOT take a 4th attempt without user input. The handoff prompt is part of the escalation, not a
-replacement for the options: it carries the one option you would pick, ready to send.
+replacement for the options: the options above are the menu, and the block below them is the **one** — a single
+line, one command, no second block beside it — that you would pick, ready to send.
 
 ### 4b. Unattended run — same snapshot, no question
 

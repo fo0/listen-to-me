@@ -49,7 +49,7 @@ Proposed: git revert HEAD~1..HEAD && git push (no force).
 Proceed? (yes/no)
 ```
 
-**Unattended** (`$CLAUDE_CODE_REMOTE=true`): nobody answers `Proceed?`, and a run that waits for it is a dead run (CLAUDE.md → _Autonomy_). The phases split by what they destroy. Phases C, D, E and F add commits or restore a ref — they run without the prompt, and the detection line above becomes a report line. Phases A and B and every force operation destroy work: they run unattended only when the instruction that invoked this skill ordered exactly that (the `stuck` skill's unattended step ordering the loop work discarded is one); otherwise skip, report the proposed command, and continue with what does not depend on it.
+**Unattended** (`$CLAUDE_CODE_REMOTE=true`): nobody answers `Proceed?`, and a run that waits for it is a dead run (CLAUDE.md → _Autonomy_). The phases split by what they destroy. Phases C, E and F add commits or restore a ref — they run without the prompt, and the detection line above becomes a report line. **Phase D is the exception among the additive phases:** its direct push to the default branch is interactive-only. Unattended, a bad commit on the default branch takes the Phase E path — revert commit on its own branch, revert PR, merge through the `pr` skill's gate — because a run that pushes straight to the default branch breaks the repo's own branch rule, whatever it pushes. Phases A and B and every force operation destroy work: they run unattended only when the instruction that invoked this skill ordered exactly that (the `stuck` skill's unattended step ordering the loop work discarded is one); otherwise skip, report the proposed command, and continue with what does not depend on it.
 
 ## Phase A — Discard uncommitted changes
 
@@ -91,6 +91,8 @@ git push origin "$BASE"
 ```
 
 If revert produces a conflict → stop, ask user to resolve manually.
+
+**Unattended (`$CLAUDE_CODE_REMOTE=true`): never push to `$BASE`.** Run the revert as Phase E with `$PR` replaced by the bad SHA — branch `revert-pr-<sha>`, `git revert <bad-sha>` without `-m 1` for a non-merge commit — push that branch, open the revert PR, merge it only through `.claude/skills/pr/SKILL.md → /pr merge`. The direct push above is the interactive shortcut for a repo whose owner is at the keyboard; unattended, a direct push to the default branch is outside the branch rule in `agent_docs/autonomy.md → Branch rule`.
 
 ## Phase E — Revert merged PR
 
