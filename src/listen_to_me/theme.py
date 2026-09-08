@@ -218,10 +218,13 @@ def _chevron_asset(direction: str, color: str) -> str | None:
     slashes, ready to drop into a QSS ``url("…")``. Returns None if the file
     can't be written so the caller can fall back to Qt's native arrow.
 
-    Written via a temp sibling + ``os.replace`` like config.atomic_write_json:
-    the existence check never re-validates the content, so a write cut short
-    (crash, full disk) would otherwise leave a truncated SVG that every later
-    run happily reuses — arrows silently broken for good.
+    Written via a temp sibling + ``os.replace`` like config.atomic_write_json,
+    fsync included: the existence check never re-validates the content, so a
+    write cut short (crash, full disk) would otherwise leave a truncated SVG
+    that every later run happily reuses — arrows silently broken for good.
+    Closing the temp file only hands the bytes to the OS cache; without the
+    flush a power loss can land the rename ahead of the data and leave exactly
+    the zero-length asset the replace exists to rule out.
     """
     try:
         svg = _chevron_svg(direction, color)
@@ -230,7 +233,10 @@ def _chevron_asset(direction: str, color: str) -> str | None:
         if not path.exists():
             tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
             try:
-                tmp.write_text(svg, encoding="utf-8")
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    fh.write(svg)
+                    fh.flush()
+                    os.fsync(fh.fileno())
                 os.replace(tmp, path)
             except Exception:
                 tmp.unlink(missing_ok=True)
