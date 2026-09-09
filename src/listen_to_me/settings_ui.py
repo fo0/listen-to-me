@@ -65,6 +65,9 @@ from .choices import (
     SYSTEM_DEFAULT_DEVICE,
     backend_from_label,
     backend_label,
+    choice_label,
+    choice_labels,
+    choice_value,
     clipboard_copy_from_label,
     clipboard_copy_label,
     clipboard_copy_mode,
@@ -80,7 +83,7 @@ from .choices import (
     openvino_supports_model,
 )
 from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
-from .diagnostics import DiagnosticsEngine
+from .diagnostics import DiagnosticsEngine, model_cache_status
 from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
@@ -422,6 +425,9 @@ class SettingsWindow(QDialog):
         self._dsig.hotkey_detected.connect(self._on_hotkey_detected)
         self._dsig.hw_done.connect(self._on_hw_done)
         self._diag_busy = False
+        # Set by _offer_model_download; read by _save, which must not close
+        # the window on a download it just started.
+        self._offered_download = False
         self._diag_kind: str | None = None  # "model" | "tx" | "mic" while busy
         # Bumped when a diagnostic starts AND when one is cancelled, so signals
         # from a detached worker are recognized as stale and ignored.
@@ -859,6 +865,14 @@ class SettingsWindow(QDialog):
         pick.clicked.connect(self._pick_hotkey)
         hk.addWidget(pick)
         form.addRow("Global hotkey:", hotkey_row)
+        # An error style, not one more grey note: the wizard already validates
+        # this same value inline, while here it only surfaced as a modal at Save.
+        self._hotkey_error = self._hint("")
+        self._hotkey_error.setProperty("role", "error")
+        form.addRow("", self._hotkey_error)
+        self._general_form = form
+        self.hotkey_edit.textChanged.connect(self._refresh_hotkey_error)
+        self._refresh_hotkey_error()
 
         modes = QWidget()
         mv = QVBoxLayout(modes)
@@ -1164,24 +1178,28 @@ class SettingsWindow(QDialog):
         form.addRow("Intel device:", self.ov_device_combo)
 
         self.ov_precision_combo = QComboBox()
-        self.ov_precision_combo.addItems(OPENVINO_PRECISIONS)
-        self._select_combo(self.ov_precision_combo, self.cfg["openvino_precision"])
+        self.ov_precision_combo.addItems(choice_labels(OPENVINO_PRECISIONS))
+        ov_precision = choice_label(OPENVINO_PRECISIONS, self.cfg["openvino_precision"])
+        self._select_combo(self.ov_precision_combo, ov_precision)
         self.ov_precision_combo.setToolTip(
             "OpenVINO model precision — which pre-converted variant of the model to "
             "download: int8 is small and fast (recommended), fp16 the most accurate, "
             "int4 the smallest. Changing this downloads the model again in the new "
             "precision."
         )
+        elastic_combo(self.ov_precision_combo)  # long items widen the page
         form.addRow("Precision:", self.ov_precision_combo)
 
         self.pk_quant_combo = QComboBox()
-        self.pk_quant_combo.addItems(PARAKEET_QUANTIZATIONS)
-        self._select_combo(self.pk_quant_combo, self.cfg["parakeet_quantization"])
+        self.pk_quant_combo.addItems(choice_labels(PARAKEET_QUANTIZATIONS))
+        pk_quant = choice_label(PARAKEET_QUANTIZATIONS, self.cfg["parakeet_quantization"])
+        self._select_combo(self.pk_quant_combo, pk_quant)
         self.pk_quant_combo.setToolTip(
             "Parakeet precision — which ONNX variant of the model to download: int8 "
             "is small and fast on the CPU (recommended), fp32 the most accurate — "
             "best with a GPU. Changing this downloads the model again."
         )
+        elastic_combo(self.pk_quant_combo)
         form.addRow("Precision:", self.pk_quant_combo)
 
         self.chk_vad = self._checkbox(
@@ -2153,6 +2171,27 @@ class SettingsWindow(QDialog):
         if combo:
             self.hotkey_edit.setText(combo)
 
+    def _refresh_hotkey_error(self) -> None:
+        """Show or clear the inline reason under the hotkey field. The modal in
+        _validate stays — a label is never announced to a screen reader whose
+        focus is on the Save button that refused, which is also why the reason
+        rides on the field itself (the wizard's _validate_hotkey rule)."""
+        hotkey = self.hotkey_edit.text().strip()
+        try:
+            valid = Hotkeys.validate(hotkey)
+        except Exception:
+            # Parsing needs pynput, which a headless run cannot import. Calling
+            # a combination broken because we could not look is worse than
+            # staying quiet, and Save checks it again anyway.
+            log.debug("could not check the hotkey %r while editing", hotkey, exc_info=True)
+            valid = True
+        reason = "" if valid else (
+            f"“{hotkey}” is not a valid combination — click “Change…” and press the keys."
+        )
+        self._hotkey_error.setText(reason)
+        self.hotkey_edit.setAccessibleDescription(reason)
+        self._general_form.setRowVisible(self._hotkey_error, bool(reason))
+
     def _browse_model_dir(self) -> None:
         initial = self.model_dir_edit.text().strip() or str(default_model_dir())
         chosen = QFileDialog.getExistingDirectory(self, "Choose model download folder", initial)
@@ -2413,8 +2452,8 @@ class SettingsWindow(QDialog):
             "initial_prompt": self.initial_prompt_edit.toPlainText().strip(),
             "vad_filter": self.chk_vad.isChecked(),
             "openvino_device": self.ov_device_combo.currentText(),
-            "openvino_precision": self.ov_precision_combo.currentText(),
-            "parakeet_quantization": self.pk_quant_combo.currentText(),
+            "openvino_precision": choice_value(OPENVINO_PRECISIONS, self.ov_precision_combo.currentText()),
+            "parakeet_quantization": choice_value(PARAKEET_QUANTIZATIONS, self.pk_quant_combo.currentText()),
         }
 
     def _set_hotkey_paused(self, paused: bool) -> None:
@@ -4081,8 +4120,8 @@ class SettingsWindow(QDialog):
             "compute_type": self.compute_combo.currentText(),
             "beam_size": int(self.beam_spin.value()),
             "openvino_device": self.ov_device_combo.currentText(),
-            "openvino_precision": self.ov_precision_combo.currentText(),
-            "parakeet_quantization": self.pk_quant_combo.currentText(),
+            "openvino_precision": choice_value(OPENVINO_PRECISIONS, self.ov_precision_combo.currentText()),
+            "parakeet_quantization": choice_value(PARAKEET_QUANTIZATIONS, self.pk_quant_combo.currentText()),
             "vad_filter": self.chk_vad.isChecked(),
             "history_enabled": self.chk_history_enabled.isChecked(),
             "history_max": int(self.history_max_spin.value()),
@@ -4212,6 +4251,28 @@ class SettingsWindow(QDialog):
                 )
                 row.hotkey_edit.setFocus()
                 return False
+
+        # Last, because it is the only check that writes. An unusable model
+        # folder used to fail at "Open folder" or at the first download on a
+        # worker thread; mkdir catches a typo, a missing drive letter and a
+        # read-only parent alike. Empty = the Hugging Face cache, nothing to do.
+        if values["model_dir"]:
+            from pathlib import Path
+
+            try:
+                Path(values["model_dir"]).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self._show_page("Engine")
+                QMessageBox.critical(
+                    self,
+                    APP_NAME,
+                    f"This model folder cannot be used:\n{values['model_dir']}\n\n{exc}\n\n"
+                    "Pick an existing folder, or empty the field to use the "
+                    "Hugging Face cache instead.",
+                )
+                self.model_dir_edit.setFocus()
+                return False
+
         return True
 
     def _apply_values(self) -> bool:
@@ -4247,7 +4308,7 @@ class SettingsWindow(QDialog):
                 "the reason.",
             )
         self.app.apply_settings()
-        self._saved_snapshot = self._collect()
+        previous, self._saved_snapshot = self._saved_snapshot, self._collect()
         # A saved device/precision/model change invalidates the loaded model
         # (or swapped the transcriber), so the "Running on" line changes too.
         self._refresh_runtime_status()
@@ -4264,11 +4325,49 @@ class SettingsWindow(QDialog):
                 self._refresh_history()
             else:
                 self._history_rendered = False
+        # Last: the question below is modal, and everything above it is the
+        # refresh that makes the window agree with what was just saved.
+        self._offered_download = self._offer_model_download(previous)
+        return True
+
+    def _offer_model_download(self, previous: dict) -> bool:
+        """After a saved model/backend/precision change, offer to fetch the
+        model now; True when one was started.
+
+        Apply and Save promise the settings take effect immediately, but the
+        new model is only loaded at the next recording — so the first dictation
+        after the change can block for minutes on a download nobody asked for
+        at that moment. model_cache_status is disk-only and never raises, so
+        asking is cheap; a diagnostic already running owns the page instead.
+        """
+        keys = ("model", "backend", "openvino_precision", "parakeet_quantization")
+        if self._diag_busy or all(previous.get(k) == self._saved_snapshot.get(k) for k in keys):
+            return False
+        status = model_cache_status(self._diag_snapshot())
+        if status["cached"] or status["error"]:
+            return False
+        answer = QMessageBox.question(
+            self,
+            APP_NAME,
+            f"'{status['target']}' is not downloaded yet.\n\nDownload it now? "
+            "Otherwise the first recording after this fetches it, and waits "
+            "until it is done.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        self._show_page("Engine")
+        self._download_model()
         return True
 
     def _save(self) -> None:
-        if self._apply_values():
-            self.accept()
+        if not self._apply_values():
+            return
+        # A download the offer above just started lives on this page: closing
+        # now would run _cancel_diagnostics and throw it away. Only that one —
+        # a diagnostic that was already running must not block Save.
+        if self._offered_download:
+            return
+        self.accept()
 
     def _apply(self) -> None:
         if self._apply_values():

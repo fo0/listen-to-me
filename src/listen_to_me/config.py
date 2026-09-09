@@ -403,6 +403,34 @@ def _restrict_to_owner(path: Path) -> None:
         log.debug("could not restrict the permissions of %s", path, exc_info=True)
 
 
+def _sync_directory(directory: Path) -> None:
+    """Best-effort fsync of `directory` itself, so a rename into it survives a
+    power loss the way the renamed file's contents already do.
+
+    `os.fsync` on the temp file flushes its *data*; on POSIX the new directory
+    entry created by `os.replace` is separate metadata and can still be lost,
+    leaving the previous file in place. Integrity is never at stake either way
+    (the old file is intact, never truncated) — this is the durability of the
+    last write only.
+
+    Windows, the primary target, exposes no directory handle to sync, so the
+    open is expected to fail there. A write that already succeeded must never
+    be reported as failed over that, hence the two catches and the debug-level
+    log: nothing here is actionable for a user.
+    """
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        log.debug("could not open %s to flush its directory entry", directory, exc_info=True)
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        log.debug("could not flush the directory entry in %s", directory, exc_info=True)
+    finally:
+        os.close(fd)
+
+
 def atomic_write_json(path: Path, data) -> None:
     """Write `data` as pretty JSON to `path` atomically: a sibling temp file is
     written and then `os.replace`d over the target, so a crash mid-write never
@@ -412,6 +440,9 @@ def atomic_write_json(path: Path, data) -> None:
     bytes to the OS cache; without the flush a power loss or OS crash can land
     the rename ahead of the data and leave a zero-length config.json /
     history.json — the very outcome this helper exists to prevent.
+
+    The parent directory is flushed after the replace for the same reason one
+    step up — see :func:`_sync_directory`.
 
     The file is restricted to its owner before the replace — see
     :func:`_restrict_to_owner` for why that matters here.
@@ -438,6 +469,10 @@ def atomic_write_json(path: Path, data) -> None:
         except OSError:
             pass
         raise
+    # Outside the try on purpose: the replace has happened, so the write is
+    # done and there is no temp file left to clean up — a failure to flush the
+    # directory must not enter the cleanup path.
+    _sync_directory(path.parent)
 
 
 def sweep_stale_tmp(directory: Path, max_age_s: float = 3600.0) -> None:
