@@ -1140,6 +1140,59 @@ def _theme_scrollbar_contrast():
         assert _contrast(palette["scroll"], palette["muted"]) >= 1.3, name
 
 
+def _theme_accent_text_contrast():
+    """A label on the accent fill must be readable — 4.5:1, not 4.28:1.
+
+    The accent buttons carry the primary action of every page (Save, Apply,
+    "Download & install", the key picker's OK) and their label is white at the
+    app's normal 10 pt, so the WCAG minimum for *normal text* applies: on the
+    brand accent that pairing measured 4.28:1 and its hover shade 3.35:1, which
+    is why the fill has a token of its own while ``ACCENT`` keeps the borders,
+    focus rings and gradients. Pure arithmetic over both schemes, like the
+    scroll-bar check above — a render only exercises the host's own scheme.
+    """
+    from listen_to_me.theme import (
+        ACCENT,
+        ACCENT_DEEP,
+        ACCENT_DOWN,
+        ACCENT_FILL,
+        ACCENT_HOVER,
+        _DARK,
+        _LIGHT,
+    )
+
+    for name, palette in (("light", _LIGHT), ("dark", _DARK)):
+        white = palette["on_accent"]
+        for state, fill in (
+            ("rest", ACCENT_FILL),
+            ("hover", ACCENT_HOVER),
+            ("pressed", ACCENT_DOWN),
+        ):
+            ratio = _contrast(white, fill)
+            assert ratio >= 4.5, f"{name} accent label ({state}): {ratio:.2f}:1"
+        # ACCENT stays a shape, never a label: fill and outline both have to
+        # stay visible against the page — the 3:1 non-text threshold. Headroom
+        # is thin there by construction (white on indigo at 4.5:1 forces a fill
+        # dark enough to sit close to a dark card: 3.03:1 today), so darkening
+        # the fill further needs a lighter outline to carry the boundary.
+        for surface in ("window", "base"):
+            ratio = _contrast(ACCENT_FILL, palette[surface])
+            assert ratio >= 3.0, f"{name} accent fill on {surface}: {ratio:.2f}:1"
+            ratio = _contrast(ACCENT, palette[surface])
+            assert ratio >= 3.0, f"{name} accent outline on {surface}: {ratio:.2f}:1"
+        # The accent as a label: the selected sidebar entry, the footer link on
+        # hover, the Help page's links. Each of those surfaces, not just the
+        # page background — the sidebar selection is a tinted one.
+        for surface in ("accent_soft", "hover", "window", "base"):
+            ratio = _contrast(palette["accent_text"], palette[surface])
+            assert ratio >= 4.5, f"{name} accent text on {surface}: {ratio:.2f}:1"
+    # The hero's record button is white in both schemes (it sits on the accent
+    # gradient), so its label needs the light shade whatever the OS says.
+    for surface in ("#ffffff", "#eef1ff", "#dbe2fe"):  # rest, hover, pressed
+        ratio = _contrast(ACCENT_DEEP, surface)
+        assert ratio >= 4.5, f"hero record button on {surface}: {ratio:.2f}:1"
+
+
 def _theme_assets_stay_out_of_shared_temp():
     """The generated chevron SVGs are loaded back through a QSS ``url()``, so
     the directory holding them must belong to this user.
@@ -3151,10 +3204,10 @@ def _theme_disabled_visible():
     # users unseen. Check the tokens themselves for both, like the scroll-bar
     # contrast check does: a disabled button must shed the accent fill and the
     # danger red, and dim its label.
-    from listen_to_me.theme import ACCENT, _DARK, _LIGHT
+    from listen_to_me.theme import ACCENT_FILL, _DARK, _LIGHT
 
     for name, palette in (("light", _LIGHT), ("dark", _DARK)):
-        ratio = _contrast(palette["disabled_bg"], ACCENT)
+        ratio = _contrast(palette["disabled_bg"], ACCENT_FILL)
         assert ratio >= 2.0, f"{name} disabled surface vs the accent fill: {ratio:.2f}:1"
         for live in ("text", "danger"):
             ratio = _contrast(palette["disabled"], palette[live])
@@ -5269,6 +5322,7 @@ _LIGHT_CHECKS = [
     ("clipboard copy is announced", _clipboard_copy_is_announced),
     ("copy button reports a failure", _copy_button_reports_failure),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
+    ("theme accent text contrast", _theme_accent_text_contrast),
     ("theme assets stay out of shared temp", _theme_assets_stay_out_of_shared_temp),
     ("mute integrations no-op", _integrations_noop),
     ("mute keybind uses virtual keys", _mute_keybind_uses_virtual_keys),

@@ -20,8 +20,21 @@ from .config import config_dir
 log = logging.getLogger(__name__)
 
 ACCENT = "#4f6ef7"
-ACCENT_HOVER = "#6a84f8"
 ACCENT_DOWN = "#3c56cf"
+# Fill of a solid accent control — the accent buttons (Save, Apply, Download &
+# install, the key picker's OK) and every text selection. Deliberately a shade
+# deeper than ACCENT: their label is white at the app's normal 10 pt, and on
+# ACCENT itself that reads 4.28:1 — below the 4.5:1 WCAG minimum for normal
+# text, and the hover shade it used to lift to (#6a84f8) was 3.35:1. ACCENT
+# keeps every place it is a *shape* rather than a label — borders, focus rings,
+# the hero gradient, the painted nav glyphs — where the 3:1 non-text minimum
+# applies and it clears it. gui_smoke asserts both thresholds.
+ACCENT_FILL = "#4560db"
+ACCENT_HOVER = "#4a66ea"
+# The accent as *text* on a light surface: the hero's white record button, and
+# the light scheme's "accent_text" token. ACCENT itself reads 4.28:1 on white
+# and only 3.50:1 on the tinted sidebar selection, so it is never a label.
+ACCENT_DEEP = "#3a4dbb"
 # Second stop of the hero gradient on the Home page (indigo → violet).
 ACCENT_ALT = "#7b5bf5"
 
@@ -43,6 +56,11 @@ _LIGHT = {
     # the 3:1 WCAG minimum for non-text UI components (asserted by gui_smoke).
     "scroll": "#868c9c",
     "accent_soft": "#e2e8fd",
+    # The accent wherever it is a label rather than a shape: the selected
+    # sidebar entry, the footer link on hover, the Help page's links. ACCENT
+    # lands between 3.0:1 and 4.3:1 on all of those, so each scheme carries a
+    # shade that clears 4.5:1 on its own surfaces (asserted by gui_smoke).
+    "accent_text": ACCENT_DEEP,
     "on_accent": "#ffffff",
     "disabled": "#a2a7b3",
     # Surface of a disabled button. Its own token rather than "alt"/"window":
@@ -63,6 +81,7 @@ _DARK = {
     "sidebar": "#101114",
     "scroll": "#6e7381",  # see the light palette's note
     "accent_soft": "#28304f",
+    "accent_text": "#9aabfc",  # see the light palette's note
     "on_accent": "#ffffff",
     "disabled": "#5b6069",
     "disabled_bg": "#1a1c21",  # see the light palette's note
@@ -111,10 +130,10 @@ def _palette(t: dict) -> QPalette:
     p.setColor(Role.ButtonText, C(t["text"]))
     p.setColor(Role.ToolTipBase, C(t["base"]))
     p.setColor(Role.ToolTipText, C(t["text"]))
-    p.setColor(Role.Highlight, C(ACCENT))
+    p.setColor(Role.Highlight, C(ACCENT_FILL))
     p.setColor(Role.HighlightedText, C(t["on_accent"]))
     p.setColor(Role.PlaceholderText, C(t["muted"]))
-    p.setColor(Role.Link, C(ACCENT))
+    p.setColor(Role.Link, C(t["accent_text"]))
     for role in (Role.WindowText, Role.Text, Role.ButtonText):
         p.setColor(Group.Disabled, role, C(t["disabled"]))
     return p
@@ -323,7 +342,7 @@ def _qss(t: dict) -> str:
         margin: 2px 2px;
         color: {t["muted"]};
     }}
-    QListWidget#nav::item:selected {{ background: {t["accent_soft"]}; color: {ACCENT}; }}
+    QListWidget#nav::item:selected {{ background: {t["accent_soft"]}; color: {t["accent_text"]}; }}
     QListWidget#nav::item:hover:!selected:!disabled {{ background: {t["hover"]}; color: {t["text"]}; }}
     /* Section headers are non-selectable (disabled) rows: muted, extra space above. */
     QListWidget#nav::item:disabled {{
@@ -374,7 +393,7 @@ def _qss(t: dict) -> str:
     }}
     QPushButton#recordBtn {{
         background: #ffffff;
-        color: {ACCENT};
+        color: {ACCENT_DEEP};
         border: none;
         border-radius: 10px;
         padding: 11px 24px;
@@ -450,7 +469,7 @@ def _qss(t: dict) -> str:
         border: 1px solid {t["border"]};
         border-radius: 8px;
         padding: 6px 9px;
-        selection-background-color: {ACCENT};
+        selection-background-color: {ACCENT_FILL};
         selection-color: {t["on_accent"]};
     }}
     QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus,
@@ -464,7 +483,7 @@ def _qss(t: dict) -> str:
     QComboBox QAbstractItemView {{
         background: {t["base"]};
         border: 1px solid {t["border"]};
-        selection-background-color: {ACCENT};
+        selection-background-color: {ACCENT_FILL};
         selection-color: {t["on_accent"]};
         outline: 0;
     }}
@@ -482,7 +501,8 @@ def _qss(t: dict) -> str:
     QPushButton:hover {{ background: {t["hover"]}; }}
     QPushButton:pressed {{ background: {t["alt"]}; }}
     QPushButton[accent="true"] {{
-        background: {ACCENT}; color: {t["on_accent"]}; border: 1px solid {ACCENT}; font-weight: 600;
+        background: {ACCENT_FILL}; color: {t["on_accent"]};
+        border: 1px solid {ACCENT_FILL}; font-weight: 600;
     }}
     QPushButton[accent="true"]:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
     QPushButton[accent="true"]:pressed {{ background: {ACCENT_DOWN}; border-color: {ACCENT_DOWN}; }}
@@ -506,7 +526,7 @@ def _qss(t: dict) -> str:
         min-height: 0;
         color: {t["muted"]};
     }}
-    QPushButton[link="true"]:hover {{ background: {t["hover"]}; color: {ACCENT}; }}
+    QPushButton[link="true"]:hover {{ background: {t["hover"]}; color: {t["accent_text"]}; }}
     QPushButton[link="true"]:pressed {{ background: {t["alt"]}; }}
     QPushButton[link="true"]:focus {{ border: 1px solid {ACCENT}; }}
     /* A disabled button MUST look disabled. This used to be a single
