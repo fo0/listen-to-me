@@ -425,6 +425,9 @@ class SettingsWindow(QDialog):
         self._dsig.hotkey_detected.connect(self._on_hotkey_detected)
         self._dsig.hw_done.connect(self._on_hw_done)
         self._diag_busy = False
+        # Set by _offer_model_download; read by _save, which must not close
+        # the window on a download it just started.
+        self._offered_download = False
         self._diag_kind: str | None = None  # "model" | "tx" | "mic" while busy
         # Bumped when a diagnostic starts AND when one is cancelled, so signals
         # from a detached worker are recognized as stale and ignored.
@@ -4324,12 +4327,12 @@ class SettingsWindow(QDialog):
                 self._history_rendered = False
         # Last: the question below is modal, and everything above it is the
         # refresh that makes the window agree with what was just saved.
-        self._offer_model_download(previous)
+        self._offered_download = self._offer_model_download(previous)
         return True
 
-    def _offer_model_download(self, previous: dict) -> None:
+    def _offer_model_download(self, previous: dict) -> bool:
         """After a saved model/backend/precision change, offer to fetch the
-        model now.
+        model now; True when one was started.
 
         Apply and Save promise the settings take effect immediately, but the
         new model is only loaded at the next recording — so the first dictation
@@ -4339,10 +4342,10 @@ class SettingsWindow(QDialog):
         """
         keys = ("model", "backend", "openvino_precision", "parakeet_quantization")
         if self._diag_busy or all(previous.get(k) == self._saved_snapshot.get(k) for k in keys):
-            return
+            return False
         status = model_cache_status(self._diag_snapshot())
         if status["cached"] or status["error"]:
-            return
+            return False
         answer = QMessageBox.question(
             self,
             APP_NAME,
@@ -4350,16 +4353,19 @@ class SettingsWindow(QDialog):
             "Otherwise the first recording after this fetches it, and waits "
             "until it is done.",
         )
-        if answer == QMessageBox.StandardButton.Yes:
-            self._show_page("Engine")
-            self._download_model()
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        self._show_page("Engine")
+        self._download_model()
+        return True
 
     def _save(self) -> None:
         if not self._apply_values():
             return
         # A download the offer above just started lives on this page: closing
-        # now would run _cancel_diagnostics and throw it away.
-        if self._diag_busy:
+        # now would run _cancel_diagnostics and throw it away. Only that one —
+        # a diagnostic that was already running must not block Save.
+        if self._offered_download:
             return
         self.accept()
 
