@@ -65,6 +65,9 @@ from .choices import (
     SYSTEM_DEFAULT_DEVICE,
     backend_from_label,
     backend_label,
+    choice_label,
+    choice_labels,
+    choice_value,
     clipboard_copy_from_label,
     clipboard_copy_label,
     clipboard_copy_mode,
@@ -1164,24 +1167,28 @@ class SettingsWindow(QDialog):
         form.addRow("Intel device:", self.ov_device_combo)
 
         self.ov_precision_combo = QComboBox()
-        self.ov_precision_combo.addItems(OPENVINO_PRECISIONS)
-        self._select_combo(self.ov_precision_combo, self.cfg["openvino_precision"])
+        self.ov_precision_combo.addItems(choice_labels(OPENVINO_PRECISIONS))
+        ov_precision = choice_label(OPENVINO_PRECISIONS, self.cfg["openvino_precision"])
+        self._select_combo(self.ov_precision_combo, ov_precision)
         self.ov_precision_combo.setToolTip(
             "OpenVINO model precision — which pre-converted variant of the model to "
             "download: int8 is small and fast (recommended), fp16 the most accurate, "
             "int4 the smallest. Changing this downloads the model again in the new "
             "precision."
         )
+        elastic_combo(self.ov_precision_combo)  # long items widen the page
         form.addRow("Precision:", self.ov_precision_combo)
 
         self.pk_quant_combo = QComboBox()
-        self.pk_quant_combo.addItems(PARAKEET_QUANTIZATIONS)
-        self._select_combo(self.pk_quant_combo, self.cfg["parakeet_quantization"])
+        self.pk_quant_combo.addItems(choice_labels(PARAKEET_QUANTIZATIONS))
+        pk_quant = choice_label(PARAKEET_QUANTIZATIONS, self.cfg["parakeet_quantization"])
+        self._select_combo(self.pk_quant_combo, pk_quant)
         self.pk_quant_combo.setToolTip(
             "Parakeet precision — which ONNX variant of the model to download: int8 "
             "is small and fast on the CPU (recommended), fp32 the most accurate — "
             "best with a GPU. Changing this downloads the model again."
         )
+        elastic_combo(self.pk_quant_combo)
         form.addRow("Precision:", self.pk_quant_combo)
 
         self.chk_vad = self._checkbox(
@@ -2413,8 +2420,8 @@ class SettingsWindow(QDialog):
             "initial_prompt": self.initial_prompt_edit.toPlainText().strip(),
             "vad_filter": self.chk_vad.isChecked(),
             "openvino_device": self.ov_device_combo.currentText(),
-            "openvino_precision": self.ov_precision_combo.currentText(),
-            "parakeet_quantization": self.pk_quant_combo.currentText(),
+            "openvino_precision": choice_value(OPENVINO_PRECISIONS, self.ov_precision_combo.currentText()),
+            "parakeet_quantization": choice_value(PARAKEET_QUANTIZATIONS, self.pk_quant_combo.currentText()),
         }
 
     def _set_hotkey_paused(self, paused: bool) -> None:
@@ -4081,8 +4088,8 @@ class SettingsWindow(QDialog):
             "compute_type": self.compute_combo.currentText(),
             "beam_size": int(self.beam_spin.value()),
             "openvino_device": self.ov_device_combo.currentText(),
-            "openvino_precision": self.ov_precision_combo.currentText(),
-            "parakeet_quantization": self.pk_quant_combo.currentText(),
+            "openvino_precision": choice_value(OPENVINO_PRECISIONS, self.ov_precision_combo.currentText()),
+            "parakeet_quantization": choice_value(PARAKEET_QUANTIZATIONS, self.pk_quant_combo.currentText()),
             "vad_filter": self.chk_vad.isChecked(),
             "history_enabled": self.chk_history_enabled.isChecked(),
             "history_max": int(self.history_max_spin.value()),

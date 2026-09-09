@@ -130,8 +130,19 @@ BACKENDS = [
     ("parakeet", "Parakeet — fastest engine, NVIDIA GPU (CUDA) / CPU"),
 ]
 OPENVINO_DEVICES = ["auto", "cpu", "gpu", "npu"]
-OPENVINO_PRECISIONS = ["int8", "fp16", "int4"]
-PARAKEET_QUANTIZATIONS = ["int8", "fp32"]
+
+# (config value, note in parentheses), MODEL_CHOICES' shape — these dropdowns
+# pick a download too. OpenVINO converts whichever preset is selected, so only
+# the ratio holds; Parakeet is one model, hence absolute sizes.
+OPENVINO_PRECISIONS = [
+    ("int8", "recommended — smallest full-accuracy download, about half of fp16"),
+    ("fp16", "most accurate — the largest download, about twice int8"),
+    ("int4", "smallest download, at some accuracy cost"),
+]
+PARAKEET_QUANTIZATIONS = [
+    ("int8", "recommended — fast on the CPU, ~0.7 GB"),
+    ("fp32", "most accurate, best with a GPU, ~2.5 GB"),
+]
 
 # What happens to a finished transcript *besides* being inserted at the cursor.
 # (config value, label shown in the dropdown)
@@ -159,6 +170,18 @@ def model_label(name: str) -> str:
         if model == name:
             return f"{model}  ({benefit})"
     return name
+
+
+def choice_label(choices: list[tuple[str, str]], value: str) -> str:
+    """"<value>  (<note>)", or the bare value — a hand-edited one has no note."""
+    for item, note in choices:
+        if item == value:
+            return f"{item}  ({note})"
+    return value
+
+
+def choice_labels(choices: list[tuple[str, str]]) -> list[str]:
+    return [choice_label(choices, value) for value, _note in choices]
 
 
 def backend_label(backend: str) -> str:
@@ -207,6 +230,15 @@ def model_from_label(label: str) -> str:
             return model
     # Custom Hugging Face model id typed by the user — keep it verbatim.
     return label or "small"
+
+
+def choice_value(choices: list[tuple[str, str]], label: str) -> str:
+    """Inverse of :func:`choice_label` — an unlisted label is its own value."""
+    label = label.strip()
+    for item, _note in choices:
+        if label == choice_label(choices, item):
+            return item
+    return label or choices[0][0]
 
 
 def backend_from_label(label: str) -> str:
