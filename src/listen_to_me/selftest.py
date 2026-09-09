@@ -1151,7 +1151,15 @@ def _theme_accent_text_contrast():
     focus rings and gradients. Pure arithmetic over both schemes, like the
     scroll-bar check above — a render only exercises the host's own scheme.
     """
-    from listen_to_me.theme import ACCENT, ACCENT_DOWN, ACCENT_FILL, ACCENT_HOVER, _DARK, _LIGHT
+    from listen_to_me.theme import (
+        ACCENT,
+        ACCENT_DEEP,
+        ACCENT_DOWN,
+        ACCENT_FILL,
+        ACCENT_HOVER,
+        _DARK,
+        _LIGHT,
+    )
 
     for name, palette in (("light", _LIGHT), ("dark", _DARK)):
         white = palette["on_accent"]
@@ -1172,6 +1180,17 @@ def _theme_accent_text_contrast():
             assert ratio >= 3.0, f"{name} accent fill on {surface}: {ratio:.2f}:1"
             ratio = _contrast(ACCENT, palette[surface])
             assert ratio >= 3.0, f"{name} accent outline on {surface}: {ratio:.2f}:1"
+        # The accent as a label: the selected sidebar entry, the footer link on
+        # hover, the Help page's links. Each of those surfaces, not just the
+        # page background — the sidebar selection is a tinted one.
+        for surface in ("accent_soft", "hover", "window", "base"):
+            ratio = _contrast(palette["accent_text"], palette[surface])
+            assert ratio >= 4.5, f"{name} accent text on {surface}: {ratio:.2f}:1"
+    # The hero's record button is white in both schemes (it sits on the accent
+    # gradient), so its label needs the light shade whatever the OS says.
+    for surface in ("#ffffff", "#eef1ff", "#dbe2fe"):  # rest, hover, pressed
+        ratio = _contrast(ACCENT_DEEP, surface)
+        assert ratio >= 4.5, f"hero record button on {surface}: {ratio:.2f}:1"
 
 
 def _theme_assets_stay_out_of_shared_temp():

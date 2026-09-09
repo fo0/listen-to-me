@@ -2029,11 +2029,13 @@ class SettingsWindow(QDialog):
     def _help_stylesheet() -> str:
         """A tiny theme-aware style sheet for the Help browser: accent links and
         a subtle background behind inline <code> so DLL/command names stand out."""
-        from .theme import ACCENT, is_dark
+        from .theme import is_dark, tokens
 
         code_bg = "#3a3d41" if is_dark() else "#eceef1"
+        # accent_text, not ACCENT: a link is a label, and the brand accent sits
+        # at 4.28:1 (light) / 3.76:1 (dark) on the browser's background.
         return (
-            f"a {{ color: {ACCENT}; }}"
+            f"a {{ color: {tokens()['accent_text']}; }}"
             f"h3 {{ margin-top: 4px; }}"
             f"code {{ background-color: {code_bg}; }}"
         )
