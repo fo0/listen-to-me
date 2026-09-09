@@ -83,7 +83,7 @@ from .choices import (
     openvino_supports_model,
 )
 from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
-from .diagnostics import DiagnosticsEngine
+from .diagnostics import DiagnosticsEngine, model_cache_status
 from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
@@ -4305,7 +4305,7 @@ class SettingsWindow(QDialog):
                 "the reason.",
             )
         self.app.apply_settings()
-        self._saved_snapshot = self._collect()
+        previous, self._saved_snapshot = self._saved_snapshot, self._collect()
         # A saved device/precision/model change invalidates the loaded model
         # (or swapped the transcriber), so the "Running on" line changes too.
         self._refresh_runtime_status()
@@ -4322,11 +4322,46 @@ class SettingsWindow(QDialog):
                 self._refresh_history()
             else:
                 self._history_rendered = False
+        # Last: the question below is modal, and everything above it is the
+        # refresh that makes the window agree with what was just saved.
+        self._offer_model_download(previous)
         return True
 
+    def _offer_model_download(self, previous: dict) -> None:
+        """After a saved model/backend/precision change, offer to fetch the
+        model now.
+
+        Apply and Save promise the settings take effect immediately, but the
+        new model is only loaded at the next recording — so the first dictation
+        after the change can block for minutes on a download nobody asked for
+        at that moment. model_cache_status is disk-only and never raises, so
+        asking is cheap; a diagnostic already running owns the page instead.
+        """
+        keys = ("model", "backend", "openvino_precision", "parakeet_quantization")
+        if self._diag_busy or all(previous.get(k) == self._saved_snapshot.get(k) for k in keys):
+            return
+        status = model_cache_status(self._diag_snapshot())
+        if status["cached"] or status["error"]:
+            return
+        answer = QMessageBox.question(
+            self,
+            APP_NAME,
+            f"'{status['target']}' is not downloaded yet.\n\nDownload it now? "
+            "Otherwise the first recording after this fetches it, and waits "
+            "until it is done.",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            self._show_page("Engine")
+            self._download_model()
+
     def _save(self) -> None:
-        if self._apply_values():
-            self.accept()
+        if not self._apply_values():
+            return
+        # A download the offer above just started lives on this page: closing
+        # now would run _cancel_diagnostics and throw it away.
+        if self._diag_busy:
+            return
+        self.accept()
 
     def _apply(self) -> None:
         if self._apply_values():
