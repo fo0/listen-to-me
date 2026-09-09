@@ -862,6 +862,14 @@ class SettingsWindow(QDialog):
         pick.clicked.connect(self._pick_hotkey)
         hk.addWidget(pick)
         form.addRow("Global hotkey:", hotkey_row)
+        # An error style, not one more grey note: the wizard already validates
+        # this same value inline, while here it only surfaced as a modal at Save.
+        self._hotkey_error = self._hint("")
+        self._hotkey_error.setProperty("role", "error")
+        form.addRow("", self._hotkey_error)
+        self._general_form = form
+        self.hotkey_edit.textChanged.connect(self._refresh_hotkey_error)
+        self._refresh_hotkey_error()
 
         modes = QWidget()
         mv = QVBoxLayout(modes)
@@ -2159,6 +2167,27 @@ class SettingsWindow(QDialog):
         combo = self._capture_hotkey()
         if combo:
             self.hotkey_edit.setText(combo)
+
+    def _refresh_hotkey_error(self) -> None:
+        """Show or clear the inline reason under the hotkey field. The modal in
+        _validate stays — a label is never announced to a screen reader whose
+        focus is on the Save button that refused, which is also why the reason
+        rides on the field itself (the wizard's _validate_hotkey rule)."""
+        hotkey = self.hotkey_edit.text().strip()
+        try:
+            valid = Hotkeys.validate(hotkey)
+        except Exception:
+            # Parsing needs pynput, which a headless run cannot import. Calling
+            # a combination broken because we could not look is worse than
+            # staying quiet, and Save checks it again anyway.
+            log.debug("could not check the hotkey %r while editing", hotkey, exc_info=True)
+            valid = True
+        reason = "" if valid else (
+            f"“{hotkey}” is not a valid combination — click “Change…” and press the keys."
+        )
+        self._hotkey_error.setText(reason)
+        self.hotkey_edit.setAccessibleDescription(reason)
+        self._general_form.setRowVisible(self._hotkey_error, bool(reason))
 
     def _browse_model_dir(self) -> None:
         initial = self.model_dir_edit.text().strip() or str(default_model_dir())
@@ -4219,6 +4248,28 @@ class SettingsWindow(QDialog):
                 )
                 row.hotkey_edit.setFocus()
                 return False
+
+        # Last, because it is the only check that writes. An unusable model
+        # folder used to fail at "Open folder" or at the first download on a
+        # worker thread; mkdir catches a typo, a missing drive letter and a
+        # read-only parent alike. Empty = the Hugging Face cache, nothing to do.
+        if values["model_dir"]:
+            from pathlib import Path
+
+            try:
+                Path(values["model_dir"]).mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self._show_page("Engine")
+                QMessageBox.critical(
+                    self,
+                    APP_NAME,
+                    f"This model folder cannot be used:\n{values['model_dir']}\n\n{exc}\n\n"
+                    "Pick an existing folder, or empty the field to use the "
+                    "Hugging Face cache instead.",
+                )
+                self.model_dir_edit.setFocus()
+                return False
+
         return True
 
     def _apply_values(self) -> bool:
