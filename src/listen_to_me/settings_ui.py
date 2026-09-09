@@ -507,8 +507,10 @@ class SettingsWindow(QDialog):
                 glyph = _NAV_GLYPHS.get(title)
                 if glyph:
                     # Selected rows recolour their glyph to the accent (the
-                    # tinted row keeps the muted glyph unreadable otherwise).
-                    item.setIcon(glyph_icon(glyph, colors["muted"], ACCENT, size=18))
+                    # tinted row keeps the muted glyph unreadable otherwise) —
+                    # to accent_text, the same shade the row's label takes, so
+                    # icon and label are not two different indigos side by side.
+                    item.setIcon(glyph_icon(glyph, colors["muted"], colors["accent_text"], size=18))
                 self.nav.addItem(item)
                 self._page_index[title] = index
                 self._nav_row[title] = self.nav.count() - 1
@@ -2017,7 +2019,9 @@ class SettingsWindow(QDialog):
                 glyph = _NAV_GLYPHS.get(title)
                 item = self.nav.item(row)
                 if glyph and item is not None:
-                    item.setIcon(glyph_icon(glyph, colors["muted"], ACCENT, size=18))
+                    item.setIcon(
+                        glyph_icon(glyph, colors["muted"], colors["accent_text"], size=18)
+                    )
             self.home.restyle_icons(colors["muted"], ACCENT)
             self.repo_button.setIcon(glyph_icon("link", colors["muted"], ACCENT, size=14))
             self.releases_button.setIcon(glyph_icon("download", colors["muted"], ACCENT, size=14))
