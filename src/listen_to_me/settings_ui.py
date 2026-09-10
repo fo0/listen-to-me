@@ -2589,8 +2589,31 @@ class SettingsWindow(QDialog):
         """Switch the sidebar (and with it the stack) to the page `title`."""
         self.nav.setCurrentRow(self._nav_row[title])
 
+    def _stop_app_hotkeys(self) -> None:
+        """Stop *both* of the app's global listeners (#191).
+
+        Three paths in this window take the hotkey away from the app so that
+        keys pressed at a dialog cannot start a real recording: the key picker,
+        the hotkey test and a diagnostic that records. Stopping the microphone
+        listener alone left the system-audio combination live, and pressing it
+        then started a take nobody asked for behind a modal dialog.
+
+        A method here rather than a shared one on App: `App._stop_hotkeys` does
+        exactly this, but it is app-private and a UI module reaching into it
+        would invert the dependency between the two. Nothing is needed for the
+        way back — `App._register_hotkey` registers both listeners, which is
+        what every caller below already calls.
+
+        getattr like everywhere else the second source is read: the headless
+        self-test drives this window against an App stub that predates it.
+        """
+        self.app.hotkeys.stop()
+        listener = getattr(self.app, "system_hotkeys", None)
+        if listener is not None:
+            listener.stop()
+
     def _capture_hotkey(self) -> str | None:
-        """Open the key picker with the live global hotkey paused, otherwise
+        """Open the key picker with the live global hotkeys paused, otherwise
         pressing keys to pick a combo would trigger a real recording behind the
         dialog. Nothing is applied until Save, so the old hotkey is restored."""
         if self._app_busy():
@@ -2603,7 +2626,7 @@ class SettingsWindow(QDialog):
         if self._hotkey_test is not None:
             # A running hotkey test would swallow the picker's key presses.
             self._finish_hotkey_test("")
-        self.app.hotkeys.stop()
+        self._stop_app_hotkeys()
         # Ownership flag for _set_hotkey_paused: a recording diagnostic that
         # finishes while the modal picker is open must not re-register the
         # live listener mid-capture — the finally below restores it instead.
@@ -3138,7 +3161,7 @@ class SettingsWindow(QDialog):
             return
         try:
             if paused:
-                self.app.hotkeys.stop()
+                self._stop_app_hotkeys()
             else:
                 self.app._register_hotkey()
         except Exception:
@@ -3477,9 +3500,11 @@ class SettingsWindow(QDialog):
         if not Hotkeys.validate(combo):
             self.hotkey_test_status.setText("Invalid hotkey — fix the combination first.")
             return
-        # Pause the app's real listener so the test press can't start a real
-        # recording behind the dialog (same pattern as _capture_hotkey).
-        self.app.hotkeys.stop()
+        # Pause the app's real listeners so the test press can't start a real
+        # recording behind the dialog (same pattern as _capture_hotkey). Both of
+        # them: the tested combination is the microphone's, but the system-audio
+        # one is just as live while the user is pressing keys at this page.
+        self._stop_app_hotkeys()
         test = Hotkeys(lambda: self._dsig.hotkey_detected.emit())
         try:
             test.register(combo, mode="toggle")
@@ -5000,13 +5025,21 @@ class SettingsWindow(QDialog):
                 )
                 row.hotkey_edit.setFocus()
                 return False
-            if Hotkeys.equal(target["hotkey"], hotkey):
+            # Against both recording hotkeys (#191), and the message names which
+            # one it hit: "the recording hotkey" no longer identifies one of
+            # them, and a keybind clashing with the system-audio combination
+            # starts that take instead of muting the app — the same failure the
+            # check has always been about. An empty system-audio hotkey means
+            # the second source is off and cannot clash with anything.
+            for combo, source_name in ((hotkey, "microphone"), (sys_hotkey, "system audio")):
+                if not combo or not Hotkeys.equal(target["hotkey"], combo):
+                    continue
                 self._show_page("Integrations")
                 QMessageBox.critical(
                     self,
                     APP_NAME,
-                    f"“{target['name']}” uses the same keybind as the recording "
-                    f"hotkey ({hotkey}).\n\nGive the app a different combination — "
+                    f"“{target['name']}” uses the same keybind as the {source_name} "
+                    f"hotkey ({combo}).\n\nGive the app a different combination — "
                     "otherwise muting it would also start/stop your recording.",
                 )
                 row.hotkey_edit.setFocus()

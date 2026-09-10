@@ -287,20 +287,33 @@ class OnboardingWizard(QWizard):
     # ------------------------------------------------------------ handlers
 
     def _capture_hotkey(self) -> str | None:
-        """Open the key picker with the app's live global hotkey paused.
+        """Open the key picker with the app's live global hotkeys paused.
 
         App registers the hotkey before it shows this wizard, so pressing the
         currently active combination while picking would start a real recording
         behind the modal wizard — on the user's very first launch. Nothing is
         applied until Finish, so the old hotkey is simply restored afterwards
-        (same pattern as settings_ui._capture_hotkey)."""
+        (same pattern as settings_ui._capture_hotkey).
+
+        Both listeners (#191): a first launch inherits a config with no
+        system-audio hotkey, but this wizard is also the path back after a
+        deleted config file, and that combination would then be just as live as
+        the microphone's while the user is pressing candidate keys. The two
+        lines are duplicated from `SettingsWindow._stop_app_hotkeys` on purpose:
+        this is the only site in this module, and neither a second helper nor an
+        import from the settings window would carry its weight here — the way
+        back is `App._register_hotkey` for both of them either way.
+        """
         app = self._app
         if app is None:  # bare-Config construction (headless self-test)
             return HotkeyCaptureDialog.ask(self)
         try:
             app.hotkeys.stop()
+            listener = getattr(app, "system_hotkeys", None)
+            if listener is not None:
+                listener.stop()
         except Exception:
-            log.debug("could not pause the global hotkey for the key picker", exc_info=True)
+            log.debug("could not pause the global hotkeys for the key picker", exc_info=True)
         try:
             return HotkeyCaptureDialog.ask(self)
         finally:
