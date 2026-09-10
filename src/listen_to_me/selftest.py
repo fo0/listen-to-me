@@ -5468,6 +5468,15 @@ def _overlay_preview_anchor_places_the_bubble():
       be clicked (and eats the click on any platform that ignores
       WindowTransparentForInput); inside the screen because half a preview is
       not a preview.
+    - and it has to do that for a pointer **outside** `geo` as well. The
+      first version of this check ran the pointer from `geo.left()`/`top()`
+      to `geo.right()`/`bottom()` only, which is precisely why a missing
+      lower bound in `_clear_of` shipped: every violating case has the
+      pointer outside the rectangle, none inside it. `geo` is
+      `availableGeometry()`, so "outside" is the ordinary desktop — a
+      top-docked taskbar, a GNOME top bar, the macOS menu bar, a left-docked
+      Windows taskbar — plus the pointer-on-no-screen case, where
+      `_screen_geometry` pairs a point from nowhere with the icon's screen.
 
     And the degradation, because `preview_anchor` is untrusted, hand-editable
     input whose default is a string: `config._coerce` lets every string
@@ -5600,6 +5609,57 @@ def _overlay_preview_anchor_places_the_bubble():
         assert cursor_bubble_position(
             geo.center().x(), geo.center().y(), geo.width() + 200, geo.height() + 200, geo
         ) == (geo.left() + 4, geo.top() + 4)
+
+    # --- the cursor anchor with the pointer OUTSIDE geo ----------------
+    # A 40 px panel docked at the top and a 62 px Windows taskbar on the left:
+    # `geo` is availableGeometry, so the panel is a strip the pointer visits
+    # and the rectangle does not contain. Measured values, because the failure
+    # was quantitative — before the lower bound in `_clear_of`, the pointer at
+    # y=0 put the bubble's top edge at y=22, i.e. 22 px inside the panel, and
+    # the pointer at x=0 put its left edge at x=16 instead of 66.
+    _TOP_PANEL = QRect(0, 40, 1920, 1040)
+    _LEFT_PANEL = QRect(62, 0, 1858, 1040)
+    assert cursor_bubble_position(500, 0, 320, 60, _TOP_PANEL) == (516, 44)
+    assert cursor_bubble_position(0, 500, 320, 60, _LEFT_PANEL) == (66, 522)
+    # A pointer from nowhere. `_screen_geometry` answers with the *icon's*
+    # rectangle for a point on no screen at all (the gap between two monitors
+    # of unequal height, a position left over from a monitor that went away),
+    # so the point and the rectangle really can be this far apart — and a
+    # bubble placed relative to the point alone lands off every screen: a
+    # preview the app believes is up and the user never sees.
+    assert cursor_bubble_position(-3000, -3000, 320, 60, _GEO) == (4, 4)
+    assert cursor_bubble_position(9000, 9000, 320, 60, _GEO) == (676, 736)
+    # A ring of pointers around and across each rectangle, negative origins
+    # included. Every one of these must land inside `geo` *and* clear the
+    # pointer: a rectangle wholly inside `geo` cannot contain a point outside
+    # it, so for the pointer this block adds there is no trade-off between
+    # the two invariants at all — which is what makes them both assertable
+    # here without exception.
+    for geo in (_GEO, _GEO_OFFSET, _TOP_PANEL, _LEFT_PANEL):
+        for px in (
+            geo.left() - 3000,
+            geo.left() - 200,
+            geo.left() - 40,
+            geo.left() - 1,
+            geo.center().x(),
+            geo.right() + 1,
+            geo.right() + 40,
+            geo.right() + 200,
+            geo.right() + 3000,
+        ):
+            for py in (
+                geo.top() - 3000,
+                geo.top() - 200,
+                geo.top() - 40,
+                geo.top() - 1,
+                geo.center().y(),
+                geo.bottom() + 1,
+                geo.bottom() + 40,
+                geo.bottom() + 200,
+                geo.bottom() + 3000,
+            ):
+                for width, height in ((320, 60), (320, 300), (120, 24)):
+                    _placed(px, py, width, height, geo)
 
 
 def _overlay_preview_follows_the_pointer():
@@ -5929,6 +5989,192 @@ def _the_poll_ticks_the_cursor_preview():
             app.overlay.destroy()
 
 
+def _the_take_starts_the_preview_its_anchor_needs():
+    """Something has to *fill* the live-preview bubble — and which anchor is
+    set decides whether anything does.
+
+    Two conditions, one feature, and they drifted apart (#196):
+    `Overlay.set_state("recording")` puts the bubble up on `live_preview`
+    alone, while the producer of the text in it — `_live_preview_loop`, or a
+    `post_preview=True` LiveTyper — was gated on `overlay.enabled` as well.
+    With the cursor anchor and the floating icon switched off (the combination
+    the anchor exists for, and the one the Settings hint, both READMEs and the
+    changelog promise) the bubble came up at the pointer reading
+    "● Listening…", followed the pointer for the whole take, and nothing ever
+    replaced that string. No exception, no log line: a frozen placeholder is
+    what "it works" looks like from the outside.
+
+    The other direction matters just as much and is why this is not simply
+    `live_preview` on its own: with the icon anchor and no icon on screen,
+    `_show_bubble` refuses to draw at all, so a preview loop there would spend
+    the model on partials that are thrown away — a decode loop nobody sees, on
+    the machine of someone who turned the icon off.
+
+    Asserted through `App._start_recording` borrowed unbound onto a stub — the
+    way `_the_poll_ticks_the_cursor_preview` borrows `_poll` — and not by
+    re-computing the gate here: a check that restates the expression agrees
+    with any wrong expression it is copied from, and this bug *is* the
+    expression. What the stub has to supply beyond it is small (a recorder, a
+    state setter, a beep, the two producers) because the default
+    `input_device` is `None`, which `resolve_input_device` passes straight
+    through without enumerating any hardware.
+
+    The producers are distinguished by which one runs, not by timing: the gate
+    sits in an if/else whose other arm is `_warm_up_model`, so "warm-up ran"
+    proves the preview thread was never created, and the preview arm signals
+    an Event the thread sets from inside `_live_preview_loop`.
+    """
+    import threading
+
+    from listen_to_me import app as app_module
+    from listen_to_me.app import App
+    from listen_to_me.choices import SOURCE_MIC
+    from listen_to_me.config import Config
+    from listen_to_me.overlay import ANCHOR_CURSOR, ANCHOR_ICON
+
+    class _Recorder:
+        def __init__(self):
+            self.starts = 0
+
+        def start(self, **kwargs):
+            self.starts += 1
+
+    class _LiveTyper:
+        """Stands in for the real worker: it would load the model and type into
+        the focused window. Only the flag it is handed is under test."""
+
+        made: list[bool] = []
+
+        def __init__(self, app, recording_id, post_preview):
+            _LiveTyper.made.append(bool(post_preview))
+
+        def start(self):
+            pass
+
+    class _App:
+        # Borrowed unbound: a real App needs a tray, a transcriber, an injector.
+        _start_recording = App._start_recording
+
+        def __init__(self, tmp, *, live_typing=False):
+            self.cfg = Config(path=tmp / "config.json")
+            self.cfg["live_typing"] = live_typing
+            self.recorder = _Recorder()
+            self.state = "idle"
+            self._recording_id = 0
+            self._live_typer = None
+            self._device_fallback_notified: dict = {}
+            self.ran: list[str] = []
+            self.previewing = threading.Event()
+
+        def notify(self, *args, **kwargs):
+            self.ran.append("notify")
+
+        def post(self, *args, **kwargs):
+            pass
+
+        def _set_state(self, state):
+            self.state = state
+
+        def _beep(self, frequency):
+            pass
+
+        def _live_typing_gate(self):
+            return None  # only reached when cfg["live_typing"] is on
+
+        def _live_preview_loop(self, recording_id):
+            self.ran.append("preview")
+            self.previewing.set()
+
+        def _warm_up_model(self):
+            self.ran.append("warm-up")
+
+    def _producer(tmp, *, enabled, live_preview, anchor, live_typing=False):
+        """Which of the two arms this configuration takes for one take."""
+        app = _App(tmp, live_typing=live_typing)
+        ocfg = app.cfg["overlay"]
+        ocfg["enabled"] = enabled
+        ocfg["live_preview"] = live_preview
+        ocfg["preview_anchor"] = anchor
+        _LiveTyper.made = []
+        app._start_recording(SOURCE_MIC)
+        # The take really started — otherwise every "no producer ran" below
+        # would pass for the wrong reason.
+        assert app.recorder.starts == 1, app.recorder.starts
+        assert app.state == "recording", app.state
+        if live_typing:
+            assert app.ran == [], app.ran
+            assert len(_LiveTyper.made) == 1, _LiveTyper.made
+            return "live-typer-preview" if _LiveTyper.made[0] else "live-typer-only"
+        assert not _LiveTyper.made, _LiveTyper.made
+        if app.ran == ["warm-up"]:
+            # The if/else is exclusive: the warm-up arm proves no thread was
+            # started, with nothing to wait for.
+            return "warm-up"
+        assert app.previewing.wait(10), app.ran
+        assert app.ran == ["preview"], app.ran
+        return "preview"
+
+    real_typer = app_module.LiveTyper
+    app_module.LiveTyper = _LiveTyper
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            # THE FIX: the anchor the icon is not needed for gets its producer.
+            assert (
+                _producer(tmp, enabled=False, live_preview=True, anchor=ANCHOR_CURSOR) == "preview"
+            ), "a cursor-anchored live preview would stay frozen at '● Listening…'"
+            # …and the anchor that does need the icon still does not, because
+            # _show_bubble would throw every partial away.
+            assert (
+                _producer(tmp, enabled=False, live_preview=True, anchor=ANCHOR_ICON) == "warm-up"
+            ), "a decode loop ran for a bubble _show_bubble refuses to draw"
+            # An unplaceable hand-edited value gates like the icon it degrades
+            # to. `preview_anchor` is what the gate narrows through, so the
+            # producer can never disagree with the placement about which
+            # anchor is in force — today a bare `== "cursor"` would answer
+            # these identically, and that is exactly the equivalence that
+            # stops holding the moment PREVIEW_ANCHORS grows a third value or
+            # the narrowing starts normalizing anything.
+            for junk in ("mouse-pointer", "Cursor", "", None, 7):
+                assert (
+                    _producer(tmp, enabled=False, live_preview=True, anchor=junk) == "warm-up"
+                ), repr(junk)
+            # With the icon on, both anchors produce — unchanged behaviour.
+            for anchor in (ANCHOR_ICON, ANCHOR_CURSOR):
+                assert (
+                    _producer(tmp, enabled=True, live_preview=True, anchor=anchor) == "preview"
+                ), anchor
+                # And the setting that switches the preview off outranks the
+                # anchor: nothing shows the text, so nothing decodes it.
+                assert (
+                    _producer(tmp, enabled=True, live_preview=False, anchor=anchor) == "warm-up"
+                ), anchor
+                assert (
+                    _producer(tmp, enabled=False, live_preview=False, anchor=anchor) == "warm-up"
+                ), anchor
+            # The live typer is the *other* consumer of the same gate: when it
+            # runs it owns the decode loop and feeds the preview itself, so the
+            # flag it is handed has to answer the anchor question too.
+            assert (
+                _producer(
+                    tmp,
+                    enabled=False,
+                    live_preview=True,
+                    anchor=ANCHOR_CURSOR,
+                    live_typing=True,
+                )
+                == "live-typer-preview"
+            ), "the live typer would not feed a cursor-anchored bubble"
+            assert (
+                _producer(
+                    tmp, enabled=False, live_preview=True, anchor=ANCHOR_ICON, live_typing=True
+                )
+                == "live-typer-only"
+            )
+    finally:
+        app_module.LiveTyper = real_typer
+
+
 def _overlay_preview_anchor_round_trips():
     """The #196 setting survives the Settings window.
 
@@ -5968,6 +6214,16 @@ def _overlay_preview_anchor_round_trips():
             assert combo.currentText() == "The floating icon"
             assert combo.itemText(1) == "The mouse pointer"
             assert window._collect()["overlay"]["preview_anchor"] == ANCHOR_ICON
+
+            # The two checkboxes this dropdown governs must not name a place
+            # themselves. Both said "next to the icon" — the wrong place with
+            # the anchor on the pointer, and contradicted by the row sitting
+            # directly beneath them. Wording, so nothing but a check like this
+            # notices it going stale again.
+            for box in (window.chk_o_preview, window.chk_o_live):
+                for wording in (box.text(), box.toolTip()):
+                    assert "next to the icon" not in wording, wording
+                    assert "beside the icon" not in wording, wording
 
             combo.setCurrentIndex(combo.findData(ANCHOR_CURSOR))
             values = window._collect()
@@ -9685,6 +9941,7 @@ _LIGHT_CHECKS = [
     ("overlay preview anchor places the bubble", _overlay_preview_anchor_places_the_bubble),
     ("overlay preview follows the pointer", _overlay_preview_follows_the_pointer),
     ("the poll ticks the cursor preview", _the_poll_ticks_the_cursor_preview),
+    ("the take starts the preview its anchor needs", _the_take_starts_the_preview_its_anchor_needs),
     ("overlay preview anchor round-trips", _overlay_preview_anchor_round_trips),
     ("overlay counts the recording time", _overlay_counts_the_recording_time),
     ("overlay lists recent transcripts", _overlay_lists_recent_transcripts),

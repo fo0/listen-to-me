@@ -2024,16 +2024,21 @@ class SettingsWindow(QDialog):
             "icon look like it vanished when it is only buried. Turn off to let windows cover it.",
         )
         cv.addWidget(self.chk_o_on_top)
+        # Neither of these two says *where* the text appears: "Show the
+        # transcript at" below owns that, and with it set to the mouse pointer
+        # a label promising "next to the icon" describes the wrong place — the
+        # more so as the row that overrules it sits directly underneath.
         self.chk_o_preview = self._checkbox(
-            "Show the transcribed text next to the icon after each recording",
+            "Show the transcribed text after each recording",
             ocfg["show_preview"],
-            "After a recording, the text pops up in a small bubble next to the icon for a few seconds.",
+            "After a recording, the text pops up in a small bubble for a few seconds — "
+            "“Show the transcript at” below decides where.",
         )
         cv.addWidget(self.chk_o_preview)
         self.chk_o_live = self._checkbox(
             "Live transcript preview while recording (experimental)",
             ocfg["live_preview"],
-            "A rolling preview of the recognized text next to the icon while you speak.",
+            "A rolling preview of the recognized text while you speak, in the same bubble.",
         )
         cv.addWidget(self.chk_o_live)
         cv.addWidget(self._hint(

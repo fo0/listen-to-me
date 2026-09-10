@@ -220,22 +220,44 @@ def icon_bubble_position(
     return x, y
 
 
-def _clear_of(point: int, size: int, low: int, high: int, gap: int) -> tuple[int, bool]:
+def _clear_of(point: int, size: int, low: int, high: int, gap: int) -> int:
     """One axis of the cursor placement: where a span of `size` starts so it
     clears `point` by `gap` and stays inside `[low, high]` (both inclusive).
 
-    Returns `(start, cleared)` — `cleared` is False when neither side had
-    room, in which case the span is merely held inside the range. The caller
-    needs that flag: the bubble misses the pointer as soon as *one* axis
-    cleared it, so only "neither did" is a bubble drawn over the pointer.
+    **Every candidate side is checked against *both* bounds**, because `point`
+    is the mouse pointer and the pointer can lie outside `[low, high]`: `geo`
+    is `availableGeometry()`, so a pointer over a top-docked taskbar, a GNOME
+    top bar or the macOS menu bar sits above it and one over a left-docked
+    taskbar sits left of it — and `_screen_geometry` pairs a pointer on no
+    screen at all with the icon's rectangle, which can be arbitrarily far
+    away. An `after` tested against the upper bound alone then started the
+    span *below* `low`: a pointer on a 40 px top panel put the bubble 22 px
+    inside that panel, and a pointer at (-3000, -3000) put it off every
+    screen — a preview the app believes is up and nobody can see.
+
+    For a pointer *inside* the range the two added bounds can never fire
+    (`gap` exceeds `_BUBBLE_EDGE_MARGIN` on both axes, so `after >= low` and
+    `before + size - 1 = point - gap <= high` hold by construction) — which is
+    what makes this a fix rather than a change of placement.
+
+    Returns the start only. Whether the span ended up clearing `point` is
+    deliberately not reported: the fallback below clears the pointer in most
+    of the cases it is reached for (the top-panel one lands at `low`, well
+    past a pointer above it) and covers it in few, so a per-axis flag would
+    name the wrong thing. The one case where the bubble really does cover the
+    pointer — no clearing position exists inside `geo` at all — is the
+    trade-off `cursor_bubble_position` documents and the self-test pins.
     """
     after = point + gap  # the preferred side: past the pointer
-    if after + size - 1 <= high:
-        return after, True
+    if after >= low and after + size - 1 <= high:
+        return after
     before = point - gap - size + 1  # flipped to the other side of it
-    if before >= low:
-        return before, True
-    return max(low, min(after, high - size + 1)), False
+    if before >= low and before + size - 1 <= high:
+        return before
+    # Neither side fits: hold the span inside the range. `low` wins last, so a
+    # span larger than the range starts at the readable end instead of at
+    # whatever the upper clamp happens to yield.
+    return max(low, min(after, high - size + 1))
 
 
 def cursor_bubble_position(px: int, py: int, width: int, height: int, geo) -> tuple[int, int]:
@@ -251,17 +273,23 @@ def cursor_bubble_position(px: int, py: int, width: int, height: int, geo) -> tu
     `geo` is a QRect, so `right()`/`bottom()` are inclusive: a window at `x`
     of `width` covers `x … x + width - 1`.
 
+    The pointer is **not** assumed to be inside `geo`: `geo` is
+    `availableGeometry()`, which excludes the taskbar the pointer may be
+    hovering, and `_screen_geometry` answers with the icon's screen for a
+    pointer that is on no screen at all. `_clear_of` carries that case.
+
     Pure on purpose — (pointer, size, screen rectangle) in, position out, no
     window touched — so the self-test can assert both invariants at every edge
-    and corner without a display. Staying inside `geo` wins where they cannot
-    both hold: a bubble larger than half the screen in *both* dimensions
-    cannot clear a pointer near the middle of it (no such position exists),
-    and a bubble hanging half off the screen is the worse of the two.
+    and corner, and outside them, without a display. Staying inside `geo`
+    wins where they cannot both hold: a bubble larger than half the screen in
+    *both* dimensions cannot clear a pointer near the middle of it (no such
+    position exists), and a bubble hanging half off the screen is the worse of
+    the two.
     """
     left, top = geo.left() + _BUBBLE_EDGE_MARGIN, geo.top() + _BUBBLE_EDGE_MARGIN
     right, bottom = geo.right() - _BUBBLE_EDGE_MARGIN, geo.bottom() - _BUBBLE_EDGE_MARGIN
-    x, _x_cleared = _clear_of(px, width, left, right, _CURSOR_GAP_X)
-    y, _y_cleared = _clear_of(py, height, top, bottom, _CURSOR_GAP_Y)
+    x = _clear_of(px, width, left, right, _CURSOR_GAP_X)
+    y = _clear_of(py, height, top, bottom, _CURSOR_GAP_Y)
     return x, y
 
 
@@ -1132,6 +1160,13 @@ class Overlay:
         if state == "recording":
             self._level_timer.start(_LEVEL_POLL_MS)
             if self.app.cfg["overlay"]["live_preview"]:
+                # `live_preview` alone on purpose — the anchor decides whether
+                # the icon has to be up, not this line. But note that this is
+                # only *the bubble*: what fills it is App._start_recording's
+                # own gate, and the two conditions drifted apart once (a
+                # cursor-anchored bubble frozen at the placeholder below for a
+                # whole take). Change one, check the other.
+                #
                 # Named after the source for the same reason as the tooltip: the
                 # preview runs for both sources, and "● Listening…" over a
                 # recorded meeting reads as an open microphone.

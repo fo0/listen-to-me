@@ -991,7 +991,38 @@ class App:
         self._beep(880)
         ocfg = self.cfg["overlay"]
         # The overlay preview may run for both sources — it only shows text.
-        want_preview = bool(ocfg["enabled"] and ocfg["live_preview"])
+        #
+        # THE TRAP: the bubble's own visibility rule and this gate — the
+        # *producer* of the text in it — are two different conditions, and
+        # they drifted apart once already (#196). `Overlay.set_state` puts the
+        # bubble up on `live_preview` alone, so with the cursor anchor and the
+        # floating icon switched off it came up at the pointer reading
+        # "● Listening…" and nothing ever replaced that: neither
+        # `_live_preview_loop` nor a `post_preview=True` LiveTyper had been
+        # started. Any change to either condition has to be made to both.
+        #
+        # `enabled` still counts for the icon anchor: there `_show_bubble`
+        # refuses to draw beside an icon that is not on screen, so a decode
+        # loop for it would spend the model on partials thrown away. Hence the
+        # anchor-aware gate rather than dropping `enabled` outright.
+        #
+        # Imported here, not at module scope: overlay.py imports PySide6 at
+        # module scope, and app.py is what `python -m listen_to_me --version`
+        # loads — a hoisted import here would pull Qt into a flag that must
+        # load none of it (measured, not assumed). Same rule as `run()`'s own
+        # `from .overlay import Overlay`; by the time a take starts, that one
+        # has long since put the module in sys.modules.
+        from .overlay import ANCHOR_CURSOR, preview_anchor
+
+        want_preview = bool(
+            ocfg["live_preview"]
+            and (
+                ocfg["enabled"]
+                # Narrowed through overlay's own reader, so an unplaceable
+                # hand-edited value gates like the icon it degrades to.
+                or preview_anchor(ocfg.get("preview_anchor")) == ANCHOR_CURSOR
+            )
+        )
         self._live_typer = None
         # Live typing is the microphone's alone. _live_typing_gate reasons about
         # the *microphone* hotkey — whether our own injected keystrokes could
