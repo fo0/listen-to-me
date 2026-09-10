@@ -63,6 +63,84 @@ def _read_body(response, deadline: float) -> bytes:
     return b"".join(chunks)
 
 
+# The connection is shared by both recording sources (see profile()).
+_SHARED_KEYS = ("base_url", "api_key", "temperature", "timeout")
+
+_prompt_warned: set[str] = set()
+
+
+def _gate(key: str, enabled, system_prompt) -> tuple[bool, str]:
+    """One profile's `(enabled, system prompt)`, each as the type it claims.
+
+    `enabled` is read the way ``config._coerce`` reads a bool default — a real
+    bool or the unambiguous 0/1 of a hand-edit, never plain truthiness, so a
+    stored ``"enabled": "false"`` cannot turn the feature ON (re-checked here
+    because a dict built by hand never passed that merge). A blank or
+    non-string prompt switches the profile off and is named once per key and
+    process: a request with no system prompt tells the endpoint nothing about
+    what to do with the transcript, and the user pays for the answer with the
+    wait after a recording that is already over — while a log line per take
+    would bury the log, as in _warn_if_key_travels_in_clear.
+    """
+    on = enabled if isinstance(enabled, bool) else (isinstance(enabled, int) and enabled == 1)
+    prompt = system_prompt if isinstance(system_prompt, str) else ""
+    if on and not prompt.strip():
+        on = False
+        if key not in _prompt_warned:
+            _prompt_warned.add(key)
+            log.warning(
+                "config key %r carries no prompt text — assistant post-processing "
+                "stays off for this recording source (Settings → Assistant)",
+                key,
+            )
+    return (on, prompt)
+
+
+def profile(acfg: dict, source: str = "mic") -> dict:
+    """The `assistant` section resolved for one recording source — flat, so it
+    goes straight into `config_problem()` and `refine()`.
+
+    The microphone hotkey and the system-audio one (#191) want opposite things
+    from the assistant: a dictation wants punctuation and filler removal, a
+    recorded meeting minutes or a summary. What they do not want twice is the
+    connection — one endpoint, one key, one timeout — so `base_url`, `api_key`,
+    `temperature` and `timeout` stay shared, and only the switch, the model and
+    the prompt are per source. The top-level `enabled`/`system_prompt`/`model`
+    ARE the microphone profile (not renamed, so no existing config.json needs a
+    migration); `acfg["system_audio"]` holds the other one, and any `source`
+    but "system" is the microphone — a plain string, because app.py imports
+    this module and an enum would need a third one to live in.
+
+    An unreadable profile is reported DISABLED, never repaired from the other
+    one: post-processing a recorded meeting with the dictation prompt is a
+    confidently wrong result, while a feature nobody configured staying off is
+    the right one. Nothing here raises — a hand-edited config.json may cost the
+    assistant, never the transcript already waiting for it.
+    """
+    # Only the shared keys the caller really stored: a value invented here
+    # would shadow refine()'s own fallbacks for temperature and timeout.
+    prof = {key: acfg[key] for key in _SHARED_KEYS if key in acfg}
+    shared_model = acfg.get("model", "")
+    if source == "system":
+        # A missing section (a config hand-written before #191) or a scalar
+        # where it belongs reads as switched off with an empty prompt, so not
+        # even a caller that ignores `enabled` can send the dictation prompt to
+        # a recorded meeting. config._merge already logs that shape and keeps
+        # the defaults — this is the last line of defence, not the report.
+        stored = acfg.get("system_audio")
+        section = stored if isinstance(stored, dict) else {}
+        key = "assistant.system_audio.system_prompt"
+        # A blank model means "use the shared one" by design (one endpoint
+        # usually serves one), so an unusable value falls back to it as well —
+        # unlike the prompt, which has no right value to fall back to.
+        model = section.get("model")
+        model = (model.strip() if isinstance(model, str) else "") or shared_model
+    else:
+        section, key, model = acfg, "assistant.system_prompt", shared_model
+    enabled, prompt = _gate(key, section.get("enabled"), section.get("system_prompt"))
+    return {**prof, "enabled": enabled, "model": model, "system_prompt": prompt}
+
+
 def config_problem(acfg: dict) -> tuple[str, str] | None:
     """Why `acfg` cannot produce a request, as `(config key, reason)` — or None.
 
