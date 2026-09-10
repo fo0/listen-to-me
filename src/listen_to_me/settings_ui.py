@@ -129,10 +129,16 @@ class _UpdateSignals(QObject):
 
 class _AssistantSignals(QObject):
     """Marshals the assistant connection test's outcome from its worker thread
-    back to the Qt main thread."""
+    back to the Qt main thread.
 
-    tested = Signal(str)  # what the endpoint returned for the sample sentence
-    test_failed = Signal(str)
+    The leading int is the test generation the worker was started with, the
+    same guard `_DiagSignals` uses: a worker detached by Cancel (or superseded
+    by a newer run) no longer matches and its handler drops the payload, so a
+    late answer can't overwrite the status line the user is now reading.
+    """
+
+    tested = Signal(int, str)  # generation, what the endpoint returned
+    test_failed = Signal(int, str)  # generation, described error
 
 
 class _DiagSignals(QObject):
@@ -186,6 +192,11 @@ _A_TESTING_LABEL = "Testing…"
 # Status line under the button while nothing runs — the same promise the
 # Engine page's diagnostics make.
 _A_TEST_IDLE = "Uses the values entered above — no Save needed."
+# One constant because the flash restores this label after "Reset ✓" — spelled
+# out in two places, the two would drift apart. Carries the "…" for the same
+# reason the other destructive buttons do: it asks first, whenever the prompt
+# below is not already the default one.
+_A_PROMPT_RESET_LABEL = "Reset to default…"
 # What the test sends. Deliberately shaped like raw dictation (no punctuation,
 # a filler word), so the reply shows not just that the endpoint answers but
 # whether the prompt and model actually clean text up.
@@ -201,7 +212,7 @@ _A_TEST_PREVIEW_CHARS = 160
 # The destructive button on the General page — spelled out, and with the "…"
 # that promises a confirmation step before anything happens. The same rule
 # names every other button here that asks first (Clear history…, Delete…,
-# Install selected…); a bare label means the click acts at once.
+# Remove…, Install selected…); a bare label means the click acts at once.
 _FACTORY_RESET_LABEL = "Reset to factory settings…"
 
 # Every preset label the model dropdown can hold. The list is re-filtered per
@@ -246,7 +257,11 @@ class MuteTargetRow(QGroupBox):
         # text is not an accessible name.
         self.name_edit.setAccessibleName("App name")
         header.addWidget(self.name_edit, 1)
-        self.remove_button = QPushButton("Remove")
+        # "…" because it asks first whenever the row holds anything to lose —
+        # see SettingsWindow._remove_target_row. The keybind in particular is
+        # usually looked up in the other app's own settings, so re-adding a
+        # row removed by a mis-click is not free.
+        self.remove_button = QPushButton("Remove…")
         self.remove_button.setProperty("destructive", True)
         self.remove_button.setToolTip("Delete this app from the list.")
         self.remove_button.setAutoDefault(False)
@@ -398,13 +413,15 @@ class SettingsWindow(QDialog):
 
         # Assistant connection test, wired before the Assistant page is built
         # below. Kept out of the diagnostics machinery on purpose: it borrows
-        # neither the microphone nor the model, so it needs no generation, no
-        # cancel event and no hotkey pause — only a busy flag, like the update
-        # check it is modelled on.
+        # neither the microphone nor the model, so it needs no cancel event and
+        # no hotkey pause. It does carry a generation, because Cancel here can
+        # only detach the waiting worker, never interrupt the HTTP request it
+        # is blocked in — see _cancel_assistant_test.
         self._asig = _AssistantSignals()
         self._asig.tested.connect(self._on_assistant_tested)
         self._asig.test_failed.connect(self._on_assistant_test_failed)
         self._assistant_busy = False
+        self._assistant_gen = 0
 
         # Diagnostics state (Download model / Test transcription on the Engine
         # page, Test microphone on the Audio page, Test hotkey on General),
@@ -1658,6 +1675,38 @@ class SettingsWindow(QDialog):
         self._targets_layout.addWidget(row)
 
     def _remove_target_row(self, row: MuteTargetRow) -> None:
+        """Take one app off the mute list, asking first when it holds anything.
+
+        The three other destructive buttons in this window (Clear history…,
+        Delete…, Reset to factory settings…) all confirm before acting; this
+        one dropped a fully configured app on a single click. The mute keybind
+        it carries is normally looked up in that app's own settings, so a
+        mis-click cost noticeably more than it looked like, and nothing here
+        offers an undo — the row is gone, and Save writes the shortened list.
+
+        A row that is still blank (added from "Other app…" and never filled
+        in) has nothing to lose and goes at once: a confirmation there would
+        be friction guarding an empty box. That is also why the question names
+        the app and its keybind rather than asking about "this entry".
+        """
+        name = row.name_edit.text().strip()
+        keys = row.hotkey_edit.text().strip()
+        if name or keys:
+            described = name or "the unnamed app"
+            # hotkey_label() renders nothing for a combination it cannot parse
+            # (the Add menu guards the same way) — naming the app alone beats
+            # an empty pair of brackets in the question.
+            pretty = hotkey_label(keys) if keys else ""
+            detail = f" ({pretty})" if pretty else ""
+            confirm = QMessageBox.question(
+                self,
+                APP_NAME,
+                f"Remove {described}{detail} from the apps to mute while recording?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
         if row in self._target_rows:
             self._target_rows.remove(row)
         self._targets_layout.removeWidget(row)
@@ -1724,6 +1773,20 @@ class SettingsWindow(QDialog):
         )
         self.a_test_button.clicked.connect(self._test_assistant)
         th.addWidget(self.a_test_button)
+        # Every other test and download in this window can be called off; this
+        # one held the page for the configured request timeout, which goes up
+        # to 600 s. Disabled while nothing is running, like the mic and model
+        # Cancel buttons.
+        self.a_test_cancel_button = QPushButton("Cancel")
+        self.a_test_cancel_button.setAutoDefault(False)
+        self.a_test_cancel_button.setEnabled(False)
+        self.a_test_cancel_button.setToolTip(
+            "Stop waiting for the endpoint's answer and hand the button back. "
+            "The request itself cannot be recalled once sent — it is left to "
+            "run out on its own and its answer is discarded."
+        )
+        self.a_test_cancel_button.clicked.connect(self._cancel_assistant_test)
+        th.addWidget(self.a_test_cancel_button)
         th.addStretch(1)
         form.addRow("", test_row)
         # elastic: the line carries a URL, an endpoint reply or an exception —
@@ -1736,8 +1799,12 @@ class SettingsWindow(QDialog):
         pv = QVBoxLayout(prompt)
         header = QHBoxLayout()
         header.addStretch(1)
-        reset = QPushButton("Reset to default")
-        reset.setToolTip("Replace the prompt below with the built-in default cleanup prompt.")
+        reset = QPushButton(_A_PROMPT_RESET_LABEL)
+        reset.setAutoDefault(False)
+        reset.setToolTip(
+            "Replace the prompt below with the built-in default cleanup prompt. "
+            "Asks first if you have edited it — the replacement cannot be undone."
+        )
         reset.clicked.connect(self._reset_prompt)
         self.a_prompt_reset_button = reset
         header.addWidget(reset)
@@ -2321,9 +2388,34 @@ class SettingsWindow(QDialog):
         all — in both cases the click was visually indistinguishable from one
         that never registered. Same confirmation-where-you-clicked contract as
         the device rescan, the overlay reset and the history export.
+
+        An edited prompt is asked about first. It is free text the user wrote —
+        the one field on this page with no second copy anywhere — and
+        `setPlainText` drops the edit history with it, so Ctrl+Z does not bring
+        it back either. The button sits directly above the box, which makes it
+        an easy mis-click on the way to the text.
+
+        A prompt that already matches the default has nothing to lose, so that
+        click still acts at once and only flashes: the question would be
+        guarding an identity.
         """
+        current = self.a_prompt_edit.toPlainText()
+        if current.strip() != DEFAULT_ASSISTANT_PROMPT.strip():
+            confirm = QMessageBox.question(
+                self,
+                APP_NAME,
+                "Replace your edited system prompt with the built-in default?\n\n"
+                "What you wrote is not kept anywhere else and this cannot be "
+                "undone.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
         self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
-        self._flash_button(self.a_prompt_reset_button, "Reset ✓", "Reset to default")
+        self._flash_button(
+            self.a_prompt_reset_button, "Reset ✓", _A_PROMPT_RESET_LABEL
+        )
 
     # ---------------------------------------------------- assistant test
 
@@ -2374,8 +2466,11 @@ class SettingsWindow(QDialog):
             (self.a_url_edit if field == "base_url" else self.a_model_edit).setFocus()
             return
         self._assistant_busy = True
+        self._assistant_gen += 1
+        gen = self._assistant_gen
         self.a_test_button.setEnabled(False)
         self.a_test_button.setText(_A_TESTING_LABEL)
+        self.a_test_cancel_button.setEnabled(True)
         timeout = values["timeout"]
         # Name the wait: a cold local model can take a while to answer, and a
         # button that just sits there reads as a hang rather than as patience.
@@ -2388,15 +2483,39 @@ class SettingsWindow(QDialog):
             try:
                 from . import assistant
 
-                self._asig.tested.emit(assistant.refine(_A_TEST_SAMPLE, values))
+                self._asig.tested.emit(gen, assistant.refine(_A_TEST_SAMPLE, values))
             except Exception as exc:  # surfaced in the UI, never raised at the user
                 from . import netutil
 
-                self._asig.test_failed.emit(netutil.describe_error(exc))
+                self._asig.test_failed.emit(gen, netutil.describe_error(exc))
 
         threading.Thread(target=work, name="assistant-test", daemon=True).start()
 
-    def _on_assistant_tested(self, reply: str) -> None:
+    def _cancel_assistant_test(self) -> None:
+        """Stop waiting for the endpoint and give the button back.
+
+        Detach, not abort: the worker is blocked in a single blocking HTTP call
+        with the configured timeout behind it and there is no handle to
+        interrupt it with. Bumping the generation makes its eventual answer
+        arrive against a stale number, so the handler drops it; the daemon
+        thread then runs out on its own. Nothing was recorded or inserted, so
+        there is no state to unwind — only the wait.
+
+        Worth having because that wait is the user's, not the app's: the
+        request timeout goes up to 600 s and exists precisely for slow local
+        models, so "Testing…" against a wrong URL or a stopped Ollama could sit
+        there for ten minutes with the page frozen on it. Every other test and
+        download in this window already offered a way out.
+        """
+        if not self._assistant_busy:
+            return
+        self._assistant_gen += 1
+        self._end_assistant_test()
+        self.a_test_status.setText("Test cancelled.")
+
+    def _on_assistant_tested(self, gen: int, reply: str) -> None:
+        if gen != self._assistant_gen:
+            return  # detached by Cancel or superseded — see _cancel_assistant_test
         self._end_assistant_test()
         # What came back, not just "OK": an endpoint can answer perfectly while
         # the model or the prompt turns the sentence into a translation, a
@@ -2407,15 +2526,18 @@ class SettingsWindow(QDialog):
             preview = preview[:_A_TEST_PREVIEW_CHARS].rstrip() + "…"
         self.a_test_status.setText(f"Connection works ✓ — the endpoint returned: “{preview}”")
 
-    def _on_assistant_test_failed(self, message: str) -> None:
+    def _on_assistant_test_failed(self, gen: int, message: str) -> None:
+        if gen != self._assistant_gen:
+            return  # detached by Cancel or superseded — see _cancel_assistant_test
         self._end_assistant_test()
         self.a_test_status.setText(f"Test failed: {message}")
 
     def _end_assistant_test(self) -> None:
-        """Hand the button back to the user (both outcomes)."""
+        """Hand the button back to the user (all three outcomes)."""
         self._assistant_busy = False
         self.a_test_button.setEnabled(True)
         self.a_test_button.setText(_A_TEST_LABEL)
+        self.a_test_cancel_button.setEnabled(False)
 
     # --------------------------------------------------------- diagnostics
 
@@ -2872,6 +2994,10 @@ class SettingsWindow(QDialog):
         # swapping the exe after the user dismissed the dialog would surprise.
         if self._update_cancel_event is not None:
             self._update_cancel_event.set()
+        # Same for a running assistant test: its worker would otherwise come
+        # back to a status label on a closed page. Detaching costs nothing —
+        # nothing was recorded, inserted or written.
+        self._cancel_assistant_test()
         # Drop the cached test transcriber so a test model (potentially GBs of
         # RAM) doesn't stay loaded after the dialog closes — App keeps a
         # reference to the closed window until Settings is opened again. A

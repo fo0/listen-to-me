@@ -14,6 +14,16 @@ changes at a glance.
 
 ### Added
 
+- **The assistant's "Test connection" can be cancelled.** It was the one test
+  in the settings window with no way out: the microphone test, the model
+  download, the transcription test and the update download all have a
+  **Cancel** button, while this one held the page for the full request timeout
+  — configurable up to 600 s, and deliberately set high for slow local models.
+  Testing a wrong URL or a stopped Ollama could therefore sit on "Testing…"
+  for ten minutes. Cancel detaches the waiting worker rather than aborting the
+  request, which cannot be recalled once sent: the answer still arrives and is
+  discarded, so it can no longer overwrite the status line minutes later.
+  Closing the settings window detaches a running test the same way.
 - **The Text replacements field says which of its rules took effect.** A rule
   with a typo — an arrow written as `->`, a line with nothing on its left-hand
   side — was skipped with a warning that only ever reached the log file, so
@@ -138,6 +148,21 @@ changes at a glance.
 
 ### Changed
 
+- **"Reset to default" for the assistant system prompt asks before discarding
+  an edited one.** The button sits directly above the box it overwrites, and
+  the prompt is free text with no second copy anywhere — replacing it also
+  drops the edit history, so Ctrl+Z did not bring it back either. It is now
+  **Reset to default…** and asks whenever the prompt differs from the built-in
+  one; a prompt that already is the default has nothing to lose and still
+  resets on the first click.
+- **Removing an app from "Mute other apps while recording" asks first.** The
+  button is now **Remove…** and names the app and its keybind before the row
+  goes — every other destructive button in the settings window (Clear history…,
+  Delete…, Reset to factory settings…) already confirmed, and this one dropped
+  a fully configured entry on a single click with no undo. The keybind is
+  normally looked up in the other app's own settings, so re-adding a row
+  removed by accident was not free. A row still blank from "Other app…" has
+  nothing to lose and is removed at once.
 - **The floating icon's right-click menu now follows the app state**, the way
   the tray menu always has: the first entry says whether it will start or stop
   the recording instead of the ambiguous "Start / stop recording", and "Cancel
