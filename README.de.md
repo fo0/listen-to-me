@@ -59,6 +59,11 @@ fokussierten Feldes eingefügt.
    Fehlt so ein Gerät, verweigert die App die Aufnahme und zeigt genau diesen
    Hinweis — sie greift absichtlich **nicht** auf das Standard-Mikrofon zurück,
    das den Raum statt den Ton des Rechners aufnehmen würde.
+8. Optional: unter **Overlay → Show the transcript at** festlegen, wo der
+   Transkript-Text erscheint — am **floating icon** oder am **Mauszeiger**, dem
+   die Bubble dann beim Sprechen folgt (gedacht für Diktate in ein Fenster auf
+   einem anderen Monitor). Die Variante am Mauszeiger funktioniert auch mit
+   komplett **ausgeschaltetem floating icon** und nimmt keine Klicks weg.
 
 ## Lizenz
 

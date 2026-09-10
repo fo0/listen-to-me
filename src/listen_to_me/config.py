@@ -186,13 +186,23 @@ DEFAULTS: dict = {
         # still there but buried, which reads as "it vanished". Off leaves it an
         # ordinary window that other windows may cover.
         "always_on_top": True,
-        # Briefly show the transcribed text next to the icon after a recording.
+        # Briefly show the transcribed text in a bubble after a recording;
+        # overlay.preview_anchor below decides where that bubble appears.
         "show_preview": True,
         # Experimental: transcribe in the background *while* recording and show
-        # a rolling live preview of what was understood so far. Costs CPU.
+        # a rolling live preview of what was understood so far, in the same
+        # bubble. Costs CPU.
         "live_preview": False,
         # How long the finished transcript stays visible (seconds).
         "preview_seconds": 6,
+        # Where both previews above are drawn: "icon" (default) next to the
+        # floating icon, wherever it was dragged; "cursor" below-right of the
+        # mouse pointer, so the text appears on the monitor — and beside the
+        # window — actually being dictated into (#196). Anything else here
+        # degrades to "icon": this key's default is a string, so _coerce lets
+        # every string through, and an unknown value must not leave the bubble
+        # unplaced (see overlay.preview_anchor).
+        "preview_anchor": "icon",
         # Saved position of the floating icon (null = bottom right). "x"/"y"
         # are desktop coordinates; "screen" identifies the monitor the icon was
         # left on (EDID identity, else the device name) and "rel_x"/"rel_y" are

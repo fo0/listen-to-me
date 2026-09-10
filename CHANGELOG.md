@@ -14,6 +14,27 @@ changes at a glance.
 
 ### Added
 
+- **The transcript can now appear at the mouse pointer instead of beside the
+  floating icon.** Settings → Overlay → **Show the transcript at** moves both
+  previews — the rolling live one while you speak and the flash after a take —
+  from the floating icon, wherever you dragged it (still the default, so
+  nothing changes for anyone who leaves it there), to the mouse pointer, which
+  the bubble then follows while you dictate. Dictating into a window on another
+  screen meant reading the words in whatever corner the icon happens to live in
+  — the text on one monitor, your eyes on the other, which for a live preview
+  defeats the point of having one. At the pointer the text lands beside the
+  field it is going into: below-right of the cursor, flipped at a screen edge,
+  kept inside the monitor the pointer is on, and never drawn over the pointer
+  itself. Two things follow from where it now sits. It works with the floating
+  icon **switched off entirely** — no icon anywhere, the text where you are
+  looking, which is arguably the most useful way to run it — and it obeys
+  **Keep the icon above all other windows** in both positions, so with that
+  setting off other windows may cover the bubble too. That is the rule the
+  bubble beside the icon has always followed, kept deliberately for the new
+  spot rather than quietly excepted from it. Fixed on the way: the bubble
+  never passed clicks through to the window underneath, so a click that landed
+  on it was swallowed instead of reaching what you aimed at — survivable while
+  it only sat beside the icon, not survivable under the cursor.
 - **A second hotkey records what the computer plays.** A call, a meeting, a
   video, a voice message — transcribed by the same local model and inserted at
   the cursor like a dictation, and controlled exactly like one (press once to

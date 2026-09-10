@@ -10,12 +10,17 @@ transcribing = orange mic glyph):
   dropped on, so it comes back there across restarts and monitor changes
 - right click: context menu
 
-Next to the icon a "bubble" window can show text: a rolling live preview while
-recording (if enabled) and/or the finished transcript for a few seconds.
+A "bubble" window can show text: a rolling live preview while recording (if
+enabled) and/or the finished transcript for a few seconds. Where it appears is
+`overlay.preview_anchor` — beside the icon (the default) or at the mouse
+pointer, which it then follows through App's 100 ms poll (#196).
 
-Both windows are created with WindowDoesNotAcceptFocus + WA_ShowWithoutActivating
-so clicking or showing them never steals keyboard focus from the window the
-transcript is meant to be typed into. All methods run on the Qt main thread.
+Both windows are created with WindowDoesNotAcceptFocus +
+WA_ShowWithoutActivating so clicking or showing them never steals keyboard
+focus from the window the transcript is meant to be typed into, and the bubble
+adds WindowTransparentForInput so it never takes the click either — at the
+pointer it sits under the cursor by definition. All methods run on the Qt main
+thread.
 """
 
 from __future__ import annotations
@@ -25,7 +30,7 @@ import sys
 import time
 
 from PySide6.QtCore import QPoint, Qt, QTimer
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QCursor, QGuiApplication
 from PySide6.QtWidgets import QLabel, QMenu, QVBoxLayout, QWidget
 
 from .audio import SAMPLE_RATE, band_levels
@@ -68,6 +73,35 @@ _TOPMOST_LOST = "no longer above other windows"
 _UNEXPOSED = "no longer exposed"
 _PLACE_RETRY_MS = 2_000  # look again while the saved monitor is still missing
 _PLACE_RETRY_LIMIT = 15  # …for ~30 s after start; later hot-plug arrives as a signal
+
+# Where the transcript bubble is drawn (`overlay.preview_anchor`, #196).
+# "icon" is what it has always done — beside the floating icon, wherever that
+# was dragged; "cursor" puts it at the mouse pointer, because dictating into a
+# window on the other screen meant reading the words in the corner the icon
+# lives in. Both previews use it: the rolling live one and the end-of-take
+# flash are the same window, so an anchor that moved one and not the other
+# would read as a bug.
+ANCHOR_ICON = "icon"
+ANCHOR_CURSOR = "cursor"
+# (config value, label for the Settings dropdown). The label says where the
+# text appears, not what an anchor is; settings_ui reads the list from here so
+# the dropdown can never offer a value the placement below does not know.
+PREVIEW_ANCHORS = [
+    (ANCHOR_ICON, "The floating icon"),
+    (ANCHOR_CURSOR, "The mouse pointer"),
+]
+_BUBBLE_EDGE_MARGIN = 4  # screen edge the cursor-anchored bubble keeps clear
+# How far the bubble clears the pointer's hotspot. A Windows arrow is ~20 px
+# tall and ~12 px wide from its tip, and a bubble drawn over the glyph is
+# unreadable even where it cannot swallow the click.
+_CURSOR_GAP_X = 16
+_CURSOR_GAP_Y = 22
+
+# The unusable `preview_anchor` values already logged — a hand-edit is
+# reported once per process instead of on every 100 ms cursor tick. Keyed by
+# repr(), which is defined for the unhashable values a config.json can hold
+# (the same reasoning as choices._UNKNOWN_SOURCES_LOGGED).
+_ANCHOR_WARNED: set[str] = set()
 
 # What a click on the icon does while a take runs. Its own constant so the
 # recording tooltip keeps it while everything in front of it varies — the take
@@ -140,12 +174,144 @@ def _screen_key(screen) -> str:
     return key if key.strip("|") else (screen.name() or "").strip()
 
 
+def preview_anchor(value) -> str:
+    """`value` narrowed to an anchor this code can place — anything else is
+    `ANCHOR_ICON`.
+
+    config.json is untrusted, hand-editable input and this key's default is a
+    string, so `config._coerce` hands *every* string through unchanged
+    ("Cursor", "mouse", "") and an older build could have written a non-string
+    at all. An unrecognised value must never leave the bubble unplaced, and
+    the one placement every existing install already sees is the icon's — so
+    that is what it degrades to, logged once per distinct value and silent
+    afterwards (this is read on every cursor tick).
+    """
+    if isinstance(value, str):
+        for anchor, _label in PREVIEW_ANCHORS:
+            if value == anchor:
+                return anchor
+    key = repr(value)
+    if key not in _ANCHOR_WARNED:
+        _ANCHOR_WARNED.add(key)
+        log.warning(
+            "unknown overlay.preview_anchor %.60r — showing the transcript at the icon",
+            value,
+        )
+    return ANCHOR_ICON
+
+
+def icon_bubble_position(
+    icon_x: int, icon_y: int, width: int, height: int, geo
+) -> tuple[int, int]:
+    """Where a `width`×`height` bubble goes for an icon at `icon_x`/`icon_y`.
+
+    Centred under the icon, flipped above it when there is no room below, and
+    clamped into `geo` (asymmetric margins included). Lifted out of
+    `reposition_bubble` character for character rather than rewritten: this is
+    the placement every install has today, so it is pinned by a check against
+    the old implementation's own output instead of re-derived by one.
+    """
+    x = icon_x + _ICON_SIZE // 2 - width // 2
+    x = max(geo.left() + 4, min(x, geo.right() - width - 3))
+    y = icon_y + _ICON_SIZE + 8
+    if y + height > geo.bottom() - 4:
+        y = icon_y - height - 8
+    y = max(geo.top() + 4, y)
+    return x, y
+
+
+def _clear_of(point: int, size: int, low: int, high: int, gap: int) -> int:
+    """One axis of the cursor placement: where a span of `size` starts so it
+    clears `point` by `gap` and stays inside `[low, high]` (both inclusive).
+
+    **Every candidate side is checked against *both* bounds**, because `point`
+    is the mouse pointer and the pointer can lie outside `[low, high]`: `geo`
+    is `availableGeometry()`, so a pointer over a top-docked taskbar, a GNOME
+    top bar or the macOS menu bar sits above it and one over a left-docked
+    taskbar sits left of it — and `_screen_geometry` pairs a pointer on no
+    screen at all with the icon's rectangle, which can be arbitrarily far
+    away. An `after` tested against the upper bound alone then started the
+    span *below* `low`: a pointer on a 40 px top panel put the bubble 22 px
+    inside that panel, and a pointer at (-3000, -3000) put it off every
+    screen — a preview the app believes is up and nobody can see.
+
+    For a pointer *inside* the range the two added bounds can never fire
+    (`gap` exceeds `_BUBBLE_EDGE_MARGIN` on both axes, so `after >= low` and
+    `before + size - 1 = point - gap <= high` hold by construction) — which is
+    what makes this a fix rather than a change of placement.
+
+    Returns the start only. Whether the span ended up clearing `point` is
+    deliberately not reported: the fallback below clears the pointer in most
+    of the cases it is reached for (the top-panel one lands at `low`, well
+    past a pointer above it) and covers it in few, so a per-axis flag would
+    name the wrong thing. The one case where the bubble really does cover the
+    pointer — no clearing position exists inside `geo` at all — is the
+    trade-off `cursor_bubble_position` documents and the self-test pins.
+    """
+    after = point + gap  # the preferred side: past the pointer
+    if after >= low and after + size - 1 <= high:
+        return after
+    before = point - gap - size + 1  # flipped to the other side of it
+    if before >= low and before + size - 1 <= high:
+        return before
+    # Neither side fits: hold the span inside the range. `low` wins last, so a
+    # span larger than the range starts at the readable end instead of at
+    # whatever the upper clamp happens to yield.
+    return max(low, min(after, high - size + 1))
+
+
+def cursor_bubble_position(px: int, py: int, width: int, height: int, geo) -> tuple[int, int]:
+    """Where a `width`×`height` bubble goes for a pointer at `px`/`py` on the
+    screen `geo`.
+
+    Below-right of the pointer by default; each axis flips to the other side
+    when that side has no room, and the result is clamped into `geo` — so the
+    bubble is never half off-screen and never drawn over the pointer itself,
+    where it would hide what is about to be clicked (and, on a platform that
+    ignores `WindowTransparentForInput`, eat the click).
+
+    `geo` is a QRect, so `right()`/`bottom()` are inclusive: a window at `x`
+    of `width` covers `x … x + width - 1`.
+
+    The pointer is **not** assumed to be inside `geo`: `geo` is
+    `availableGeometry()`, which excludes the taskbar the pointer may be
+    hovering, and `_screen_geometry` answers with the icon's screen for a
+    pointer that is on no screen at all. `_clear_of` carries that case.
+
+    Pure on purpose — (pointer, size, screen rectangle) in, position out, no
+    window touched — so the self-test can assert both invariants at every edge
+    and corner, and outside them, without a display. Staying inside `geo`
+    wins where they cannot both hold: a bubble larger than half the screen in
+    *both* dimensions cannot clear a pointer near the middle of it (no such
+    position exists), and a bubble hanging half off the screen is the worse of
+    the two.
+    """
+    left, top = geo.left() + _BUBBLE_EDGE_MARGIN, geo.top() + _BUBBLE_EDGE_MARGIN
+    right, bottom = geo.right() - _BUBBLE_EDGE_MARGIN, geo.bottom() - _BUBBLE_EDGE_MARGIN
+    x = _clear_of(px, width, left, right, _CURSOR_GAP_X)
+    y = _clear_of(py, height, top, bottom, _CURSOR_GAP_Y)
+    return x, y
+
+
 _WIN_FLAGS = (
     Qt.WindowType.FramelessWindowHint
     | Qt.WindowType.WindowStaysOnTopHint
     | Qt.WindowType.Tool
     | Qt.WindowType.WindowDoesNotAcceptFocus
 )
+
+# The bubble adds one flag to the icon's: it must also be click-through.
+# WindowDoesNotAcceptFocus only keeps it from taking *focus* — a click still
+# lands on the bubble and the window underneath never sees it. That was
+# survivable while the bubble only ever sat beside the icon; anchored to the
+# pointer it is under the cursor by definition, so the preview of a dictation
+# would eat the clicks aimed at the field being dictated into.
+# WindowTransparentForInput is the flag Qt maps to WS_EX_TRANSPARENT on
+# Windows (and to an empty input shape on X11) — the one that actually takes
+# the window out of the hit test. WA_TransparentForMouseEvents is set with it
+# for the Qt side of the same intent, but it is not the load-bearing half: on
+# a top-level window it only drops the event instead of handing it on.
+_BUBBLE_FLAGS = _WIN_FLAGS | Qt.WindowType.WindowTransparentForInput
 
 
 class _FloatingIcon(QWidget):
@@ -222,12 +388,15 @@ class _FloatingIcon(QWidget):
 
 
 class _Bubble(QWidget):
-    """A frameless label window shown next to the icon."""
+    """A frameless label window shown next to the icon — or at the mouse
+    pointer, depending on `overlay.preview_anchor`. Never takes focus and
+    never takes a click (see `_BUBBLE_FLAGS`)."""
 
     def __init__(self):
         super().__init__(None)
-        self.setWindowFlags(_WIN_FLAGS)
+        self.setWindowFlags(_BUBBLE_FLAGS)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         # Transparent window so only the label's rounded rectangle shows (no
         # opaque square corners behind the border-radius).
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -273,6 +442,10 @@ class Overlay:
         self._apply_status(_idle_label(app.cfg))
 
         self.bubble = _Bubble()
+        # The pointer position the bubble was last placed at, so the cursor
+        # tick can tell "the pointer moved" from "the poll fired again".
+        # None whenever nothing is being followed (see tick_cursor_preview).
+        self._cursor_at: QPoint | None = None
 
         self._level_timer = QTimer(self.win)
         self._level_timer.timeout.connect(self._poll_levels)
@@ -392,8 +565,21 @@ class Overlay:
 
     # ---------------------------------------------------------- placement
 
-    def _screen_geometry(self):
-        screen = self.win.screen() or QGuiApplication.primaryScreen()
+    def _screen_geometry(self, at: QPoint | None = None):
+        """The available geometry to place against: the screen the point `at`
+        is on, the icon's own screen when no point is given.
+
+        The cursor anchor has to clamp against the monitor the *pointer* is on
+        — the whole point of it is a bubble on the screen being dictated into,
+        and on a mixed-scaling setup that is a different rectangle from the
+        icon's. `screenAt` answers None for a point on no screen at all (the
+        gap between two monitors of unequal height, a position left over from
+        a monitor that went away), which falls back to the icon's screen: the
+        same rectangle the icon anchor uses, never nothing.
+        """
+        screen = QGuiApplication.screenAt(at) if at is not None else None
+        if screen is None:
+            screen = self.win.screen() or QGuiApplication.primaryScreen()
         return screen.availableGeometry()
 
     @staticmethod
@@ -609,7 +795,13 @@ class Overlay:
             self._watchdog.start(_WATCHDOG_MS)
         else:
             self._watchdog.stop()
-            self._hide_bubble()
+            if self._anchor() == ANCHOR_ICON:
+                # A bubble hanging next to an icon that just went away reads
+                # as a stray artefact. A cursor-anchored one is not attached
+                # to the icon at all, so hiding the icon must not also take
+                # the preview of a running dictation away; the flash timer and
+                # the next state change still bound how long it stays.
+                self._hide_bubble()
             self.win.hide()
 
     def _watchdog_tick(self) -> None:
@@ -968,6 +1160,13 @@ class Overlay:
         if state == "recording":
             self._level_timer.start(_LEVEL_POLL_MS)
             if self.app.cfg["overlay"]["live_preview"]:
+                # `live_preview` alone on purpose — the anchor decides whether
+                # the icon has to be up, not this line. But note that this is
+                # only *the bubble*: what fills it is App._start_recording's
+                # own gate, and the two conditions drifted apart once (a
+                # cursor-anchored bubble frozen at the placeholder below for a
+                # whole take). Change one, check the other.
+                #
                 # Named after the source for the same reason as the tooltip: the
                 # preview runs for both sources, and "● Listening…" over a
                 # recorded meeting reads as an open microphone.
@@ -1031,8 +1230,36 @@ class Overlay:
     def _bubble_visible(self) -> bool:
         return self.bubble.isVisible()
 
+    def _anchor(self) -> str:
+        """Where the bubble belongs right now, narrowed to a placeable value.
+
+        Read fresh on every placement rather than cached: `apply_settings`
+        re-wires live components without a restart, and a cached anchor would
+        keep the next dictation's preview in the old place.
+        """
+        return preview_anchor(self.app.cfg["overlay"].get("preview_anchor"))
+
+    def _cursor_pos(self) -> QPoint | None:
+        """Where the mouse pointer is, or None when the platform cannot say.
+
+        A platform plugin with no cursor at all makes this raise, and the
+        answer only decides *where* a bubble is drawn — so a failure has to
+        fall back to the icon, never take the preview down with it.
+        """
+        try:
+            return QCursor.pos()
+        except Exception:
+            log.debug("could not read the mouse pointer position", exc_info=True)
+            return None
+
     def _show_bubble(self, text: str) -> None:
-        if not text or not self.win.isVisible():
+        if not text:
+            return
+        if self._anchor() == ANCHOR_ICON and not self.win.isVisible():
+            # Anchored to an icon that is not on screen: a bubble at its last
+            # coordinates would be a caption for nothing. The cursor anchor is
+            # deliberately NOT gated on the icon — no icon anywhere and the
+            # text where you are looking is the combination it exists for.
             return
         self.bubble.set_text(text)
         self.reposition_bubble()
@@ -1042,20 +1269,55 @@ class Overlay:
     def reposition_bubble(self) -> None:
         # Safe to run whether the bubble is shown or hidden (moving a hidden
         # window is a no-op on screen); callers position it right before showing.
-        icon_x, icon_y = self.win.x(), self.win.y()
-        width = self.bubble.width()
-        height = self.bubble.height()
+        # Both anchors go through a pure function of (anchor point, bubble
+        # size, screen rectangle) — the edge flip and the clamping are the
+        # same problem either way, and only the point they start from differs.
+        width, height = self.bubble.width(), self.bubble.height()
+        if self._anchor() == ANCHOR_CURSOR:
+            pos = self._cursor_pos()
+            if pos is not None:
+                geo = self._screen_geometry(pos)
+                self._cursor_at = pos
+                self.bubble.move(*cursor_bubble_position(pos.x(), pos.y(), width, height, geo))
+                return
+            # No pointer position to be had: place it at the icon rather than
+            # leave it wherever it happened to be.
         geo = self._screen_geometry()
-        x = icon_x + _ICON_SIZE // 2 - width // 2
-        x = max(geo.left() + 4, min(x, geo.right() - width - 3))
-        y = icon_y + _ICON_SIZE + 8
-        if y + height > geo.bottom() - 4:
-            y = icon_y - height - 8
-        y = max(geo.top() + 4, y)
-        self.bubble.move(x, y)
+        self.bubble.move(*icon_bubble_position(self.win.x(), self.win.y(), width, height, geo))
+
+    def tick_cursor_preview(self) -> None:
+        """Follow the mouse pointer while a cursor-anchored bubble is up.
+
+        Rides App's 100 ms poll — the timer that already drains the event
+        queue and ticks the recording clock — instead of owning one of its
+        own: the live preview updates while the user speaks, so a bubble
+        placed once would end up sitting where the pointer *was*.
+
+        And like `_tick_recording_clock` it only touches the window when
+        something actually changed. A still pointer must cost nothing, and
+        re-placing the bubble ten times a second where it already is would
+        only make it flicker.
+
+        Never raises: it is called straight from the poll, and a placement
+        that failed must not take the event drain down with it.
+        """
+        try:
+            if not self.bubble.isVisible() or self._anchor() != ANCHOR_CURSOR:
+                # Nothing to follow — and moving a bubble window that was
+                # never shown segfaults Qt outright (offscreen platform), so
+                # every caller of reposition_bubble guards on isVisible().
+                self._cursor_at = None
+                return
+            pos = self._cursor_pos()
+            if pos is None or pos == self._cursor_at:
+                return
+            self.reposition_bubble()  # records the new position in _cursor_at
+        except Exception:
+            log.debug("overlay cursor tracking failed", exc_info=True)
 
     def _hide_bubble(self) -> None:
         self._flash_timer.stop()
+        self._cursor_at = None
         self.bubble.hide()
 
     # ------------------------------------------------------------ menu
