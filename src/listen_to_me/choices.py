@@ -2,8 +2,8 @@
 
 Single source of truth for the dropdowns that appear both in the settings
 window and in the first-run onboarding wizard. Qt-free (sounddevice is
-imported lazily inside input_device_choices) so the lists stay testable
-headless.
+imported lazily, inside the functions that enumerate devices) so the lists
+stay testable headless.
 """
 
 from __future__ import annotations
@@ -153,6 +153,13 @@ CLIPBOARD_COPY_MODES = [
 ]
 
 SYSTEM_DEFAULT_DEVICE = "System default"
+
+# The recording source of a take: the microphone, or what the computer is
+# playing (#191). app.py and the assistant profiles pass these around;
+# assistant.py deliberately takes the plain string instead of importing them,
+# so there is no import cycle.
+SOURCE_MIC = "mic"
+SOURCE_SYSTEM = "system"
 
 
 # ------------------------------------------------------- value -> label
