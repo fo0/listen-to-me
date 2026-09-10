@@ -1481,10 +1481,14 @@ class SettingsWindow(QDialog):
             "A take with no speech does not come back empty: Whisper was trained on "
             "subtitles, so near-silence decodes to the phrase that ends a clip — "
             "“Vielen Dank.”, “Thank you.”, a subtitle credit — and that sentence is "
-            "then inserted at your cursor. With this on, a transcript that matches "
-            "one of the phrases below as a WHOLE is thrown away instead. A phrase "
-            "that merely occurs inside a longer text is never touched, so dictating "
-            "“Vielen Dank für die Datei” stays exactly as spoken.",
+            "then inserted at your cursor. With this on, such a transcript is thrown "
+            "away instead — but a phrase below only counts when BOTH halves are true: "
+            "it is the WHOLE transcript, and the recording itself carried no usable "
+            "signal (silent, or too quiet to recognize anything — the same verdict the "
+            "microphone test on the Audio page reports). A take you really spoke into "
+            "is never filtered, however it reads: dictating nothing but “Vielen "
+            "Dank.” keeps it, and so does “Vielen Dank für die Datei”, which the "
+            "phrase only occurs inside.",
         )
         sv.addWidget(self.chk_filler)
         self.filler_edit = QPlainTextEdit(self.cfg["filler_phrases"])
@@ -1525,14 +1529,23 @@ class SettingsWindow(QDialog):
         # toggle.
         self.chk_filler.toggled.connect(self._refresh_filler_enabled)
         self._refresh_filler_enabled()
-        # The two consequences nothing on screen could show: what a dropped
-        # take looks like from the outside, and the one case the filter is
-        # skipped in.
+        # The rule and the two consequences nothing on screen could show: what
+        # both halves of "dropped" really are (the phrase list on its own reads
+        # as a blocklist — see fillers.is_filler and app._process), what a
+        # dropped take looks like from the outside, and the one case the filter
+        # is skipped in.
         sv.addWidget(self._hint(
-            "A dropped take reports “no speech”, inserts nothing and writes nothing "
-            "to the history — the same outcome as a recording you cancelled. The "
-            "filter is skipped while live typing is on: that text is already at the "
-            "cursor, and append-only typing cannot take it back."
+            "A phrase above only counts when two things are true: it is the whole "
+            "transcript, and the recording itself carried no usable signal — silent, "
+            "or too quiet to recognize anything. A take you really spoke into is kept "
+            "however it reads, which is what makes this safe to leave on. The one "
+            "transcript dropped whatever the list and the recording say is one with no "
+            "letter and no digit left in it (“...”, “♪♪”) — there is nothing in that "
+            "one anybody could have spoken. A dropped take reports “no speech”, "
+            "inserts nothing and writes nothing to the history — the same outcome as a "
+            "recording you cancelled. The filter is skipped while live typing is on: "
+            "that text is already at the cursor, and append-only typing cannot take it "
+            "back."
         ))
         layout.addWidget(fillers)
 
@@ -2130,6 +2143,21 @@ class SettingsWindow(QDialog):
             "the prompt is not.",
         )
         sysv.addWidget(self.chk_a_sys_enabled)
+        # Where the recording ends up, in the card that switches it on. The
+        # endpoint itself is configured two cards above, so ticking the box
+        # above can start sending recorded meetings to a host set months ago
+        # for dictation cleanup — and a system-audio recording is a recording of
+        # other people. Resolved from the field rather than from the saved
+        # config, so it follows editing before any Save.
+        self._a_destination_hint = self._hint("", elastic=True)
+        # Plain text, never Qt's AutoText guess: the host comes out of a text
+        # field, and a value with a "<" in it would otherwise be rendered as
+        # markup (the same reasoning as the History page's transcript rows).
+        self._a_destination_hint.setTextFormat(Qt.TextFormat.PlainText)
+        sysv.addWidget(self._a_destination_hint)
+        self.a_url_edit.textChanged.connect(self._refresh_assistant_destination)
+        self.chk_a_sys_enabled.toggled.connect(self._refresh_assistant_destination)
+        self._refresh_assistant_destination()
         model_row = QWidget()
         mrh = QHBoxLayout(model_row)
         mrh.setContentsMargins(0, 0, 0, 0)
@@ -2200,6 +2228,100 @@ class SettingsWindow(QDialog):
         # visible at the call site.
         reset.clicked.connect(lambda: self._reset_prompt(edit, default, reset))
         return edit, reset
+
+    def _refresh_assistant_destination(self, *_args) -> None:
+        """Re-render the System audio card's "sent to …" line.
+
+        Runs on every keystroke in the base-URL field and on the profile's own
+        switch, because the sentence is about what is on screen: whoever ticks
+        that box has to be able to read where the recording goes without
+        saving first.
+
+        Never hidden and never greyed out while the profile is off — off is
+        exactly the state the decision gets made in, and a disclosure that
+        appears only after the tick is one the tick could not use. The tense
+        carries the state instead ("Switched on, this sends …"). The sentence
+        also goes on the checkbox's accessible description: a sibling label is
+        not announced with the widget it belongs to, and this one belongs to
+        that switch.
+        """
+        text = self._endpoint_destination(
+            self.a_url_edit.text(), enabled=self.chk_a_sys_enabled.isChecked()
+        )
+        self._a_destination_hint.setText(text)
+        self.chk_a_sys_enabled.setAccessibleDescription(text)
+
+    @staticmethod
+    def _endpoint_destination(url: str, *, enabled: bool) -> str:
+        """Where a system-audio transcript would go, as the finished sentence
+        the System audio card shows.
+
+        The defaults are safe — `assistant.system_audio.enabled` ships off —
+        but the consequence of switching it on is invisible at the switch: the
+        endpoint is named on the Connection card above, so a base URL entered
+        months ago for dictation cleanup quietly becomes the destination for a
+        recording of other people. This is that disclosure, in the card where
+        the tick happens.
+
+        Only the host is ever rendered, never the URL and never the key: a base
+        URL may carry credentials in its userinfo, and this label sits in a
+        window people screenshot.
+
+        The loopback test is `assistant._warn_if_key_travels_in_clear`'s, down
+        to the `localhost` suffix rule and the IP literal — the same question
+        decides there whether the API key leaves this machine and here whether
+        the recording does, and two differently-wrong copies of it would be
+        worse than one. Static so the wording is testable without a window, and
+        it never raises: a URL that cannot be read gets a neutral sentence,
+        never a claim about where the audio goes.
+        """
+        import ipaddress
+        from urllib.parse import urlparse
+
+        text = str(url or "").strip()
+        parsed, host = None, ""
+        if text:
+            try:
+                parsed = urlparse(text)
+                host = (parsed.hostname or "").lower()
+            except ValueError:
+                # An unclosed IPv6 literal or a non-numeric port: urlsplit and
+                # .hostname raise, and this must not be what breaks the page.
+                parsed, host = None, ""
+        if not text:
+            return (
+                "No API base URL is set on the Connection card above, so there is "
+                "nowhere for a transcript to go yet."
+            )
+        if not host:
+            return (
+                "The API base URL on the Connection card above names no host, so this "
+                "cannot say where a transcript would go — check it before switching "
+                "this on."
+            )
+        loopback = host == "localhost" or host.endswith(".localhost")
+        if not loopback:
+            try:
+                loopback = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                loopback = False  # a hostname, not a literal address
+        lead = (
+            "The transcript of every recorded playback is sent to"
+            if enabled
+            else "Switched on, this sends the transcript of every recorded playback to"
+        )
+        if loopback:
+            return f"{lead} “{host}” — that is this computer, so the recording stays on it."
+        note = (
+            f"{lead} “{host}”, which is not this computer — a recording of other "
+            "people then leaves this machine."
+        )
+        if parsed is not None and parsed.scheme.lower() == "http":
+            # The wire the API key travels on as well; assistant logs that once
+            # (_warn_if_key_travels_in_clear), and a log file is not where the
+            # person ticking this box is looking.
+            note += " The connection is plain http, so it travels unencrypted."
+        return note
 
     def _build_history(self, title: str) -> QWidget:
         page, layout = self._page(title)
@@ -4845,8 +4967,12 @@ class SettingsWindow(QDialog):
             "initial_prompt": self.initial_prompt_edit.toPlainText().strip(),
             "replacements": self.replacements_edit.toPlainText().strip(),
             "filler_filter": self.chk_filler.isChecked(),
-            # No fallback to the default list: an emptied field is a legitimate
-            # "filter nothing", and the checkbox is the off switch.
+            # No fallback to the default list: the checkbox above is the off
+            # switch, so an emptied field is stored exactly as it stands. What
+            # an empty list does NOT mean is "filter nothing" — with no phrases
+            # left, is_filler still drops a transcript that holds no letter or
+            # digit at all (“...”, “♪♪”), a case that never depended on the
+            # list (see fillers.is_filler).
             "filler_phrases": self.filler_edit.toPlainText().strip(),
             "input_device": self._selected_input_device(),
             "max_seconds": int(self.max_seconds_spin.value()),
@@ -4973,9 +5099,9 @@ class SettingsWindow(QDialog):
         # disabled mute row — and the two are checked separately because the
         # connection is shared: the microphone profile being off does not make
         # a missing base URL harmless for the system-audio one.
-        for source, name, model_widget in (
-            (SOURCE_MIC, "Microphone dictation", self.a_model_edit),
-            (SOURCE_SYSTEM, "System audio", self.a_sys_model_edit),
+        for source, name, model_widget, prompt_widget in (
+            (SOURCE_MIC, "Microphone dictation", self.a_model_edit, self.a_prompt_edit),
+            (SOURCE_SYSTEM, "System audio", self.a_sys_model_edit, self.a_sys_prompt_edit),
         ):
             resolved = assistant_profile(values["assistant"], source)
             if not resolved["enabled"]:
@@ -4992,12 +5118,23 @@ class SettingsWindow(QDialog):
                     "otherwise every recording from it would fail on the assistant "
                     "after the fact.",
                 )
-                # The model can come from the profile's own override or from
-                # the shared field; an empty override means the shared one is
-                # what has to be filled in.
-                widget = self.a_url_edit if field == "base_url" else model_widget
-                if widget is not self.a_url_edit and not widget.text().strip():
-                    widget = self.a_model_edit
+                # Every key config_problem can name needs a field of its own,
+                # or the caret lands on something the message did not talk
+                # about: base_url is the shared one on the Connection card,
+                # system_prompt is this profile's own prompt box (blank there
+                # used to be reported nowhere at all — assistant._gate read the
+                # profile as disabled and left a log line as the only trace),
+                # and the model can come from the profile's own override or
+                # from the shared field, where an empty override means the
+                # shared one is what has to be filled in.
+                if field == "base_url":
+                    widget = self.a_url_edit
+                elif field == "system_prompt":
+                    widget = prompt_widget
+                else:
+                    widget = model_widget
+                    if not widget.text().strip():
+                        widget = self.a_model_edit
                 widget.setFocus()
                 return False
 

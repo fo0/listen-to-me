@@ -29,7 +29,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QLabel, QMenu, QVBoxLayout, QWidget
 
 from .audio import SAMPLE_RATE, band_levels
-from .choices import SOURCE_MIC, SOURCE_SYSTEM
+from .choices import SOURCE_MIC, SOURCE_SYSTEM, source_label
 from .history import entry_timestamp
 from .keymap import hotkey_label
 
@@ -69,13 +69,15 @@ _UNEXPOSED = "no longer exposed"
 _PLACE_RETRY_MS = 2_000  # look again while the saved monitor is still missing
 _PLACE_RETRY_LIMIT = 15  # …for ~30 s after start; later hot-plug arrives as a signal
 
-# What a click on the icon does while a take runs. Its own constant because
-# the recording wording is built twice below — with the take clock, and with
-# the name of the source the take records from.
+# What a click on the icon does while a take runs. Its own constant so the
+# recording tooltip keeps it while everything in front of it varies — the take
+# clock, and the name of the source the take records from (_recording_label).
 _STOP_HINT = "click again to stop"
+# No "recording" entry: _state_tooltip answers that state from
+# _recording_label before it ever reaches this map, so an entry here would be a
+# second, unreachable wording — one waiting to be found and used by mistake.
 _STATE_LABELS = {
     "idle": "Idle — click or press the hotkey to record",
-    "recording": f"Recording… {_STOP_HINT}",
     "processing": "Transcribing…",
 }
 
@@ -99,7 +101,7 @@ def _recording_label(elapsed=None, source: str = SOURCE_MIC) -> str:
     from a dictation — both end up inserted at the cursor. The microphone keeps
     the wording it always had, so nothing about a dictation reads differently.
     """
-    what = "Recording" if source == SOURCE_MIC else "Recording system audio"
+    what = "Recording" if source == SOURCE_MIC else f"Recording {source_label(source)}"
     clock = "" if elapsed is None else f" {format_duration(elapsed)}"
     return f"{what}{clock}… {_STOP_HINT}"
 
@@ -969,10 +971,11 @@ class Overlay:
                 # Named after the source for the same reason as the tooltip: the
                 # preview runs for both sources, and "● Listening…" over a
                 # recorded meeting reads as an open microphone.
+                source = self._source()
                 self.show_live(
                     "● Listening…"
-                    if self._source() == SOURCE_MIC
-                    else "● Recording system audio…"
+                    if source == SOURCE_MIC
+                    else f"● Recording {source_label(source)}…"
                 )
             else:
                 # Clear any leftover flash so a stale transcript doesn't linger.

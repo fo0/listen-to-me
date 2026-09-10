@@ -12,6 +12,7 @@ import logging
 import time
 
 from . import netutil
+from .choices import SOURCE_MIC, SOURCE_SYSTEM
 from .config import clamp_setting
 
 log = logging.getLogger(__name__)
@@ -66,37 +67,32 @@ def _read_body(response, deadline: float) -> bytes:
 # The connection is shared by both recording sources (see profile()).
 _SHARED_KEYS = ("base_url", "api_key", "temperature", "timeout")
 
-_prompt_warned: set[str] = set()
 
-
-def _gate(key: str, enabled, system_prompt) -> tuple[bool, str]:
+def _gate(enabled, system_prompt) -> tuple[bool, str]:
     """One profile's `(enabled, system prompt)`, each as the type it claims.
 
     `enabled` is read the way ``config._coerce`` reads a bool default — a real
     bool or the unambiguous 0/1 of a hand-edit, never plain truthiness, so a
     stored ``"enabled": "false"`` cannot turn the feature ON (re-checked here
-    because a dict built by hand never passed that merge). A blank or
-    non-string prompt switches the profile off and is named once per key and
-    process: a request with no system prompt tells the endpoint nothing about
-    what to do with the transcript, and the user pays for the answer with the
-    wait after a recording that is already over — while a log line per take
-    would bury the log, as in _warn_if_key_travels_in_clear.
+    because a dict built by hand never passed that merge). That is a type
+    coercion, not a verdict on the configuration.
+
+    The prompt is only *typed* here, never judged. A non-string becomes the
+    empty string: `refine()` puts this value straight into the request body, so
+    it has to be a `str` by the time it leaves `profile()` — but it is left
+    empty rather than repaired into something plausible, because the one thing
+    worse than no prompt is a prompt the user never wrote (the same rule that
+    keeps a broken `system_audio` section from borrowing the dictation prompt,
+    see `profile`). Whether an empty prompt can produce a request is
+    `config_problem`'s answer, and that one reaches the user; switching the
+    profile off here instead turned a feature the user had switched ON into a
+    no-op whose only trace was one log line per process.
     """
     on = enabled if isinstance(enabled, bool) else (isinstance(enabled, int) and enabled == 1)
-    prompt = system_prompt if isinstance(system_prompt, str) else ""
-    if on and not prompt.strip():
-        on = False
-        if key not in _prompt_warned:
-            _prompt_warned.add(key)
-            log.warning(
-                "config key %r carries no prompt text — assistant post-processing "
-                "stays off for this recording source (Settings → Assistant)",
-                key,
-            )
-    return (on, prompt)
+    return (on, system_prompt if isinstance(system_prompt, str) else "")
 
 
-def profile(acfg: dict, source: str = "mic") -> dict:
+def profile(acfg: dict, source: str = SOURCE_MIC) -> dict:
     """The `assistant` section resolved for one recording source — flat, so it
     goes straight into `config_problem()` and `refine()`.
 
@@ -108,20 +104,29 @@ def profile(acfg: dict, source: str = "mic") -> dict:
     the prompt are per source. The top-level `enabled`/`system_prompt`/`model`
     ARE the microphone profile (not renamed, so no existing config.json needs a
     migration); `acfg["system_audio"]` holds the other one, and any `source`
-    but "system" is the microphone — a plain string, because app.py imports
-    this module and an enum would need a third one to live in.
+    but `SOURCE_SYSTEM` is the microphone — the constants come from `choices`,
+    which imports nothing from this package at module scope, so naming them
+    here costs no import cycle. This is the one module whose wrong answer is a
+    confidently wrong result rather than a missing one, so the comparison must
+    not be a bare string literal: a mistyped constant is an ImportError at
+    import time, while a mistyped `"sytem"` was a silent fall-through to the
+    dictation prompt.
 
     An unreadable profile is reported DISABLED, never repaired from the other
     one: post-processing a recorded meeting with the dictation prompt is a
     confidently wrong result, while a feature nobody configured staying off is
-    the right one. Nothing here raises — a hand-edited config.json may cost the
-    assistant, never the transcript already waiting for it.
+    the right one. A profile that IS switched on but carries no prompt stays
+    switched on, with an empty one, so `config_problem` can report it — the
+    older answer (reporting it disabled) left a feature the user had turned on
+    doing nothing at all, with nothing on screen to say why. Nothing here
+    raises — a hand-edited config.json may cost the assistant, never the
+    transcript already waiting for it.
     """
     # Only the shared keys the caller really stored: a value invented here
     # would shadow refine()'s own fallbacks for temperature and timeout.
     prof = {key: acfg[key] for key in _SHARED_KEYS if key in acfg}
     shared_model = acfg.get("model", "")
-    if source == "system":
+    if source == SOURCE_SYSTEM:
         # A missing section (a config hand-written before #191) or a scalar
         # where it belongs reads as switched off with an empty prompt, so not
         # even a caller that ignores `enabled` can send the dictation prompt to
@@ -129,15 +134,14 @@ def profile(acfg: dict, source: str = "mic") -> dict:
         # the defaults — this is the last line of defence, not the report.
         stored = acfg.get("system_audio")
         section = stored if isinstance(stored, dict) else {}
-        key = "assistant.system_audio.system_prompt"
         # A blank model means "use the shared one" by design (one endpoint
         # usually serves one), so an unusable value falls back to it as well —
         # unlike the prompt, which has no right value to fall back to.
         model = section.get("model")
         model = (model.strip() if isinstance(model, str) else "") or shared_model
     else:
-        section, key, model = acfg, "assistant.system_prompt", shared_model
-    enabled, prompt = _gate(key, section.get("enabled"), section.get("system_prompt"))
+        section, model = acfg, shared_model
+    enabled, prompt = _gate(section.get("enabled"), section.get("system_prompt"))
     return {**prof, "enabled": enabled, "model": model, "system_prompt": prompt}
 
 
@@ -151,6 +155,19 @@ def config_problem(acfg: dict) -> tuple[str, str] | None:
     done. Naming the problem up front — at Save, and again before the request
     goes out — turns that into something the user can act on.
 
+    The missing prompt is the third answer, and it used to be a silent no-op
+    instead: a profile with `"enabled": true` and a blank `system_prompt` was
+    reported *disabled* by `profile()`, so the feature the user had switched on
+    never ran, the settings window skipped it (it asks `profile()`, which
+    already said disabled) and one log line per process was the only trace.
+    Only a hand-edited config.json gets there — the settings window substitutes
+    the default prompt for an empty field — but it belongs here for exactly the
+    reason the other two do: a request with no system prompt tells the endpoint
+    nothing about what to do with the transcript, and this is the one place
+    that already reaches the user. A non-string is refused rather than stringified:
+    `refine()` puts this value into the request body, and "5" is not a prompt
+    anybody wrote.
+
     Qt-free on purpose: the settings window and the worker thread both ask,
     and the rule belongs to neither of them.
     """
@@ -161,6 +178,9 @@ def config_problem(acfg: dict) -> tuple[str, str] | None:
         return ("base_url", "the API base URL must start with http:// or https://")
     if not str(acfg.get("model") or "").strip():
         return ("model", "no model name is set")
+    prompt = acfg.get("system_prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return ("system_prompt", "no system prompt is set")
     return None
 
 

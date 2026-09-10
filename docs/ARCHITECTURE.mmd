@@ -29,7 +29,7 @@ flowchart TD
         Transcriber("Transcriber — faster-whisper"):::backend
         TranscriberOV("OpenVinoTranscriber — OpenVINO GenAI (Intel GPU/NPU)"):::backend
         TranscriberPK("ParakeetTranscriber — NVIDIA Parakeet TDT via onnx-asr"):::backend
-        Fillers("fillers — drop a transcript that is only an invented silence phrase"):::backend
+        Fillers("fillers — is the whole transcript one of the invented silence phrases?"):::backend
         Assistant("Assistant — LLM post-process (one profile per source)"):::backend
         Injector("Injector — paste/type at cursor"):::backend
         LiveType("LiveTyper — live typing while recording"):::backend
@@ -77,7 +77,8 @@ flowchart TD
     App -->|"start/stop (microphone take)"| Recorder
     App -->|"system-audio take: which device?"| SysAudio
     SysAudio -->|"loopback input index"| Recorder
-    SysAudio -->|"no candidate → refuse, notify the platform fix"| Events
+    SysAudio -->|"no candidate → refuse: (None, the platform fix)"| App
+    App -->|"post notify (the refusal, forced)"| Events
     Loopback -->|"what the computer plays"| Recorder
     Recorder -->|"downmix + resample per block"| Resample
     App -->|"_process worker"| Transcriber
@@ -86,7 +87,8 @@ flowchart TD
     Recorder -->|"audio frames"| Transcriber
     Recorder -->|"audio frames"| TranscriberOV
     Recorder -->|"audio frames"| TranscriberPK
-    App -->|"whole transcript = a listed phrase → drop the take"| Fillers
+    App -->|"silent/quiet audio + whole transcript = a listed phrase → drop the take"| Fillers
+    App -->|"clip_stats verdict (silent/quiet/ok) for a take with no text"| Diag
     Transcriber -->|"text"| Assistant
     Assistant -->|"cleaned text"| Injector
     Transcriber -->|"text (assistant off)"| Injector

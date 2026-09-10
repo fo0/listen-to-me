@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from typing import NamedTuple
 
 log = logging.getLogger(__name__)
 
@@ -150,9 +151,47 @@ def system_audio_help() -> str:
     )
 
 
+class LoopbackChoice(NamedTuple):
+    """What a system-audio take should do — the answer of
+    :func:`resolve_loopback_device`.
+
+    Three fields rather than the obvious two, because two had the exact shape
+    of :func:`choices.resolve_input_device`'s answer — ``(index, note)`` — with
+    the *opposite* meaning for a None index: refuse the take here, record from
+    the system default there. The two functions no longer sit in one module
+    where a reader sees them side by side, and the next caller (a "Test system
+    audio" button next to the existing "Test microphone" is the obvious one) is
+    where the wrong sibling gets copied from. ``device, note =
+    resolve_loopback_device(...)`` now raises ``ValueError: too many values to
+    unpack`` on the very first system-audio take instead of silently recording
+    a microphone.
+
+    `refuse` is True exactly when `index` is None: the flag is the half a
+    reader cannot misread, the None is what the recorder would act on.
+    """
+
+    index: int | None
+    note: str | None
+    refuse: bool
+
+
+def _stale_index_phrase(configured, found: dict | None) -> str:
+    """How a note names a configured index that must not be recorded from:
+    either gone, or still there but no longer a loopback device.
+
+    Both halves are named on purpose — the device now sitting at the index is
+    what makes "why is my microphone in this transcript?" answerable, and it is
+    the same sentence's job to say which device is used instead.
+    """
+    where = f"The device selected for system audio (index {configured})"
+    if found is None:
+        return f"{where} is no longer available"
+    return f"{where} is now “{found.get('name')}”, which does not look like a loopback device"
+
+
 def resolve_loopback_device(
     configured: int | None, profiles: list[dict] | None = None
-) -> tuple[int | None, str | None]:
+) -> LoopbackChoice:
     """The device a system-audio take records from, plus the sentence to show
     when that is not the one the user configured (None = nothing to report).
 
@@ -165,32 +204,59 @@ def resolve_loopback_device(
     a conversation in the room into a transcript the user believes came from a
     meeting, and nothing about the text would give that away. So a None index
     always carries a non-None, actionable note, and the caller shows the note
-    instead of recording.
+    instead of recording. `LoopbackChoice.refuse` says the same thing in a
+    field the caller cannot mistake for its sibling's meaning; the docstring is
+    no longer the only guard.
 
     Which device it is:
 
-    * a configured index that still exists — that one, nothing to report;
+    * a configured index that still points at a device that *looks* like a
+      loopback capture — that one, nothing to report;
     * nothing configured ("device": null) — the best of
       :func:`loopback_candidates`, with no note: auto-pick is the documented
       default, not a fallback worth interrupting a take for (it is logged);
-    * a configured index that is gone — PortAudio indices are positional, so
-      unplugging one interface re-indexes the rest — the best candidate
-      instead, plus a note naming both;
+    * a configured index that is gone, or that now carries a device with no
+      loopback hint in its name — PortAudio indices are positional, so
+      unplugging one interface moves the stored index onto whatever device
+      follows, a microphone included — the best candidate instead, plus a note
+      naming the device found there *and* the one recorded from;
     * no candidate at all — no index, and a note naming the fix.
+
+    The score check is what stops the worst outcome the feature has: an index
+    that still exists is not the device it was chosen for, so accepting it on
+    existence alone recorded the room with `note` left at None — nothing said,
+    nothing to notice, the transcript stored as the computer's audio (ADR-0009
+    rejects exactly that). A device whose name carries no hint at all is
+    therefore treated like a missing one. It costs the take that a loopback
+    device with an unheard-of name would have delivered — a note names it and
+    LOOPBACK_HINTS takes one line to learn it, which is the direction of the
+    two errors this has to choose between.
 
     `profiles` is injectable for headless tests. An enumeration that fails or
     comes back empty passes a configured index through untouched, exactly as
     :func:`choices.resolve_input_device` does: it cannot tell "the device is
-    gone" from "PortAudio could not be asked", and only the auto case can then
-    report that nothing was found. A `configured` value that is not an index
-    is passed through unvalidated for the same reason as there — config.json
-    is untrusted, the null default carries no type information, and a device
-    *name* is something PortAudio resolves itself. (`bool` is an int subclass,
-    and `True` is not a device.)
+    gone" from "PortAudio could not be asked", so it cannot score anything
+    either, and only the auto case can then report that nothing was found.
+
+    A `configured` value that is not an index is refused, which is where this
+    parts company with `input_device` a second time: a device *name* buys
+    nothing here (the settings dropdown only ever writes an index or null, so a
+    non-int is a broken hand-edit, not a name for PortAudio to resolve), and
+    handing one on has a specific cost — `bool` is an int subclass, sounddevice
+    validates nothing, and `True` therefore resolves to input device 1, i.e. a
+    nonsense config value records the default microphone.
     """
-    is_index = isinstance(configured, int) and not isinstance(configured, bool)
-    if configured is not None and not is_index:
-        return configured, None
+    if configured is not None and (
+        not isinstance(configured, int) or isinstance(configured, bool)
+    ):
+        log.warning("system_audio.device is %r, which is not a device index", configured)
+        return LoopbackChoice(
+            None,
+            f"The device selected for system audio is not a device index ({configured!r}) — "
+            "nothing was recorded. Pick the device again under Settings → Audio.",
+            True,
+        )
+    is_index = configured is not None
     if profiles is None:
         try:
             from .audio import input_device_profiles
@@ -199,31 +265,45 @@ def resolve_loopback_device(
         except Exception:
             log.exception("could not check whether the system-audio device still exists")
             profiles = []
-    if is_index and (
-        not profiles or any(profile.get("index") == configured for profile in profiles)
-    ):
-        return configured, None
+    if is_index and not profiles:
+        return LoopbackChoice(configured, None, False)
+    at_index = None
+    if is_index:
+        at_index = next(
+            (profile for profile in profiles if profile.get("index") == configured), None
+        )
+        if at_index is not None and _loopback_score(str(at_index.get("name") or ""))[0] > 0:
+            return LoopbackChoice(configured, None, False)
     candidates = loopback_candidates(profiles)
     if not candidates:
         if is_index:
-            return None, (
-                f"The device selected for system audio (index {configured}) is no longer "
-                "available and no other loopback device was found — nothing was recorded. "
-                + system_audio_help()
+            return LoopbackChoice(
+                None,
+                f"{_stale_index_phrase(configured, at_index)} and no other loopback device "
+                "was found — nothing was recorded. " + system_audio_help(),
+                True,
             )
-        return None, (
+        return LoopbackChoice(
+            None,
             "No device for recording what the computer plays was found — nothing was "
-            "recorded. " + system_audio_help()
+            "recorded. " + system_audio_help(),
+            True,
         )
     best = candidates[0]
     if is_index:
-        return best["index"], (
-            f"The device selected for system audio (index {configured}) is no longer "
-            f"available — recording from “{best.get('name')}” instead. Pick it again "
-            "under Settings → Audio."
+        log.warning(
+            "system audio: configured index %s is %r — recording from %s (%r) instead",
+            configured, None if at_index is None else at_index.get("name"),
+            best["index"], best.get("name"),
+        )
+        return LoopbackChoice(
+            best["index"],
+            f"{_stale_index_phrase(configured, at_index)} — recording from "
+            f"“{best.get('name')}” instead. Pick it again under Settings → Audio.",
+            False,
         )
     log.info(
         "system audio: auto-selected input device %s (%r, matched %r)",
         best["index"], best.get("name"), best.get("hint"),
     )
-    return best["index"], None
+    return LoopbackChoice(best["index"], None, False)

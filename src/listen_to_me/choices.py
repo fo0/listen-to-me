@@ -1,9 +1,14 @@
-"""Shared UI choice lists (languages, models, backends) and label mapping.
+"""Shared UI choice lists (languages, models, backends) and label mapping —
+plus the identity of the two recording sources a take can have.
 
 Single source of truth for the dropdowns that appear both in the settings
-window and in the first-run onboarding wizard. Qt-free (sounddevice is
-imported lazily, inside the functions that enumerate devices) so the lists
-stay testable headless.
+window and in the first-run onboarding wizard, and for the recording sources
+themselves: the constants, the registry that routes by them and the wording
+every message about a running take is built from (see `source_label`). Qt-free
+(sounddevice is imported lazily, inside the functions that enumerate devices)
+so the lists stay testable headless — and importable from every consumer,
+which the module that used to own the source wording (app.py, the heaviest in
+the package) was not.
 """
 
 from __future__ import annotations
@@ -155,11 +160,78 @@ CLIPBOARD_COPY_MODES = [
 SYSTEM_DEFAULT_DEVICE = "System default"
 
 # The recording source of a take: the microphone, or what the computer is
-# playing (#191). app.py and the assistant profiles pass these around;
-# assistant.py deliberately takes the plain string instead of importing them,
-# so there is no import cycle.
+# playing (#191). app.py, the tray, the floating icon, the Home hub and the
+# assistant profiles all pass these around.
 SOURCE_MIC = "mic"
 SOURCE_SYSTEM = "system"
+
+# How a message names each source. Load-bearing wording: a system-audio take
+# reporting "the microphone stream ended unexpectedly" sends the user to a
+# setting — and a device — that is working fine, so every message about a
+# running take is built from `source_label`.
+#
+# Here rather than in app.py because five modules name the same take: the
+# notifications, the tray status, the tray menu, the floating icon and the Home
+# hero. Four of them used to spell "system audio" as their own literal, and the
+# fifth had to import app.py — the heaviest module in the package — from inside
+# a method just to read a string.
+_SOURCE_LABELS = {SOURCE_MIC: "microphone", SOURCE_SYSTEM: "system audio"}
+
+# Every source a take can record from — the registry the routing goes through
+# (see `known_source`). Derived from the labels rather than typed a second
+# time: a registered source with no label of its own would be named after the
+# microphone, which is the silent wrong answer the registry exists to stop.
+SOURCES = tuple(_SOURCE_LABELS)
+
+# The unregistered source values the log has already named, so one of them is
+# reported once instead of on every notification about the take. Keyed by
+# repr(), which is defined for the unhashable payloads a `post()` can carry.
+_UNKNOWN_SOURCES_LOGGED: set[str] = set()
+
+
+def known_source(source) -> str | None:
+    """`source` when it is one of the registered recording sources, else None.
+
+    Membership is what routes a take: `app.event_source` picks the source an
+    event belongs to, `app.hotkey_mode` reads that source's own config section,
+    and `source_label` names it. All three used to *fall through* to the
+    microphone for anything they did not recognize, which is the right answer
+    for a payload-free ``post("toggle")`` — the tray, the floating icon and the
+    Home button have always posted one, and it means the microphone — but was
+    also the answer for a source that exists and is simply not listed: a third
+    source would be recorded from the wrong device, read from the wrong config
+    section and called "microphone" in every notification, without an
+    exception or a log line anywhere.
+
+    So `None` — no source named at all — stays the silent, documented case,
+    while a value that names something unregistered is logged once per value.
+    Callers still get a usable answer out of it (``known_source(x) or
+    SOURCE_MIC``): a take that is really running has to be routed and described
+    somehow, and the log line is what keeps that guess from being invisible.
+
+    Compared by == over the registry rather than by dict lookup, so an
+    unhashable payload cannot raise inside a notification path.
+    """
+    for known in SOURCES:
+        if source == known:
+            return known
+    if source is not None:
+        key = repr(source)
+        if key not in _UNKNOWN_SOURCES_LOGGED:
+            _UNKNOWN_SOURCES_LOGGED.add(key)
+            log.warning("unknown recording source %s — treating it as the microphone", key)
+    return None
+
+
+def source_label(source) -> str:
+    """The name a notification gives one of the recording sources.
+
+    Anything unregistered reads as the microphone: the source travels through
+    the event queue as an event payload, and a take that is really running has
+    to be described somehow rather than named after a payload nobody sent. What
+    is *not* registered is logged there — see `known_source`.
+    """
+    return _SOURCE_LABELS[known_source(source) or SOURCE_MIC]
 
 
 # ------------------------------------------------------- value -> label

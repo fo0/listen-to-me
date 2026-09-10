@@ -10,7 +10,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from . import APP_NAME, REPO_URL
-from .choices import SOURCE_MIC, SOURCE_SYSTEM
+from .choices import SOURCE_MIC, SOURCE_SYSTEM, source_label
 from .history import entry_timestamp
 from .keymap import hotkey_label
 from .qtutil import tray_icon
@@ -127,7 +127,8 @@ def state_label(
         # (overlay._recording_label): a bare "Recording…" over a system-audio
         # take reads as an open microphone, and both end up at the cursor.
         clock = "" if elapsed is None else f" {format_duration(elapsed)}"
-        generic = f"{'Recording system audio' if system else 'Recording'}{clock}…"
+        what = f"Recording {source_label(SOURCE_SYSTEM)}" if system else "Recording"
+        generic = f"{what}{clock}…"
     if state not in ("idle", "recording"):
         return generic
     try:

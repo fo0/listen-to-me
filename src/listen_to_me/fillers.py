@@ -47,10 +47,29 @@ _TRIMMED_CATEGORIES = frozenset({"Po", "Pd", "Pc", "Pi", "Pf", "Sm", "Sc", "Sk",
 # single dictation.
 _MAX_FILLER_PHRASES = 500
 
+# Hard cap on the *lines* the parser reads, the same ceiling app.py puts on
+# parse_replacements. This is the limit that bounds the work, and the phrase cap
+# above cannot do it: it stops at 500 *accepted* phrases, while a blank line, a
+# `#` comment, a duplicate and a punctuation-only line are each skipped before
+# it is ever consulted — so a list of 200 000 duplicates was walked in full,
+# 310 ms of it, once per dictation on the worker thread and once per keystroke
+# on the Qt main thread (the settings field re-parses with no debounce). Four
+# lines per phrase, so a fully commented, blank-line-separated list of 500
+# phrases still fits underneath it.
+_MAX_FILLER_LINES = _MAX_FILLER_PHRASES * 4
+
 # How many bad lines describe_filler_phrases names before it counts the rest —
 # the status is one line under a text field, and a list pasted in from
 # somewhere else can have dozens of them. Same reasoning as app.py's.
 _MAX_REPORTED_ISSUES = 3
+
+# How many of those lines are kept as *strings* at all — the limit that bounds
+# the memory one parse costs. _MAX_REPORTED_ISSUES only ever bounded what the
+# status shows: the list behind it grew with the file, so a pasted 200 000-line
+# spec built 200 000 strings nobody could ever see. Everything past the ones it
+# can name is counted instead (`counts["ignored"]`), which is all the status
+# needs to stay exact.
+_MAX_COLLECTED_ISSUES = _MAX_REPORTED_ISSUES
 
 # The phrase list the log has already complained about; see _warn_once.
 _warned_spec: str | None = None
@@ -160,7 +179,9 @@ def _has_content(probe: str) -> bool:
     return any(ch.isalnum() for ch in probe)
 
 
-def parse_filler_phrases(spec: str, issues: list[str] | None = None) -> list[str]:
+def parse_filler_phrases(
+    spec: str, issues: list[str] | None = None, counts: dict | None = None
+) -> list[str]:
     """The filler phrases in `spec`, normalized, in the order they are written.
 
     One phrase per line. Blank lines and lines starting with `#` are comments,
@@ -175,10 +196,21 @@ def parse_filler_phrases(spec: str, issues: list[str] | None = None) -> list[str
     only ever match a transcript that is itself empty, a case `is_filler`
     already covers on its own. Pass a list as `issues` to collect those lines
     as short phrases naming each one ("line 4 is only punctuation"); the list
-    is appended to and never read here, so the phrases a call returns are
-    exactly the same with and without it. Only per-line problems land in it —
-    hitting the phrase cap is not one of them, and `describe_filler_phrases`
-    reports that from the phrase count instead.
+    is only appended to — never read for a decision — so the phrases a call
+    returns are exactly the same with and without it. It holds at most
+    `_MAX_COLLECTED_ISSUES` of them, the ones the status can name; the rest are
+    counted. Only per-line problems land in it — a cap being hit is not one of
+    them, and `describe_filler_phrases` reports those separately.
+
+    Two ceilings bound this walk, and they protect different things. The
+    *phrase* cap bounds what is kept and matched against. The *line* ceiling
+    bounds the walk itself: a list of nothing but comments or duplicates never
+    reaches the phrase cap, and this runs after every dictation and on every
+    keystroke in the settings field. Pass a dict as `counts` to learn what they
+    cost — `ignored` is how many unusable lines there were, including the ones
+    `issues` no longer names, and `unread_lines` is True when the line ceiling
+    stopped the walk with text left over. Both are what lets the status line
+    stay exact about a prefix instead of reporting it as the whole list.
 
     Qt-free and free of side effects bar one log line, so the syntax is
     testable headlessly.
@@ -186,14 +218,28 @@ def parse_filler_phrases(spec: str, issues: list[str] | None = None) -> list[str
     spec_text = str(spec or "")
     phrases: list[str] = []
     seen: set[str] = set()
+    ignored = 0
+    unread_lines = False
     for number, line in enumerate(spec_text.splitlines(), start=1):
+        if number > _MAX_FILLER_LINES:
+            # Getting handed this line is the proof that one exists, so the
+            # flag is set only when something really was left unread — a spec
+            # of exactly _MAX_FILLER_LINES lines is parsed whole and says so.
+            unread_lines = True
+            _warn_once(
+                spec_text,
+                "more than %d lines of filler phrases — the rest is not read",
+                _MAX_FILLER_LINES,
+            )
+            break
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         phrase = normalize(line)
         if not _has_content(phrase):
             _warn_once(spec_text, "filler phrase on line %d is only punctuation, ignored", number)
-            if issues is not None:
+            ignored += 1
+            if issues is not None and len(issues) < _MAX_COLLECTED_ISSUES:
                 issues.append(f"line {number} is only punctuation")
             continue
         if phrase in seen:
@@ -205,6 +251,9 @@ def parse_filler_phrases(spec: str, issues: list[str] | None = None) -> list[str
                 spec_text, "more than %d filler phrases — the rest is ignored", _MAX_FILLER_PHRASES
             )
             break
+    if counts is not None:
+        counts["ignored"] = ignored
+        counts["unread_lines"] = unread_lines
     return phrases
 
 
@@ -232,9 +281,10 @@ def is_filler(text: str, spec: str) -> str | None:
     Never raises. This runs on the worker thread between a finished dictation
     and its insertion, so a hand-edited list that somehow cannot be parsed
     costs the filter, never the user's text — a broken list filters nothing.
-    The list is re-read on every call (it is short, and the user may have
-    edited it since the last recording), while a complaint about it reaches the
-    log once instead of once per recording.
+    The list is re-read on every call (the line ceiling above is what bounds
+    that cost, and the user may have edited it since the last recording),
+    while a complaint about it reaches the log once instead of once per
+    recording.
     """
     try:
         probe = normalize(text)
@@ -267,22 +317,38 @@ def describe_filler_phrases(spec: str) -> str:
     placeholder, not a count of zero. A duplicate line is deliberately not
     reported as ignored — it is not a mistake, it just does not add a phrase,
     and the count already says so.
+
+    A list long enough to hit one of the parser's ceilings gets a second
+    sentence naming it. Both counts before it are then about the part that was
+    read, which is exactly why they must not be shown without it — and why a
+    walk that was cut short reports "0 phrases active" rather than nothing at
+    all: 200 000 lines of comments produce no phrase and no bad line either,
+    and staying quiet about them would be the same silent shortening this
+    sentence exists to prevent.
     """
     issues: list[str] = []
-    phrases = parse_filler_phrases(spec, issues)
-    if not phrases and not issues:
+    counts: dict = {}
+    phrases = parse_filler_phrases(spec, issues, counts)
+    # The parser collects at most _MAX_REPORTED_ISSUES of the bad lines and
+    # counts the rest, so the total comes from `counts` and the names from the
+    # list — the count stays exact however long the pasted list was.
+    ignored = counts.get("ignored", len(issues))
+    if not phrases and not ignored and not counts.get("unread_lines"):
         return ""
     status = f"{len(phrases)} phrase{'' if len(phrases) == 1 else 's'} active"
-    if issues:
-        shown = issues[:_MAX_REPORTED_ISSUES]
-        listed = ", ".join(shown)
-        hidden = len(issues) - len(shown)
+    if ignored:
+        listed = ", ".join(issues[:_MAX_REPORTED_ISSUES])
+        hidden = ignored - min(len(issues), _MAX_REPORTED_ISSUES)
         if hidden:
             listed += f", and {hidden} more"
-        status += f" · {len(issues)} line{'' if len(issues) == 1 else 's'} ignored: {listed}"
+        status += f" · {ignored} line{'' if ignored == 1 else 's'} ignored: {listed}"
     status += "."
     if len(phrases) >= _MAX_FILLER_PHRASES:
         # Its own sentence, not one of the ignored lines: the parser stops
         # counting at the cap, so it does not know how many lines came after it.
         status += f" Only the first {_MAX_FILLER_PHRASES} phrases are used."
+    elif counts.get("unread_lines"):
+        # Only when the phrase cap did not already stop the walk: whichever
+        # ceiling came first is the one that says what happened to the rest.
+        status += f" Only the first {_MAX_FILLER_LINES} lines are read."
     return status

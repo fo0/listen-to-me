@@ -15,6 +15,8 @@ The shipped stack cannot ask for it. Three measurements taken while building the
 - **The PortAudio binary bundled in its Windows wheel is too old.** It reports itself as `PortAudio V19.7.0-devel` and exports 13 `PaWasapi_*` symbols, none of which is `PaWasapi_IsLoopback`; the DLL also carries no `[Loopback]` device-name string, in neither ASCII nor UTF-16. The `-asio` and `arm64` builds in the same wheel measure identically.
 - **The API does exist upstream, and that is the trap.** sounddevice's own CFFI declarations _do_ declare `PaWasapi_IsLoopback` — so a reader who greps the Python package concludes the feature is one `_lib` call away, and only the bundled binary says otherwise. The declaration is a promise about a PortAudio newer than the one in the wheel.
 
+**How to re-check all three** (they are the reason this decision can date, and `requirements.txt` pins `sounddevice>=0.5.6` with no ceiling, so pip resolves past the measured version without anyone noticing): the artifact is the Windows wheel `sounddevice-0.5.6-py3-none-win_amd64.whl`, fetched with `pip download sounddevice --no-deps --only-binary :all: --platform win_amd64 --python-version 3.12`. Inside it the binary is `_sounddevice_data/portaudio-binaries/libportaudio64bit.dll` (siblings `libportaudio64bit-asio.dll` and `libportaudioarm64.dll`); the version string is what `strings -a` on that file reports, the export list is a `PaWasapi_[A-Za-z_]+` regex over its raw bytes plus a byte search for `Loopback` in both ASCII and UTF-16LE, and the CFFI declaration is in the `_globals` tuple of `_sounddevice.py` in the same wheel.
+
 Ordering a newer PortAudio is not a small change either: the one-file Windows build ships whatever DLL the wheel carries, so replacing it means carrying and updating a binary of our own in `release.yml`.
 
 ## Decision
@@ -29,7 +31,7 @@ When no candidate exists, the take is **refused** with the platform's own fix na
 
 - **Linux works out of the box.** PulseAudio and PipeWire give every sink a `Monitor of …` source, so there is always a candidate and the auto-pick finds it.
 - **No new dependency, no bundled binary.** The feature rides on the `sounddevice` the app already ships, and the one-file Windows build is unchanged.
-- **One capture path, one engine.** A loopback source is a normal input device, so recording, the length cap, the transcriber, the history and the assistant are the same code as for a dictation — only the device, the cap and the assistant profile differ.
+- **One capture path, one engine.** A loopback source is a normal input device, so the recorder, the transcriber, the history and the insertion at the cursor are the same code as for a dictation. Five things differ per source, and a third source would have to answer all five: the **device**, the length **cap**, the **assistant profile**, **live-typing eligibility** (`app.py`: `if self.cfg["live_typing"] and not system:` — live typing is the microphone's alone, because the gate reasons about the microphone hotkey and typing a meeting into the focused window while it records is not what this source is for) and the **UI wording**, which branches in five modules (`app.py`, `tray.py`, `overlay.py`, `home_page.py`, `settings_ui.py`).
 - **Forward-compatible by construction.** A newer PortAudio enumerates every output device a second time as `<name> [Loopback]`; `LOOPBACK_HINTS` already scores that suffix highest, so the day the wheel carries such a binary the auto-pick simply gets better with no code change.
 
 ### Negative / Trade-offs

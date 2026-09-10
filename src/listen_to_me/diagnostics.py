@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable
 
 from .audio import SAMPLE_RATE, Recorder
+from .choices import SOURCE_MIC, SOURCE_SYSTEM
 
 log = logging.getLogger(__name__)
 
@@ -183,34 +184,63 @@ def clip_stats(audio) -> dict:
     return {"peak": peak, "rms": rms, "seconds": seconds, "verdict": verdict}
 
 
-def no_speech_message(verdict: str) -> str:
+def no_speech_message(verdict: str, source: str = SOURCE_MIC) -> str:
     """What to tell the user about a recording that produced no text.
 
     A transcript comes back empty for two very different reasons, and both used
     to read "No speech detected.": the engine really heard nothing usable, or
-    the microphone never delivered a signal at all — the wrong input device is
+    the device never delivered a signal at all — the wrong input device is
     selected, a hardware mute switch is on, the OS revoked the permission. The
     second one is fixed in seconds, but only once something says so: dictating
     into a dead microphone looks exactly like a dictation the model failed to
     understand, and the user repeats the take instead of checking the device.
 
+    `source` is the take's recording source, and it decides *which* device the
+    diagnosis names. A system-audio take reading "No sound reached the
+    microphone — check the input device … and whether the microphone is muted"
+    sends the user to a device that is working perfectly: the take was pointed
+    at a loopback device, and the fixes are different ones (nothing was
+    playing, the wrong monitor is selected, Stereo Mix is enabled but not
+    routed). The microphone wording is unchanged, down to the character — it is
+    the sentence the rest of the app documents.
+
     Takes the verdict of :func:`clip_stats` rather than the audio, so the
     wording stays a pure function (no numpy) and can be checked headlessly —
     and so it says the same about a signal as the microphone test on the Audio
-    settings page does. An unknown verdict falls back to the generic sentence:
-    a diagnosis is the one thing this must never invent.
+    settings page does. An unknown verdict falls back to the generic sentence,
+    and so does a source this does not know: a diagnosis is the one thing this
+    must never invent.
     """
+    if verdict not in ("silent", "quiet"):
+        return "No speech detected."
+    if source == SOURCE_SYSTEM:
+        # system_audio_help() is the single source of the "how to get a
+        # loopback device" sentence — two drifting copies of an instruction are
+        # how a user ends up following the one that no longer matches their
+        # system. Imported lazily: this module is deliberately Qt-free and
+        # cheap to import, and system_audio only answers about the platform.
+        from .system_audio import system_audio_help
+
+        if verdict == "silent":
+            return (
+                "No sound arrived from the device selected for system audio — check that "
+                "something was really playing, and that the device belongs to the output "
+                "it was playing on (Settings → Audio). " + system_audio_help()
+            )
+        return (
+            "The system audio was too quiet to recognize anything — raise the playback "
+            "volume, or pick the loopback device of the output that is actually playing "
+            "(Settings → Audio)."
+        )
     if verdict == "silent":
         return (
             "No sound reached the microphone — check the input device under "
             "Settings → Audio and whether the microphone is muted."
         )
-    if verdict == "quiet":
-        return (
-            "The microphone signal was too quiet to recognize anything — move "
-            "closer to it or raise its input volume (Settings → Audio)."
-        )
-    return "No speech detected."
+    return (
+        "The microphone signal was too quiet to recognize anything — move "
+        "closer to it or raise its input volume (Settings → Audio)."
+    )
 
 
 class DiagnosticsEngine:

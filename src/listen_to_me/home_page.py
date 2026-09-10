@@ -37,6 +37,7 @@ from .choices import (
     SYSTEM_DEFAULT_DEVICE,
     input_device_choices,
     language_label,
+    source_label,
 )
 from .glyphs import glyph_icon
 from .keymap import pretty_keys
@@ -377,18 +378,6 @@ class HomePage(QWidget):
         breaks against it."""
         return getattr(self._app, "recording_source", SOURCE_MIC)
 
-    @staticmethod
-    def _source_name(source: str) -> str:
-        """How the app names a recording source ("microphone" / "system audio").
-
-        Lazily imported, like settings_ui borrows `describe_replacements`: the
-        wording is worth sharing with app.py — the hero and the notification
-        about the same take must not name it two ways — its import graph isn't.
-        """
-        from .app import source_label
-
-        return source_label(source)
-
     def _toggle(self) -> None:
         """Post the start/stop toggle, debounced: a double-click emits two
         clicked signals before the 100 ms event poll runs, which would queue
@@ -473,11 +462,12 @@ class HomePage(QWidget):
         self._clear_layout(self._chips_row)
         self._clear_layout(self._sys_chips_row)
         system = self._system_setting("hotkey", "")
-        # Captions only once there really are two rows, and taken from the same
-        # labels App's notifications use, so this page cannot name a source
-        # differently than the message about it does.
-        mic_caption = self._source_name(SOURCE_MIC).capitalize() if system else ""
-        sys_caption = self._source_name(SOURCE_SYSTEM).capitalize() if system else ""
+        # Captions only once there really are two rows, and taken from
+        # `choices.source_label` — the wording every notification about a take
+        # is built from — so this page cannot name a source differently than
+        # the message about it does.
+        mic_caption = source_label(SOURCE_MIC).capitalize() if system else ""
+        sys_caption = source_label(SOURCE_SYSTEM).capitalize() if system else ""
         self._fill_caps(self._chips_row, self.cfg["hotkey"], mic_caption)
         self._fill_caps(self._sys_chips_row, system, sys_caption)
         self._sys_chips_wrap.setVisible(bool(system))
@@ -678,7 +668,7 @@ class HomePage(QWidget):
         the user to speak would ask for the one thing that is not being
         recorded."""
         system = self._source() == SOURCE_SYSTEM
-        head = f"Recording {self._source_name(SOURCE_SYSTEM)}" if system else "Recording"
+        head = f"Recording {source_label(SOURCE_SYSTEM)}" if system else "Recording"
         if self._elapsed is not None:
             head = f"{head} {format_duration(self._elapsed)}"
         return head if system else f"{head} — speak now"
@@ -714,14 +704,14 @@ class HomePage(QWidget):
         if not self._system_setting("hotkey", ""):
             return f"Press the hotkey in any app. {mode_hint}"
         system_mode = self._system_setting("hotkey_mode", "toggle")
-        plays = f"The {self._source_name(SOURCE_SYSTEM)} hotkey records what the computer plays"
+        plays = f"The {source_label(SOURCE_SYSTEM)} hotkey records what the computer plays"
         if system_mode == self.cfg["hotkey_mode"]:
             tail = f"{plays}, the same way."
         elif system_mode == "hold":
             tail = f"{plays} while the keys are held."
         else:
             tail = f"{plays} — press once to start, again to insert."
-        return f"Press the {self._source_name(SOURCE_MIC)} hotkey in any app. {mode_hint} {tail}"
+        return f"Press the {source_label(SOURCE_MIC)} hotkey in any app. {mode_hint} {tail}"
 
     def set_state(self, state: str) -> None:
         """Mirror the app state into the hero card. Called via
@@ -745,7 +735,7 @@ class HomePage(QWidget):
         )
         if state == "recording":
             source = self._source()
-            name = self._source_name(source)
+            name = source_label(source)
             self.state_label.setText(self._recording_state_text())
             self.hint_label.setText("Stop to transcribe and insert the text at the cursor.")
             # Which take this stops belongs on the button, not only in the
