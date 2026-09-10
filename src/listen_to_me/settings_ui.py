@@ -201,7 +201,7 @@ _A_TEST_PREVIEW_CHARS = 160
 # The destructive button on the General page — spelled out, and with the "…"
 # that promises a confirmation step before anything happens. The same rule
 # names every other button here that asks first (Clear history…, Delete…,
-# Install selected…); a bare label means the click acts at once.
+# Remove…, Install selected…); a bare label means the click acts at once.
 _FACTORY_RESET_LABEL = "Reset to factory settings…"
 
 # Every preset label the model dropdown can hold. The list is re-filtered per
@@ -246,7 +246,11 @@ class MuteTargetRow(QGroupBox):
         # text is not an accessible name.
         self.name_edit.setAccessibleName("App name")
         header.addWidget(self.name_edit, 1)
-        self.remove_button = QPushButton("Remove")
+        # "…" because it asks first whenever the row holds anything to lose —
+        # see SettingsWindow._remove_target_row. The keybind in particular is
+        # usually looked up in the other app's own settings, so re-adding a
+        # row removed by a mis-click is not free.
+        self.remove_button = QPushButton("Remove…")
         self.remove_button.setProperty("destructive", True)
         self.remove_button.setToolTip("Delete this app from the list.")
         self.remove_button.setAutoDefault(False)
@@ -1658,6 +1662,34 @@ class SettingsWindow(QDialog):
         self._targets_layout.addWidget(row)
 
     def _remove_target_row(self, row: MuteTargetRow) -> None:
+        """Take one app off the mute list, asking first when it holds anything.
+
+        The three other destructive buttons in this window (Clear history…,
+        Delete…, Reset to factory settings…) all confirm before acting; this
+        one dropped a fully configured app on a single click. The mute keybind
+        it carries is normally looked up in that app's own settings, so a
+        mis-click cost noticeably more than it looked like, and nothing here
+        offers an undo — the row is gone, and Save writes the shortened list.
+
+        A row that is still blank (added from "Other app…" and never filled
+        in) has nothing to lose and goes at once: a confirmation there would
+        be friction guarding an empty box. That is also why the question names
+        the app and its keybind rather than asking about "this entry".
+        """
+        name = row.name_edit.text().strip()
+        keys = row.hotkey_edit.text().strip()
+        if name or keys:
+            described = name or "the unnamed app"
+            detail = f" ({hotkey_label(keys)})" if keys else ""
+            confirm = QMessageBox.question(
+                self,
+                APP_NAME,
+                f"Remove {described}{detail} from the apps to mute while recording?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
         if row in self._target_rows:
             self._target_rows.remove(row)
         self._targets_layout.removeWidget(row)

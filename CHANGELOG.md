@@ -138,6 +138,14 @@ changes at a glance.
 
 ### Changed
 
+- **Removing an app from "Mute other apps while recording" asks first.** The
+  button is now **Remove…** and names the app and its keybind before the row
+  goes — every other destructive button in the settings window (Clear history…,
+  Delete…, Reset to factory settings…) already confirmed, and this one dropped
+  a fully configured entry on a single click with no undo. The keybind is
+  normally looked up in the other app's own settings, so re-adding a row
+  removed by accident was not free. A row still blank from "Other app…" has
+  nothing to lose and is removed at once.
 - **The floating icon's right-click menu now follows the app state**, the way
   the tray menu always has: the first entry says whether it will start or stop
   the recording instead of the ambiguous "Start / stop recording", and "Cancel
