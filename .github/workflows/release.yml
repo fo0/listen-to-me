@@ -42,6 +42,17 @@ jobs:
     # commit and uploads the exe.
     permissions:
       contents: write
+    env:
+      # PortAudio is pinned by commit SHA for the same reason every action in
+      # this file is (#22) — the DLL built from it ships inside the exe the
+      # in-app updater hands to users. Here the SHA is also the only version
+      # identity that exists: the last PortAudio release, 19.7.0 (2021),
+      # predates WASAPI loopback support, so a master commit is unavoidable
+      # (#194). Bump procedure and what to check first: agent_docs/deployment.md.
+      PORTAUDIO_COMMIT: a4dbf68c51fd32734f32657db64849aac24739e7 # PortAudio master, fetched 2026-09-10
+      # Its own directory, not build/: that one is PyInstaller's --workpath and
+      # --clean removes the temporary files in there.
+      PORTAUDIO_DLL: portaudio/out/bin/portaudio.dll
     steps:
       # Third-party actions are pinned by commit SHA, not by tag: this job runs
       # with contents: write and publishes the exe the in-app updater offers, so
@@ -88,12 +99,99 @@ jobs:
       - name: Generate application icon
         run: python scripts/make_icon.py build/icon.ico
 
+      # System audio (#191, ADR-0009) records through a loopback input device.
+      # The PortAudio bundled in the `sounddevice` wheel is V19.7.0-devel and
+      # exports no PaWasapi_IsLoopback, so on Windows that capture needs
+      # `Stereo Mix` or a virtual cable and a USB headset has no capturable
+      # device at all. Upstream master enumerates every WASAPI render endpoint
+      # a second time as an input named "… [Loopback]" — the marker
+      # system_audio.LOOPBACK_HINTS already weights highest — so building the
+      # DLL ourselves is the whole fix (#194). `sounddevice` looks for
+      # `portaudio.dll` on PATH before falling back to its own copy, which is
+      # why the file name CMake produces is kept exactly as it is.
+      - name: Build PortAudio with WASAPI loopback
+        shell: bash
+        run: |
+          # Fetch the one pinned commit rather than cloning: PortAudio's full
+          # history is minutes of wall clock spent per release. Fetching by SHA
+          # also makes git verify the object name, and the rev-parse below
+          # turns the pin into an assertion instead of a request.
+          git init --quiet portaudio/src
+          git -C portaudio/src remote add origin https://github.com/PortAudio/portaudio.git
+          git -C portaudio/src fetch --quiet --depth 1 origin "$PORTAUDIO_COMMIT"
+          git -C portaudio/src checkout --quiet FETCH_HEAD
+          test "$(git -C portaudio/src rev-parse HEAD)" = "$PORTAUDIO_COMMIT"
+          # Every option is passed even where it already matches upstream's
+          # default: this is a non-release commit with no release notes, so no
+          # changed default may quietly change what ships.
+          #   PA_BUILD_SHARED_LIBS  a DLL, not a static lib — upstream otherwise
+          #     follows BUILD_SHARED_LIBS whenever that is set.
+          #   PA_USE_WASAPI  the point of the build; with it off,
+          #     cmake/portaudio.def.in drops every PaWasapi_* export.
+          #   PA_DLL_LINK_WITH_STATIC_RUNTIME  rewrites /MD to /MT, so the DLL
+          #     needs no MSVC redistributable on a user's machine. Upstream
+          #     defaults it ON only while PortAudio is the top-level project.
+          #   PA_BUILD_TESTS / PA_BUILD_EXAMPLES  nothing here consumes them.
+          # -A x64 selects the 64-bit toolchain of the runner's Visual Studio
+          # generator; that generator is multi-config, hence --config Release
+          # on the build and the install.
+          cmake -S portaudio/src -B portaudio/build -A x64 \
+            -DPA_BUILD_SHARED_LIBS=ON \
+            -DPA_USE_WASAPI=ON \
+            -DPA_DLL_LINK_WITH_STATIC_RUNTIME=ON \
+            -DPA_BUILD_TESTS=OFF \
+            -DPA_BUILD_EXAMPLES=OFF \
+            -DCMAKE_INSTALL_PREFIX=portaudio/out
+          cmake --build portaudio/build --config Release --target portaudio
+          # Install instead of copying out of the build tree: `bin/` is the
+          # project's own layout, while the config subdirectory in the build
+          # tree is the generator's.
+          cmake --install portaudio/build --config Release
+          ls -l "$PORTAUDIO_DLL"
+
+      # A DLL built without WASAPI would ship a feature-less binary that only
+      # surfaces as "no loopback device" on a user's machine, so the release
+      # stops here instead. cmake/portaudio.def.in gates every PaWasapi_*
+      # export behind PA_USE_WASAPI, which makes the export the proof that the
+      # option took effect. Loading the DLL first covers the two other ways
+      # this build can be wrong: a 32-bit one, and one that needs the MSVC
+      # redistributable to load.
+      - name: Verify the PortAudio DLL exports WASAPI loopback
+        shell: bash
+        run: |
+          python - <<'PY'
+          import ctypes
+          import os
+          import sys
+
+          path = os.path.abspath(os.environ["PORTAUDIO_DLL"])
+          if not os.path.isfile(path):
+              sys.exit(f"PortAudio DLL missing: {path}")
+          lib = ctypes.CDLL(path)
+          lib.Pa_GetVersionText.restype = ctypes.c_char_p
+          version = lib.Pa_GetVersionText().decode("utf-8", "replace")
+          print(f"{path}: {os.path.getsize(path)} bytes, {version}")
+          if not version.startswith("PortAudio V"):
+              sys.exit(f"not a PortAudio library: {version!r}")
+          # Deliberately not compared against a version number: this master
+          # commit still reports V19.7.0-devel, the same string the wheel's own
+          # DLL reports, so the export is the only thing that tells them apart.
+          if not hasattr(lib, "PaWasapi_IsLoopback"):
+              sys.exit("no PaWasapi_IsLoopback export - built without WASAPI")
+          print("PaWasapi_IsLoopback: exported")
+          PY
+
       - name: Build executable (PyInstaller)
         shell: bash
         run: |
+          # portaudio.dll goes to the bundle root (`;.`), where the one-file
+          # build unpacks it into sys._MEIPASS for app.main() to put on PATH
+          # (#194). The wheel's own copy keeps its own name and directory and
+          # stays the fallback.
           pyinstaller --noconfirm --clean --onefile --windowed \
             --name ListenToMe \
             --icon build/icon.ico \
+            --add-binary "$PORTAUDIO_DLL;." \
             --collect-all faster_whisper \
             --collect-all ctranslate2 \
             --collect-all onnxruntime \
