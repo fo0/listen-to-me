@@ -68,7 +68,11 @@ unknown` — byte for byte what the old bundled one reports — so the log line
   names the **file** that was loaded and whether loopback is supported instead
   of a version. Running from source is deliberately unchanged: `pip install -e .`
   ships no DLL, so there “Stereo Mix” or a virtual cable is still required
-  ([ADR-0010](docs/adr/0010-the-windows-release-ships-its-own-portaudio.md)).
+  ([ADR-0010](docs/adr/0010-the-windows-release-ships-its-own-portaudio.md)) —
+  and because that swap reaches all audio, there is a way back out of it:
+  `system_audio.bundled_portaudio: false` in `config.json` loads the wheel's
+  old binary again, at the price of recording what the computer plays on
+  Windows and nothing else.
 - **A silent take no longer inserts a phrase nobody spoke — and the recording
   decides that, not the wording.** A transcript is dropped only when the take's
   own audio carried no usable signal: the clip statistics that already decide
