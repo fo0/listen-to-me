@@ -4,9 +4,9 @@ System audio (#191, ADR-0009) records through a loopback/monitor *input*
 device. Linux always has one (PulseAudio/PipeWire give every sink a "Monitor
 of ..." source); Windows has none unless the user enables "Stereo Mix" or
 installs a virtual cable, because the PortAudio binary inside the
-`sounddevice` wheel reports `PortAudio V19.7.0-devel` and carries no WASAPI
-loopback support. Upstream PortAudio does, and as a documented contract, not
-an internal detail:
+`sounddevice` wheel exports no `PaWasapi_IsLoopback` and enumerates no
+loopback device at all. Upstream PortAudio does both, and as a documented
+contract, not an internal detail:
 
 * `include/pa_win_wasapi.h:527` declares `int PaWasapi_IsLoopback(PaDeviceIndex)`;
 * `src/hostapi/wasapi/pa_win_wasapi.c:2050` (`FillLooopbackDeviceInfo`)
@@ -19,6 +19,20 @@ That marker is exactly what `system_audio.LOOPBACK_HINTS` already scores
 highest, so a newer DLL needs no device code whatsoever (#194) — it only needs
 to be the binary that actually gets loaded. This module is that half, plus the
 proof of which one won.
+
+**The version string is not that proof — it is identical in both binaries.**
+At the pinned commit (`PORTAUDIO_COMMIT` in `release.yml`) `paVersionMinor` is
+still `7` (`src/common/pa_front.c:94`) and `PA_GIT_REVISION` is still the
+checked-in `unknown`, because upstream's `update_gitrevision.sh` is a manual
+pre-build script that CMake never runs. So `Pa_GetVersionText()` returns
+`"PortAudio V19.7.0-devel, revision unknown"` and `Pa_GetVersion()` returns
+`190700` from the DLL we build *and* from the wheel's own (measured on
+`libportaudio64bit.dll` in `sounddevice-0.5.6-py3-none-win_amd64.whl`; all six
+DLLs in that wheel carry the same string). A release log reading
+`V19.7.0-devel` therefore says nothing about which binary answered — the
+loaded file path and the `PaWasapi_IsLoopback` export are the only
+discriminators, which is why :func:`log_once` leads with the path and labels
+the version as no answer, and :func:`describe` reports both.
 
 **The lever is `sounddevice`'s own load order** (0.5.6, lines 63-91): it asks
 `ctypes.util.find_library("portaudio")` first — on Windows that walks the
@@ -128,6 +142,14 @@ def describe() -> dict:
     "output_devices", "bundle_path" / "path_note" (what
     :func:`prepare_library_path` did), and "errors".
 
+    "version" / "version_number" are context, never identity: the DLL we
+    build and the one in the `sounddevice` wheel both report `PortAudio
+    V19.7.0-devel, revision unknown` and `190700` (module docstring). So a
+    caller asking "did the DLL we ship get loaded?" reads "library", and one
+    asking "can this binary do loopback?" reads "loopback_supported" and
+    "loopback_devices" — never a version comparison, which would answer
+    "unchanged" for a perfectly good new build.
+
     `loopback_supported` is tested by *accessing* `PaWasapi_IsLoopback` on the
     loaded library, not by calling it: sounddevice's CFFI declaration exists
     either way, so the symbol lookup against the binary is the test, and it
@@ -179,8 +201,9 @@ def describe() -> dict:
         try:
             info["loopback_supported"] = getattr(lib, "PaWasapi_IsLoopback") is not None
         except Exception as exc:
-            # Expected on the wheel's V19.7.0-devel: the symbol is declared in
-            # the CFFI header but not exported by that binary.
+            # Expected on the binary inside the `sounddevice` wheel: the symbol
+            # is declared in the CFFI header but not exported by it. This lookup
+            # is what separates the two binaries — their version strings do not.
             errors.append(f"PaWasapi_IsLoopback is not reachable: {exc}")
     try:
         devices = list(sd.query_devices())
@@ -202,8 +225,21 @@ def describe() -> dict:
 
 
 def log_once() -> None:
-    """Log one INFO line per process naming the PortAudio in use, whether it
-    supports WASAPI loopback, and how many loopback inputs it enumerated.
+    """Log one INFO line per process naming the *file* the loaded PortAudio
+    came from, whether it supports WASAPI loopback, and how many loopback
+    inputs it enumerated.
+
+    Those three are the answer to "did the DLL we ship get loaded?". The
+    version string is carried along but labelled, in the line itself, as no
+    answer at all: a correct new build still logs `PortAudio V19.7.0-devel,
+    revision unknown`, byte-identical to what the wheel's binary logs (module
+    docstring). The label belongs in the line and not only here, because
+    whoever reads this in a release log has no docstring in front of them —
+    and reading a "V19.7.0-devel" as "the DLL was not picked up" is the exact
+    wrong conclusion. The loaded path leads for the same reason: it is the
+    field that actually differs (the bundle's own `portaudio.dll` for ours,
+    `_sounddevice_data/portaudio-binaries/libportaudio64bit.dll` for the
+    wheel's), and at INFO level a DEBUG line would not be there to carry it.
 
     One line, once: the callers sit on paths that run repeatedly (every take,
     every visit to the Audio settings page) and this costs a device
@@ -220,19 +256,31 @@ def log_once() -> None:
     _logged = True
     try:
         info = describe()
-        # The version string already starts with "PortAudio", so it is the
-        # whole subject of the line rather than a value appended to it.
+        # Both segments are built ahead of the call, for one reason each. The
+        # caveat has to travel with the string it disclaims — a bare version
+        # here reads as a verdict, and the verdict it suggests is wrong. And a
+        # missing library must not still read as "loaded from": without
+        # sounddevice (the settings page on a bare Linux checkout) nothing was
+        # loaded at all. Deliberately not %r on the path: repr() doubles every
+        # backslash in a Windows one.
+        version = info.get("version")
+        library = info.get("library")
+        lead = f"PortAudio loaded from {library}" if library else "no PortAudio library identified"
+        version_note = (
+            f"version {version!r} says nothing: the DLL we ship and the one in the "
+            "sounddevice wheel report the same string"
+            if version
+            else "version unreadable"
+        )
         log.info(
-            "%s — WASAPI loopback %s, %d loopback input device(s) of %d output(s); %s",
-            info.get("version") or "PortAudio version unknown",
+            "%s — WASAPI loopback %s, %d loopback input device(s) of %d output(s); %s; %s",
+            lead,
             "supported" if info.get("loopback_supported") else "unsupported",
             info.get("loopback_devices") or 0,
             info.get("output_devices") or 0,
+            version_note,
             info.get("path_note"),
         )
-        library = info.get("library")
-        if library:
-            log.debug("PortAudio loaded from %s", library)
         for reason in info.get("errors") or []:
             log.debug("PortAudio probe: %s", reason)
     except Exception:
