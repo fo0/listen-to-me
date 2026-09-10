@@ -28,11 +28,13 @@ changes at a glance.
   itself. Two things follow from where it now sits. It works with the floating
   icon **switched off entirely** — no icon anywhere, the text where you are
   looking, which is arguably the most useful way to run it — and it obeys
-  **Keep the icon above all other windows** in both positions, so turning that
-  off no longer leaves one window that forces itself over yours. Fixed on the
-  way: the bubble never passed clicks through to the window underneath, so a
-  click that landed on it was swallowed instead of reaching what you aimed at —
-  survivable while it only sat beside the icon, not survivable under the cursor.
+  **Keep the icon above all other windows** in both positions, so with that
+  setting off other windows may cover the bubble too. That is the rule the
+  bubble beside the icon has always followed, kept deliberately for the new
+  spot rather than quietly excepted from it. Fixed on the way: the bubble
+  never passed clicks through to the window underneath, so a click that landed
+  on it was swallowed instead of reaching what you aimed at — survivable while
+  it only sat beside the icon, not survivable under the cursor.
 - **A second hotkey records what the computer plays.** A call, a meeting, a
   video, a voice message — transcribed by the same local model and inserted at
   the cursor like a dictation, and controlled exactly like one (press once to
