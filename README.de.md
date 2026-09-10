@@ -43,12 +43,18 @@ fokussierten Feldes eingefügt.
 7. Optional: unter **Audio → System Audio** einen zweiten Hotkey setzen — der
    nimmt auf, was der Rechner **abspielt** (Telefonat, Meeting, Video), mit der
    gleichen Bedienung wie das Diktat und mit eigenem Gerät, eigener Maximallänge
-   (900 s) und eigenem Assistant-Profil. Dafür braucht die App ein
-   **Loopback**-Aufnahmegerät: Unter Windows heißt es meist „Stereomix" und ist
-   zwar vorhanden, aber **standardmäßig ausgeblendet und deaktiviert** — im
-   Windows-Sound-Dialog im Tab _Aufnahme_ → Rechtsklick →
-   _Deaktivierte Geräte anzeigen_ einblenden und danach aktivieren; alternativ
-   ein virtuelles Audiokabel wie VB-CABLE installieren. Unter Linux genügt die
+   (900 s) und eigenem Assistant-Profil. Auf der heruntergeladenen `.exe` ist
+   dafür **nichts mehr einzurichten**: sie bringt ein eigenes PortAudio mit
+   WASAPI loopback mit, deshalb erscheint **jedes Ausgabegerät** zusätzlich als
+   aufnehmbares Input-Device („… [Loopback]") und „Stereomix" ist nicht mehr
+   nötig — auch ein USB-Headset ohne Stereomix lässt sich so aufnehmen. Die
+   Geräteliste benennt jetzt in einer eigenen Gruppe das **Ausgabegerät**, das
+   eine Zeile aufnimmt, statt nur Mikrofone unter der Überschrift „System
+   audio" zu zeigen; „Automatic" wählt das passende. Aus dem Quellcode
+   gestartet (`pip install -e .`) fehlt diese DLL, dort gilt weiterhin: unter
+   Windows „Stereomix" im Windows-Sound-Dialog im Tab _Aufnahme_ → Rechtsklick
+   → _Deaktivierte Geräte anzeigen_ einblenden und danach aktivieren, oder ein
+   virtuelles Audiokabel wie VB-CABLE installieren. Unter Linux genügt die
    Quelle „Monitor of …", unter macOS ein virtuelles Ausgabegerät wie BlackHole.
    Fehlt so ein Gerät, verweigert die App die Aufnahme und zeigt genau diesen
    Hinweis — sie greift absichtlich **nicht** auf das Standard-Mikrofon zurück,

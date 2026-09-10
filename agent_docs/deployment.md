@@ -34,6 +34,45 @@ Never by tag (#22). A tag can be moved to point at different code, and `release.
 - Update the trailing comment with the new version.
 - Dependabot proposes these bumps weekly and groups them into one PR (`.github/dependabot.yml`); it rewrites the SHA **and** the trailing version comment together, which is this same procedure. Review the pair before merging — a bump made by hand still follows the steps above.
 
+## PortAudio is pinned by commit SHA too
+
+The `build-windows` job builds `portaudio.dll` from source and ships it in the one-file exe, so system audio (#191, ADR-0009) can capture any output device through WASAPI loopback instead of needing `Stereo Mix` or a virtual cable (#194). `sounddevice` resolves `find_library('portaudio')` — `portaudio.dll` on `PATH` — before its own bundled copy, so the file name is the whole integration. The pin lives in that job's `env` block:
+
+```yaml
+PORTAUDIO_COMMIT: a4dbf68c51fd32734f32657db64849aac24739e7 # PortAudio master, fetched 2026-09-10
+```
+
+The last PortAudio release, 19.7.0 (2021), predates loopback support, so this is necessarily a **master commit** and the SHA is the only version identity there is. Same rule as the actions above (#22), for a stronger reason: this is native code inside a binary end users run, and a branch or tag would let a rebuild pull in something else.
+
+### Bumping the pin
+
+1. Resolve the new SHA: `git ls-remote https://github.com/PortAudio/portaudio.git refs/heads/master`. Full 40 hex characters, never abbreviated.
+2. Read the range (`https://github.com/PortAudio/portaudio/compare/<old>...<new>`) and confirm all five things the build leans on still hold:
+   - `include/pa_win_wasapi.h` still declares `PaWasapi_IsLoopback`.
+   - `src/hostapi/wasapi/pa_win_wasapi.c` still appends the `[Loopback]` name marker (`PA_WASAPI_LOOPBACK_NAME_IDENTIFICATOR`, used by `FillLooopbackDeviceInfo`). This is a **name-based contract**: the app finds these devices through `system_audio.LOOPBACK_HINTS`, so a renamed marker breaks the feature while the DLL still builds and still exports the function. Upstream's "do not change!" comment is a convention, not a guarantee.
+   - `CMakeLists.txt` still knows `PA_BUILD_SHARED_LIBS`, `PA_USE_WASAPI`, `PA_DLL_LINK_WITH_STATIC_RUNTIME`, `PA_BUILD_TESTS` and `PA_BUILD_EXAMPLES` — CMake ignores an unknown `-D` with a warning, so a renamed option changes the build silently.
+   - What `cmake_minimum_required` asks for, because it decides which of the two static-runtime mechanisms is live. Below 3.15 (upstream asks for 3.10) policy CMP0091 stays OLD and `PA_DLL_LINK_WITH_STATIC_RUNTIME` works, by string-replacing `/MD` with `/MT` in `CMAKE_C_FLAGS_*`. At 3.15 or above the policy is NEW, the runtime flag is not in those variables at all and that replace becomes a **silent no-op** — which is why the workflow also passes `-DCMAKE_POLICY_DEFAULT_CMP0091=NEW -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded`, the abstraction that replaced the flags. Exactly one of the two is ever in force and the import-table assertion below is what catches it if a bump breaks both.
+   - `set_target_properties(portaudio PROPERTIES OUTPUT_NAME portaudio)` still stands, i.e. the artifact is still named `portaudio.dll`.
+3. Update the SHA and its trailing `# PortAudio master, fetched <date>` comment together — the same procedure as an action pin.
+
+### Verifying a bump
+
+- The build's own gate is the **Verify the PortAudio DLL exports WASAPI loopback** step, and its assertions each prove one thing and not the next one:
+  - The `ctypes` load proves the file is a PE that a 64-bit Python can load, so it catches a 32-bit build. It proves **nothing** about the MSVC redistributable: `windows-latest` has Visual Studio and therefore that runtime, so a `/MD`-linked DLL loads on the runner exactly as happily as a `/MT` one.
+  - The `PaWasapi_IsLoopback` export proves `PA_USE_WASAPI` was on, because `cmake/portaudio.def.in` drops every `PaWasapi_*` export without it.
+  - Parsing the DLL's own PE import table — the import directory and the delay-load one — proves the static runtime took effect, by finding no import from a redistributable family (`vcruntime140.dll`, `msvcp140.dll`, `msvcr120.dll`, `concrt140.dll`; Windows' own `msvcrt.dll` is not one of them and does not fail the gate). Only the file can answer this, which is why the step reads it.
+- End to end the check is the exe's `--selftest` in the **Smoke test executable** step. That is the only place WASAPI exists at all — the Linux `check` job cannot see any of it.
+- Both live in `release.yml`, which is `workflow_dispatch`-only and guarded to `main`, so **a bump is not verifiable in a PR**: it is verified the first time a release is dispatched after the merge. To check earlier, run the job's `cmake` commands by hand on a Windows machine with Visual Studio 2022 plus CMake and inspect the result with `dumpbin /exports portaudio.dll` and `dumpbin /dependents portaudio.dll` from a Developer Command Prompt.
+- A DLL that is found but refuses to load costs only the feature, not the app: `sounddevice` wraps the whole `find_library` path in `try: … except OSError` (0.5.6, lines 63-91) and falls back to its own `libportaudio64bit.dll`. That is why the CI gate above loads the DLL itself — the fallback would otherwise hide a broken build until someone looked for a `[Loopback]` device.
+- The version string cannot tell you which DLL got loaded: this master commit still reports `PortAudio V19.7.0-devel` (`paVersionMinor` is still 7 in `src/common/pa_front.c`), exactly what the `sounddevice` wheel's DLL reports. The `PaWasapi_IsLoopback` export and the presence of `[Loopback]` input devices are the discriminators.
+
+### Costs, stated plainly
+
+- The DLL comes from a **non-release commit**, so there are no upstream release notes to read: every bump is a judgment call over a raw commit range.
+- It is **unsigned**, like the exe — this changes nothing about the SmartScreen warning.
+- The release job carries a native toolchain step (fetch, CMake configure, MSVC build) and the wall clock it costs, on every dispatch.
+- **A source install ships no DLL.** `pip install -e .` leaves `sounddevice` on its own bundled copy, so Windows users running from source still need `Stereo Mix` or a virtual cable.
+
 ## Rollback
 
 See `.claude/skills/rollback/SKILL.md`. For a bad release, prefer a revert-PR plus a fresh dispatched build over hand-editing a published asset — the updater serves whatever the Release carries.

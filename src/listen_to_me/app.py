@@ -22,7 +22,7 @@ import threading
 import time
 
 from . import APP_NAME, REPO_URL, __version__
-from . import assistant, autostart, netutil, singleinstance
+from . import assistant, autostart, netutil, portaudio, singleinstance
 from .audio import SAMPLE_RATE, Recorder
 from .choices import (
     SOURCE_MIC,
@@ -2008,6 +2008,18 @@ _FLAGS = ("--version", "--selftest", "--help", "-h")
 
 
 def main(argv=None) -> int:
+    # First statement of the process, deliberately ahead of the flag handling:
+    # in a frozen build this prepends the bundle directory to PATH so that the
+    # newer portaudio.dll we ship is the one `sounddevice` loads (#194 — see
+    # portaudio.py for the load order it exploits). It has to run before the
+    # flags because main() returns for --version, --help and --selftest before
+    # _setup_logging() is ever reached, and --selftest is the one run that can
+    # actually verify the DLL: placed after the flag block, the self-test would
+    # check the binary it was not given. It costs --version/--help nothing —
+    # this is os.environ work only, no Qt and no sounddevice — so there is no
+    # reason to move it down, and this comment is here because moving it down
+    # is what a later tidy-up would do.
+    portaudio.prepare_library_path()
     args = list(sys.argv[1:] if argv is None else argv)
     # Own flags only — they are stripped before Qt sees sys.argv (see App.run),
     # so an unrecognized one is nobody's and would otherwise be swallowed: the
