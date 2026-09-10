@@ -49,6 +49,7 @@ from PySide6.QtWidgets import (
 
 from . import APP_NAME, RELEASES_URL, REPO_URL, __version__
 from .assistant import config_problem as assistant_config_problem
+from .assistant import profile as assistant_profile
 from .choices import (
     BACKENDS,
     CLIPBOARD_COPY_MODES,
@@ -62,6 +63,8 @@ from .choices import (
     OPENVINO_DEVICES,
     OPENVINO_PRECISIONS,
     PARAKEET_QUANTIZATIONS,
+    SOURCE_MIC,
+    SOURCE_SYSTEM,
     SYSTEM_DEFAULT_DEVICE,
     backend_from_label,
     backend_label,
@@ -82,8 +85,15 @@ from .choices import (
     openvino_alternative,
     openvino_supports_model,
 )
-from .config import DEFAULT_ASSISTANT_PROMPT, default_model_dir, open_path
+from .config import (
+    DEFAULT_ASSISTANT_PROMPT,
+    DEFAULT_FILLER_PHRASES,
+    DEFAULT_SYSTEM_AUDIO_PROMPT,
+    default_model_dir,
+    open_path,
+)
 from .diagnostics import DiagnosticsEngine, model_cache_status
+from .fillers import describe_filler_phrases
 from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
@@ -97,6 +107,10 @@ from .qtutil import (
     keep_return_in_field,
     text_rows_height,
 )
+# Qt-free and PortAudio-free at import time (`audio` is imported inside their
+# bodies), so both may live up here — the enumeration itself still happens on
+# the first visit to the Audio page, see _load_system_devices.
+from .system_audio import loopback_candidates, system_audio_help
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -195,8 +209,11 @@ _A_TEST_IDLE = "Uses the values entered above — no Save needed."
 # One constant because the flash restores this label after "Reset ✓" — spelled
 # out in two places, the two would drift apart. Carries the "…" for the same
 # reason the other destructive buttons do: it asks first, whenever the prompt
-# below is not already the default one.
+# below is not already the default one. Shared by both assistant profiles.
 _A_PROMPT_RESET_LABEL = "Reset to default…"
+# Engine page: the filler phrase list's reset button. Same contract as the
+# prompt reset above — the "…" promises the question an edited list gets.
+_FILLER_RESET_LABEL = "Reset to defaults…"
 # What the test sends. Deliberately shaped like raw dictation (no punctuation,
 # a filler word), so the reply shows not just that the endpoint answers but
 # whether the prompt and model actually clean text up.
@@ -205,6 +222,28 @@ _A_TEST_SAMPLE = "so um this is a test of the assistant does it work"
 # sample sentence coming back, short enough not to reflow the page.
 _A_TEST_PREVIEW_CHARS = 160
 
+
+# Audio page: the system-audio device entry that means "auto-pick the best
+# loopback candidate" (config `system_audio.device` = null). Deliberately
+# without a ":" so input_device_from_label parses it back to None, exactly as
+# it does for SYSTEM_DEFAULT_DEVICE — but named differently, because auto here
+# never falls back to the system default input (that is a microphone; see
+# system_audio.resolve_loopback_device).
+_SYSTEM_AUDIO_AUTO = "Automatic — the best loopback device found"
+# What the feature does, in the one place both the hint and the tooltips point
+# at. Kept short: the platform-specific instruction that follows it
+# (system_audio_help) is the part the user has to act on.
+_SYSTEM_AUDIO_NOTE = (
+    "Records what the computer plays — a call, a meeting, a video — instead of the "
+    "microphone, transcribes it and inserts the text at the cursor. Leave the hotkey "
+    "empty to switch this second source off entirely."
+)
+
+# The config sections _collect returns as nested dicts. Named once so the flat
+# copy loop in _apply_values and the merge below can never disagree about which
+# key is a section — a new section added to one and not the other would be
+# written flat and then overwritten by the merge.
+_NESTED_SECTIONS = ("overlay", "system_audio", "assistant", "integrations")
 
 # The choice lists (models, languages, backends, …) live in choices.py, shared
 # with the first-run onboarding wizard.
@@ -380,6 +419,16 @@ class SettingsWindow(QDialog):
         # Whether input_combo holds the enumerated devices or only the
         # placeholder (see _load_devices / _selected_input_device).
         self._devices_loaded = False
+        # The same pair for the system-audio dropdown. Its own flag, not the
+        # one above: the two Refresh buttons re-scan one list each, and a flag
+        # set by the other one would let _selected_system_device answer from a
+        # combo that still holds nothing but the "Automatic" placeholder — and
+        # Save would then drop the configured loopback device.
+        self._sys_devices_loaded = False
+        # How many loopback candidates the last scan found (None = not scanned
+        # yet). Drives the System audio hint, which is the only place a machine
+        # with no loopback device at all learns why the feature cannot work.
+        self._sys_candidates: int | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -890,6 +939,16 @@ class SettingsWindow(QDialog):
         self._general_form = form
         self.hotkey_edit.textChanged.connect(self._refresh_hotkey_error)
         self._refresh_hotkey_error()
+        # There are two recording hotkeys now, and only one of them is on this
+        # page — someone looking for "the other one" would otherwise have to
+        # guess which page hides it. Deliberately a pointer, not a second
+        # field: the system-audio hotkey belongs next to the device and the
+        # length cap it shares a card with (Audio page).
+        form.addRow("", self._hint(
+            "A second hotkey records what the computer plays instead of the "
+            "microphone — it lives with the rest of that source under Audio → "
+            "System audio, where an empty hotkey means it is off."
+        ))
 
         modes = QWidget()
         mv = QVBoxLayout(modes)
@@ -1411,6 +1470,72 @@ class SettingsWindow(QDialog):
         ))
         layout.addWidget(replacements)
 
+        # Its own card for the same reason the replacements above are one:
+        # these rules run on the finished transcript of every backend, while
+        # the prompt card two boxes up is faster-whisper's alone.
+        fillers = QGroupBox("Silent takes (invented phrases)")
+        sv = QVBoxLayout(fillers)
+        self.chk_filler = self._checkbox(
+            "Drop a transcript that is nothing but an invented silence phrase",
+            self.cfg["filler_filter"],
+            "A take with no speech does not come back empty: Whisper was trained on "
+            "subtitles, so near-silence decodes to the phrase that ends a clip — "
+            "“Vielen Dank.”, “Thank you.”, a subtitle credit — and that sentence is "
+            "then inserted at your cursor. With this on, a transcript that matches "
+            "one of the phrases below as a WHOLE is thrown away instead. A phrase "
+            "that merely occurs inside a longer text is never touched, so dictating "
+            "“Vielen Dank für die Datei” stays exactly as spoken.",
+        )
+        sv.addWidget(self.chk_filler)
+        self.filler_edit = QPlainTextEdit(self.cfg["filler_phrases"])
+        self.filler_edit.setToolTip(
+            "One phrase per line — the base form is enough. Matching ignores upper/lower "
+            "case and the punctuation and whitespace around the phrase, so “Vielen Dank”, "
+            "“vielen dank!” and “„Vielen Dank!“” all count as one. Brackets do "
+            "count: “[Musik]” catches the annotation the model writes for a passage of "
+            "music, while somebody dictating the word “Musik” is kept — so each bracketing "
+            "style needs its own line. Lines starting with # are comments."
+        )
+        self.filler_edit.setAccessibleName("Phrases invented for silent takes")
+        self.filler_edit.setPlaceholderText("Vielen Dank\nThank you\n[Musik]")
+        self.filler_edit.setFixedHeight(text_rows_height(self.filler_edit, 6))
+        sv.addWidget(self.filler_edit)
+        # Same job as the replacements status line: a phrase list is skipped
+        # line by line with nothing but a log warning, and a field full of
+        # rejected lines looks exactly like one whose phrases all work.
+        self.filler_status = self._hint("", elastic=True)
+        sv.addWidget(self.filler_status)
+        reset_row = QWidget()
+        rh = QHBoxLayout(reset_row)
+        rh.setContentsMargins(0, 0, 0, 0)
+        rh.addStretch(1)
+        self.filler_reset_button = QPushButton(_FILLER_RESET_LABEL)
+        self.filler_reset_button.setAutoDefault(False)
+        self.filler_reset_button.setToolTip(
+            "Put the shipped phrase list back. Asks first if you have edited it — "
+            "the replacement cannot be undone."
+        )
+        self.filler_reset_button.clicked.connect(self._reset_filler_phrases)
+        rh.addWidget(self.filler_reset_button)
+        sv.addWidget(reset_row)
+        self.filler_edit.textChanged.connect(self._refresh_filler_status)
+        self._refresh_filler_status()
+        # Wired here, and called once, so the field and the button are already
+        # greyed out when the page is first shown rather than after the first
+        # toggle.
+        self.chk_filler.toggled.connect(self._refresh_filler_enabled)
+        self._refresh_filler_enabled()
+        # The two consequences nothing on screen could show: what a dropped
+        # take looks like from the outside, and the one case the filter is
+        # skipped in.
+        sv.addWidget(self._hint(
+            "A dropped take reports “no speech”, inserts nothing and writes nothing "
+            "to the history — the same outcome as a recording you cancelled. The "
+            "filter is skipped while live typing is on: that text is already at the "
+            "cursor, and append-only typing cannot take it back."
+        ))
+        layout.addWidget(fillers)
+
         # Wired last: _on_backend_changed also greys out the model/language
         # rows, the initial prompt above and the live-typing option on the
         # General page, so every widget it touches must already exist when it
@@ -1444,6 +1569,59 @@ class SettingsWindow(QDialog):
         # line's worth of space for a field nobody has written in yet.
         self.replacements_status.setVisible(bool(status))
         self.replacements_edit.setAccessibleDescription(status)
+
+    def _refresh_filler_status(self) -> None:
+        """Re-render the line under the silence phrase field.
+
+        The replacements contract, for the same reasons (see
+        `_refresh_replacements_status`): `describe_filler_phrases` only walks
+        the lines and compiles nothing, so it runs per keystroke rather than
+        behind a debounce that could go stale; the sentence it returns is
+        finished prose and goes on the field verbatim; and it is repeated as
+        the field's accessible description, because a sibling label is not
+        announced with the widget it belongs to and this is the only feedback
+        about which of the typed phrases actually took.
+        """
+        status = describe_filler_phrases(self.filler_edit.toPlainText())
+        self.filler_status.setText(status)
+        # Hidden rather than left empty, so an untouched field keeps its
+        # placeholder instead of a blank line's worth of space.
+        self.filler_status.setVisible(bool(status))
+        self.filler_edit.setAccessibleDescription(status)
+
+    def _refresh_filler_enabled(self) -> None:
+        """Grey out the phrase list while the filter is off — the field, its
+        reset button and the count under it have no effect then, and a count of
+        active phrases next to a switched-off filter reads as a promise the app
+        does not keep."""
+        on = self.chk_filler.isChecked()
+        self.filler_edit.setEnabled(on)
+        self.filler_reset_button.setEnabled(on)
+        self.filler_status.setEnabled(on)
+
+    def _reset_filler_phrases(self) -> None:
+        """Put the shipped phrase list back, and confirm on the button.
+
+        Same contract as the assistant prompt reset (`_reset_prompt`): the list
+        is free text the user may have curated, `setPlainText` drops the undo
+        history with it, and the button sits right under the box it overwrites.
+        An unedited list has nothing to lose, so that click acts at once and
+        only flashes.
+        """
+        if self.filler_edit.toPlainText().strip() != DEFAULT_FILLER_PHRASES.strip():
+            confirm = QMessageBox.question(
+                self,
+                APP_NAME,
+                "Replace your edited phrase list with the built-in default?\n\n"
+                "What you wrote is not kept anywhere else and this cannot be "
+                "undone.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+        self.filler_edit.setPlainText(DEFAULT_FILLER_PHRASES)
+        self._flash_button(self.filler_reset_button, "Reset ✓", _FILLER_RESET_LABEL)
 
     def _build_audio(self, title: str) -> QWidget:
         page, layout = self._page(title)
@@ -1517,6 +1695,127 @@ class SettingsWindow(QDialog):
         self.mic_status = self._hint("", elastic=True, selectable=True)
         form.addRow("", self.mic_status)
         layout.addWidget(card)
+
+        # Everything the second recording source needs, in one card: its
+        # hotkey, its mode, its device and its length cap. Split across the
+        # General and Audio pages the way the microphone's are, "is it even on?"
+        # would have no single place to be answered — and the answer is the
+        # hotkey field right here (empty = off).
+        sys_card, sys_form = self._card("System audio")
+        self._sys_form = sys_form
+        sys_hotkey_row = QWidget()
+        shk = QHBoxLayout(sys_hotkey_row)
+        shk.setContentsMargins(0, 0, 0, 0)
+        self.sys_hotkey_edit = QLineEdit(self.cfg["system_audio"]["hotkey"])
+        self.sys_hotkey_edit.setToolTip(
+            "The key combination that starts/stops recording what the computer plays. "
+            "Leave it EMPTY to switch this source off — nothing is registered then. "
+            "pynput format, e.g. <ctrl>+<alt>+<shift>+<space>. Easiest: click “Change…” "
+            "and press the keys. It must differ from the microphone hotkey on the "
+            "General page."
+        )
+        self.sys_hotkey_edit.setAccessibleName("System audio hotkey")
+        shk.addWidget(self.sys_hotkey_edit, 1)
+        sys_pick = QPushButton("Change…")
+        sys_pick.setAutoDefault(False)
+        sys_pick.setToolTip("Records the next key combination you press — no typing needed.")
+        sys_pick.clicked.connect(self._pick_system_hotkey)
+        shk.addWidget(sys_pick)
+        sys_form.addRow("System audio hotkey:", sys_hotkey_row)
+        # The same inline error style the microphone hotkey carries — plus the
+        # clash with that hotkey, which _validate refuses at Save and app.py
+        # refuses to register: one chord cannot drive two listeners.
+        self._sys_hotkey_error = self._hint("")
+        self._sys_hotkey_error.setProperty("role", "error")
+        sys_form.addRow("", self._sys_hotkey_error)
+        self.sys_hotkey_edit.textChanged.connect(self._refresh_system_hotkey_error)
+        # Also on the microphone field: the clash is a property of the pair, so
+        # editing either side can clear or cause it.
+        self.hotkey_edit.textChanged.connect(self._refresh_system_hotkey_error)
+        self._refresh_system_hotkey_error()
+
+        sys_modes = QWidget()
+        smv = QVBoxLayout(sys_modes)
+        smv.setContentsMargins(0, 0, 0, 0)
+        smv.setSpacing(2)
+        self.rb_sys_toggle = QRadioButton("Toggle — press once to start, press again to stop")
+        self.rb_sys_toggle.setToolTip(
+            "One press starts recording the computer's playback, the next press stops it "
+            "and inserts the transcript. The mode for a meeting you record for minutes."
+        )
+        # Not labelled "push-to-talk" like the microphone's: nobody talks here,
+        # the keys are held while the machine plays.
+        self.rb_sys_hold = QRadioButton("Hold — record only while the keys are held down")
+        self.rb_sys_hold.setToolTip(
+            "Recording runs while the full combination is held and stops the moment you "
+            "release it — for grabbing a single sentence out of a video."
+        )
+        sys_mode_group = QButtonGroup(self)
+        sys_mode_group.addButton(self.rb_sys_toggle)
+        sys_mode_group.addButton(self.rb_sys_hold)
+        (
+            self.rb_sys_hold
+            if self.cfg["system_audio"]["hotkey_mode"] == "hold"
+            else self.rb_sys_toggle
+        ).setChecked(True)
+        smv.addWidget(self.rb_sys_toggle)
+        smv.addWidget(self.rb_sys_hold)
+        sys_form.addRow("Hotkey mode:", sys_modes)
+
+        sys_device_row = QWidget()
+        sdh = QHBoxLayout(sys_device_row)
+        sdh.setContentsMargins(0, 0, 0, 0)
+        self.sys_device_combo = QComboBox()
+        self.sys_device_combo.setToolTip(
+            "The loopback/monitor INPUT device that carries what the computer plays — not "
+            "the speakers themselves. The devices that look like one are offered first, "
+            "each with the part of its name that identifies it; every other input device "
+            "follows in case yours is named differently. “Automatic” picks the best "
+            "detected candidate, which is the default."
+        )
+        self.sys_device_combo.setAccessibleName("System audio device")
+        elastic_combo(self.sys_device_combo)
+        sdh.addWidget(self.sys_device_combo, 1)
+        sys_refresh = QPushButton("Refresh")
+        sys_refresh.setAutoDefault(False)
+        sys_refresh.setToolTip(
+            "Re-scan for loopback devices — e.g. after enabling “Stereo Mix” or "
+            "installing a virtual audio cable."
+        )
+        self._sys_refresh_button = sys_refresh
+        sys_refresh.clicked.connect(self._rescan_system_devices)
+        sdh.addWidget(sys_refresh)
+        sys_form.addRow("Device:", sys_device_row)
+        # Not enumerated here, for the reason the microphone list above spells
+        # out: PortAudio can stall for hundreds of ms and nothing is on screen
+        # yet. Until the Audio page is first opened the dropdown holds only
+        # this placeholder and _selected_system_device() answers from the
+        # config, so saving without ever visiting this page writes back the
+        # device that is stored instead of "Automatic".
+        self.sys_device_combo.addItem(_SYSTEM_AUDIO_AUTO)
+
+        self.sys_max_seconds_spin = QSpinBox()
+        self.sys_max_seconds_spin.setRange(10, 3600)
+        self.sys_max_seconds_spin.setSingleStep(10)
+        self.sys_max_seconds_spin.setValue(
+            self._to_int(self.cfg["system_audio"]["max_seconds"], 900)
+        )
+        self.sys_max_seconds_spin.setToolTip(
+            "Safety cap for one system-audio recording — it stops automatically when the "
+            "limit is reached. The default is higher than the microphone's because a "
+            "recorded meeting is not a dictation; the whole take is held in memory and "
+            "transcribed in one go, so a very long cap costs RAM and a long wait at the end."
+        )
+        sys_form.addRow("Max recording length (s):", self.sys_max_seconds_spin)
+
+        # Visible, not a tooltip: on a machine with no loopback device this
+        # hint is the only thing between the user and a feature that looks
+        # broken — every take would be refused with nothing recorded. Text and
+        # visibility are owned by _refresh_system_audio_hint.
+        self._sys_audio_hint = self._hint("", elastic=True)
+        self._refresh_system_audio_hint()
+        sys_form.addRow("", self._sys_audio_hint)
+        layout.addWidget(sys_card)
 
         layout.addStretch(1)
         return page
@@ -1716,16 +2015,15 @@ class SettingsWindow(QDialog):
         page, layout = self._page(title)
         acfg = self.cfg["assistant"]
 
-        self.chk_a_enabled = self._checkbox(
-            "Post-process the transcript with an assistant (LLM)",
-            acfg["enabled"],
-            "Send the raw transcript through a language model for cleanup before it is inserted. "
-            "Needs a running OpenAI-compatible endpoint.",
-        )
-        layout.addWidget(self.chk_a_enabled)
+        # No master switch of its own up here: there are two profiles below,
+        # one per recording source, and each carries its own. A third checkbox
+        # over both would be one more state to reason about ("on, but is the
+        # microphone one on?") for a feature that is already opt-in twice.
         layout.addWidget(self._hint(
             "Optional. Sends the transcript to an OpenAI-compatible API for cleanup — "
-            "e.g. a local Ollama (default), LM Studio, llama.cpp or a hosted service."
+            "e.g. a local Ollama (default), LM Studio, llama.cpp or a hosted service. "
+            "One connection, two profiles: the microphone hotkey and the system-audio "
+            "hotkey each have their own switch, model and prompt below."
         ))
 
         conn, form = self._card("Connection")
@@ -1768,8 +2066,10 @@ class SettingsWindow(QDialog):
         self._pin_width(self.a_test_button, _A_TEST_LABEL, _A_TESTING_LABEL)
         self.a_test_button.setToolTip(
             "Send one short sample sentence to the endpoint above and show what "
-            "comes back. Uses the values currently entered — no Save needed. "
-            "Nothing is recorded, inserted or written to the history."
+            "comes back. Uses the values currently entered — no Save needed — "
+            "with the microphone profile's model and system prompt, so the reply "
+            "shows what that profile would make of a dictation. Nothing is "
+            "recorded, inserted or written to the history."
         )
         self.a_test_button.clicked.connect(self._test_assistant)
         th.addWidget(self.a_test_button)
@@ -1795,31 +2095,111 @@ class SettingsWindow(QDialog):
         form.addRow("", self.a_test_status)
         layout.addWidget(conn)
 
-        prompt = QGroupBox("System prompt")
-        pv = QVBoxLayout(prompt)
+        # One card per recording source. The switch lives in the card whose
+        # prompt it turns on — the old page put the microphone's switch at the
+        # top, where it now would read as a master over both.
+        mic = QGroupBox("Microphone dictation")
+        mv = QVBoxLayout(mic)
+        self.chk_a_enabled = self._checkbox(
+            "Post-process dictated transcripts with the assistant",
+            acfg["enabled"],
+            "Send the raw transcript of a MICROPHONE recording through the language "
+            "model above for cleanup before it is inserted. Off leaves the transcript "
+            "exactly as the speech model produced it.",
+        )
+        mv.addWidget(self.chk_a_enabled)
+        self.a_prompt_edit, self.a_prompt_reset_button = self._add_prompt_editor(
+            mv,
+            acfg["system_prompt"],
+            DEFAULT_ASSISTANT_PROMPT,
+            "Assistant system prompt",
+            "Instructions for the assistant. The transcript is sent as the user message; "
+            "whatever the model returns is inserted instead of the raw transcript.",
+        )
+        layout.addWidget(mic, 1)
+
+        sacfg = acfg["system_audio"]
+        sys_box = QGroupBox("System audio")
+        sysv = QVBoxLayout(sys_box)
+        self.chk_a_sys_enabled = self._checkbox(
+            "Post-process system-audio transcripts with the assistant",
+            sacfg["enabled"],
+            "Send the transcript of a SYSTEM AUDIO recording (the second hotkey, "
+            "Audio page) through the language model for cleanup before it is inserted. "
+            "Independent of the microphone switch above — the connection is shared, "
+            "the prompt is not.",
+        )
+        sysv.addWidget(self.chk_a_sys_enabled)
+        model_row = QWidget()
+        mrh = QHBoxLayout(model_row)
+        mrh.setContentsMargins(0, 0, 0, 0)
+        model_label_widget = QLabel("Model override:")
+        mrh.addWidget(model_label_widget)
+        self.a_sys_model_edit = QLineEdit(str(sacfg["model"] or ""))
+        self.a_sys_model_edit.setPlaceholderText("empty = the model from Connection above")
+        self.a_sys_model_edit.setToolTip(
+            "Optional: a different model for this profile only, as the endpoint knows it "
+            "(e.g. a larger one for minutes of a meeting). Leave it EMPTY to use the "
+            "model from the Connection card above — one endpoint usually serves one model."
+        )
+        self.a_sys_model_edit.setAccessibleName("System audio model override")
+        model_label_widget.setBuddy(self.a_sys_model_edit)
+        mrh.addWidget(self.a_sys_model_edit, 1)
+        sysv.addWidget(model_row)
+        self.a_sys_prompt_edit, self.a_sys_prompt_reset_button = self._add_prompt_editor(
+            sysv,
+            sacfg["system_prompt"],
+            DEFAULT_SYSTEM_AUDIO_PROMPT,
+            "System audio system prompt",
+            "Instructions for this profile. The transcript of the recorded playback is "
+            "sent as the user message; whatever the model returns is inserted instead "
+            "of the raw transcript.",
+        )
+        sysv.addWidget(self._hint(
+            "Runs on the transcript of a system-audio recording, never on a dictation. "
+            "The default prompt only cleans that transcript up — it is a starting point "
+            "meant to be replaced with what you actually want out of a recorded meeting: "
+            "minutes, a summary, a translation."
+        ))
+        layout.addWidget(sys_box, 1)
+
+        return page
+
+    def _add_prompt_editor(
+        self,
+        layout: QVBoxLayout,
+        text: str,
+        default: str,
+        name: str,
+        tip: str,
+    ) -> tuple[QPlainTextEdit, QPushButton]:
+        """A system-prompt box with its "Reset to default…" button above it.
+
+        Both assistant profiles get the identical pair, and the reset carries a
+        confirmation step that was a deliberate fix (see `_reset_prompt`) — one
+        builder keeps that behaviour from being half-copied into the second
+        card. Returns (edit, button) so the caller can name them.
+        """
         header = QHBoxLayout()
         header.addStretch(1)
         reset = QPushButton(_A_PROMPT_RESET_LABEL)
         reset.setAutoDefault(False)
         reset.setToolTip(
-            "Replace the prompt below with the built-in default cleanup prompt. "
+            "Replace the prompt below with the built-in default for this profile. "
             "Asks first if you have edited it — the replacement cannot be undone."
         )
-        reset.clicked.connect(self._reset_prompt)
-        self.a_prompt_reset_button = reset
         header.addWidget(reset)
-        pv.addLayout(header)
-        self.a_prompt_edit = QPlainTextEdit(acfg["system_prompt"])
-        self.a_prompt_edit.setToolTip(
-            "Instructions for the assistant. The transcript is sent as the user message; "
-            "whatever the model returns is inserted instead of the raw transcript."
-        )
-        self.a_prompt_edit.setAccessibleName("Assistant system prompt")
-        self.a_prompt_edit.setMinimumHeight(text_rows_height(self.a_prompt_edit, 8))
-        pv.addWidget(self.a_prompt_edit)
-        layout.addWidget(prompt, 1)
-
-        return page
+        layout.addLayout(header)
+        edit = QPlainTextEdit(text)
+        edit.setToolTip(tip)
+        edit.setAccessibleName(name)
+        edit.setMinimumHeight(text_rows_height(edit, 8))
+        layout.addWidget(edit)
+        # A lambda, not the bound method: `clicked` would hand its `checked`
+        # argument to the first parameter, and this way the three arguments are
+        # visible at the call site.
+        reset.clicked.connect(lambda: self._reset_prompt(edit, default, reset))
+        return edit, reset
 
     def _build_history(self, title: str) -> QWidget:
         page, layout = self._page(title)
@@ -2180,12 +2560,17 @@ class SettingsWindow(QDialog):
         # yet to explain the wait.
         if index == self._audio_index and not self._devices_loaded:
             self._load_devices()
+            # One PortAudio enumeration is what stalls, and both dropdowns on
+            # this page need one, so the system-audio list is filled in the
+            # same visit rather than on a second trigger.
+            self._load_system_devices()
             # The deferred load can land on a different value than the config
             # holds: a configured microphone that is currently unplugged
             # resolves to "System default". Nobody edited anything, so the
             # snapshot has to follow, or merely opening the Audio page and
             # closing the window would ask about unsaved changes.
             self._saved_snapshot["input_device"] = self._selected_input_device()
+            self._saved_snapshot["system_audio"]["device"] = self._selected_system_device()
         if index == self._engine_index:
             # Every visit: a recording since the last look may have loaded the
             # model, and this is a property read, not a probe.
@@ -2237,6 +2622,71 @@ class SettingsWindow(QDialog):
         combo = self._capture_hotkey()
         if combo:
             self.hotkey_edit.setText(combo)
+
+    def _pick_system_hotkey(self) -> None:
+        """The key picker for the system-audio hotkey.
+
+        A sibling of `_pick_hotkey` rather than a shared slot with a target
+        widget: `_capture_hotkey` pauses the live listener and hands ownership
+        back in its `finally`, and threading a second field through that state
+        would put two callers on one flag for no gain — this is two lines.
+        """
+        combo = self._capture_hotkey()
+        if combo:
+            self.sys_hotkey_edit.setText(combo)
+
+    def _refresh_system_hotkey_error(self) -> None:
+        """Show or clear the inline reason under the system-audio hotkey.
+
+        Two rules, both of which Save repeats as a modal (a label is never
+        announced to a screen reader whose focus is on the button that
+        refused):
+
+        * an EMPTY field is valid and means the feature is off — never an
+          error, or the default config would open with a red line under it;
+        * a combination the microphone already uses cannot work. pynput
+          registers one listener per chord, `app.py` refuses the duplicate,
+          and without this the user would find out at Save at the earliest.
+        """
+        hotkey = self.sys_hotkey_edit.text().strip()
+        reason = ""
+        if hotkey:
+            try:
+                if not Hotkeys.validate(hotkey):
+                    reason = (
+                        f"“{hotkey}” is not a valid combination — click “Change…” "
+                        "and press the keys."
+                    )
+                elif Hotkeys.equal(hotkey, self.hotkey_edit.text().strip()):
+                    reason = (
+                        "Same combination as the microphone hotkey — one chord "
+                        "cannot start two recordings."
+                    )
+            except Exception:
+                # Parsing needs pynput, which a headless run cannot import.
+                # Calling a combination broken because we could not look is
+                # worse than staying quiet, and Save checks it again anyway.
+                log.debug("could not check the system-audio hotkey %r", hotkey, exc_info=True)
+        self._sys_hotkey_error.setText(reason)
+        self.sys_hotkey_edit.setAccessibleDescription(reason)
+        self._sys_form.setRowVisible(self._sys_hotkey_error, bool(reason))
+
+    def _refresh_system_audio_hint(self) -> None:
+        """The note under the System audio card: what the feature does, plus
+        the platform's own way to get a loopback device.
+
+        The help sentence stays on screen even when candidates were found —
+        picking the monitor that belongs to the output actually in use is the
+        part users get wrong. A scan that found nothing prepends the warning:
+        every take would then be refused with nothing recorded, and nothing
+        else on this page would say why.
+        """
+        parts = [_SYSTEM_AUDIO_NOTE]
+        if self._sys_candidates == 0:
+            parts.insert(0, "⚠ No loopback device was found on this system, so a "
+                            "recording would be refused with nothing captured.")
+        parts.append(system_audio_help())
+        self._sys_audio_hint.setText(" ".join(parts))
 
     def _refresh_hotkey_error(self) -> None:
         """Show or clear the inline reason under the hotkey field. The modal in
@@ -2314,6 +2764,85 @@ class SettingsWindow(QDialog):
             "Refresh",
         )
 
+    def _load_system_devices(self) -> None:
+        """Fill the system-audio dropdown: the loopback candidates first, then
+        every other input device, under an "Automatic" entry.
+
+        The candidates carry the *name fragment* that identified them, never
+        their score — that number is a sum of weights, not a percentage, and
+        "170" tells the user nothing while “monitor of” tells them exactly why
+        the device is offered.
+
+        Like `_load_devices` this keeps an unsaved on-screen choice across a
+        refresh, and it keeps a configured device that is not currently there
+        as its own entry instead of silently falling back to "Automatic":
+        PortAudio indices are positional, so unplugging one interface
+        re-indexes the rest, and a Save afterwards would drop the choice.
+        """
+        # Read before the flag flips: this answers from the config on the first
+        # load (type-checked there, so a hand-edited device *name* cannot
+        # become a dropdown row) and from the dropdown on a refresh, which is
+        # what keeps an unsaved on-screen choice — repopulating from the saved
+        # config would silently revert the device the user just picked.
+        stored = self._selected_system_device()
+        self._sys_devices_loaded = True
+        try:
+            from .audio import input_device_profiles
+
+            profiles = input_device_profiles()
+        except Exception:
+            # input_device_profiles already swallows a PortAudio failure; this
+            # catches the import itself (a missing sounddevice) so the page
+            # still renders with the "Automatic" entry alone.
+            log.exception("could not enumerate the devices for system audio")
+            profiles = []
+        candidates = loopback_candidates(profiles)
+        self._sys_candidates = len(candidates)
+        self.sys_device_combo.clear()
+        self.sys_device_combo.addItem(_SYSTEM_AUDIO_AUTO)
+        ranked = {candidate["index"] for candidate in candidates}
+        for candidate in candidates:
+            hint = candidate.get("hint")
+            label = f"{candidate['index']}: {candidate.get('name')}"
+            why = f"  — loopback, matched “{hint}”" if hint else "  — loopback"
+            self.sys_device_combo.addItem(label + why)
+        rest = [profile for profile in profiles if profile["index"] not in ranked]
+        if candidates and rest:
+            self.sys_device_combo.insertSeparator(self.sys_device_combo.count())
+        for profile in rest:
+            self.sys_device_combo.addItem(f"{profile['index']}: {profile.get('name')}")
+        current = _SYSTEM_AUDIO_AUTO
+        if stored is not None:
+            for row in range(self.sys_device_combo.count()):
+                text = self.sys_device_combo.itemText(row)
+                if text and input_device_from_label(text) == stored:
+                    current = text
+                    break
+            else:
+                # Keeps the index parseable, so Save writes back the device the
+                # user chose rather than "Automatic".
+                current = f"{stored}: (not available right now)"
+                self.sys_device_combo.addItem(current)
+        self.sys_device_combo.setCurrentText(current)
+        self._refresh_system_audio_hint()
+
+    def _rescan_system_devices(self) -> None:
+        """Re-scan on the System audio Refresh button and confirm on it.
+
+        Same reasoning as `_rescan_devices`: the usual outcome is the very same
+        list, so without a confirmation the button reads as dead. The count is
+        of loopback *candidates*, because that is what the press is for —
+        enabling "Stereo Mix" or installing a virtual cable is exactly the
+        moment this button gets pressed.
+        """
+        self._load_system_devices()
+        found = self._sys_candidates or 0
+        self._flash_button(
+            self._sys_refresh_button,
+            f"{found} loopback ✓" if found else "None found",
+            "Refresh",
+        )
+
     def _refresh_overlay_reset_button(self) -> None:
         """Enable "Reset position" only while there is an icon to move, and say
         why when there isn't — a greyed-out button with no reason reads as
@@ -2379,9 +2908,19 @@ class SettingsWindow(QDialog):
         self.app.post("factory_reset")
         self.force_close()
 
-    def _reset_prompt(self) -> None:
-        """Put the built-in cleanup prompt back, and say on the button that it
+    def _reset_prompt(
+        self,
+        edit: QPlainTextEdit | None = None,
+        default: str | None = None,
+        button: QPushButton | None = None,
+    ) -> None:
+        """Put a profile's built-in prompt back, and say on the button that it
         happened.
+
+        Parameterized over the field, its default and its button because the
+        Assistant page has two profiles (microphone / system audio) with the
+        same reset. Called with no arguments it resets the microphone profile —
+        the one it was written for.
 
         The prompt box is long enough that the swap can happen entirely off
         screen, and a prompt that already *is* the default changes nothing at
@@ -2399,8 +2938,11 @@ class SettingsWindow(QDialog):
         click still acts at once and only flashes: the question would be
         guarding an identity.
         """
-        current = self.a_prompt_edit.toPlainText()
-        if current.strip() != DEFAULT_ASSISTANT_PROMPT.strip():
+        edit = edit or self.a_prompt_edit
+        default = DEFAULT_ASSISTANT_PROMPT if default is None else default
+        button = button or self.a_prompt_reset_button
+        current = edit.toPlainText()
+        if current.strip() != default.strip():
             confirm = QMessageBox.question(
                 self,
                 APP_NAME,
@@ -2412,10 +2954,8 @@ class SettingsWindow(QDialog):
             )
             if confirm != QMessageBox.StandardButton.Yes:
                 return
-        self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
-        self._flash_button(
-            self.a_prompt_reset_button, "Reset ✓", _A_PROMPT_RESET_LABEL
-        )
+        edit.setPlainText(default)
+        self._flash_button(button, "Reset ✓", _A_PROMPT_RESET_LABEL)
 
     # ---------------------------------------------------- assistant test
 
@@ -4219,6 +4759,29 @@ class SettingsWindow(QDialog):
             return stored
         return input_device_from_label(self.input_combo.currentText())
 
+    def _selected_system_device(self):
+        """The configured system-audio device index, or None for "Automatic".
+
+        Same trap as `_selected_input_device`, same answer: before the Audio
+        page has been opened the dropdown holds nothing but the "Automatic"
+        placeholder, and answering from it would report auto-pick for a window
+        whose Audio page was never visited — Save would then drop the loopback
+        device the user picked. The stored value is passed through with the
+        same type check, because `system_audio.device` defaults to null and
+        config.py hands a hand-edited value back untouched.
+
+        None does NOT mean "the system default input" here: it means auto-pick
+        the best loopback candidate (see
+        `system_audio.resolve_loopback_device`, which refuses a take rather
+        than recording the room).
+        """
+        if not self._sys_devices_loaded:
+            stored = self.cfg["system_audio"]["device"]
+            if isinstance(stored, bool) or not isinstance(stored, int):
+                return None
+            return stored
+        return input_device_from_label(self.sys_device_combo.currentText())
+
     # -------------------------------------------------------- save / apply
 
     def _collect(self) -> dict:
@@ -4256,8 +4819,18 @@ class SettingsWindow(QDialog):
             "insecure_ssl": self.chk_insecure_ssl.isChecked(),
             "initial_prompt": self.initial_prompt_edit.toPlainText().strip(),
             "replacements": self.replacements_edit.toPlainText().strip(),
+            "filler_filter": self.chk_filler.isChecked(),
+            # No fallback to the default list: an emptied field is a legitimate
+            # "filter nothing", and the checkbox is the off switch.
+            "filler_phrases": self.filler_edit.toPlainText().strip(),
             "input_device": self._selected_input_device(),
             "max_seconds": int(self.max_seconds_spin.value()),
+            "system_audio": {
+                "hotkey": self.sys_hotkey_edit.text().strip(),
+                "hotkey_mode": "hold" if self.rb_sys_hold.isChecked() else "toggle",
+                "device": self._selected_system_device(),
+                "max_seconds": int(self.sys_max_seconds_spin.value()),
+            },
             "overlay": {
                 "enabled": self.chk_o_enabled.isChecked(),
                 "always_on_top": self.chk_o_on_top.isChecked(),
@@ -4275,6 +4848,19 @@ class SettingsWindow(QDialog):
                 "system_prompt": (
                     self.a_prompt_edit.toPlainText().strip() or DEFAULT_ASSISTANT_PROMPT
                 ),
+                # The second profile. Only what differs per source lives here;
+                # base_url/api_key/temperature/timeout above are shared (see
+                # assistant.profile). An empty model means "use the shared one",
+                # so it is stored verbatim — unlike the prompt, which falls back
+                # to its default exactly like the microphone one above.
+                "system_audio": {
+                    "enabled": self.chk_a_sys_enabled.isChecked(),
+                    "model": self.a_sys_model_edit.text().strip(),
+                    "system_prompt": (
+                        self.a_sys_prompt_edit.toPlainText().strip()
+                        or DEFAULT_SYSTEM_AUDIO_PROMPT
+                    ),
+                },
             },
             "integrations": {
                 "mute_while_recording": self.chk_mute_enabled.isChecked(),
@@ -4321,24 +4907,72 @@ class SettingsWindow(QDialog):
                 self.hotkey_edit.setFocus()
                 return False
 
-        # An enabled assistant with no usable endpoint is the one setting that
-        # cannot report itself: it runs after a dictation, on a worker thread,
-        # and the user meets the problem as a raw requests error attached to a
-        # transcript they already spoke. Catch it here, where the fields are.
-        # A disabled assistant may stay half-configured, like a disabled mute row.
-        if values["assistant"]["enabled"]:
-            problem = assistant_config_problem(values["assistant"])
+        # A non-empty system-audio hotkey has to parse, exactly like the
+        # microphone one — an empty one is valid and means the feature is off,
+        # so it must never be reported. Checked here as well as inline under
+        # the field: a label is not announced to a screen reader whose focus is
+        # on the Save button that refused.
+        sys_hotkey = values["system_audio"]["hotkey"]
+        if sys_hotkey and not Hotkeys.validate(sys_hotkey):
+            self._show_page("Audio")
+            QMessageBox.critical(
+                self,
+                APP_NAME,
+                f"Invalid system audio hotkey: {sys_hotkey}\n\nUse the pynput format, "
+                "e.g. <ctrl>+<alt>+<shift>+<space> — or click “Change…” and press the "
+                "keys. Leave the field empty to switch system audio off.",
+            )
+            self.sys_hotkey_edit.setFocus()
+            return False
+        # Two listeners on one chord cannot work: pynput would deliver the
+        # press to both, and app.py refuses to register the duplicate — so
+        # without this the second source would simply be missing, with a log
+        # line as the only trace.
+        if sys_hotkey and Hotkeys.equal(sys_hotkey, hotkey):
+            self._show_page("Audio")
+            QMessageBox.critical(
+                self,
+                APP_NAME,
+                f"The system audio hotkey ({sys_hotkey}) is the same combination as the "
+                f"microphone hotkey ({hotkey}).\n\nGive it a different one — one chord "
+                "cannot start two recordings, so the second one would never run.",
+            )
+            self.sys_hotkey_edit.setFocus()
+            return False
+
+        # An enabled assistant profile with no usable endpoint is the one
+        # setting that cannot report itself: it runs after a recording, on a
+        # worker thread, and the user meets the problem as a raw requests error
+        # attached to a transcript they already spoke. Catch it here, where the
+        # fields are. A disabled profile may stay half-configured, like a
+        # disabled mute row — and the two are checked separately because the
+        # connection is shared: the microphone profile being off does not make
+        # a missing base URL harmless for the system-audio one.
+        for source, name, model_widget in (
+            (SOURCE_MIC, "Microphone dictation", self.a_model_edit),
+            (SOURCE_SYSTEM, "System audio", self.a_sys_model_edit),
+        ):
+            resolved = assistant_profile(values["assistant"], source)
+            if not resolved["enabled"]:
+                continue
+            problem = assistant_config_problem(resolved)
             if problem is not None:
                 field, reason = problem
                 self._show_page("Assistant")
                 QMessageBox.critical(
                     self,
                     APP_NAME,
-                    f"Assistant post-processing is switched on, but {reason}.\n\n"
-                    "Fill the field in, or turn the assistant off — otherwise "
-                    "every dictation would fail on it after the fact.",
+                    f"Assistant post-processing for “{name}” is switched on, but "
+                    f"{reason}.\n\nFill the field in, or turn that profile off — "
+                    "otherwise every recording from it would fail on the assistant "
+                    "after the fact.",
                 )
-                widget = self.a_url_edit if field == "base_url" else self.a_model_edit
+                # The model can come from the profile's own override or from
+                # the shared field; an empty override means the shared one is
+                # what has to be filled in.
+                widget = self.a_url_edit if field == "base_url" else model_widget
+                if widget is not self.a_url_edit and not widget.text().strip():
+                    widget = self.a_model_edit
                 widget.setFocus()
                 return False
 
@@ -4401,6 +5035,30 @@ class SettingsWindow(QDialog):
 
         return True
 
+    @staticmethod
+    def _merge_section(target: dict, values: dict) -> None:
+        """Write `values` into `target`, merging a nested dict key by key
+        instead of replacing it.
+
+        `assistant` holds a sub-section (`system_audio`, the second profile),
+        and a plain `target.update(values)` would swap that whole dict for the
+        one `_collect` built. That is correct only as long as `_collect`
+        returns every one of its keys — the day a per-source key is added to
+        `config.DEFAULTS` and not (yet) to this window, an update would delete
+        the stored value instead of leaving it alone. Merging cannot rot that
+        way.
+
+        A list value (`integrations.targets`) is assigned, not merged: the
+        rows on screen are the whole list, and a row the user removed has to
+        disappear.
+        """
+        for key, value in values.items():
+            current = target.get(key)
+            if isinstance(current, dict) and isinstance(value, dict):
+                SettingsWindow._merge_section(current, value)
+            else:
+                target[key] = value
+
     def _apply_values(self) -> bool:
         """Validate, write the dialog values to the config and apply them.
         Returns False (dialog stays open, nothing saved) on invalid input."""
@@ -4416,12 +5074,17 @@ class SettingsWindow(QDialog):
             self._finish_hotkey_test("")
         cfg = self.cfg.data
         for key, value in values.items():
-            if key in ("overlay", "assistant", "integrations"):
+            if key in _NESTED_SECTIONS:
                 continue
             cfg[key] = value
-        cfg["overlay"].update(values["overlay"])
-        cfg["assistant"].update(values["assistant"])
-        cfg.setdefault("integrations", {}).update(values["integrations"])
+        for name in _NESTED_SECTIONS:
+            section = cfg.get(name)
+            if not isinstance(section, dict):
+                # A section a hand-edited config.json replaced with a scalar
+                # (config._merge logs that and keeps the defaults in cfg, so
+                # this is belt and braces) — merging into it would raise.
+                section = cfg[name] = {}
+            self._merge_section(section, values[name])
         if not self.cfg.save():
             # Disk full / read-only config dir: the values still apply to this
             # session (they are in cfg.data), but silence here would let the
