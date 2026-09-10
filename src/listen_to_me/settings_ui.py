@@ -228,8 +228,38 @@ _A_TEST_PREVIEW_CHARS = 160
 # without a ":" so input_device_from_label parses it back to None, exactly as
 # it does for SYSTEM_DEFAULT_DEVICE — but named differently, because auto here
 # never falls back to the system default input (that is a microphone; see
-# system_audio.resolve_loopback_device).
-_SYSTEM_AUDIO_AUTO = "Automatic — the best loopback device found"
+# system_audio.resolve_loopback_device). "or nothing" is the half a bare
+# "Automatic" hid — auto-pick refuses the take when the loopback group is
+# empty, which is the state the reporter of #195 was in — and it is kept that
+# short on purpose: measured against the closed combo at the default window
+# width (393 px), a fuller wording elides exactly where the news is. The
+# sentence in full is in the tooltip and, when it applies, in the card's hint.
+_SYSTEM_AUDIO_AUTO = "Automatic — the best loopback device, or nothing"
+
+# The group headings of the system-audio dropdown (#195). A flat list under a
+# card headed "System audio" is what the maintainer opened looking for their
+# outputs and found their microphones in; these say which half of the list is
+# which. Inserted as non-selectable, disabled rows (see `_sys_add_unselectable`)
+# and deliberately free of any ":" — so even a Qt path that somehow made one
+# current has input_device_from_label parse it back to None rather than into a
+# device index.
+_SYS_GROUP_LOOPBACK = "Loopback devices — these record what the computer plays"
+_SYS_GROUP_OTHER = "Other input devices — microphones, not what the computer plays"
+_SYS_GROUP_ABSENT = "Selected earlier — not available right now"
+# Shown under the first heading when the scan found nothing: the honest answer
+# to "where are my outputs?", in the list itself. Without it the group would
+# be empty and the microphones below it would read as the answer.
+_SYS_NO_LOOPBACK_ROW = "None found — nothing here can record the computer's output"
+# How many output devices the hint spells out by name before it counts the
+# rest. A studio interface can expose a dozen, and a hint that grows into a
+# paragraph is one nobody reads.
+_SYS_OUTPUTS_NAMED = 3
+# The shortest name half that may stand in for a whole output name when a
+# loopback device is matched to its output. Windows' MME host API truncates
+# device names to 31 characters, so "Monitor of <long output name>" and the
+# output itself agree only on a prefix — but a prefix of two or three
+# characters would pair devices that have nothing to do with each other.
+_SYS_OUTPUT_PREFIX_MIN = 8
 # What the feature does, in the one place both the hint and the tooltips point
 # at. Kept short: the platform-specific instruction that follows it
 # (system_audio_help) is the part the user has to act on.
@@ -263,6 +293,120 @@ _PRESET_LABELS = frozenset(model_label(model) for model, _ in MODEL_CHOICES)
 # up to `history_max`; rendering every one as widgets would be slow for large
 # histories, so only the most recent are shown (with a note about the rest).
 _HISTORY_RENDER_LIMIT = 300
+
+
+def _loopback_output_name(candidate: dict) -> str | None:
+    """The OUTPUT device a loopback candidate records, read out of its own
+    name — or None where the name carries no such mapping (#195).
+
+    "Monitor of Built-in Audio Analog Stereo" and "Speakers (Realtek) [Loopback]"
+    both carry the output they belong to, and the user thinks in outputs: the
+    mechanism marker is display noise in front of the only word they recognize.
+    Keyed on the fragment `system_audio.loopback_candidates` reports as
+    "hint", so this never keeps a second list of markers — a prefix hint names
+    the output after it, the suffix hint names it before.
+
+    "Stereo Mix", "CABLE Output" and "BlackHole" carry no output name at all,
+    and none is invented for them: a made-up mapping would promise that a take
+    comes from a specific output when nothing in the system says so.
+    """
+    name = str(candidate.get("name") or "").strip()
+    hint = str(candidate.get("hint") or "")
+    if not name or not hint:
+        return None
+    lowered = name.casefold()
+    if hint in ("monitor of", "monitor von"):
+        cut = lowered.find(hint)
+        if cut >= 0:
+            return name[cut + len(hint):].strip(" :–—-") or None
+    if hint == "[loopback]":
+        cut = lowered.rfind(hint)
+        if cut >= 0:
+            return name[:cut].strip(" :–—-") or None
+    return None
+
+
+def _sys_device_label(profile: dict) -> str:
+    """One row of the system-audio dropdown: "<index>: <what the user thinks
+    this is>", plus why it is offered when it is a loopback candidate.
+
+    The index prefix is load-bearing — `choices.input_device_from_label` parses
+    it back and Save writes exactly what that returns, so it stays first and
+    stays the only ":" this function can put in front of the name.
+
+    A candidate is labelled with the *output* it records where its name says
+    so, and with the name fragment that identified it — never with its score,
+    which is a sum of weights and not a percentage ("170" says nothing;
+    “monitor of” says why this row is here). Where no output can be read out
+    of the name the raw device name stays, marked as a loopback input rather
+    than as an output it may not be.
+    """
+    index = profile.get("index")
+    name = str(profile.get("name") or f"Device {index}")
+    hint = profile.get("hint")
+    if not hint:
+        return f"{index}: {name}"
+    output = _loopback_output_name(profile)
+    if output:
+        return f"{index}: {output}  — records this output, matched “{hint}”"
+    return f"{index}: {name}  — loopback input, matched “{hint}”"
+
+
+def _outputs_without_loopback(outputs: list[str], candidates: list[dict]) -> list[str]:
+    """The output devices no loopback candidate covers — the ones the hint has
+    to name, because they are what the user came to the card to pick (#195).
+
+    An output counts as covered when some candidate's name resolves to it
+    (`_loopback_output_name`). Matched on equality or on a prefix of at least
+    `_SYS_OUTPUT_PREFIX_MIN` characters: Windows' MME host API truncates device
+    names to 31 characters, so the output entry and the loopback entry of one
+    device can differ in their tail while naming the same hardware.
+
+    Order is PortAudio's, so the hint lists the outputs in the order the
+    Windows sound panel does. A candidate that maps to no output at all
+    ("Stereo Mix") covers nothing — it may well carry the output the user
+    wants, but nothing in its name says which, and this list is only used to
+    say what cannot be recorded *directly*.
+    """
+    covered = [
+        name.strip().casefold()
+        for name in (_loopback_output_name(candidate) for candidate in candidates)
+        if name and name.strip()
+    ]
+    missing: list[str] = []
+    for output in outputs:
+        key = str(output or "").strip()
+        if not key:
+            continue
+        folded = key.casefold()
+        if any(
+            folded == other
+            or (
+                min(len(folded), len(other)) >= _SYS_OUTPUT_PREFIX_MIN
+                and (folded.startswith(other) or other.startswith(folded))
+            )
+            for other in covered
+        ):
+            continue
+        missing.append(key)
+    return missing
+
+
+def _output_list_phrase(names: list[str], limit: int = _SYS_OUTPUTS_NAMED) -> str:
+    """“A”, “B” and 7 more — a bounded enumeration for the hint.
+
+    Bounded on purpose: the sentence has to be readable on a machine with two
+    outputs and on one with fifteen, and the count carries the rest. Quoted
+    because an output name can be a whole phrase ("Speakers (Realtek(R)
+    Audio)") that would otherwise dissolve into the sentence around it.
+    """
+    quoted = [f"“{name}”" for name in names[:limit]]
+    rest = len(names) - len(quoted)
+    if rest > 0:
+        quoted.append(f"{rest} more")
+    if len(quoted) == 1:
+        return quoted[0]
+    return ", ".join(quoted[:-1]) + " and " + quoted[-1]
 
 
 class MuteTargetRow(QGroupBox):
@@ -429,6 +573,11 @@ class SettingsWindow(QDialog):
         # yet). Drives the System audio hint, which is the only place a machine
         # with no loopback device at all learns why the feature cannot work.
         self._sys_candidates: int | None = None
+        # The names of the output devices that scan found no loopback device
+        # for — what the hint spells out, because those outputs are what the
+        # user opened this card to pick (#195). Empty until the Audio page is
+        # first visited: enumerating them goes through PortAudio too.
+        self._sys_missing_outputs: list[str] = []
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1781,19 +1930,26 @@ class SettingsWindow(QDialog):
         self.sys_device_combo = QComboBox()
         self.sys_device_combo.setToolTip(
             "The loopback/monitor INPUT device that carries what the computer plays — not "
-            "the speakers themselves. The devices that look like one are offered first, "
-            "each with the part of its name that identifies it; every other input device "
-            "follows in case yours is named differently. “Automatic” picks the best "
-            "detected candidate, which is the default."
+            "the speakers themselves: PortAudio can only record from inputs, so an output "
+            "device is never in this list. The devices that look like a loopback capture "
+            "come first, each labelled with the output it records and the part of its name "
+            "that identified it; the remaining input devices — microphones — follow under "
+            "their own heading, in case yours is named differently. “Automatic” is the "
+            "default: it picks the best of the first group, and refuses the take when that "
+            "group is empty rather than recording the room."
         )
         self.sys_device_combo.setAccessibleName("System audio device")
         elastic_combo(self.sys_device_combo)
         sdh.addWidget(self.sys_device_combo, 1)
         sys_refresh = QPushButton("Refresh")
         sys_refresh.setAutoDefault(False)
+        # The order the work happens in, and the platform instruction comes
+        # from system_audio_help() — the one wording, in one place, that the
+        # hint and the refused-take notification also carry.
         sys_refresh.setToolTip(
-            "Re-scan for loopback devices — e.g. after enabling “Stereo Mix” or "
-            "installing a virtual audio cable."
+            "Re-scan for loopback devices. If the list has none, get one first: "
+            + system_audio_help()
+            + " Then press this — the new device appears without a restart."
         )
         self._sys_refresh_button = sys_refresh
         sys_refresh.clicked.connect(self._rescan_system_devices)
@@ -2817,20 +2973,54 @@ class SettingsWindow(QDialog):
         self._sys_form.setRowVisible(self._sys_hotkey_error, bool(reason))
 
     def _refresh_system_audio_hint(self) -> None:
-        """The note under the System audio card: what the feature does, plus
-        the platform's own way to get a loopback device.
+        """The note under the System audio card: what the feature does, which
+        of this machine's outputs no loopback device covers, the platform's own
+        way to get one — and, when there is none at all, the Refresh press that
+        finishes the job.
 
         The help sentence stays on screen even when candidates were found —
         picking the monitor that belongs to the output actually in use is the
         part users get wrong. A scan that found nothing prepends the warning:
         every take would then be refused with nothing recorded, and nothing
         else on this page would say why.
+
+        Naming the outputs is the half #195 was reported for: the dropdown can
+        only ever offer input devices, so a user looking for "Speakers
+        (Realtek)" needs to read that their outputs exist, that none of them
+        can be recorded directly on this build, and what to do about it — in
+        that order, because that is the order they act in. `system_audio_help`
+        stays the single source of the platform instruction; the same sentence
+        goes into the notification that refuses a take, and two drifting copies
+        are how a user follows the one that no longer fits their system.
+
+        Bounded on purpose (`_output_list_phrase`): fifteen outputs must not
+        turn this into a paragraph.
         """
         parts = [_SYSTEM_AUDIO_NOTE]
-        if self._sys_candidates == 0:
+        none_found = self._sys_candidates == 0
+        if none_found:
             parts.insert(0, "⚠ No loopback device was found on this system, so a "
                             "recording would be refused with nothing captured.")
+        missing = self._sys_missing_outputs
+        if missing:
+            named = _output_list_phrase(missing)
+            if none_found:
+                parts.append(
+                    f"Your outputs are {named} — none of them can be recorded "
+                    "directly on this build."
+                )
+            else:
+                subject = "that output" if len(missing) == 1 else "those outputs"
+                parts.append(
+                    f"No loopback device was found for {named} — {subject} cannot "
+                    "be recorded directly on this build."
+                )
         parts.append(system_audio_help())
+        if none_found:
+            parts.append(
+                "Then press “Refresh” next to the list — the new device shows up "
+                "there and “Automatic” picks it, no restart needed."
+            )
         self._sys_audio_hint.setText(" ".join(parts))
 
     def _refresh_hotkey_error(self) -> None:
@@ -2909,14 +3099,74 @@ class SettingsWindow(QDialog):
             "Refresh",
         )
 
-    def _load_system_devices(self) -> None:
-        """Fill the system-audio dropdown: the loopback candidates first, then
-        every other input device, under an "Automatic" entry.
+    def _sys_add_unselectable(self, text: str, announce: str) -> bool:
+        """Append a row to the system-audio dropdown that nothing can choose —
+        a group heading or a "none found" line — and report whether that
+        worked.
 
-        The candidates carry the *name fragment* that identified them, never
-        their score — that number is a sum of weights, not a percentage, and
-        "170" tells the user nothing while “monitor of” tells them exactly why
-        the device is offered.
+        Qt combo boxes have no group headers, so a heading has to be a row, and
+        a row that can be picked is a bug with teeth: it parses to no index, so
+        choosing "Loopback devices" would silently switch the device back to
+        "Automatic" on the next Save. Clearing every flag is what prevents it —
+        Qt's arrow-key walk skips a row without `ItemIsSelectable`, the popup
+        refuses a click on a disabled one, and a screen reader announces it as
+        unavailable instead of as one of the devices. `AccessibleTextRole`
+        carries `announce`, because "greyed out, under a separator" has no
+        audible equivalent: the heading has to say that it is one.
+
+        The flags are read back rather than assumed (the house rule for
+        autostart and `Config.save` alike): the combo's model is Qt's own, and
+        a build that handed out one without `setFlags` would leave a selectable
+        heading behind. In that case the row is removed again — no heading is
+        better than a pickable one.
+        """
+        combo = self.sys_device_combo
+        combo.addItem(text)
+        row = combo.count() - 1
+        model = combo.model()
+        item = model.item(row) if hasattr(model, "item") else None
+        if item is not None:
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            item.setData(announce, Qt.ItemDataRole.AccessibleTextRole)
+        if bool(model.flags(model.index(row, 0)) & Qt.ItemFlag.ItemIsSelectable):
+            log.debug("could not make the dropdown row %r non-selectable — dropped", text)
+            combo.removeItem(row)
+            return False
+        return True
+
+    def _sys_add_group(self, heading: str) -> None:
+        """A group heading in the system-audio dropdown: a separator, then the
+        heading as a row nothing can choose (`_sys_add_unselectable`).
+
+        The separator is the visual half — Qt draws a real dividing line for
+        it, and it is skipped by every navigation path — and the heading row is
+        the half that says what the group is. A separator on its own carries no
+        text at all, so a screen reader would announce the grouping as nothing.
+        """
+        combo = self.sys_device_combo
+        combo.insertSeparator(combo.count())
+        if not self._sys_add_unselectable(heading, f"Group heading. {heading}"):
+            # Don't leave a dividing line introducing nothing.
+            combo.removeItem(combo.count() - 1)
+
+    def _load_system_devices(self) -> None:
+        """Fill the system-audio dropdown, in two visible groups under an
+        "Automatic" entry: the loopback candidates, then every other input
+        device.
+
+        Two groups rather than one concatenated list, because the card is
+        headed "System audio" and a flat list of microphones under it is what
+        #195 was reported for — the first group answers the question the card
+        asks, the second is visibly something else. When the first group is
+        empty its heading stays, with a "none found" row under it: that is the
+        honest answer to "where are my outputs?" *in the list*, and the hint
+        below then names the outputs that exist and the fix.
+
+        Each candidate is labelled with the output it records where its name
+        says so, plus the *name fragment* that identified it, never its score —
+        that number is a sum of weights, not a percentage, and "170" tells the
+        user nothing while “monitor of” tells them exactly why the device is
+        offered (`_sys_device_label`).
 
         Like `_load_devices` this keeps an unsaved on-screen choice across a
         refresh, and it keeps a configured device that is not currently there
@@ -2932,43 +3182,64 @@ class SettingsWindow(QDialog):
         stored = self._selected_system_device()
         self._sys_devices_loaded = True
         try:
-            from .audio import input_device_profiles
+            from .audio import input_device_profiles, list_output_devices
 
             profiles = input_device_profiles()
+            # The outputs are what the user came here to pick and the one thing
+            # this list can never offer, so the hint has to be able to name
+            # them. Same visit, same PortAudio stall — never the constructor.
+            outputs = [name for _index, name in list_output_devices()]
         except Exception:
-            # input_device_profiles already swallows a PortAudio failure; this
-            # catches the import itself (a missing sounddevice) so the page
-            # still renders with the "Automatic" entry alone.
+            # Both calls swallow a PortAudio failure themselves; this catches
+            # the import (a missing sounddevice) so the page still renders with
+            # the "Automatic" entry alone.
             log.exception("could not enumerate the devices for system audio")
-            profiles = []
+            profiles, outputs = [], []
         candidates = loopback_candidates(profiles)
         self._sys_candidates = len(candidates)
-        self.sys_device_combo.clear()
-        self.sys_device_combo.addItem(_SYSTEM_AUDIO_AUTO)
-        ranked = {candidate["index"] for candidate in candidates}
+        self._sys_missing_outputs = _outputs_without_loopback(outputs, candidates)
+        combo = self.sys_device_combo
+        combo.clear()
+        combo.addItem(_SYSTEM_AUDIO_AUTO)
+        self._sys_add_group(_SYS_GROUP_LOOPBACK)
         for candidate in candidates:
-            hint = candidate.get("hint")
-            label = f"{candidate['index']}: {candidate.get('name')}"
-            why = f"  — loopback, matched “{hint}”" if hint else "  — loopback"
-            self.sys_device_combo.addItem(label + why)
+            combo.addItem(_sys_device_label(candidate))
+        if not candidates:
+            self._sys_add_unselectable(
+                _SYS_NO_LOOPBACK_ROW, f"Not available. {_SYS_NO_LOOPBACK_ROW}"
+            )
+        ranked = {candidate["index"] for candidate in candidates}
         rest = [profile for profile in profiles if profile["index"] not in ranked]
-        if candidates and rest:
-            self.sys_device_combo.insertSeparator(self.sys_device_combo.count())
-        for profile in rest:
-            self.sys_device_combo.addItem(f"{profile['index']}: {profile.get('name')}")
+        if rest:
+            self._sys_add_group(_SYS_GROUP_OTHER)
+            for profile in rest:
+                combo.addItem(_sys_device_label(profile))
         current = _SYSTEM_AUDIO_AUTO
         if stored is not None:
-            for row in range(self.sys_device_combo.count()):
-                text = self.sys_device_combo.itemText(row)
+            for row in range(combo.count()):
+                text = combo.itemText(row)
                 if text and input_device_from_label(text) == stored:
                     current = text
                     break
             else:
                 # Keeps the index parseable, so Save writes back the device the
-                # user chose rather than "Automatic".
+                # user chose rather than "Automatic" — under a heading of its
+                # own, because it is neither a loopback device nor an input
+                # device that exists right now.
+                self._sys_add_group(_SYS_GROUP_ABSENT)
                 current = f"{stored}: (not available right now)"
-                self.sys_device_combo.addItem(current)
-        self.sys_device_combo.setCurrentText(current)
+                combo.addItem(current)
+        # Only ever "Automatic" or a row carrying an index prefix:
+        # setCurrentText does NOT check selectability, so handing it a heading
+        # would make one the current choice.
+        combo.setCurrentText(current)
+        # The grouping without the visual: a screen reader gets the two counts
+        # in one sentence instead of having to walk the whole list to find out
+        # whether the first group has anything in it.
+        combo.setAccessibleDescription(
+            f"{len(candidates)} loopback device(s) that record what the computer "
+            f"plays, then {len(rest)} other input device(s)."
+        )
         self._refresh_system_audio_hint()
 
     def _rescan_system_devices(self) -> None:

@@ -1359,6 +1359,114 @@ def _loopback_device_is_ranked_and_resolved():
             assert answer.note is not None, answer
 
 
+def _portaudio_path_prepend():
+    """The PATH prepend that decides WHICH PortAudio `sounddevice` loads
+    (#194) — the pure half of it, the half no Windows exe is needed for.
+
+    Four cases, because each is a separate promise. A source install must be
+    left completely alone. A frozen build that ships no DLL must be left alone
+    too — `sounddevice` then loads its own bundled copy and the app behaves
+    exactly as it did before the feature existed. A bundle that does carry the
+    DLL gets its directory in *front* of PATH, because a stray portaudio.dll
+    earlier on the user's PATH would otherwise be the one that answers. And a
+    second call must not grow PATH: `app.main()` calls this, and nothing stops
+    a future entry point from calling it as well.
+
+    `sys.frozen` / `sys._MEIPASS` and the module's own state are saved and put
+    back, not cleared — inside the packaged exe they carry real values that the
+    rest of the self-test run reports on (same reason the updater check
+    restores PyInstaller's bootloader variables instead of deleting them).
+    """
+    from listen_to_me import portaudio
+
+    sentinel = os.path.join(os.sep, "listen-to-me-no-such-dir")
+    saved_path = os.environ.get("PATH")
+    saved_frozen = getattr(sys, "frozen", None)
+    saved_meipass = getattr(sys, "_MEIPASS", None)
+    saved_state = {
+        name: getattr(portaudio, name)
+        for name in ("_prepared", "_prepare_note", "_prepare_done", "_logged")
+    }
+
+    def restore():
+        for name, value in (("frozen", saved_frozen), ("_MEIPASS", saved_meipass)):
+            if value is None:
+                if hasattr(sys, name):
+                    delattr(sys, name)
+            else:
+                setattr(sys, name, value)
+        if saved_path is None:
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = saved_path
+        for name, value in saved_state.items():
+            setattr(portaudio, name, value)
+
+    # NOTHING in the faked window may import sounddevice — `describe()`
+    # especially. sounddevice resolves its DLL once, at import time, from the
+    # PATH in force then: importing it while PATH is this fake would pin the
+    # wheel's old PortAudio for the whole process and fail the loopback check
+    # below on a perfectly good build. So the outcome is read from the module's
+    # own note here, and describe() is called only after the restore.
+    try:
+        # Not frozen: a `pip install -e .` keeps its PATH untouched.
+        if hasattr(sys, "frozen"):
+            del sys.frozen
+        os.environ["PATH"] = sentinel
+        portaudio._reset_state()
+        assert portaudio.prepare_library_path() is None
+        assert os.environ["PATH"] == sentinel
+        assert "not a frozen build" in portaudio._prepare_note
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Frozen, but this build shipped no DLL — same promise: nothing
+            # changed, and the note says which of the two reasons it was.
+            sys.frozen = True
+            sys._MEIPASS = tmp
+            portaudio._reset_state()
+            assert portaudio.prepare_library_path() is None
+            assert os.environ["PATH"] == sentinel
+            assert portaudio.DLL_NAME in portaudio._prepare_note
+
+            # The DLL is there: its directory goes to the FRONT of PATH. The
+            # file stays empty on purpose — it is never loaded, only found by
+            # os.path.isfile, and a real DLL in a temp dir would be a loaded
+            # binary nobody checked.
+            Path(tmp, portaudio.DLL_NAME).write_bytes(b"")
+            portaudio._reset_state()
+            assert portaudio.prepare_library_path() == tmp
+            prepended = os.environ["PATH"]
+            assert prepended == tmp + os.pathsep + sentinel, prepended
+            assert portaudio._prepared == tmp
+
+            # ...exactly once, however often it is called.
+            assert portaudio.prepare_library_path() == tmp
+            assert os.environ["PATH"] == prepended, "a second call grew PATH"
+    finally:
+        restore()
+
+    assert os.environ.get("PATH") == saved_path, "the check leaked its fake PATH"
+
+    # The probe answers with a shape, never an exception: it runs from the
+    # recording path and from the settings page, and a diagnostic that throws
+    # is worse than none. Without sounddevice every field degrades and the
+    # reason is recorded — that is the case the Linux CI job exercises.
+    info = portaudio.describe()
+    assert {
+        "version", "version_number", "library", "loopback_supported",
+        "loopback_devices", "output_devices", "bundle_path", "path_note", "errors",
+    } <= set(info), info
+    assert isinstance(info["loopback_supported"], bool)
+    assert isinstance(info["loopback_devices"], int) and isinstance(info["output_devices"], int)
+    assert isinstance(info["errors"], list)
+    try:
+        import sounddevice  # noqa: F401
+    except ImportError:
+        assert info["version"] is None and info["loopback_supported"] is False, info
+        assert info["loopback_devices"] == 0 and info["output_devices"] == 0, info
+        assert info["errors"] and "sounddevice" in info["errors"][0], info
+
+
 def _empty_transcript_names_the_microphone():
     """A take that produced no text says *why*: a microphone that delivered no
     signal (or an unusably quiet one) is a device problem the user can fix,
@@ -5743,6 +5851,469 @@ def _settings_window_edits_the_new_options():
         app.processEvents()
 
 
+def _system_audio_profiles(names):
+    """The shape `audio.input_device_profiles()` returns, for a list of device
+    names. The index is the enumeration order, exactly as PortAudio hands it
+    out — which is what makes a stored index positional in the first place."""
+    return [
+        {
+            "index": index,
+            "name": name,
+            "hostapi": "WASAPI",
+            "channels": 2,
+            "samplerate": 48000.0,
+        }
+        for index, name in enumerate(names)
+    ]
+
+
+def _load_faked_system_devices(window, inputs, outputs, platform):
+    """Fill `window`'s system-audio dropdown from injected device lists, as if
+    PortAudio and the platform said so. Returns
+    `system_audio.system_audio_help()` for that platform — the sentence the
+    card's hint has to carry verbatim.
+
+    Both enumerations are patched on `listen_to_me.audio`, because
+    `_load_system_devices` imports them inside its own body — the same lazy
+    import that keeps PortAudio off the constructor path. `sys.platform` is
+    patched around the call and put straight back: the hint's actionable half
+    is `system_audio_help()`, which branches on the platform, so a Windows
+    machine's card cannot be checked on the Linux CI runner without saying so.
+    (`_portaudio_path_prepend` does the same with `sys.frozen`, for the same
+    reason.)
+    """
+    from listen_to_me import audio
+    from listen_to_me.system_audio import system_audio_help
+
+    saved = (audio.input_device_profiles, audio.list_output_devices, sys.platform)
+    audio.input_device_profiles = lambda: _system_audio_profiles(inputs)
+    audio.list_output_devices = lambda: list(enumerate(outputs))
+    sys.platform = platform
+    try:
+        window._load_system_devices()
+        return system_audio_help()
+    finally:
+        audio.input_device_profiles, audio.list_output_devices, sys.platform = saved
+
+
+def _system_audio_rows(window):
+    """Every row of the system-audio dropdown as a dict: `text`, `selectable`,
+    `enabled` and `announce` (what a screen reader reads instead of the text).
+
+    Read off the combo's own model, because those flags are what Qt itself
+    consults: its arrow-key walk skips a row without `ItemIsSelectable`, and
+    its popup refuses a click on one that is not enabled. Asserting the flags
+    is therefore asserting the behaviour, without a pixel in it.
+    """
+    from PySide6.QtCore import Qt
+
+    combo = window.sys_device_combo
+    model = combo.model()
+    rows = []
+    for row in range(combo.count()):
+        index = model.index(row, 0)
+        flags = model.flags(index)
+        rows.append(
+            {
+                "text": combo.itemText(row),
+                "selectable": bool(flags & Qt.ItemFlag.ItemIsSelectable),
+                "enabled": bool(flags & Qt.ItemFlag.ItemIsEnabled),
+                "announce": model.data(index, Qt.ItemDataRole.AccessibleTextRole),
+            }
+        )
+    return rows
+
+
+def _system_audio_picker_reads_as_an_output_picker():
+    """What the "System audio" dropdown offers, on the three machine shapes
+    that matter (#195).
+
+    The complaint: the card is headed "System audio", and on a Windows machine
+    without "Stereo Mix" the list under it was a flat row of microphones —
+    "vor allen Dingen fehlen mir da meine Audio-Ausgabegeräte". PortAudio
+    records from inputs only, so an output device can never *be* in this list;
+    what was fixable is that the list now says which half of it records the
+    computer and which half does not, and says so out loud when the first half
+    is empty instead of leaving the microphones to read as the answer.
+
+    Two groups, each introduced by a row that nothing can choose. That is the
+    load-bearing part: a pickable heading parses to no index, so choosing it
+    would silently switch the device back to "Automatic" on the next Save —
+    which is why every non-selectable row is put through
+    `input_device_from_label` here as well.
+
+    Every rule #191 established is re-asserted, because each is a way to write
+    the wrong device without anything looking wrong: the matched *fragment* is
+    shown and the score never is, an unsaved on-screen pick survives a
+    Refresh, a configured device that is currently absent keeps a parseable row
+    of its own, and a window whose Audio page was never opened still saves the
+    stored index.
+    """
+    from listen_to_me.choices import input_device_from_label
+    from listen_to_me.settings_ui import (
+        _SYS_GROUP_ABSENT,
+        _SYS_GROUP_LOOPBACK,
+        _SYS_GROUP_OTHER,
+        _SYS_NO_LOOPBACK_ROW,
+        _SYSTEM_AUDIO_AUTO,
+        SettingsWindow,
+        _loopback_output_name,
+        _sys_device_label,
+    )
+    from listen_to_me.theme import apply_theme
+
+    # No heading may ever parse to a device index — nor may "Automatic", which
+    # is the same promise the list has kept since #191.
+    for label in (
+        _SYSTEM_AUDIO_AUTO,
+        _SYS_GROUP_LOOPBACK,
+        _SYS_GROUP_OTHER,
+        _SYS_GROUP_ABSENT,
+        _SYS_NO_LOOPBACK_ROW,
+    ):
+        assert ":" not in label, label
+        assert input_device_from_label(label) is None, label
+
+    # The output a loopback device belongs to, read out of its own name — the
+    # user thinks in outputs, and the mechanism marker is noise in front of
+    # the only words they recognize. Where the name carries no mapping, none
+    # is invented: a made-up one promises a take comes from an output that
+    # nothing in the system connects it to.
+    assert _loopback_output_name(
+        {"name": "Monitor of Built-in Audio Analog Stereo", "hint": "monitor of"}
+    ) == "Built-in Audio Analog Stereo"
+    assert _loopback_output_name(
+        {"name": "Monitor von Lautsprecher (Realtek)", "hint": "monitor von"}
+    ) == "Lautsprecher (Realtek)"
+    assert _loopback_output_name(
+        {"name": "Speakers (Realtek(R) Audio) [Loopback]", "hint": "[loopback]"}
+    ) == "Speakers (Realtek(R) Audio)"
+    for nothing in (
+        {"name": "Stereo Mix (Realtek(R) Audio)", "hint": "stereo mix"},
+        {"name": "CABLE Output (VB-Audio Virtual Cable)", "hint": "cable output"},
+        {"name": "BlackHole 2ch", "hint": "blackhole"},
+        {"name": "[Loopback]", "hint": "[loopback]"},  # nothing left of the name
+        {"name": "Built-in Microphone"},  # not a candidate at all: no hint key
+    ):
+        assert _loopback_output_name(nothing) is None, nothing
+    # A row never carries the score. It is a sum of LOOPBACK_HINTS weights, not
+    # a percentage: "140" beside a device name reads as a confidence and is
+    # not one.
+    scored = {"index": 7, "name": "Speakers [Loopback]", "hint": "[loopback]", "score": 140}
+    assert "140" not in _sys_device_label(scored), _sys_device_label(scored)
+    assert "score" not in _sys_device_label(scored).casefold()
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    def rows_after(window, inputs, outputs, platform):
+        _load_faked_system_devices(window, inputs, outputs, platform)
+        rows = _system_audio_rows(window)
+        # Whatever the shape: nothing unpickable may parse to an index, the
+        # first row is always "Automatic", and the current row is a real
+        # answer rather than a heading Qt happened to land on.
+        assert rows[0]["text"] == _SYSTEM_AUDIO_AUTO and rows[0]["selectable"]
+        for row in rows:
+            if not row["selectable"]:
+                assert input_device_from_label(row["text"]) is None, row
+                assert not row["enabled"], row  # greyed out, and announced as such
+        assert window.sys_device_combo.currentIndex() >= 0
+        assert rows[window.sys_device_combo.currentIndex()]["selectable"]
+        return rows
+
+    def texts(rows):
+        return [row["text"] for row in rows]
+
+    def group_at(rows, heading):
+        """The selectable rows between `heading` and the next heading."""
+        labels = texts(rows)
+        # A heading that is missing entirely is the `_sys_add_unselectable`
+        # read-back having dropped it: it stayed pickable, so no heading was
+        # left rather than a pickable one. Named, because a bare ValueError
+        # from the lookup below would not say that.
+        assert heading in labels, (heading, labels)
+        start = labels.index(heading) + 1
+        group = []
+        for row in rows[start:]:
+            if not row["selectable"] and row["text"]:
+                break  # the next heading
+            if row["text"]:
+                group.append(row["text"])
+        return group
+
+    with tempfile.TemporaryDirectory() as tmp:
+        window = SettingsWindow(_StubApp(Path(tmp)))
+        try:
+            # --- shape 1: Windows, no Stereo Mix, no cable — the report -----
+            rows = rows_after(
+                window,
+                ["Microphone (Realtek(R) Audio)", "Microphone Array (Intel Smart Sound)"],
+                ["Speakers (Realtek(R) Audio)", "Jabra SPEAK 410 USB"],
+                "win32",
+            )
+            headings = [row for row in rows if row["text"] == _SYS_GROUP_LOOPBACK]
+            assert len(headings) == 1, texts(rows)
+            heading = headings[0]
+            assert not heading["selectable"] and not heading["enabled"], heading
+            # A screen reader must not read a heading as one of the choices:
+            # disabled already says "unavailable", and this says what it is.
+            assert heading["announce"] == f"Group heading. {_SYS_GROUP_LOOPBACK}", heading
+            # The empty group keeps its heading and says so, rather than
+            # letting the microphones below read as the answer.
+            assert group_at(rows, _SYS_GROUP_LOOPBACK) == [], rows
+            assert _SYS_NO_LOOPBACK_ROW in texts(rows), texts(rows)
+            assert texts(rows).index(_SYS_NO_LOOPBACK_ROW) < texts(rows).index(_SYS_GROUP_OTHER)
+            # The microphones are offered, under a heading that says they are
+            # microphones — and nothing above that heading pretends otherwise.
+            assert group_at(rows, _SYS_GROUP_OTHER) == [
+                "0: Microphone (Realtek(R) Audio)",
+                "1: Microphone Array (Intel Smart Sound)",
+            ], rows
+            other = texts(rows).index(_SYS_GROUP_OTHER)
+            assert all(
+                input_device_from_label(row["text"]) is None
+                for row in rows[:other]
+            ), texts(rows[:other])
+            # A separator introduces each group: Qt draws the line, the row
+            # above carries the words.
+            assert any(not row["text"] and not row["selectable"] for row in rows)
+
+            # --- shape 2: Windows with the newer PortAudio's twins (#194) ---
+            rows = rows_after(
+                window,
+                [
+                    "Microphone (Realtek(R) Audio)",
+                    "Speakers (Realtek(R) Audio) [Loopback]",
+                    "Jabra SPEAK 410 USB [Loopback]",
+                    "Stereo Mix (Realtek(R) Audio)",
+                ],
+                ["Speakers (Realtek(R) Audio)", "Jabra SPEAK 410 USB"],
+                "win32",
+            )
+            loopbacks = group_at(rows, _SYS_GROUP_LOOPBACK)
+            # The list now reads as the output picker the user expected: the
+            # twins first (the strongest hint there is, and it trips "loopback"
+            # as well, so the weights add up past Stereo Mix), each labelled
+            # with the OUTPUT it records and not with the marker.
+            assert loopbacks == [
+                "1: Speakers (Realtek(R) Audio)  — records this output, matched “[loopback]”",
+                "2: Jabra SPEAK 410 USB  — records this output, matched “[loopback]”",
+                "3: Stereo Mix (Realtek(R) Audio)  — loopback input, matched “stereo mix”",
+            ], loopbacks
+            assert _SYS_NO_LOOPBACK_ROW not in texts(rows)
+            # Every candidate row is still parseable, which is what Save reads.
+            assert [input_device_from_label(text) for text in loopbacks] == [1, 2, 3]
+            assert group_at(rows, _SYS_GROUP_OTHER) == ["0: Microphone (Realtek(R) Audio)"]
+
+            # An unsaved pick survives a Refresh — repopulating from the saved
+            # config would silently revert the device just chosen. Stereo Mix,
+            # deliberately: it is the row the Linux shape below has no index
+            # for, which is what the absent-device rule is about.
+            window.sys_device_combo.setCurrentText(loopbacks[2])
+            assert window._selected_system_device() == 3
+            rows = rows_after(
+                window,
+                [
+                    "Microphone (Realtek(R) Audio)",
+                    "Speakers (Realtek(R) Audio) [Loopback]",
+                    "Jabra SPEAK 410 USB [Loopback]",
+                    "Stereo Mix (Realtek(R) Audio)",
+                ],
+                ["Speakers (Realtek(R) Audio)", "Jabra SPEAK 410 USB"],
+                "win32",
+            )
+            assert window._selected_system_device() == 3
+            assert window._collect()["system_audio"]["device"] == 3
+
+            # --- shape 3: Linux, PulseAudio/PipeWire monitor sources --------
+            rows = rows_after(
+                window,
+                [
+                    "Built-in Microphone",
+                    "Monitor of Built-in Audio Analog Stereo",
+                    "Monitor of HDMI / DisplayPort",
+                ],
+                ["Built-in Audio Analog Stereo", "HDMI / DisplayPort", "USB Speaker"],
+                "linux",
+            )
+            assert group_at(rows, _SYS_GROUP_LOOPBACK) == [
+                "1: Built-in Audio Analog Stereo  — records this output, matched “monitor of”",
+                "2: HDMI / DisplayPort  — records this output, matched “monitor of”",
+            ], rows
+            assert group_at(rows, _SYS_GROUP_OTHER) == ["0: Built-in Microphone"]
+            # "Monitor of ..." is a source name, not what the user calls the
+            # device — the primary label is the output, the mechanism is the
+            # secondary half of the row.
+            assert not any(
+                text.split(":", 1)[1].strip().startswith("Monitor of")
+                for text in group_at(rows, _SYS_GROUP_LOOPBACK)
+            ), rows
+            # The pick from shape 2 is gone from this machine: it stays as a
+            # parseable row of its own under its own heading, because PortAudio
+            # indices are positional and falling back to "Automatic" would drop
+            # the choice on the next Save.
+            assert window._selected_system_device() == 3, texts(rows)
+            assert "3: (not available right now)" in texts(rows), texts(rows)
+            absent = texts(rows).index(_SYS_GROUP_ABSENT)
+            assert texts(rows)[absent + 1] == "3: (not available right now)"
+        finally:
+            window.deleteLater()
+            app.processEvents()
+
+    # A Save from a window whose Audio page was never opened writes back the
+    # stored index: until the first visit the dropdown holds only the
+    # placeholder, and answering from it would drop the user's device.
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        stub.cfg["system_audio"]["device"] = 7
+        window = SettingsWindow(stub)
+        try:
+            assert window._sys_devices_loaded is False
+            assert window._collect()["system_audio"]["device"] == 7
+            # …and it is still 7 after the visit that fills the dropdown from a
+            # machine where index 7 does not exist.
+            rows = _system_audio_rows(window)
+            _load_faked_system_devices(window, ["Built-in Microphone"], ["Speakers"], "win32")
+            assert window._collect()["system_audio"]["device"] == 7
+            assert "7: (not available right now)" == window.sys_device_combo.currentText()
+        finally:
+            window.deleteLater()
+            app.processEvents()
+
+
+def _system_audio_hint_names_the_outputs_it_cannot_record():
+    """The sentence the report was actually missing (#195): the card names the
+    outputs this machine has, says that none of them can be recorded directly,
+    and gives the platform's fix — in the order the user acts in.
+
+    A dropdown that can only ever offer input devices is not wrong, but on its
+    own it is unusable: someone looking for "Speakers (Realtek)" has to read
+    that their outputs exist, that this build cannot record them, what to do
+    about it, and that pressing Refresh afterwards is the last step. The fix
+    itself comes from `system_audio.system_audio_help()` and is asserted to be
+    embedded verbatim — one wording in one place, because the notification
+    that refuses a take carries the same one and two drifting copies are how a
+    user follows the one that no longer matches their system.
+
+    Bounded, too: a machine with fifteen outputs must grow the hint by a count,
+    not by twelve device names.
+    """
+    from listen_to_me.settings_ui import (
+        _SYS_OUTPUTS_NAMED,
+        SettingsWindow,
+        _output_list_phrase,
+        _outputs_without_loopback,
+    )
+    from listen_to_me.theme import apply_theme
+
+    # Which outputs are named: the ones no candidate resolves to. A candidate
+    # that maps to no output at all ("Stereo Mix") covers nothing — it may
+    # carry the output the user wants, but nothing in its name says which.
+    monitor = {"name": "Monitor of Built-in Audio Analog Stereo", "hint": "monitor of"}
+    stereo_mix = {"name": "Stereo Mix (Realtek(R) Audio)", "hint": "stereo mix"}
+    outputs = ["Built-in Audio Analog Stereo", "HDMI / DisplayPort"]
+    assert _outputs_without_loopback(outputs, [monitor]) == ["HDMI / DisplayPort"]
+    assert _outputs_without_loopback(outputs, [stereo_mix]) == outputs
+    assert _outputs_without_loopback(outputs, []) == outputs
+    assert _outputs_without_loopback([], [monitor]) == []
+    # Windows' MME host API truncates device names to 31 characters, so the
+    # output entry and its loopback twin agree only on a prefix.
+    truncated = {"name": "Speakers (High Definition Audi [Loopback]", "hint": "[loopback]"}
+    assert _outputs_without_loopback(["Speakers (High Definition Audio Device)"], [truncated]) == []
+    # …but a prefix of three characters is not a pairing, it is a collision.
+    assert _outputs_without_loopback(["USB"], [{"name": "USB Speaker [Loopback]",
+                                                "hint": "[loopback]"}]) == ["USB"]
+
+    assert _output_list_phrase(["A"]) == "“A”"
+    assert _output_list_phrase(["A", "B"]) == "“A” and “B”"
+    assert _output_list_phrase(["A", "B", "C"]) == "“A”, “B” and “C”"
+    assert _SYS_OUTPUTS_NAMED == 3  # the wording above is bounded by this
+    assert _output_list_phrase(["A", "B", "C", "D", "E"]) == "“A”, “B”, “C” and 2 more"
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    many = [f"Output {n}" for n in range(1, 16)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        window = SettingsWindow(_StubApp(Path(tmp)))
+        try:
+            # --- shape 1: Windows, no candidate — the reported case ---------
+            help_text = _load_faked_system_devices(
+                window,
+                ["Microphone (Realtek(R) Audio)"],
+                ["Speakers (Realtek(R) Audio)", "Jabra SPEAK 410 USB"],
+                "win32",
+            )
+            assert "Stereo Mix" in help_text, help_text  # the platform took effect
+            hint = window._sys_audio_hint.text()
+            assert window._sys_candidates == 0
+            assert "⚠ No loopback device was found" in hint, hint
+            assert (
+                "Your outputs are “Speakers (Realtek(R) Audio)” and “Jabra SPEAK 410 USB” "
+                "— none of them can be recorded directly on this build." in hint
+            ), hint
+            assert help_text in hint, hint
+            # The order the user acts in: what is missing, then how to get it,
+            # then the Refresh that picks it up without a restart.
+            assert hint.index("Your outputs are") < hint.index(help_text) < hint.index(
+                "Then press “Refresh”"
+            ), hint
+            assert "no restart needed" in hint, hint
+
+            # --- shape 2: every output twinned (#194) — nothing to complain --
+            help_text = _load_faked_system_devices(
+                window,
+                [
+                    "Microphone (Realtek(R) Audio)",
+                    "Speakers (Realtek(R) Audio) [Loopback]",
+                    "Jabra SPEAK 410 USB [Loopback]",
+                ],
+                ["Speakers (Realtek(R) Audio)", "Jabra SPEAK 410 USB"],
+                "win32",
+            )
+            hint = window._sys_audio_hint.text()
+            assert window._sys_candidates == 2
+            assert "⚠" not in hint, hint
+            assert "Your outputs are" not in hint and "cannot be recorded" not in hint, hint
+            assert "Then press “Refresh”" not in hint, hint
+            # The platform's fix stays on screen even so: picking the monitor
+            # that belongs to the output actually in use is the part users get
+            # wrong.
+            assert help_text in hint, hint
+
+            # --- shape 3: Linux monitors, one output without one ------------
+            help_text = _load_faked_system_devices(
+                window,
+                ["Built-in Microphone", "Monitor of Built-in Audio Analog Stereo"],
+                ["Built-in Audio Analog Stereo", "USB Speaker"],
+                "linux",
+            )
+            hint = window._sys_audio_hint.text()
+            assert "Monitor of" in help_text and "PipeWire" in help_text, help_text
+            assert window._sys_candidates == 1
+            assert "⚠" not in hint, hint
+            # Named, and in the singular: there is a loopback device, just not
+            # for this output.
+            assert (
+                "No loopback device was found for “USB Speaker” — that output cannot "
+                "be recorded directly on this build." in hint
+            ), hint
+            assert help_text in hint, hint
+
+            # --- bounded: three outputs vs fifteen of the same names --------
+            _load_faked_system_devices(window, ["Microphone"], many[:3], "win32")
+            few_hint = window._sys_audio_hint.text()
+            _load_faked_system_devices(window, ["Microphone"], many, "win32")
+            many_hint = window._sys_audio_hint.text()
+            assert "“Output 1”, “Output 2”, “Output 3” and 12 more" in many_hint, many_hint
+            assert "Output 15" not in many_hint, many_hint
+            # Twelve more devices, at most a handful of characters more text.
+            assert len(many_hint) - len(few_hint) <= 20, (len(few_hint), len(many_hint))
+        finally:
+            window.deleteLater()
+            app.processEvents()
+
+
 def _gui_construction():
     from listen_to_me import overlay as overlay_module
     from listen_to_me.choices import GERMAN_TURBO_CT2, model_from_label, model_label
@@ -7854,8 +8425,15 @@ def _run_checks(checks, imports=()) -> int:
     def check(name, fn):
         nonlocal ok
         try:
-            fn()
-            lines.append(f"OK   {name}")
+            # A check may return a string to have it land in the report: that
+            # is how a check that could not mean anything here (no
+            # sounddevice, not Windows) says so instead of reading as a plain
+            # OK, and how one worth a value — the PortAudio version the exe
+            # loaded — puts it where the release log is read. Anything else a
+            # check returns is ignored; the import probes below return modules.
+            note = fn()
+            suffix = f" — {note}" if isinstance(note, str) and note else ""
+            lines.append(f"OK   {name}{suffix}")
         except Exception:
             ok = False
             lines.append(f"FAIL {name}\n{traceback.format_exc()}")
@@ -7895,6 +8473,7 @@ _LIGHT_CHECKS = [
     ("the parsers bound the lines they walk", _the_parsers_bound_the_lines_they_walk),
     ("missing microphone falls back", _missing_microphone_falls_back),
     ("loopback device is ranked and resolved", _loopback_device_is_ranked_and_resolved),
+    ("PortAudio DLL path is prepended only in a frozen bundle", _portaudio_path_prepend),
     ("assistant failure is actionable", _assistant_failure_is_actionable),
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
     ("no-speech report names its own source", _no_speech_report_names_its_own_source),
@@ -7970,6 +8549,10 @@ _LIGHT_CHECKS = [
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("source-aware controls stop their take", _source_aware_controls_stop_their_take),
     ("settings window edits the new options", _settings_window_edits_the_new_options),
+    ("system audio picker reads as an output picker",
+     _system_audio_picker_reads_as_an_output_picker),
+    ("system audio hint names the outputs it cannot record",
+     _system_audio_hint_names_the_outputs_it_cannot_record),
     ("save refuses an assistant profile with no prompt",
      _save_refuses_an_assistant_profile_with_no_prompt),
     ("Qt UI construction", _gui_construction),
@@ -7989,6 +8572,52 @@ def _insecure_hub_client_builds():
     netutil._build_hub_client(verify=True).close()
 
 
+def _portaudio_supports_wasapi_loopback():
+    """What the release build's own portaudio.dll promises (#194): WASAPI
+    loopback, so *any* output device can be captured — no "Stereo Mix", no
+    virtual cable. This is the only check that can catch a DLL built without
+    WASAPI, or a bundle whose DLL was never picked up, and it can only run on
+    the built exe: the Linux CI job installs no sounddevice and has no WASAPI
+    at all (its monitor sources are a different mechanism, already covered by
+    "loopback device is ranked and resolved").
+
+    Two halves, and the failure message says which one gave way plus the
+    version string that answered — this check exists to be read out of a
+    release build's self-test log, where nobody can re-run it interactively.
+    The device half is skipped on a machine with no output device (a CI runner
+    with no audio hardware has nothing to enumerate a loopback for), so it
+    reports what it could not test instead of failing on it.
+    """
+    try:
+        import sounddevice  # noqa: F401
+    except ImportError:
+        return "SKIPPED: sounddevice is not installed"
+    if not sys.platform.startswith("win"):
+        return f"SKIPPED: WASAPI loopback is Windows-only, this is {sys.platform}"
+    from listen_to_me import portaudio
+
+    info = portaudio.describe()
+    version = info.get("version") or "unknown"
+    where = f"loaded {info.get('library')!r}, {info.get('path_note')}"
+    if not info.get("loopback_supported"):
+        raise AssertionError(
+            f"PaWasapi_IsLoopback is not reachable in the loaded library ({version}) — "
+            f"the bundled {portaudio.DLL_NAME} was not loaded, or was built without "
+            f"WASAPI. {where}, errors={info.get('errors')}"
+        )
+    outputs = int(info.get("output_devices") or 0)
+    loopbacks = int(info.get("loopback_devices") or 0)
+    if outputs and not loopbacks:
+        raise AssertionError(
+            f"The loaded library ({version}) exports PaWasapi_IsLoopback but enumerated "
+            f"no input device carrying the '[Loopback]' marker, although the machine "
+            f"reports {outputs} output device(s) — loopback enumeration is missing. {where}"
+        )
+    if not outputs:
+        return f"{version} supports loopback; no output device to enumerate one for"
+    return f"{version}, {loopbacks} loopback input(s) for {outputs} output(s)"
+
+
 _FULL_EXTRA = [
     ("default hotkey parses", _hotkey_default_valid),
     ("audio band levels", _band_levels),
@@ -7996,6 +8625,7 @@ _FULL_EXTRA = [
     ("recorder falls back to the native format", _recorder_falls_back_to_the_native_format),
     ("clip stats verdicts", _clip_stats_verdicts),
     ("insecure hub client builds", _insecure_hub_client_builds),
+    ("PortAudio supports WASAPI loopback", _portaudio_supports_wasapi_loopback),
 ]
 
 _BUNDLED_IMPORTS = [

@@ -10,6 +10,12 @@ awkward format. Hence `input_device_profiles()`, which the ranking in
 `system_audio.py` reads to identify the candidates, and the recorder's
 native-format fallback: a loopback input rarely offers 16 kHz mono, and
 PortAudio does not resample.
+
+The wheel's binary is no longer the only possibility: the frozen Windows build
+ships a newer `portaudio.dll` that enumerates every output device a second
+time as a "<name> [Loopback]" input (#194, `portaudio.py`). That changes
+nothing here — such an entry is still a plain input device, found by name —
+which is why `log_once()` below names the binary that answered.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from . import portaudio
 from .resample import Resampler, downmix_to_mono
 
 if TYPE_CHECKING:
@@ -186,6 +193,13 @@ class Recorder:
         being the ones that refuse the plain format.
         """
         import sounddevice as sd
+
+        # One INFO line per process naming the PortAudio that answered and
+        # whether it supports WASAPI loopback (#194). Here because start()
+        # always runs before any capture, so the log of a session that recorded
+        # anything at all carries it; the module flag inside makes every call
+        # after the first free.
+        portaudio.log_once()
 
         if self._stream is not None:
             raise RuntimeError("recording already active")
@@ -429,6 +443,40 @@ def list_input_devices() -> list[tuple[int, str]]:
     return devices
 
 
+def list_output_devices() -> list[tuple[int, str]]:
+    """Every OUTPUT device as `(index, name)` — the speakers and headsets this
+    machine plays through.
+
+    Nothing records from one of these: PortAudio captures from inputs only,
+    which is why system audio goes through a loopback *input* (ADR-0009). They
+    are enumerated for one consumer, and it is a UI one — `settings_ui`'s
+    System audio hint names the outputs that no loopback device covers, plus
+    the platform's fix (#195). That is the sentence a user who opened a card
+    headed "System audio", found their microphones in it and asked where their
+    outputs went was missing. So: the data source of a sentence, not dead code
+    — it was deleted as such once.
+
+    Never raises, like `input_device_profiles()`: an unaskable PortAudio yields
+    `[]` and the hint then names no outputs, rather than an exception reaching
+    a settings page.
+    """
+    try:
+        import sounddevice as sd
+
+        devices = list(enumerate(sd.query_devices()))
+    except Exception:
+        log.exception("could not enumerate the output devices")
+        return []
+    outputs: list[tuple[int, str]] = []
+    for idx, dev in devices:
+        try:
+            if int(dev.get("max_output_channels", 0) or 0) > 0:
+                outputs.append((idx, str(dev.get("name", f"Device {idx}"))))
+        except Exception:
+            log.debug("output device %s has an unreadable entry — skipped", idx, exc_info=True)
+    return outputs
+
+
 def input_device_profiles() -> list[dict]:
     """One dict per input device, with the keys `index`, `name`, `hostapi`
     (the host API *name*), `channels` (max input channels) and `samplerate`
@@ -443,6 +491,14 @@ def input_device_profiles() -> list[dict]:
     skipped, and a PortAudio that cannot be asked gives `[]` rather than
     raising into a settings page.
     """
+    # The same one-per-process line as in Recorder.start, because this is what
+    # the Audio settings page calls — exactly where someone hunting a missing
+    # loopback device is looking, and the path in that line tells them which
+    # binary answered (the version string cannot: the DLL we build and the
+    # wheel's own report the same one). Never raises, so it sits ahead
+    # of the enumeration guard rather than inside it, where the broad except
+    # would mislabel it as a failed enumeration.
+    portaudio.log_once()
     try:
         import sounddevice as sd
 
