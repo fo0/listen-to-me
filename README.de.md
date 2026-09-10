@@ -33,11 +33,13 @@ fokussierten Feldes eingefügt.
    hat: „Vielen Dank.", „Thank you.", „Untertitelung des ZDF, 2020". Das kommt
    aus dem Whisper-Modell, nicht aus der App — Whisper ist auf untertitelten
    Videos trainiert, und eine Passage ohne Sprache trägt dort meist den
-   Schlusssatz des Clips. Besteht ein Transkript **ausschließlich** aus einer
-   Phrase der Liste, wird es verworfen und wie eine Aufnahme ohne Sprache
-   gemeldet; „Vielen Dank für die Datei" bleibt dagegen unverändert. 18 Phrasen
-   (deutsch und englisch) sind voreingestellt, die Liste ist frei editierbar und
-   der Filter ganz abschaltbar.
+   Schlusssatz des Clips. Verworfen wird ein Transkript nur, wenn die Aufnahme
+   selbst **still oder zu leise** war und der Text **ausschließlich** aus einer
+   Phrase der Liste besteht; dann wird es wie eine Aufnahme ohne Sprache
+   gemeldet. Ein wirklich gesprochenes „Vielen Dank." bleibt also erhalten,
+   „Vielen Dank für die Datei" ebenfalls. 18 Phrasen (deutsch und englisch)
+   sind voreingestellt, die Liste ist frei editierbar und der Filter ganz
+   abschaltbar.
 7. Optional: unter **Audio → System Audio** einen zweiten Hotkey setzen — der
    nimmt auf, was der Rechner **abspielt** (Telefonat, Meeting, Video), mit der
    gleichen Bedienung wie das Diktat und mit eigenem Gerät, eigener Maximallänge

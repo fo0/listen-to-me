@@ -42,26 +42,41 @@ changes at a glance.
   because that one is a microphone — recording the room while you asked for what
   the computer plays is a wrong result, not a degraded one, and nothing about
   the resulting text would give it away.
-- **A silent take no longer inserts a phrase nobody spoke.** Press the hotkey,
-  say nothing, press it again, and what landed at the cursor was "Vielen Dank.",
-  "Thank you." or a subtitle credit. Not one of those strings exists anywhere in
-  this app — a repo-wide grep finds none of them; they come out of the model.
-  Whisper's training data is subtitle-heavy, and a stretch of video without
-  speech is usually subtitled with the clip's closing phrase, so near-silence
-  decodes to the most likely "silence continuation" the model ever saw. Neither
-  guard already in place catches that: the VAD silence filter (`vad_filter`,
-  Silero) keeps a chunk as soon as there is room noise or a keyboard click, and
-  faster-whisper's `no_speech_threshold` only drops a segment when
-  `no_speech_prob` is high _and_ `avg_logprob` is low — while these
-  hallucinations are decoded with high confidence and pass every quality gate
-  the decoder has. A transcript that is _nothing but_ a listed phrase is now
-  dropped and reported exactly like a take with no speech: nothing is inserted,
-  and nothing goes into the history. The list is editable on the Engine settings
-  page (18 phrases ship by default, German and English) and the whole filter
-  switches off. Matching ignores case and the punctuation around the phrase but
-  keeps brackets — so the annotation `[Musik]` is caught while a dictated
-  `Musik` is inserted as spoken — and a take that has already live-typed text is
-  never filtered, because that text cannot be taken back.
+- **A silent take no longer inserts a phrase nobody spoke — and the recording
+  decides that, not the wording.** A transcript is dropped only when the take's
+  own audio carried no usable signal: the clip statistics that already decide
+  whether an empty result is reported as a dead microphone or as unrecognized
+  speech have to come back **silent or too quiet** first, and a verdict that
+  could not be computed at all keeps the text. Only then is the transcript
+  matched against the phrase list, and only as a whole — a listed phrase inside
+  a longer dictation is never touched. A take that carried real speech is never
+  filtered, however it reads, so a "Vielen Dank." you really did dictate lands
+  at the cursor like any other dictation. What the filter is for is the take
+  you meant to be empty: press the hotkey, say nothing, press it again, and
+  what landed at the cursor was "Vielen Dank.", "Thank you." or a subtitle
+  credit. Not one of those strings exists anywhere in this app — a repo-wide
+  grep finds none of them; they come out of the model. Whisper's training data
+  is subtitle-heavy, and a stretch of video without speech is usually subtitled
+  with the clip's closing phrase, so near-silence decodes to the most likely
+  "silence continuation" the model ever saw. Neither guard already in place
+  catches that: the VAD silence filter (`vad_filter`, Silero) keeps a chunk as
+  soon as there is room noise or a keyboard click, and faster-whisper's
+  `no_speech_threshold` only drops a segment when `no_speech_prob` is high
+  _and_ `avg_logprob` is low — while these hallucinations are decoded with high
+  confidence and pass every quality gate the decoder has. The audio is what
+  tells the two cases apart, because the wording cannot: "Vielen Dank" and
+  "Thank you" are complete messages people dictate, and going by the list alone
+  would answer a spoken one with nothing at the cursor, nothing in the history
+  and no way to get it back. A take the recording does condemn is dropped and
+  reported exactly like one with no speech: nothing is inserted, and nothing
+  goes into the history. The single drop neither the list nor the recording has
+  a say in is a transcript with **no letter and no digit** left in it (`...`,
+  `♪♪`) — there is nothing there to insert either way. The list is editable on
+  the Engine settings page (18 phrases ship by default, German and English) and
+  the whole filter switches off. Matching ignores case and the punctuation
+  around the phrase but keeps brackets — so the annotation `[Musik]` is caught
+  while a dictated `Musik` is inserted as spoken — and a take that has already
+  live-typed text is never filtered, because that text cannot be taken back.
 - **The assistant's "Test connection" can be cancelled.** It was the one test
   in the settings window with no way out: the microphone test, the model
   download, the transcription test and the update download all have a
