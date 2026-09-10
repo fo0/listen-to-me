@@ -1693,7 +1693,11 @@ class SettingsWindow(QDialog):
         keys = row.hotkey_edit.text().strip()
         if name or keys:
             described = name or "the unnamed app"
-            detail = f" ({hotkey_label(keys)})" if keys else ""
+            # hotkey_label() renders nothing for a combination it cannot parse
+            # (the Add menu guards the same way) — naming the app alone beats
+            # an empty pair of brackets in the question.
+            pretty = hotkey_label(keys) if keys else ""
+            detail = f" ({pretty})" if pretty else ""
             confirm = QMessageBox.question(
                 self,
                 APP_NAME,

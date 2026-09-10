@@ -4433,6 +4433,7 @@ def _gui_construction():
 
         real_prompt_box = _settings_module.QMessageBox
         _settings_module.QMessageBox = _FakePromptBox
+        prompt_before = window.a_prompt_edit.toPlainText()
         try:
             window.a_prompt_edit.setPlainText("Only ever answer in rhyming couplets.")
             window._reset_prompt()  # declined
@@ -4449,6 +4450,10 @@ def _gui_construction():
             assert _FakePromptBox.asked == 2, "asked about a reset with nothing to lose"
             assert window.a_prompt_edit.toPlainText() == _DEFAULT_PROMPT
         finally:
+            # Hand the page back as it was found: a later check compares
+            # _collect() against the saved snapshot, and a prompt left
+            # rewritten here would surface there as an unrelated failure.
+            window.a_prompt_edit.setPlainText(prompt_before)
             _settings_module.QMessageBox = real_prompt_box
 
         # "Reset position" for the floating icon. It exists because dragging is
@@ -4844,7 +4849,7 @@ def _gui_construction():
 
             @classmethod
             def question(cls, *args, **_kwargs):
-                cls.asked.append(args[-3] if len(args) >= 3 else args[-1])
+                cls.asked.append(args[2])  # (parent, title, text, buttons, default)
                 return cls.answer
 
         real_remove_box = _settings_module.QMessageBox
@@ -4865,6 +4870,17 @@ def _gui_construction():
             _FakeRemoveBox.answer = _RealRemoveBox.StandardButton.Yes
             window._remove_target_row(configured)  # confirmed
             assert configured not in window._target_rows
+
+            # A keybind hotkey_label() cannot parse renders as nothing, so the
+            # question must name the app alone rather than trailing an empty
+            # pair of brackets.
+            window._add_target_row(
+                {"name": "", "enabled": True, "mode": "hold", "hotkey": "not-a-combo"}
+            )
+            unparseable = window._target_rows[-1]
+            window._remove_target_row(unparseable)
+            assert "()" not in _FakeRemoveBox.asked[-1], _FakeRemoveBox.asked[-1]
+            assert unparseable not in window._target_rows
         finally:
             _settings_module.QMessageBox = real_remove_box
 
