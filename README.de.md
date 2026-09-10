@@ -27,6 +27,30 @@ fokussierten Feldes eingefügt.
    (Push-to-Mute) oder **„Stummschaltung umschalten"** vergeben und in Listen To
    Me dieselbe Kombination samt passendem Modus eintragen — so wird dein Diktat
    nicht in den Voice-Call übertragen und danach automatisch wieder aktiviert.
+6. Schon aktiv: der Filter für stille Aufnahmen, unter **Engine →
+   Silent takes (invented phrases)**. Wer den Hotkey drückt, nichts sagt und
+   wieder drückt, bekommt sonst einen Satz eingefügt, den niemand gesprochen
+   hat: „Vielen Dank.", „Thank you.", „Untertitelung des ZDF, 2020". Das kommt
+   aus dem Whisper-Modell, nicht aus der App — Whisper ist auf untertitelten
+   Videos trainiert, und eine Passage ohne Sprache trägt dort meist den
+   Schlusssatz des Clips. Besteht ein Transkript **ausschließlich** aus einer
+   Phrase der Liste, wird es verworfen und wie eine Aufnahme ohne Sprache
+   gemeldet; „Vielen Dank für die Datei" bleibt dagegen unverändert. 18 Phrasen
+   (deutsch und englisch) sind voreingestellt, die Liste ist frei editierbar und
+   der Filter ganz abschaltbar.
+7. Optional: unter **Audio → System Audio** einen zweiten Hotkey setzen — der
+   nimmt auf, was der Rechner **abspielt** (Telefonat, Meeting, Video), mit der
+   gleichen Bedienung wie das Diktat und mit eigenem Gerät, eigener Maximallänge
+   (900 s) und eigenem Assistant-Profil. Dafür braucht die App ein
+   **Loopback**-Aufnahmegerät: Unter Windows heißt es meist „Stereomix" und ist
+   zwar vorhanden, aber **standardmäßig ausgeblendet und deaktiviert** — im
+   Windows-Sound-Dialog im Tab _Aufnahme_ → Rechtsklick →
+   _Deaktivierte Geräte anzeigen_ einblenden und danach aktivieren; alternativ
+   ein virtuelles Audiokabel wie VB-CABLE installieren. Unter Linux genügt die
+   Quelle „Monitor of …", unter macOS ein virtuelles Ausgabegerät wie BlackHole.
+   Fehlt so ein Gerät, verweigert die App die Aufnahme und zeigt genau diesen
+   Hinweis — sie greift absichtlich **nicht** auf das Standard-Mikrofon zurück,
+   das den Raum statt den Ton des Rechners aufnehmen würde.
 
 ## Lizenz
 

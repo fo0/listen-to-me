@@ -14,6 +14,54 @@ changes at a glance.
 
 ### Added
 
+- **A second hotkey records what the computer plays.** A call, a meeting, a
+  video, a voice message — transcribed by the same local model and inserted at
+  the cursor like a dictation, and controlled exactly like one (press once to
+  start, again to stop; hold mode works too). The app could only ever hear the
+  microphone, so getting a call into text meant playing it into the room and
+  recording that back, with everything the speakers and the room added to it.
+  The second source brings its own device, its own maximum length (900 s by
+  default, because a recorded meeting is not a dictation) and its own assistant
+  profile: the Assistant page is now one shared connection with two profiles,
+  **Microphone dictation** and **System audio**, each with its own switch and
+  its own prompt, the second one with a model override as well. It is reachable
+  by hotkey, from the tray menu and from the floating icon's menu; the Home hub
+  shows a second row of key caps once a hotkey is set, and every control that
+  used to say "Stop recording" now names and stops the source that is actually
+  running. What it records from is an ordinary loopback/monitor **input** device
+  the operating system provides — Linux (PulseAudio/PipeWire) has a
+  "Monitor of …" source for every output and needs no setup, Windows has
+  "Stereo Mix" on most onboard audio but ships it disabled (Sound Control Panel
+  → Recording tab → right-click → **Show Disabled Devices**) and otherwise takes
+  a virtual cable such as VB-CABLE, macOS needs a virtual output device such as
+  BlackHole — because the shipped audio stack cannot ask Windows for a loopback
+  stream directly
+  ([ADR-0009](docs/adr/0009-system-audio-is-captured-through-a-loopback-input-device.md)).
+  Without such a device the take is **refused**, with that instruction in the
+  notification: falling back to the default input is deliberately not done,
+  because that one is a microphone — recording the room while you asked for what
+  the computer plays is a wrong result, not a degraded one, and nothing about
+  the resulting text would give it away.
+- **A silent take no longer inserts a phrase nobody spoke.** Press the hotkey,
+  say nothing, press it again, and what landed at the cursor was "Vielen Dank.",
+  "Thank you." or a subtitle credit. Not one of those strings exists anywhere in
+  this app — a repo-wide grep finds none of them; they come out of the model.
+  Whisper's training data is subtitle-heavy, and a stretch of video without
+  speech is usually subtitled with the clip's closing phrase, so near-silence
+  decodes to the most likely "silence continuation" the model ever saw. Neither
+  guard already in place catches that: the VAD silence filter (`vad_filter`,
+  Silero) keeps a chunk as soon as there is room noise or a keyboard click, and
+  faster-whisper's `no_speech_threshold` only drops a segment when
+  `no_speech_prob` is high _and_ `avg_logprob` is low — while these
+  hallucinations are decoded with high confidence and pass every quality gate
+  the decoder has. A transcript that is _nothing but_ a listed phrase is now
+  dropped and reported exactly like a take with no speech: nothing is inserted,
+  and nothing goes into the history. The list is editable on the Engine settings
+  page (18 phrases ship by default, German and English) and the whole filter
+  switches off. Matching ignores case and the punctuation around the phrase but
+  keeps brackets — so the annotation `[Musik]` is caught while a dictated
+  `Musik` is inserted as spoken — and a take that has already live-typed text is
+  never filtered, because that text cannot be taken back.
 - **The assistant's "Test connection" can be cancelled.** It was the one test
   in the settings window with no way out: the microphone test, the model
   download, the transcription test and the update download all have a
