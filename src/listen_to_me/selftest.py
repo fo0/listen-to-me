@@ -35,7 +35,7 @@ def _config_roundtrip():
 
 
 def _config_defaults():
-    from listen_to_me.config import DEFAULTS
+    from listen_to_me.config import DEFAULT_FILLER_PHRASES, DEFAULTS
 
     assert DEFAULTS["hotkey_mode"] in ("toggle", "hold")
     assert DEFAULTS["start_in_tray"] is False
@@ -62,6 +62,33 @@ def _config_defaults():
     for target in integrations["targets"]:
         assert set(target) >= {"name", "enabled", "mode", "hotkey"}
         assert target["mode"] in ("hold", "toggle")
+    # The filler filter (#190) ships ON: a take with no speech comes back as a
+    # sentence nobody spoke, and inserting that at the cursor is the bug — an
+    # opt-in guard would leave every fresh install with it.
+    assert DEFAULTS["filler_filter"] is True
+    assert DEFAULTS["filler_phrases"] == DEFAULT_FILLER_PHRASES
+    assert isinstance(DEFAULTS["filler_phrases"], str) and DEFAULTS["filler_phrases"].strip()
+    # The second recording source (#191). An empty hotkey is what switches it
+    # off, so that — not a flag — is the default; a null device means "auto-pick
+    # the best loopback candidate", never "the system default input", which is
+    # a microphone (system_audio.resolve_loopback_device).
+    system_audio = DEFAULTS["system_audio"]
+    assert set(system_audio) == {"hotkey", "hotkey_mode", "device", "max_seconds"}
+    assert system_audio["hotkey"] == ""
+    assert system_audio["hotkey_mode"] in ("toggle", "hold")
+    assert system_audio["device"] is None
+    # A recorded meeting is not a dictation, so its cap is the longer one.
+    assert system_audio["max_seconds"] == 900
+    assert system_audio["max_seconds"] > DEFAULTS["max_seconds"]
+    # The second assistant profile: only what differs per source lives in it.
+    # A base_url/api_key of its own would be one server to configure twice
+    # (assistant.profile keeps the connection shared).
+    assistant_system = DEFAULTS["assistant"]["system_audio"]
+    assert set(assistant_system) == {"enabled", "model", "system_prompt"}
+    assert assistant_system["enabled"] is False  # opt-in, like the microphone's
+    assert assistant_system["model"] == ""  # empty = the shared model above
+    assert assistant_system["system_prompt"].strip()
+    assert assistant_system["system_prompt"] != DEFAULTS["assistant"]["system_prompt"]
 
 
 def _config_survives_corrupt_sections():
@@ -97,6 +124,67 @@ def _config_survives_corrupt_sections():
         cfg = Config(path=path)
         assert cfg["overlay"]["preview_seconds"] == 9
         assert cfg["overlay"]["enabled"] == DEFAULTS["overlay"]["enabled"]
+
+
+def _config_survives_a_scalar_source_section():
+    """The section guard one level deeper, for the two sections #190/#191 added.
+
+    `assistant.system_audio` is a section *inside* a section, and both new ones
+    are read where nothing can report a type error: `cfg["system_audio"]
+    ["hotkey"]` during hotkey registration, before any window exists, and
+    `assistant.profile(cfg["assistant"], source)` on the worker thread after a
+    recording is already over. A hand-edited scalar in either place must cost
+    that section and nothing else — `_config_survives_corrupt_sections` is the
+    same rule for the sections that predate them."""
+    import json
+
+    from listen_to_me.config import DEFAULTS, Config
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "system_audio": "off",  # whole section replaced by a scalar
+                    # …and the nested profile nulled, next to a sibling key that
+                    # has to survive it.
+                    "assistant": {"system_audio": None, "model": "mistral"},
+                    "filler_filter": "yes",  # unusable scalar → that key's default
+                    "filler_phrases": 5,  # a number where the list belongs
+                    "max_seconds": 120,  # a valid sibling must still apply
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = Config(path=path)
+        assert cfg["max_seconds"] == 120
+        assert isinstance(cfg["system_audio"], dict)
+        assert cfg["system_audio"] == DEFAULTS["system_audio"]
+        assert isinstance(cfg["assistant"]["system_audio"], dict)
+        assert cfg["assistant"]["system_audio"] == DEFAULTS["assistant"]["system_audio"]
+        assert cfg["assistant"]["model"] == "mistral"
+        assert cfg["filler_filter"] == DEFAULTS["filler_filter"]
+        assert cfg["filler_phrases"] == DEFAULTS["filler_phrases"]
+        # A section that IS a dict still merges key by key: a hotkey set by
+        # hand must not cost the cap next to it.
+        path.write_text(
+            json.dumps(
+                {
+                    "system_audio": {"hotkey": "<ctrl>+<alt>+s"},
+                    "assistant": {"system_audio": {"enabled": True}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        cfg = Config(path=path)
+        assert cfg["system_audio"]["hotkey"] == "<ctrl>+<alt>+s"
+        assert cfg["system_audio"]["max_seconds"] == DEFAULTS["system_audio"]["max_seconds"]
+        assert isinstance(cfg["system_audio"]["hotkey_mode"], str)  # tray/app read it
+        assert cfg["assistant"]["system_audio"]["enabled"] is True
+        assert (
+            cfg["assistant"]["system_audio"]["system_prompt"]
+            == DEFAULTS["assistant"]["system_audio"]["system_prompt"]
+        )
 
 
 def _config_guards_scalar_types():
@@ -483,6 +571,74 @@ def _recording_length_warning():
     assert length_warning_message(295.0, "300") is not None
 
 
+def _take_is_warned_about_its_own_cap():
+    """The heads-up names the cap the running take really stops at.
+
+    `_check_length_warning` used to read `cfg["max_seconds"]` on every poll
+    tick, which was the same number for every take. The two recording sources
+    have their own caps (`max_seconds` vs. `system_audio.max_seconds`, 300 vs.
+    900 by default), so a system-audio take was warned about a limit that is
+    not its own — 30 seconds before nothing happened, and never before the
+    limit it actually hits. `_start_recording` stores the cap the recorder was
+    opened with, and this reads that.
+
+    Borrowed unbound onto a stub for the reason `_recorder_events_carry_their_
+    take` gives: this runs inside the 100 ms poll of a real App."""
+    import time
+
+    from listen_to_me.app import STATE_IDLE, STATE_PROCESSING, STATE_RECORDING, App
+
+    class _App:
+        _check_length_warning = App._check_length_warning
+
+        def __init__(self, cap, elapsed, state=STATE_RECORDING):
+            self.state = state
+            self._take_max_seconds = cap
+            self._length_warned = False
+            self._recording_started = time.monotonic() - elapsed
+            # The microphone's cap, deliberately different from every `cap`
+            # below: a re-read of this would name the wrong limit.
+            self.cfg = {"max_seconds": 300}
+            self.messages: list[str] = []
+
+        def notify(self, message, force=False):
+            self.messages.append(message)
+
+    system = _App(900, 880)  # a system-audio take, 20 s before its own cap
+    system._check_length_warning()
+    assert system.messages, "a system-audio take was not warned about its own cap"
+    assert "900" in system.messages[0], system.messages[0]
+    assert system.messages[0].startswith("20 seconds left"), system.messages[0]
+    assert "300" not in system.messages[0], "warned about the microphone's cap"
+    # Once per take, not once per poll tick — and latched before the notify, so
+    # a failure downstream cannot turn it into one message every 100 ms.
+    system._check_length_warning()
+    assert len(system.messages) == 1
+    assert system._length_warned is True
+
+    # A microphone take is warned about its own 300 s, unchanged.
+    mic = _App(300, 280)
+    mic._check_length_warning()
+    assert mic.messages and "300" in mic.messages[0]
+    assert mic.messages[0].startswith("20 seconds left")
+
+    # Nothing outside a running take, and nothing while the cap is still far
+    # away — the same two comparisons this rides the event poll for.
+    for state in (STATE_IDLE, STATE_PROCESSING):
+        idle = _App(900, 880, state=state)
+        idle._check_length_warning()
+        assert idle.messages == [], state
+        assert idle._length_warned is False
+    early = _App(900, 5)
+    early._check_length_warning()
+    assert early.messages == [] and early._length_warned is False
+    # A hand-edited cap must fall through, never raise into the poll.
+    for bad in (None, "many", float("nan"), 0):
+        broken = _App(bad, 880)
+        broken._check_length_warning()
+        assert broken.messages == [], repr(bad)
+
+
 def _text_replacements():
     """The user's `find => replace` rules: whole-word and case-insensitive so
     one rule catches the word wherever it lands, the replacement verbatim so it
@@ -577,6 +733,305 @@ def _replacement_rules_report_what_was_skipped():
     assert len(issues) == 1
 
 
+def _filler_filter_drops_a_silent_take():
+    """The rule behind #190: a take with no speech comes back as a phrase the
+    model invented for silence, and that phrase must not reach the cursor.
+
+    Whisper's training data is subtitle-heavy, so near-silence decodes to a
+    closing phrase ("Vielen Dank.", "Thank you.") or a subtitle annotation —
+    with high confidence, which is why neither `vad_filter` nor
+    `no_speech_threshold` catches it. The filter is deliberately narrow: only a
+    match against the WHOLE transcript drops a take, because "vielen Dank" is
+    something people really dictate and deleting it out of a sentence would be
+    a far worse bug than the one this fixes.
+
+    The bracket rule is the load-bearing half of the comparison and is pinned
+    here: brackets survive `normalize`, so the shipped entry `[Musik]` catches
+    the annotation while somebody dictating the word `Musik` keeps their word.
+    Stripping them makes those two indistinguishable — a wrong answer, not a
+    stricter filter."""
+    from listen_to_me.config import DEFAULT_FILLER_PHRASES
+    from listen_to_me.fillers import EMPTY_TRANSCRIPT, is_filler, normalize
+
+    spec = DEFAULT_FILLER_PHRASES
+
+    # The German and the English phrase, in the punctuation the model writes
+    # around them — the returned value is the phrase that matched, so the log
+    # can name it.
+    assert is_filler("Vielen Dank.", spec) == "vielen dank"
+    assert is_filler("  vielen dank!  ", spec) == "vielen dank"
+    assert is_filler("„Vielen Dank!“", spec) == "vielen dank"
+    assert is_filler("Thank you.", spec) == "thank you"
+    assert is_filler("Untertitelung des ZDF, 2020", spec) == "untertitelung des zdf, 2020"
+    # A bracketed annotation, which is a non-speech marker and not a word.
+    assert is_filler("[Musik]", spec) == "[musik]"
+    assert is_filler("(Music)", spec) == "(music)"
+
+    # A real sentence that merely CONTAINS the phrase survives, at either end.
+    assert is_filler("Vielen Dank für das Gespräch, ich melde mich morgen.", spec) is None
+    assert is_filler("Ich bedanke mich. Vielen Dank.", spec) is None
+    assert is_filler("Thank you for the summary of the release notes.", spec) is None
+    # …and so does the dictated word whose *annotation* form is on the list.
+    # This is the whole reason brackets are kept: without them both normalize
+    # to the same string and the spoken word is deleted.
+    assert is_filler("Musik", spec) is None
+    assert is_filler("Applause", spec) is None
+    assert normalize("[Musik]") == "[musik]" and normalize("Musik") == "musik"
+
+    # A transcript with no letter or digit is filler on its own — a silent take
+    # decodes to a lone ellipsis or a music glyph just as regularly as to a
+    # phrase, and there is nothing to insert either way. Its own marker, so the
+    # caller can tell the two cases apart without inventing a list entry.
+    for empty in ("...", "♪♪", ".", "—", "[]", "(…)", "", "   ", None):
+        assert is_filler(empty, spec) == EMPTY_TRANSCRIPT, repr(empty)
+    assert EMPTY_TRANSCRIPT not in spec
+
+    # A broken or non-string list filters nothing rather than raising: this
+    # runs on the worker thread between a finished dictation and its
+    # insertion, so a hand-edited list may cost the filter, never the text.
+    for junk in (None, "", "   ", 12, ["Vielen Dank"], {"a": 1}, object()):
+        assert is_filler("Ein ganz normaler diktierter Satz.", junk) is None, repr(junk)
+    # A list handed in as a Python list is not a phrase list — str() of it
+    # keeps its own brackets and quotes, so it matches nothing.
+    assert is_filler("Vielen Dank.", ["Vielen Dank"]) is None
+
+
+def _filler_phrases_report_what_was_skipped():
+    """The line the Settings page shows under the filler phrase field.
+
+    Same contract as `_replacement_rules_report_what_was_skipped` for the field
+    next to it, and for the same reason: a line the parser threw away is
+    otherwise visible in the log file only, and the field then looks exactly
+    like one whose phrases all work. A punctuation-only line is the one worth
+    reporting — it could only ever match a transcript that is empty anyway,
+    which `is_filler` already covers on its own."""
+    from listen_to_me.config import DEFAULT_FILLER_PHRASES
+    from listen_to_me.fillers import (
+        _MAX_REPORTED_ISSUES,
+        describe_filler_phrases,
+        parse_filler_phrases,
+    )
+
+    # Syntax: one phrase per line, "#" comments and blank lines ignored —
+    # the same syntax as the replacements field two cards away.
+    assert parse_filler_phrases("# invented phrases\n\nVielen Dank\nThank you!\n") == [
+        "vielen dank",
+        "thank you",
+    ]
+    assert parse_filler_phrases("") == [] and parse_filler_phrases(None) == []
+    # A line with no letter or digit left in it is skipped and named.
+    issues: list[str] = []
+    assert parse_filler_phrases("Vielen Dank\n...\n♪♪\n", issues) == ["vielen dank"]
+    assert issues == ["line 2 is only punctuation", "line 3 is only punctuation"], issues
+    # Phrases that differ only in punctuation are one phrase, not two — a user
+    # who wrote both meant one, so the duplicate is dropped without complaint.
+    assert parse_filler_phrases("Vielen Dank\nvielen dank!\n„Vielen Dank“") == ["vielen dank"]
+    # The issue list is append-only bookkeeping: the phrases are the same with
+    # and without it, which is what lets the status share the parser.
+    spec = "Vielen Dank\n---\nThank you"
+    collected: list[str] = []
+    assert parse_filler_phrases(spec, collected) == parse_filler_phrases(spec)
+    assert len(collected) == 1
+
+    # An untouched field says nothing — the placeholder explains the syntax.
+    for quiet in ("", "   ", None, "# only a comment\n\n"):
+        assert describe_filler_phrases(quiet) == "", repr(quiet)
+    assert describe_filler_phrases("Vielen Dank") == "1 phrase active."
+    assert describe_filler_phrases("Vielen Dank\nThank you") == "2 phrases active."
+    # The shipped list has to parse clean: its header is comments and every
+    # other line a usable phrase, or a fresh install greets the user with a
+    # complaint about a list they never wrote.
+    shipped = parse_filler_phrases(DEFAULT_FILLER_PHRASES)
+    default_status = describe_filler_phrases(DEFAULT_FILLER_PHRASES)
+    assert "ignored" not in default_status, default_status
+    assert default_status == f"{len(shipped)} phrases active.", default_status
+    assert len(shipped) >= 18, len(shipped)  # 18 today; a deletion is a regression
+    assert {"vielen dank", "thank you", "[musik]"} <= set(shipped)
+
+    # The skipped lines, each naming its line number.
+    one_bad = describe_filler_phrases("Vielen Dank\n...")
+    assert one_bad.startswith("1 phrase active · 1 line ignored:"), one_bad
+    assert "line 2 is only punctuation" in one_bad
+    # A pasted list of junk stays one line: the first few are named, the rest
+    # counted (a list from somewhere else can have dozens of bad lines).
+    many = describe_filler_phrases("\n".join("..." for _ in range(8)))
+    assert "0 phrases active" in many and "8 lines ignored" in many and "and 5 more" in many
+    for named in range(1, _MAX_REPORTED_ISSUES + 1):
+        assert f"line {named} is only punctuation" in many
+    assert f"line {_MAX_REPORTED_ISSUES + 1} is" not in many  # counted, not named
+
+
+def _filler_take_inserts_nothing():
+    """A hallucinated transcript reaches neither the cursor, the history nor
+    the assistant — the behaviour, not just the rule.
+
+    `App._process` is borrowed unbound onto a stub, the way
+    `_recorder_events_carry_their_take` borrows `_handle`: a real App needs a
+    tray, a recorder and a transcriber. What the take really was is "no
+    speech", so it is reported exactly like one — the notification the
+    microphone diagnosis already owns — and nothing is written anywhere.
+
+    Two orderings are pinned besides the drop itself. The filter runs before
+    `apply_replacements`, or a rule that rewrote the phrase would hide it from
+    the filter; and it runs before the assistant, because there is nothing to
+    gain from paying an LLM to rewrite a sentence nobody spoke. The third case
+    is the dangerous one: a take that already live-typed text must NOT be
+    filtered — dropping it then leaves the typed words on screen while the app
+    reports "no speech" and stores nothing, which is worse than the
+    hallucination it was trying to fix."""
+    from listen_to_me import assistant as assistant_module
+    from listen_to_me.app import App
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.choices import SOURCE_MIC
+    from listen_to_me.config import Config
+
+    class _Transcriber:
+        def __init__(self, text):
+            self.text = text
+            self.loads = 0
+
+        def ensure_loaded(self, notify=None, progress=None):
+            self.loads += 1
+
+        def transcribe(self, audio, notify=None, progress=None):
+            return self.text
+
+    class _Injector:
+        def __init__(self):
+            self.typed: list[str] = []
+
+        def clipboard_mode(self):
+            return "on_failure"
+
+        def type_plain_blocking(self, text):
+            self.typed.append(text)
+            return ""
+
+    class _History:
+        def __init__(self):
+            self.stored: list[str] = []
+
+        def add(self, text):
+            self.stored.append(text)
+
+    class _Live:
+        """The take's LiveTyper, as far as _process reads it."""
+
+        def __init__(self, committed, frames):
+            self.committed_text = committed
+            self.committed_frames = frames
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def hand_over(self):
+            return ("", bool(self.committed_text))
+
+    class _App:
+        _process = App._process
+
+        def __init__(self, cfg, text):
+            self.cfg = cfg
+            self.transcriber = _Transcriber(text)
+            self.injector = _Injector()
+            self.history = _History()
+            self.inserted: list[str] = []
+            self.no_speech = 0
+            self.posts: list[tuple] = []
+            self.messages: list[str] = []
+
+        def notify(self, message, force=False):
+            self.messages.append(message)
+
+        def post(self, kind, payload=None):
+            self.posts.append((kind, payload))
+
+        def progress(self, *args, **kwargs):
+            pass
+
+        def _insert_transcript(self, text):
+            self.inserted.append(text)
+
+        def _notify_no_speech(self, audio):
+            self.no_speech += 1
+
+    audio = [0.0] * SAMPLE_RATE  # one second: long enough to be transcribed
+    refined: list[str] = []
+
+    def _refine(text, acfg):
+        refined.append(text)
+        return f"refined: {text}"
+
+    real_refine = assistant_module.refine
+    assistant_module.refine = _refine
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(path=Path(tmp) / "config.json")
+            # The assistant is ON, so "never reached" is a fact about the
+            # filter rather than about a switched-off feature.
+            cfg["assistant"]["enabled"] = True
+            # …and a rule that would rewrite the phrase: the filter has to run
+            # first, or the rewritten text no longer matches the list.
+            cfg["replacements"] = "Vielen Dank => Danke für das Gespräch"
+
+            take = _App(cfg, "Vielen Dank.")
+            take._process(audio, None, SOURCE_MIC)
+            assert take.inserted == [], take.inserted
+            assert take.history.stored == [], take.history.stored
+            assert refined == [], refined
+            assert take.no_speech == 1
+            # Reported like the empty take it was, and the worker still hands
+            # the state machine back — a dropped take must not leave the app
+            # in PROCESSING.
+            assert ("done", None) in take.posts
+            assert ("flash_text", "Vielen Dank.") not in take.posts
+
+            # A transcript with nothing but punctuation goes the same way.
+            silent = _App(cfg, "...")
+            silent._process(audio, None, SOURCE_MIC)
+            assert silent.inserted == [] and silent.no_speech == 1
+
+            # A real sentence is untouched by the filter and does reach the
+            # assistant and the history.
+            cfg["replacements"] = ""
+            real = _App(cfg, "Bitte pruefe den Report vor dem Meeting.")
+            real._process(audio, None, SOURCE_MIC)
+            assert refined == ["Bitte pruefe den Report vor dem Meeting."], refined
+            assert real.inserted == ["refined: Bitte pruefe den Report vor dem Meeting."]
+            assert real.history.stored == real.inserted
+            assert real.no_speech == 0
+
+            # The switch is honoured: off, the hallucination is inserted again
+            # (which is exactly the bug #190 is about).
+            refined.clear()
+            cfg["assistant"]["enabled"] = False
+            cfg["filler_filter"] = False
+            unfiltered = _App(cfg, "Vielen Dank.")
+            unfiltered._process(audio, None, SOURCE_MIC)
+            assert unfiltered.inserted == ["Vielen Dank."], unfiltered.inserted
+            assert unfiltered.no_speech == 0
+
+            # Live typing already put the phrase at the cursor: append-only
+            # typing cannot take it back, so this take is NOT filtered — it is
+            # stored and reported like any other.
+            cfg["filler_filter"] = True
+            typed = _App(cfg, "")
+            typed._process(audio, _Live("Vielen Dank.", len(audio)), SOURCE_MIC)
+            assert typed.no_speech == 0, "a live-typed take must not be dropped"
+            assert typed.history.stored == ["Vielen Dank."], typed.history.stored
+            assert ("flash_text", "Vielen Dank.") in typed.posts
+            # An armed but silent live typer (nothing committed, nothing typed)
+            # is not that case — the filter applies to it normally.
+            armed = _App(cfg, "Vielen Dank.")
+            armed._process(audio, _Live("", 0), SOURCE_MIC)
+            assert armed.no_speech == 1 and armed.history.stored == []
+    finally:
+        assistant_module.refine = real_refine
+
+
 def _assistant_failure_is_actionable():
     """A failing assistant interrupts a real dictation, so its notification has
     to say what to do — not print the `requests` transport chain. The app's own
@@ -663,6 +1118,108 @@ def _missing_microphone_falls_back():
         audio_mod.list_input_devices = original
 
 
+def _loopback_device_is_ranked_and_resolved():
+    """Which device a system-audio take records from — and the refusal that
+    keeps it from recording the room (#191).
+
+    Nothing can ask WASAPI for a loopback stream here (sounddevice 0.5.6
+    exposes no loopback option), so the second source records from an ordinary
+    PortAudio *input* device that happens to carry the output: "Monitor of …"
+    on PipeWire/PulseAudio, "Stereo Mix" or a virtual cable on Windows,
+    BlackHole on macOS. Identifying it is name matching, and the ranking is
+    data (`LOOPBACK_HINTS`) so an unseen device name is one line instead of a
+    branch.
+
+    The contract this pins hardest: **a returned index of None means refuse
+    the take**, and it always carries a note. It does NOT mean "the system
+    default" the way `choices.resolve_input_device` does — the default input
+    *is* a microphone, so falling back to it would record the room while the
+    user asked for what the computer plays. That is a wrong result, not a
+    degraded one, and nothing about the transcript would give it away."""
+    from listen_to_me.system_audio import (
+        loopback_candidates,
+        resolve_loopback_device,
+        system_audio_help,
+    )
+
+    def _profile(index, name):
+        # The shape audio.input_device_profiles() returns.
+        return {
+            "index": index,
+            "name": name,
+            "hostapi": "ALSA",
+            "channels": 2,
+            "samplerate": 48000.0,
+        }
+
+    mic = _profile(0, "Built-in Microphone")
+    stereo_mix = _profile(2, "Stereo Mix (Realtek(R) Audio)")
+    monitor = _profile(4, "Monitor of Built-in Audio Analog Stereo")
+    hdmi_monitor = _profile(5, "Monitor of HDMI / DisplayPort")
+    loopback = _profile(7, "Speakers (Realtek(R) Audio) [Loopback]")
+
+    # A plain microphone scores nothing at all — offering it would be the one
+    # device that must never be offered here.
+    assert loopback_candidates([mic]) == []
+    ranked = loopback_candidates([mic, stereo_mix, monitor])
+    assert [c["index"] for c in ranked] == [4, 2], ranked
+    assert ranked[0]["hint"] == "monitor of" and ranked[0]["score"] == 90
+    assert ranked[1]["hint"] == "stereo mix"
+    # "<name> [Loopback]" is the strongest hint there is (a newer PortAudio
+    # enumerates every output device again as one) and it trips "loopback" as
+    # well, so the weights add up — it outranks Stereo Mix even when it is
+    # enumerated after it.
+    ranked = loopback_candidates([stereo_mix, loopback])
+    assert [c["index"] for c in ranked] == [7, 2], ranked
+    assert ranked[0]["score"] == 140 and ranked[0]["hint"] == "[loopback]"
+    # The candidate carries its whole profile, which is what the dropdown and
+    # the recorder read off it.
+    assert ranked[0]["name"] == loopback["name"] and ranked[0]["channels"] == 2
+    # Equal scores keep PortAudio's enumeration order, so the auto-pick does
+    # not shuffle from call to call.
+    assert [c["index"] for c in loopback_candidates([monitor, hdmi_monitor])] == [4, 5]
+    assert [c["index"] for c in loopback_candidates([hdmi_monitor, monitor])] == [5, 4]
+
+    profiles = [mic, stereo_mix, monitor]
+    # A configured index that still exists: that one, and nothing to report.
+    assert resolve_loopback_device(2, profiles) == (2, None)
+    # Nothing configured: the best candidate, silently — auto-pick is the
+    # documented default, not a fallback worth interrupting a take for.
+    assert resolve_loopback_device(None, profiles) == (4, None)
+    # A configured index that is gone (PortAudio indices are positional, so
+    # unplugging one interface re-indexes the rest): the best candidate plus a
+    # note naming both and where to pick it again.
+    device, note = resolve_loopback_device(9, profiles)
+    assert device == 4
+    assert note and "9" in note and "Monitor of" in note and "Settings" in note
+
+    # No candidate at all — the refusal. No index, and never a None index
+    # without a note, because the note is the only thing the caller can show
+    # instead of recording.
+    for configured in (None, 9):
+        device, note = resolve_loopback_device(configured, [mic])
+        assert device is None, configured
+        assert note is not None, "a refused take must carry the reason"
+        assert "nothing was recorded" in note, note
+        assert system_audio_help() in note  # the part the user has to act on
+    # An enumeration that failed or came back empty cannot tell "the device is
+    # gone" from "PortAudio could not be asked": the configured index is
+    # passed through untouched rather than moved off a device that works.
+    assert resolve_loopback_device(2, []) == (2, None)
+    # …while the auto case can only report that nothing was found.
+    assert resolve_loopback_device(None, [])[0] is None
+    assert resolve_loopback_device(None, [])[1] is not None
+    # config.json is untrusted and `device` has a null default, so it carries
+    # no type: a device *name* is something PortAudio resolves itself, and
+    # `True` is not a device (bool is an int subclass).
+    assert resolve_loopback_device("Stereo Mix", profiles) == ("Stereo Mix", None)
+    assert resolve_loopback_device(True, profiles) == (True, None)
+    assert resolve_loopback_device("Monitor of Built-in Audio", []) == (
+        "Monitor of Built-in Audio",
+        None,
+    )
+
+
 def _empty_transcript_names_the_microphone():
     """A take that produced no text says *why*: a microphone that delivered no
     signal (or an unusably quiet one) is a device problem the user can fix,
@@ -714,6 +1271,145 @@ def _recorder_events_carry_their_take():
         assert stale.finished == 0 and stale.messages == [], f"{kind} stopped the wrong take"
         idle._handle(kind, 2)
         assert idle.finished == 0, f"{kind} outside a recording must stop nothing"
+
+
+def _hotkeys_route_to_their_own_source():
+    """Two hotkeys, one state machine: a press for one recording source may
+    neither stop nor cancel the other one's take (#191).
+
+    The alternative is the worst outcome the two sources have between them. A
+    system-audio hotkey pressed during a dictation would end that dictation and
+    insert it into whatever window happens to be focused; the microphone hotkey
+    would end a recorded meeting the same way. So the press does nothing but say
+    why — out loud, because a hotkey that silently does nothing is the one thing
+    it must not be.
+
+    `App._handle` is borrowed unbound onto a stub, as
+    `_recorder_events_carry_their_take` does it: a real App needs a tray, a
+    recorder and a transcriber, while the routing is decided from four
+    attributes."""
+    from listen_to_me.app import (
+        STATE_IDLE,
+        STATE_PROCESSING,
+        STATE_RECORDING,
+        App,
+        event_source,
+        hotkey_mode,
+        source_label,
+    )
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+
+    # The three module functions the routing rests on. Only the system-audio
+    # listener names itself; every other surface posts a payload-free toggle,
+    # so a payload that is not a source can never route a take to the wrong
+    # device.
+    assert event_source(SOURCE_SYSTEM) == SOURCE_SYSTEM
+    for payload in (None, SOURCE_MIC, "toggle", 7, True, ""):
+        assert event_source(payload) == SOURCE_MIC, repr(payload)
+    # …and the wording every message about a take is built from: a system-audio
+    # take reporting "the microphone stream ended" sends the user to a device
+    # that is working fine.
+    assert source_label(SOURCE_MIC) == "microphone"
+    assert source_label(SOURCE_SYSTEM) == "system audio"
+    for unknown in (None, "", "loopback", 3):
+        assert source_label(unknown) == "microphone", repr(unknown)
+    modes = {"hotkey_mode": "toggle", "system_audio": {"hotkey_mode": "hold"}}
+    assert hotkey_mode(modes, SOURCE_MIC) == "toggle"
+    assert hotkey_mode(modes, SOURCE_SYSTEM) == "hold"
+
+    class _App:
+        # Borrowed unbound: a real App needs a tray, a recorder, a transcriber.
+        _handle, _owns_take = App._handle, App._owns_take
+
+        def __init__(self, state=STATE_IDLE, source=SOURCE_MIC):
+            self.state, self._recording_id, self._source = state, 2, source
+            self.cfg = {
+                "hotkey_mode": "toggle",
+                "system_audio": {"hotkey_mode": "toggle"},
+            }
+            self.started: list[str] = []
+            self.finished = self.cancelled = 0
+            self.messages: list[str] = []
+
+        def notify(self, message, force=False):
+            self.messages.append(message)
+
+        def _start_recording(self, source=SOURCE_MIC):
+            self.started.append(source)
+
+        def _finish_recording(self):
+            self.finished += 1
+
+        def _cancel_recording(self):
+            self.cancelled += 1
+
+    # Idle: every toggle starts its own source, and a payload-free one is the
+    # microphone — the event the tray, the floating icon and the Home button
+    # have always posted.
+    for payload, expected in ((None, SOURCE_MIC), (SOURCE_MIC, SOURCE_MIC),
+                              (SOURCE_SYSTEM, SOURCE_SYSTEM)):
+        app = _App()
+        app._handle("toggle", payload)
+        assert app.started == [expected], (payload, app.started)
+
+    for running, pressed in ((SOURCE_MIC, SOURCE_SYSTEM), (SOURCE_SYSTEM, SOURCE_MIC)):
+        # The toggle both hotkeys and every menu entry post.
+        app = _App(state=STATE_RECORDING, source=running)
+        app._handle("toggle", pressed)
+        assert app.finished == 0, f"a {pressed} toggle stopped the {running} take"
+        assert app.started == [] and app.cancelled == 0
+        assert app.messages and source_label(running) in app.messages[0], app.messages
+        assert "already running" in app.messages[0]
+        # The take's own toggle still ends it.
+        app._handle("toggle", running)
+        assert app.finished == 1
+
+        # …and the hold-mode press/release pair, which is routed by the mode of
+        # the hotkey that fired.
+        app = _App(state=STATE_RECORDING, source=running)
+        app.cfg["hotkey_mode"] = app.cfg["system_audio"]["hotkey_mode"] = "hold"
+        app._handle("hotkey_press", pressed)
+        assert app.finished == 0 and app.started == []
+        assert app.messages and source_label(running) in app.messages[0]
+        app._handle("hotkey_release", pressed)
+        assert app.finished == 0, f"the {pressed} release ended the {running} take"
+        app._handle("hotkey_release", running)
+        assert app.finished == 1, "the take's own release must end it"
+
+    # Each source is routed by ITS OWN mode: reading the microphone's "hold"
+    # for a system-audio press would start a take whose release never comes,
+    # and it would sit there until the length cap cut it off.
+    app = _App()
+    app.cfg["hotkey_mode"], app.cfg["system_audio"]["hotkey_mode"] = "hold", "toggle"
+    app._handle("hotkey_press", SOURCE_SYSTEM)
+    assert app.started == [SOURCE_SYSTEM]
+    app.state, app._source = STATE_RECORDING, SOURCE_SYSTEM
+    app._handle("hotkey_release", SOURCE_SYSTEM)
+    assert app.finished == 0, "a toggle-mode release must not end the take"
+    app._handle("hotkey_press", SOURCE_SYSTEM)  # …the next press does
+    assert app.finished == 1
+    # The other way round in the same config: the microphone is push-to-talk.
+    app = _App()
+    app.cfg["hotkey_mode"], app.cfg["system_audio"]["hotkey_mode"] = "hold", "toggle"
+    app._handle("hotkey_press", None)
+    assert app.started == [SOURCE_MIC]
+    app.state = STATE_RECORDING
+    app._handle("hotkey_release", None)
+    assert app.finished == 1
+
+    # A press for either source while the previous take is still being
+    # transcribed gets the same feedback: the user is speaking into a dead mic,
+    # and silence here loses dictation.
+    for payload in (None, SOURCE_SYSTEM):
+        app = _App(state=STATE_PROCESSING)
+        app._handle("toggle", payload)
+        assert app.started == [] and app.finished == 0
+        assert app.messages and "transcribing" in app.messages[0], app.messages
+    # Cancel is not routed by source: it belongs to whatever is running, and
+    # both menus offer exactly one "Cancel recording" entry for both sources.
+    app = _App(state=STATE_RECORDING, source=SOURCE_SYSTEM)
+    app._handle("cancel", None)
+    assert app.cancelled == 1
 
 
 def _cli_flags():
@@ -869,6 +1565,94 @@ def _assistant_config_is_checked():
         raise AssertionError("refine accepted an assistant config without a base URL")
 
 
+def _assistant_profiles_follow_the_source():
+    """One connection, two profiles: the microphone's and the second recording
+    source's (#191).
+
+    A dictation wants punctuation, a recorded meeting wants minutes — but both
+    talk to the same endpoint with the same key, so `base_url`, `api_key`,
+    `temperature` and `timeout` stay shared and only the switch, the model and
+    the prompt are per source. The top-level `enabled`/`system_prompt`/`model`
+    ARE the microphone profile, deliberately not renamed, so no existing
+    config.json needs a migration.
+
+    The load-bearing case is a system_audio section that is missing or is not a
+    dict (a config written before #191, or a hand-edit): it must report the
+    profile DISABLED with an empty prompt, never borrow the microphone's —
+    post-processing a recorded meeting with the dictation prompt ("remove
+    filler words, do not summarize") is a confidently wrong result, while a
+    feature nobody configured staying off is the right one."""
+    from listen_to_me.assistant import config_problem, profile
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+
+    acfg = {
+        "enabled": True,
+        "base_url": "http://localhost:11434/v1",
+        "api_key": "secret",
+        "model": "llama3.2",
+        "system_prompt": "punctuate the dictation",
+        "temperature": 0.2,
+        "timeout": 90,
+        "system_audio": {
+            "enabled": True,
+            "model": "qwen2.5:14b",
+            "system_prompt": "write the minutes",
+        },
+    }
+    mic, system = profile(acfg, SOURCE_MIC), profile(acfg, SOURCE_SYSTEM)
+    assert mic["system_prompt"] == "punctuate the dictation" and mic["model"] == "llama3.2"
+    assert system["system_prompt"] == "write the minutes" and system["model"] == "qwen2.5:14b"
+    # Flat, so each profile goes straight into config_problem()/refine() — and
+    # the connection is the same one for both.
+    for resolved in (mic, system):
+        assert resolved["base_url"] == acfg["base_url"] and resolved["api_key"] == "secret"
+        assert resolved["temperature"] == 0.2 and resolved["timeout"] == 90
+        assert resolved["enabled"] is True
+        assert config_problem(resolved) is None
+    # An empty (or unusable) per-profile model means "the shared one": one
+    # endpoint usually serves one model, so this is the documented default.
+    for blank in ("", "   ", None, 7):
+        borrowed = profile({**acfg, "system_audio": {**acfg["system_audio"], "model": blank}},
+                           SOURCE_SYSTEM)
+        assert borrowed["model"] == "llama3.2", repr(blank)
+    # Each switch is its own — turning the dictation profile off must not take
+    # the meeting profile with it, and vice versa.
+    assert profile({**acfg, "enabled": False}, SOURCE_SYSTEM)["enabled"] is True
+    assert profile({**acfg, "enabled": False}, SOURCE_MIC)["enabled"] is False
+    off = {**acfg["system_audio"], "enabled": False}
+    assert profile({**acfg, "system_audio": off}, SOURCE_MIC)["enabled"] is True
+    assert profile({**acfg, "system_audio": off}, SOURCE_SYSTEM)["enabled"] is False
+    # A missing or scalar section: disabled, with no prompt to send.
+    for broken in (None, "nonsense", [1], 0, {}):
+        stored = dict(acfg)
+        if broken is None:
+            stored.pop("system_audio")
+        else:
+            stored["system_audio"] = broken
+        resolved = profile(stored, SOURCE_SYSTEM)
+        assert resolved["enabled"] is False, repr(broken)
+        assert resolved["system_prompt"] == "", (broken, resolved["system_prompt"])
+        assert resolved["system_prompt"] != acfg["system_prompt"]
+        # The shared connection still resolves — only the profile is off.
+        assert resolved["base_url"] == acfg["base_url"]
+    # An enabled profile with no prompt text is off as well: a request without
+    # one tells the endpoint nothing about what to do with the transcript.
+    for empty_prompt in ("", "   ", None, 5):
+        section = {**acfg["system_audio"], "system_prompt": empty_prompt}
+        assert profile({**acfg, "system_audio": section}, SOURCE_SYSTEM)["enabled"] is False
+    # "enabled" is read like a bool default in config._coerce, not by
+    # truthiness: a stored "false" must not be able to switch it ON.
+    for truthy in ("false", "yes", 2, [1]):
+        section = {**acfg["system_audio"], "enabled": truthy}
+        assert profile({**acfg, "system_audio": section}, SOURCE_SYSTEM)["enabled"] is False
+    # The source travels through the event queue as a payload, so anything
+    # unrecognized has to read as the microphone rather than as no profile.
+    for unknown in ("nonsense", None, ""):
+        assert profile(acfg, unknown)["system_prompt"] == "punctuate the dictation"
+    # A truncated section only costs what it does not carry.
+    assert profile({"system_prompt": "x", "enabled": True}, SOURCE_MIC)["model"] == ""
+
+
 def _recorder_start_failure_resets():
     """A stream that opens but fails to start must leave the recorder idle.
     self._stream used to be assigned before start(), so `active` stayed True
@@ -913,6 +1697,123 @@ def _recorder_start_failure_resets():
             assert not recorder.active, "a failed start must not leave the recorder active"
         assert len(opened) == 2 and all(s.closed for s in opened)
     finally:
+        if previous is None:
+            del _sys.modules["sounddevice"]
+        else:
+            _sys.modules["sounddevice"] = previous
+
+
+def _recorder_falls_back_to_the_native_format():
+    """A device that refuses 16 kHz mono is reopened in its own format and
+    converted in the callback — needs numpy, so the full run only.
+
+    A loopback input is usually locked to the output's format (48 kHz stereo)
+    and PortAudio does not resample, so an invalid sample rate is not a broken
+    device here. What must land in the buffer is 16 kHz mono whatever the
+    device did, because everything downstream counts in those frames.
+
+    `sounddevice` is stood in for, exactly as in
+    `_recorder_start_failure_resets`: the stand-in refuses 16 kHz mono for the
+    loopback device, reports 48 kHz / 2 channels as its native format and
+    hands the callback back, so the check can feed it a stereo block. The
+    WASAPI hint is stood in for too — `_wasapi_auto_convert` returns None off
+    Windows, so on this runner it could not tell the `os_convert` paths apart
+    otherwise, and the microphone's unchanged `extra_settings=None` is exactly
+    what has to be pinned."""
+    import sys as _sys
+    import types
+
+    import numpy as np
+
+    from listen_to_me import audio as audio_mod
+    from listen_to_me.audio import SAMPLE_RATE, Recorder
+
+    attempts: list[dict] = []
+    closed: list[bool] = []
+
+    class _PortAudioError(Exception):
+        pass
+
+    class _Stream:
+        def __init__(self, kwargs):
+            self.kwargs = kwargs
+            self.running = False
+
+        def start(self):
+            self.running = True
+
+        def stop(self):
+            self.running = False
+
+        def close(self):
+            closed.append(True)
+
+    def _input_stream(**kwargs):
+        attempts.append(kwargs)
+        # Device 4 is the loopback input: locked to its own format.
+        if kwargs.get("device") == 4 and kwargs.get("samplerate") == SAMPLE_RATE:
+            raise _PortAudioError("Invalid sample rate")
+        return _Stream(kwargs)
+
+    fake = types.ModuleType("sounddevice")
+    fake.InputStream = _input_stream
+    fake.CallbackStop = RuntimeError
+    fake.PortAudioError = _PortAudioError
+    fake.query_devices = lambda device=None, kind=None: {
+        "name": "Monitor of Built-in Audio",
+        "default_samplerate": 48000.0,
+        "max_input_channels": 2,
+    }
+    sentinel = object()
+    previous = _sys.modules.get("sounddevice")
+    real_wasapi = audio_mod._wasapi_auto_convert
+    _sys.modules["sounddevice"] = fake
+    audio_mod._wasapi_auto_convert = lambda sd, device: sentinel
+    try:
+        recorder = Recorder()
+        recorder.start(device=4, max_seconds=60, os_convert=True)
+        assert len(attempts) == 2, attempts
+        # 16 kHz mono first — what Whisper wants and what the OS converter
+        # often delivers outright, so the plain attempt is never skipped.
+        assert attempts[0]["samplerate"] == SAMPLE_RATE and attempts[0]["channels"] == 1
+        assert attempts[0]["extra_settings"] is sentinel  # the os_convert hint rides along
+        # …then the device's own format, at most two channels (they are
+        # averaged into mono immediately, so more would only cost bandwidth).
+        assert attempts[1]["samplerate"] == 48000 and attempts[1]["channels"] == 2
+        assert "extra_settings" not in attempts[1]
+        assert recorder.stream_format == (48000, 2)
+        assert recorder.resampling is True
+        assert recorder.active is True
+
+        # What the callback stores: 16 kHz mono, converted from a stereo block.
+        callback = attempts[1]["callback"]
+        frames = 4800  # 100 ms at 48 kHz
+        t = np.arange(frames, dtype="float64") / 48000.0
+        channel = (0.3 * np.sin(2 * np.pi * 440.0 * t)).astype("float32")
+        callback(np.stack([channel, channel], axis=1), frames, None, 0)
+        audio = recorder.stop()
+        assert audio.ndim == 1 and audio.dtype == np.dtype("float32")
+        assert abs(len(audio) - frames // 3) <= 32, len(audio)  # + the flushed filter tail
+        assert 0.2 < float(np.sqrt(np.mean(np.square(audio)))) < 0.3
+        assert recorder.active is False and closed
+
+        # The microphone path is what it always was: one attempt, 16 kHz mono,
+        # `extra_settings=None` (what sounddevice fills in itself) and no
+        # resampler in the callback.
+        attempts.clear()
+        recorder = Recorder()
+        recorder.start(device=None, max_seconds=60)
+        assert len(attempts) == 1, attempts
+        assert attempts[0]["samplerate"] == SAMPLE_RATE and attempts[0]["channels"] == 1
+        assert attempts[0]["extra_settings"] is None
+        assert recorder.stream_format == (SAMPLE_RATE, 1)
+        assert recorder.resampling is False
+        block = np.zeros((1600, 1), dtype="float32")
+        attempts[0]["callback"](block, len(block), None, 0)
+        audio = recorder.stop()
+        assert len(audio) == 1600 and audio.ndim == 1
+    finally:
+        audio_mod._wasapi_auto_convert = real_wasapi
         if previous is None:
             del _sys.modules["sounddevice"]
         else:
@@ -1539,6 +2440,120 @@ def _band_levels():
     low, mid, high = band_levels(0.2 * np.sin(2 * np.pi * 220.0 * t))
     assert low > 0.5 and low > mid and low > high  # 220 Hz lands in the low band
     assert band_levels(np.zeros(SAMPLE_RATE // 10, dtype="float32")) == (0.0, 0.0, 0.0)
+
+
+def _resampler_converts_without_aliasing():
+    """Needs numpy, so this runs only in the full (packaged) self-test.
+
+    A loopback device runs at the output's rate (48 kHz stereo as a rule) and
+    PortAudio does not resample, so `audio.py` converts inside its capture
+    callback — everything downstream (the frame counter, the length cap, the
+    live preview, livetype.py) counts in 16 kHz mono frames. This pins the
+    accuracy contract `Resampler` documents, in the same order:
+
+    * the output length, ±1 sample per block and not accumulating over a run
+      of unequal blocks (which is what PortAudio really delivers);
+    * a flat passband — a 440 Hz sine keeps its level;
+    * the anti-alias filter, the reason this is a filter and not a `[::3]`:
+      without it a 12 kHz tone folds down to 4 kHz and becomes words nobody
+      said. Measured against the naive decimation of the same signal, because
+      the absolute number is not the point: the filtered residual is ~38000x
+      down while the decimation passes the tone at full level. The tone is
+      faded and its ends trimmed — an abruptly starting one carries its own
+      broadband click, which dominates the residual (~490x here) and would
+      measure the test signal instead of the filter;
+    * one conversion per stream, not per block: restarting the interpolator at
+      every boundary is a step in the waveform, i.e. a click ~47 times a
+      second, which Whisper hears as well as the user does;
+    * equal (or unusable) rates are a pass-through, so the microphone path
+      pays nothing at all.
+    """
+    import numpy as np
+
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.resample import Resampler, downmix_to_mono
+
+    def rms(samples):
+        return float(np.sqrt(np.mean(np.square(samples)))) if samples.size else 0.0
+
+    # The mean across channels, not the sum: both channels of a loopback input
+    # carry the same programme, and summing them would clip a centred signal.
+    stereo = np.array([[0.5, 0.1], [-0.2, 0.4]], dtype="float32")
+    mono = downmix_to_mono(stereo)
+    assert mono.shape == (2,) and mono.dtype == np.dtype("float32")
+    assert abs(float(mono[0]) - 0.3) < 1e-6 and abs(float(mono[1]) - 0.1) < 1e-6
+    already_mono = np.array([0.25, -0.5], dtype="float32")
+    assert downmix_to_mono(already_mono).tolist() == already_mono.tolist()
+    # Eight channels average just as well as two (the recorder opens at most
+    # two, but nothing here depends on that).
+    assert downmix_to_mono(np.ones((4, 8), dtype="float32")).tolist() == [1.0] * 4
+
+    # Length, block by block and in total.
+    res = Resampler(48000, SAMPLE_RATE)
+    assert res.passthrough is False
+    rng = np.random.default_rng(7)
+    total_in = total_out = 0
+    for size in (1024, 512, 1024, 333, 2048, 1, 4096):
+        out = res.process((rng.standard_normal(size) * 0.1).astype("float32"))
+        assert out.dtype == np.dtype("float32") and out.ndim == 1
+        assert abs(out.size - size / 3.0) <= 1.0, (size, out.size)
+        total_in += size
+        total_out += out.size
+    assert abs(total_out - total_in / 3.0) <= 1.0, (total_out, total_in / 3.0)
+    # The filter's ring-out, which is otherwise cut off the end of every take.
+    tail = res.flush()
+    assert 0 < tail.size <= 32, tail.size
+    assert res.flush().size == 0, "flush must be idempotent (a double stop())"
+
+    # Passband: the level a 440 Hz sine comes out at.
+    t = np.arange(48000, dtype="float64") / 48000.0
+    sine = (0.3 * np.sin(2 * np.pi * 440.0 * t)).astype("float32")
+
+    def convert(signal, sizes=(1024,)):
+        resampler = Resampler(48000, SAMPLE_RATE)
+        blocks, offset, step = [], 0, 0
+        while offset < signal.size:
+            size = sizes[step % len(sizes)]
+            blocks.append(resampler.process(signal[offset : offset + size]))
+            offset += size
+            step += 1
+        return np.concatenate(blocks)
+
+    ratio = rms(convert(sine)) / rms(sine)
+    assert 0.9 < ratio < 1.1, ratio
+
+    # Anti-aliasing: 12 kHz is above the 16 kHz destination's Nyquist and must
+    # be attenuated, not folded into the band Whisper reads.
+    ramp = np.minimum(np.arange(sine.size), sine.size - 1 - np.arange(sine.size)) / 4800.0
+    faded = np.minimum(1.0, ramp)
+    tone = (0.3 * np.sin(2 * np.pi * 12000.0 * t) * faded).astype("float32")
+    filtered = convert(tone)[1600:-1600]  # drop the fades, measure the steady state
+    aliased = tone[::3][1600:-1600]  # what a decimation without the filter gives
+    assert rms(aliased) > 0.05, rms(aliased)  # the tone is there at full level …
+    assert rms(filtered) * 1000 < rms(aliased), (rms(filtered), rms(aliased))
+
+    # Block by block is one conversion: the FIR tail, the last filtered sample
+    # and the fractional read position survive the boundary.
+    one_shot = Resampler(48000, SAMPLE_RATE).process(sine)
+    chunked = convert(sine, sizes=(700, 1024, 333, 2048, 61))
+    assert chunked.size == one_shot.size, (chunked.size, one_shot.size)
+    assert float(np.max(np.abs(chunked - one_shot))) < 1e-6
+
+    # Equal rates: no filter, no interpolation, no group delay.
+    same = Resampler(SAMPLE_RATE, SAMPLE_RATE)
+    assert same.passthrough is True
+    block = (rng.standard_normal(777) * 0.1).astype("float32")
+    assert same.process(block).tolist() == block.tolist()
+    assert same.flush().size == 0
+    # Nonsense rates (a device that reported none) degrade to that instead of
+    # dividing by zero inside a callback.
+    for bad in ((0, SAMPLE_RATE), (SAMPLE_RATE, 0), (-1, SAMPLE_RATE)):
+        assert Resampler(*bad).passthrough is True, bad
+    # Upsampling needs no pre-filter — one would only add its group delay.
+    up = Resampler(8000, SAMPLE_RATE)
+    assert up.passthrough is False
+    assert abs(up.process(np.zeros(1000, dtype="float32")).size - 2000) <= 2
+    assert up.flush().size == 0
 
 
 def _hotkey_default_valid():
@@ -4023,6 +5038,191 @@ def _tray_survives_a_missing_notification_area():
         assert tray._retry_timer is None
 
 
+def _source_aware_controls_stop_their_take():
+    """Every control that can end a take names the take that is running and
+    posts the toggle for *that* source (#191).
+
+    The bug this exists for is a control labelled "Stop recording" that posts
+    the other source's toggle: App refuses a toggle for one source while the
+    other records (it must — the alternative inserts a recorded meeting into
+    the window a dictation was meant for), so such a control does nothing but
+    produce "A system audio recording is already running". Three surfaces can
+    end a take — the tray menu, the floating icon and the Home hero — and each
+    one is asserted against both sources, plus the tray status line, which used
+    to name the microphone combination while system audio was recording: the
+    one key that does not stop what is running.
+
+    The App stub carries `recording_source` as a plain attribute; the real App
+    exposes it as a property, and every surface reads it through `getattr` with
+    the microphone as the default (`Tray._source`)."""
+    from listen_to_me import tray as tray_module
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+    from listen_to_me.overlay import Overlay
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+    from listen_to_me.tray import _SYSTEM_START_LABEL, _SYSTEM_STOP_LABEL
+
+    qapp = _ensure_qapp()
+    apply_theme(qapp)
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        stub.cfg["system_audio"]["hotkey"] = "<ctrl>+<alt>+<shift>+<space>"
+
+        # --- the tray menu -------------------------------------------------
+        tray = tray_module.Tray(stub)
+        tray.start()
+        try:
+            assert tray._act_toggle.text() == "Start recording"
+            assert tray._act_system.text() == _SYSTEM_START_LABEL
+
+            # A microphone take turns the first entry into a "Stop" …
+            stub.state = "recording"
+            stub.recording_source = SOURCE_MIC
+            tray.set_state("recording")
+            assert tray._act_toggle.text() == "Stop recording (insert text)"
+            assert tray._act_system.text() == _SYSTEM_START_LABEL
+            # … a system-audio take the other one, and both name the source:
+            # with two start entries in one menu a bare "Stop recording" would
+            # not say which of the two takes it ends.
+            stub.recording_source = SOURCE_SYSTEM
+            tray.set_state("recording")
+            assert tray._act_toggle.text() == "Start recording"
+            assert tray._act_system.text() == _SYSTEM_STOP_LABEL
+            # The entry that says "Stop" is the one whose click App accepts.
+            stub.posts.clear()
+            tray._act_system.trigger()
+            assert stub.posts == [("toggle", SOURCE_SYSTEM)], stub.posts
+            stub.posts.clear()
+            tray._act_toggle.trigger()
+            assert stub.posts == [("toggle",)], stub.posts
+
+            # The status line, and with it the tooltip: the running source's
+            # own combination, from system_audio.hotkey.
+            label = tray_module.state_label(
+                "recording", stub.cfg, elapsed=72, source=SOURCE_SYSTEM
+            )
+            assert label == (
+                "Recording system audio 1:12… press Ctrl+Alt+Shift+Space to stop"
+            ), label
+            assert tray_module.state_label("recording", stub.cfg, source=SOURCE_SYSTEM) == (
+                "Recording system audio… press Ctrl+Alt+Shift+Space to stop"
+            )
+            assert "Ctrl+Alt+Space to stop" not in label, "named the dictation hotkey"
+            # …and the tray really goes through it, on both paths that render it.
+            tray.set_state("recording")
+            assert "system audio" in tray._act_state.text()
+            assert "Ctrl+Alt+Shift+Space" in tray._act_state.text(), tray._act_state.text()
+            tray.set_elapsed(72)
+            assert tray._act_state.text() == label, tray._act_state.text()
+            # Hold mode stops on release — per source, because the two modes
+            # are configured separately.
+            stub.cfg["system_audio"]["hotkey_mode"] = "hold"
+            assert "release Ctrl+Alt+Shift+Space to stop" in tray_module.state_label(
+                "recording", stub.cfg, source=SOURCE_SYSTEM
+            )
+            # An empty combination is how the second source is switched off, so
+            # such a take was started from a menu entry: say what is recording
+            # and invent no key.
+            stub.cfg["system_audio"]["hotkey"] = ""
+            for elapsed, expected in ((None, "Recording system audio…"),
+                                      (72, "Recording system audio 1:12…")):
+                assert tray_module.state_label(
+                    "recording", stub.cfg, elapsed=elapsed, source=SOURCE_SYSTEM
+                ) == expected
+            # The microphone wording is untouched by all of it, and the source
+            # changes the *recording* status only — idle is about starting a
+            # dictation, whose hotkey is the microphone's.
+            assert tray_module.state_label("recording", stub.cfg) == (
+                "Recording… press Ctrl+Alt+Space to stop"
+            )
+            assert tray_module.state_label("idle", stub.cfg, source=SOURCE_SYSTEM) == (
+                "Idle — press Ctrl+Alt+Space to record"
+            )
+            assert tray_module.state_label("processing", stub.cfg, source=SOURCE_SYSTEM) == (
+                tray_module._STATE_LABELS["processing"]
+            )
+            stub.cfg["system_audio"]["hotkey"] = "<ctrl>+<alt>+<shift>+<space>"
+        finally:
+            tray.stop()
+
+        # --- the floating icon ---------------------------------------------
+        overlay = Overlay(stub)
+        try:
+            stub.state = "recording"
+            stub.recording_source = SOURCE_SYSTEM
+            overlay.set_state("recording")
+            assert overlay._act_toggle.text() == _SYSTEM_STOP_LABEL
+            # The start entry steps aside while a take runs: the entry above is
+            # already the stop entry, and a second one would only earn App's
+            # refusal — on a context menu hanging off a 64 px icon.
+            assert not overlay._act_system.isVisible()
+            assert overlay.toggle_source() == SOURCE_SYSTEM
+            stub.posts.clear()
+            overlay.post_toggle()  # what a click on the icon itself does
+            assert stub.posts == [("toggle", SOURCE_SYSTEM)], stub.posts
+            # The one control that never leaves the screen says which source.
+            assert "system audio" in overlay.win.toolTip()
+            assert "system audio" in overlay.win.accessibleDescription()
+
+            # A microphone take keeps every wording it ever had, and its click
+            # stays the payload-free toggle every other surface posts.
+            stub.recording_source = SOURCE_MIC
+            overlay.set_state("recording")
+            assert overlay._act_toggle.text() == "Stop recording (insert text)"
+            assert overlay.toggle_source() == SOURCE_MIC
+            stub.posts.clear()
+            overlay.post_toggle()
+            assert stub.posts == [("toggle",)], stub.posts
+            assert "system audio" not in overlay.win.toolTip()
+
+            # Idle: the icon's click is the dictation control (the second
+            # source has its own entry to start from), and that entry posts
+            # its own toggle — this menu is the only way to start such a take
+            # with no hotkey configured for it.
+            stub.state = "idle"
+            overlay.set_state("idle")
+            assert overlay.toggle_source() == SOURCE_MIC
+            assert overlay._act_system.isVisible()
+            assert overlay._act_system.text() == _SYSTEM_START_LABEL
+            stub.posts.clear()
+            overlay._act_system.trigger()
+            assert stub.posts == [("toggle", SOURCE_SYSTEM)], stub.posts
+        finally:
+            overlay.destroy()
+
+        # --- the Home hero -------------------------------------------------
+        window = SettingsWindow(stub)
+        try:
+            stub.state = "recording"
+            stub.recording_source = SOURCE_SYSTEM
+            window.set_app_state("recording")
+            assert window.home.record_button.text() == "Stop && insert (system audio)"
+            assert "system audio" in window.home.record_button.toolTip()
+            # "speak now" drops with the source: this take records what the
+            # computer plays, so asking for speech would ask for the one thing
+            # that is not being recorded.
+            assert window.home.state_label.text() == "Recording system audio"
+            window.set_app_elapsed(72)
+            assert window.home.state_label.text() == "Recording system audio 1:12"
+            stub.posts.clear()
+            window.home._last_toggle = 0.0  # the hero's 400 ms click debounce
+            window.home.record_button.click()
+            assert stub.posts == [("toggle", SOURCE_SYSTEM)], stub.posts
+
+            stub.recording_source = SOURCE_MIC
+            window.set_app_state("recording")
+            assert window.home.record_button.text() == "Stop && insert"
+            assert window.home.state_label.text() == "Recording — speak now"
+            stub.posts.clear()
+            window.home._last_toggle = 0.0
+            window.home.record_button.click()
+            assert stub.posts == [("toggle",)], stub.posts
+        finally:
+            window.deleteLater()
+        stub.state = "idle"
+        qapp.processEvents()
+
+
 def _help_page_find():
     """The Help page can be searched, and the search wraps around.
 
@@ -4095,6 +5295,199 @@ def _help_page_find():
         finally:
             window.force_close()
             window.deleteLater()
+
+
+def _settings_window_edits_the_new_options():
+    """The Settings surfaces of #190/#191: the filler phrase list on the Engine
+    page, the "System audio" card on the Audio page, and the second assistant
+    profile.
+
+    Four ways this can be broken without anything looking wrong. An editable
+    phrase list whose filter is off has to read as inactive, or it looks
+    exactly like one in force. `_collect()` is the only path to disk, so a key
+    missing from it is a setting that cannot be saved at all — and the second
+    assistant profile must not collect a connection of its own, which would be
+    one server to configure twice. `_validate` refuses two listeners on one
+    chord (pynput delivers the press to both and app.py then registers
+    neither), while an empty combination is the documented "off" and must never
+    be reported. And the loopback device has to survive a Save from a window
+    whose Audio page was never opened: the dropdown holds a placeholder until
+    then, and answering from it would drop the device the user picked.
+
+    `Hotkeys` is stood in for exactly as in `_gui_construction`: the real
+    parser imports pynput, which needs an X display the CI runner has not
+    got."""
+    from listen_to_me import settings_ui as _settings_module
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+
+        # --- the filler phrase list ----------------------------------------
+        assert window.chk_filler.isChecked() is True  # DEFAULTS: the filter is on
+        window.chk_filler.setChecked(False)
+        assert not window.filler_edit.isEnabled()
+        assert not window.filler_reset_button.isEnabled()
+        assert not window.filler_status.isEnabled()
+        window.chk_filler.setChecked(True)
+        assert window.filler_edit.isEnabled() and window.filler_reset_button.isEnabled()
+        # The status under the field is live while the list is typed, and
+        # announced with the field rather than only as a label beside it (the
+        # replacements field two cards away has the same contract).
+        window.filler_edit.setPlainText("Vielen Dank\n...")
+        status = window.filler_status.text()
+        assert "1 phrase active" in status and "line 2 is only punctuation" in status, status
+        assert window.filler_edit.accessibleDescription() == status
+        window.filler_edit.setPlainText("")
+        assert window.filler_status.isHidden()
+
+        # --- _collect(): every new key round-trips --------------------------
+        window.chk_filler.setChecked(False)
+        window.filler_edit.setPlainText("Vielen Dank\nThank you")
+        window.sys_hotkey_edit.setText("<ctrl>+<alt>+<shift>+<space>")
+        window.rb_sys_hold.setChecked(True)
+        window.sys_max_seconds_spin.setValue(1200)
+        window.chk_a_sys_enabled.setChecked(True)
+        window.a_sys_model_edit.setText("qwen2.5:14b")
+        window.a_sys_prompt_edit.setPlainText("write the minutes")
+        values = window._collect()
+        assert values["filler_filter"] is False
+        # No fallback to the shipped list: an emptied field is a legitimate
+        # "filter nothing", and the checkbox is the off switch.
+        assert values["filler_phrases"] == "Vielen Dank\nThank you"
+        assert values["system_audio"] == {
+            "hotkey": "<ctrl>+<alt>+<shift>+<space>",
+            "hotkey_mode": "hold",
+            "device": None,
+            "max_seconds": 1200,
+        }, values["system_audio"]
+        assert values["assistant"]["system_audio"] == {
+            "enabled": True,
+            "model": "qwen2.5:14b",
+            "system_prompt": "write the minutes",
+        }, values["assistant"]["system_audio"]
+        # The connection stays shared — a base_url/api_key of its own here
+        # would be a second endpoint to configure for one server.
+        assert set(values["assistant"]["system_audio"]) == {"enabled", "model", "system_prompt"}
+        # An empty model override is stored verbatim ("use the shared one"),
+        # unlike the prompt, which falls back to its default.
+        window.a_sys_model_edit.setText("")
+        window.a_sys_prompt_edit.setPlainText("")
+        collected = window._collect()["assistant"]["system_audio"]
+        assert collected["model"] == ""
+        assert collected["system_prompt"] == _settings_module.DEFAULT_SYSTEM_AUDIO_PROMPT
+        # Every new key is part of the unsaved-changes snapshot too, or Save
+        # would not know it changed.
+        assert window._collect() != window._saved_snapshot
+        window.chk_filler.setChecked(True)
+        window.filler_edit.setPlainText(window.cfg["filler_phrases"])
+        window.sys_hotkey_edit.setText(window.cfg["system_audio"]["hotkey"])
+        window.rb_sys_toggle.setChecked(True)
+        window.sys_max_seconds_spin.setValue(window.cfg["system_audio"]["max_seconds"])
+        window.chk_a_sys_enabled.setChecked(False)
+        window.a_sys_prompt_edit.setPlainText(
+            window.cfg["assistant"]["system_audio"]["system_prompt"]
+        )
+        assert window._collect() == window._saved_snapshot
+
+        # --- the loopback device survives a Save ----------------------------
+        # Not enumerated at construction (PortAudio can stall for hundreds of
+        # ms before anything is on screen), so until the Audio page is first
+        # opened the *config* has to answer for the dropdown.
+        assert window._sys_devices_loaded is False
+        window.cfg["system_audio"]["device"] = 7
+        assert window._selected_system_device() == 7
+        assert window._collect()["system_audio"]["device"] == 7
+        # A stored value that is not an index reads as "Automatic": the null
+        # default carries no type, so config.py hands a hand-edit back
+        # untouched (bool is an int subclass and is not a device).
+        for junk in ("Stereo Mix", True, None, 1.5):
+            window.cfg["system_audio"]["device"] = junk
+            assert window._selected_system_device() is None, repr(junk)
+        # …and it survives the visit that fills the dropdown, even when the
+        # device is not there right now: PortAudio indices are positional, so
+        # falling back to "Automatic" would drop the choice on the next Save.
+        window.cfg["system_audio"]["device"] = 7
+        window._show_page("Audio")
+        app.processEvents()
+        assert window._sys_devices_loaded is True
+        assert window._selected_system_device() == 7
+        assert window._collect()["system_audio"]["device"] == 7
+        # With no loopback device found the card says so — every take would be
+        # refused with nothing captured, and nothing else on the page would
+        # explain it (there is no PortAudio in the light run, so this is the
+        # zero-candidate case).
+        if window._sys_candidates == 0:
+            from listen_to_me.system_audio import system_audio_help
+
+            hint = window._sys_audio_hint.text()
+            assert "No loopback device" in hint, hint
+            assert system_audio_help() in hint
+
+        # --- _validate(): one chord cannot drive two listeners --------------
+        class _FakeHotkeys:
+            valid = ("<ctrl>+<alt>+<space>", "<ctrl>+<alt>+<shift>+<space>")
+
+            @classmethod
+            def validate(cls, combo):
+                return combo in cls.valid
+
+            @classmethod
+            def combo_flags(cls, combo):
+                return (True, True)
+
+            @staticmethod
+            def equal(combo_a, combo_b):
+                return combo_a == combo_b
+
+        class _FakeCriticalBox:
+            StandardButton = _settings_module.QMessageBox.StandardButton
+            shown: list = []
+
+            @classmethod
+            def critical(cls, *args, **_kwargs):
+                cls.shown.append(args[-1])
+
+        real_hotkeys, real_box = _settings_module.Hotkeys, _settings_module.QMessageBox
+        _settings_module.Hotkeys = _FakeHotkeys
+        _settings_module.QMessageBox = _FakeCriticalBox
+        try:
+            window.hotkey_edit.setText("<ctrl>+<alt>+<space>")
+            # Empty: the second source is off, and Save must not report it.
+            window.sys_hotkey_edit.setText("")
+            assert window._validate(window._collect()) is True
+            assert not _FakeCriticalBox.shown, _FakeCriticalBox.shown
+            assert not window._sys_hotkey_error.text()
+            # Its own combination: accepted.
+            window.sys_hotkey_edit.setText("<ctrl>+<alt>+<shift>+<space>")
+            assert window._validate(window._collect()) is True
+            assert not window._sys_hotkey_error.text()
+            # The microphone's: refused, naming both — the inline reason under
+            # the field says the same thing while it is being typed, because a
+            # label is not announced to a screen reader whose focus is on the
+            # Save button that refused.
+            window.sys_hotkey_edit.setText("<ctrl>+<alt>+<space>")
+            assert window._validate(window._collect()) is False
+            assert _FakeCriticalBox.shown and "same combination" in _FakeCriticalBox.shown[-1]
+            assert "Same combination" in window._sys_hotkey_error.text()
+            # A combination that does not parse is refused like the
+            # microphone's, and never silently kept.
+            _FakeCriticalBox.shown.clear()
+            window.sys_hotkey_edit.setText("nonsense")
+            assert window._validate(window._collect()) is False
+            assert "Invalid system audio hotkey" in _FakeCriticalBox.shown[-1]
+            assert "not a valid combination" in window._sys_hotkey_error.text()
+        finally:
+            _settings_module.Hotkeys, _settings_module.QMessageBox = real_hotkeys, real_box
+            window.sys_hotkey_edit.setText(window.cfg["system_audio"]["hotkey"])
+
+        window.deleteLater()
+        app.processEvents()
 
 
 def _gui_construction():
@@ -5442,6 +6835,7 @@ _LIGHT_CHECKS = [
     ("config roundtrip", _config_roundtrip),
     ("config defaults", _config_defaults),
     ("config survives corrupt sections", _config_survives_corrupt_sections),
+    ("config survives a scalar source section", _config_survives_a_scalar_source_section),
     ("config guards scalar types", _config_guards_scalar_types),
     ("config read failure never costs the file", _config_read_failure_never_costs_the_file),
     ("config factory reset", _config_factory_reset),
@@ -5453,13 +6847,20 @@ _LIGHT_CHECKS = [
     ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
+    ("take is warned about its own cap", _take_is_warned_about_its_own_cap),
     ("text replacements", _text_replacements),
     ("replacement rules report what was skipped", _replacement_rules_report_what_was_skipped),
+    ("filler filter drops a silent take", _filler_filter_drops_a_silent_take),
+    ("filler phrases report what was skipped", _filler_phrases_report_what_was_skipped),
+    ("filler take inserts nothing", _filler_take_inserts_nothing),
     ("missing microphone falls back", _missing_microphone_falls_back),
+    ("loopback device is ranked and resolved", _loopback_device_is_ranked_and_resolved),
     ("assistant failure is actionable", _assistant_failure_is_actionable),
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
     ("recorder events carry their take", _recorder_events_carry_their_take),
+    ("hotkeys route to their own source", _hotkeys_route_to_their_own_source),
     ("assistant config is checked", _assistant_config_is_checked),
+    ("assistant profiles follow the source", _assistant_profiles_follow_the_source),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),
@@ -5521,6 +6922,8 @@ _LIGHT_CHECKS = [
     ("hotkey pause is visible and temporary", _hotkey_pause_is_visible_and_temporary),
     ("tray click opens the window", _tray_click_opens_the_window),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
+    ("source-aware controls stop their take", _source_aware_controls_stop_their_take),
+    ("settings window edits the new options", _settings_window_edits_the_new_options),
     ("Qt UI construction", _gui_construction),
 ]
 
@@ -5541,6 +6944,8 @@ def _insecure_hub_client_builds():
 _FULL_EXTRA = [
     ("default hotkey parses", _hotkey_default_valid),
     ("audio band levels", _band_levels),
+    ("resampler converts without aliasing", _resampler_converts_without_aliasing),
+    ("recorder falls back to the native format", _recorder_falls_back_to_the_native_format),
     ("clip stats verdicts", _clip_stats_verdicts),
     ("insecure hub client builds", _insecure_hub_client_builds),
 ]

@@ -84,7 +84,9 @@ def recent_entry_label(entry: dict, max_chars: int = _RECENT_CHARS) -> str:
     return text.replace("&", "&&")
 
 
-def state_label(state: str, cfg, elapsed=None, paused: bool = False) -> str:
+def state_label(
+    state: str, cfg, elapsed=None, paused: bool = False, source: str = SOURCE_MIC
+) -> str:
     """The tray's one-line status, naming the combination that acts on it.
 
     "Press the hotkey" is the one thing the tray can't assume the user knows:
@@ -98,23 +100,42 @@ def state_label(state: str, cfg, elapsed=None, paused: bool = False) -> str:
     caller that only knows the state keeps the wording it always had — and so
     the label stays a pure function of its arguments.
 
+    `source` is the recording source of the running take (#191) and changes the
+    recording status only. That take is stopped by *its own* hotkey, so naming
+    the dictation combination during a system-audio recording would name the
+    one key that does not end it; the second source's combination lives in
+    `system_audio.hotkey` and its verb in `system_audio.hotkey_mode`. Every
+    other state is about starting a dictation, whose hotkey is the
+    microphone's — which is also why the default keeps every existing caller's
+    wording exactly as it was.
+
     Falls back to the generic wording when the combination can't be rendered
     (an empty or unusable `hotkey` in the config) — never to a raw pynput
-    token in the middle of a sentence.
+    token in the middle of a sentence. For the second source an empty
+    combination is its documented "off" state, so such a take was started from
+    a menu entry: the status then says what is recording and invents no key.
     """
     if paused and state == "idle":
         # Naming the hotkey here would be a lie: pressing it does nothing.
         return _PAUSED_LABEL
     generic = _STATE_LABELS.get(state, state)
-    if state == "recording" and elapsed is not None:
+    system = state == "recording" and source == SOURCE_SYSTEM
+    if state == "recording" and (elapsed is not None or system):
         # A speaker has no clock, and the take has a cap: without this the only
         # feedback about a running recording was the heads-up 30 s before it.
-        generic = f"Recording {format_duration(elapsed)}…"
+        # The source is named for the reason the floating icon names it
+        # (overlay._recording_label): a bare "Recording…" over a system-audio
+        # take reads as an open microphone, and both end up at the cursor.
+        clock = "" if elapsed is None else f" {format_duration(elapsed)}"
+        generic = f"{'Recording system audio' if system else 'Recording'}{clock}…"
     if state not in ("idle", "recording"):
         return generic
     try:
-        combo = hotkey_label(cfg["hotkey"])
-        hold = cfg["hotkey_mode"] == "hold"
+        # The two sources are configured separately, and the key names inside
+        # the system_audio section are the same as the top-level ones.
+        keys = cfg["system_audio"] if system else cfg
+        combo = hotkey_label(keys["hotkey"])
+        hold = keys["hotkey_mode"] == "hold"
     except Exception:
         log.debug("could not render the hotkey for the tray status", exc_info=True)
         return generic
@@ -402,7 +423,9 @@ class Tray:
         # Rebuilt on every state change rather than cached, so a hotkey changed
         # in the settings shows up here as soon as apply_settings() calls in.
         paused = self._paused()
-        label = state_label(state, self.app.cfg, paused=paused)
+        # …and with the source of the running take, so the status names the
+        # combination that really stops it (see state_label).
+        label = state_label(state, self.app.cfg, paused=paused, source=self._source())
         self._icon.setIcon(tray_icon(state))
         # A download outlives the state change that started it (the model is
         # fetched during "processing"), so it keeps the line it is on.
@@ -451,7 +474,11 @@ class Tray:
         if self._icon is None or self._act_state is None:
             return
         label = state_label(
-            self.app.state, self.app.cfg, elapsed=seconds, paused=self._paused()
+            self.app.state,
+            self.app.cfg,
+            elapsed=seconds,
+            paused=self._paused(),
+            source=self._source(),
         )
         self._icon.setToolTip(f"{APP_NAME} — {self._progress or label}")
         self._act_state.setText(self._progress or label)
