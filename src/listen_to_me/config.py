@@ -179,6 +179,14 @@ DEFAULTS: dict = {
         "live_preview": False,
         # How long the finished transcript stays visible (seconds).
         "preview_seconds": 6,
+        # Where both previews above are drawn: "icon" (default) next to the
+        # floating icon, wherever it was dragged; "cursor" below-right of the
+        # mouse pointer, so the text appears on the monitor — and beside the
+        # window — actually being dictated into (#196). Anything else here
+        # degrades to "icon": this key's default is a string, so _coerce lets
+        # every string through, and an unknown value must not leave the bubble
+        # unplaced (see overlay.preview_anchor).
+        "preview_anchor": "icon",
         # Saved position of the floating icon (null = bottom right). "x"/"y"
         # are desktop coordinates; "screen" identifies the monitor the icon was
         # left on (EDID identity, else the device name) and "rel_x"/"rel_y" are

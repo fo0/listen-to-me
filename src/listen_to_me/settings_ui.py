@@ -98,6 +98,12 @@ from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
 from .keymap import hotkey_label
+# The transcript-bubble anchor's vocabulary lives with the placement that
+# reads it, so the dropdown can never offer a value overlay.py cannot place
+# (#196). Importable up here for the same reason `system_audio` is: overlay.py
+# reaches nothing heavy at import time — `audio` keeps numpy behind
+# TYPE_CHECKING, and Qt is already loaded by this module.
+from .overlay import ANCHOR_ICON, PREVIEW_ANCHORS, preview_anchor
 from .qtutil import (
     copy_with_feedback,
     elastic_combo,
@@ -1870,6 +1876,45 @@ class SettingsWindow(QDialog):
         cv.addWidget(self._hint(
             "The live preview transcribes in parallel while you speak — it needs a fast machine "
             "(or a small model) and shows only the most recent sentences."
+        ))
+        # With the two previews above rather than in a card of its own: it
+        # says where their text appears, and it governs both of them.
+        anchor_row = QWidget()
+        ar = QHBoxLayout(anchor_row)
+        ar.setContentsMargins(0, 0, 0, 0)
+        ar.setSpacing(8)
+        anchor_label = QLabel("Show the transcript at:")
+        ar.addWidget(anchor_label)
+        self.preview_anchor_combo = QComboBox()
+        for value, label in PREVIEW_ANCHORS:
+            self.preview_anchor_combo.addItem(label, value)
+        # Normalized, not raw: a hand-edited value must show the place the
+        # bubble will actually appear in (see overlay.preview_anchor).
+        self.preview_anchor_combo.setCurrentIndex(
+            self.preview_anchor_combo.findData(preview_anchor(ocfg.get("preview_anchor")))
+        )
+        self.preview_anchor_combo.setToolTip(
+            "Where both previews above are drawn. “The floating icon” keeps them beside "
+            "the icon, wherever you dragged it. “The mouse pointer” draws them below-right "
+            "of the pointer on whichever monitor it is on — for dictating into a window on "
+            "another screen, where the text otherwise appears in the corner the icon lives in."
+        )
+        elastic_combo(self.preview_anchor_combo)
+        # The visible label sits beside the combo in a plain row, so make the
+        # relation explicit — otherwise the dropdown is announced unnamed.
+        anchor_label.setBuddy(self.preview_anchor_combo)
+        ar.addWidget(self.preview_anchor_combo, 1)
+        cv.addWidget(anchor_row)
+        # The two questions this setting raises, answered here because the
+        # answers are decisions and not guesses: it works with the icon off
+        # (that is the combination it is best at), and it obeys the
+        # always-on-top switch above it like the icon does.
+        cv.addWidget(self._hint(
+            "“The mouse pointer” follows the pointer while you speak and works with the "
+            "floating icon switched off entirely — no icon anywhere, the text where you are "
+            "looking. It never takes the click, so you can keep typing underneath it. Like "
+            "the icon it obeys “Keep the icon above all other windows”: with that off, "
+            "other windows may cover the bubble too."
         ))
         layout.addWidget(card)
 
@@ -4988,6 +5033,10 @@ class SettingsWindow(QDialog):
                 "show_preview": self.chk_o_preview.isChecked(),
                 "live_preview": self.chk_o_live.isChecked(),
                 "preview_seconds": int(self.preview_seconds_spin.value()),
+                # currentData() answers None only for an empty combo, which
+                # this one never is — the fallback is the default anchor, not
+                # a null the placement would have to interpret.
+                "preview_anchor": self.preview_anchor_combo.currentData() or ANCHOR_ICON,
             },
             "assistant": {
                 "enabled": self.chk_a_enabled.isChecked(),
