@@ -129,10 +129,16 @@ class _UpdateSignals(QObject):
 
 class _AssistantSignals(QObject):
     """Marshals the assistant connection test's outcome from its worker thread
-    back to the Qt main thread."""
+    back to the Qt main thread.
 
-    tested = Signal(str)  # what the endpoint returned for the sample sentence
-    test_failed = Signal(str)
+    The leading int is the test generation the worker was started with, the
+    same guard `_DiagSignals` uses: a worker detached by Cancel (or superseded
+    by a newer run) no longer matches and its handler drops the payload, so a
+    late answer can't overwrite the status line the user is now reading.
+    """
+
+    tested = Signal(int, str)  # generation, what the endpoint returned
+    test_failed = Signal(int, str)  # generation, described error
 
 
 class _DiagSignals(QObject):
@@ -402,13 +408,15 @@ class SettingsWindow(QDialog):
 
         # Assistant connection test, wired before the Assistant page is built
         # below. Kept out of the diagnostics machinery on purpose: it borrows
-        # neither the microphone nor the model, so it needs no generation, no
-        # cancel event and no hotkey pause — only a busy flag, like the update
-        # check it is modelled on.
+        # neither the microphone nor the model, so it needs no cancel event and
+        # no hotkey pause. It does carry a generation, because Cancel here can
+        # only detach the waiting worker, never interrupt the HTTP request it
+        # is blocked in — see _cancel_assistant_test.
         self._asig = _AssistantSignals()
         self._asig.tested.connect(self._on_assistant_tested)
         self._asig.test_failed.connect(self._on_assistant_test_failed)
         self._assistant_busy = False
+        self._assistant_gen = 0
 
         # Diagnostics state (Download model / Test transcription on the Engine
         # page, Test microphone on the Audio page, Test hotkey on General),
@@ -1756,6 +1764,20 @@ class SettingsWindow(QDialog):
         )
         self.a_test_button.clicked.connect(self._test_assistant)
         th.addWidget(self.a_test_button)
+        # Every other test and download in this window can be called off; this
+        # one held the page for the configured request timeout, which goes up
+        # to 600 s. Disabled while nothing is running, like the mic and model
+        # Cancel buttons.
+        self.a_test_cancel_button = QPushButton("Cancel")
+        self.a_test_cancel_button.setAutoDefault(False)
+        self.a_test_cancel_button.setEnabled(False)
+        self.a_test_cancel_button.setToolTip(
+            "Stop waiting for the endpoint's answer and hand the button back. "
+            "The request itself cannot be recalled once sent — it is left to "
+            "run out on its own and its answer is discarded."
+        )
+        self.a_test_cancel_button.clicked.connect(self._cancel_assistant_test)
+        th.addWidget(self.a_test_cancel_button)
         th.addStretch(1)
         form.addRow("", test_row)
         # elastic: the line carries a URL, an endpoint reply or an exception —
@@ -2406,8 +2428,11 @@ class SettingsWindow(QDialog):
             (self.a_url_edit if field == "base_url" else self.a_model_edit).setFocus()
             return
         self._assistant_busy = True
+        self._assistant_gen += 1
+        gen = self._assistant_gen
         self.a_test_button.setEnabled(False)
         self.a_test_button.setText(_A_TESTING_LABEL)
+        self.a_test_cancel_button.setEnabled(True)
         timeout = values["timeout"]
         # Name the wait: a cold local model can take a while to answer, and a
         # button that just sits there reads as a hang rather than as patience.
@@ -2420,15 +2445,39 @@ class SettingsWindow(QDialog):
             try:
                 from . import assistant
 
-                self._asig.tested.emit(assistant.refine(_A_TEST_SAMPLE, values))
+                self._asig.tested.emit(gen, assistant.refine(_A_TEST_SAMPLE, values))
             except Exception as exc:  # surfaced in the UI, never raised at the user
                 from . import netutil
 
-                self._asig.test_failed.emit(netutil.describe_error(exc))
+                self._asig.test_failed.emit(gen, netutil.describe_error(exc))
 
         threading.Thread(target=work, name="assistant-test", daemon=True).start()
 
-    def _on_assistant_tested(self, reply: str) -> None:
+    def _cancel_assistant_test(self) -> None:
+        """Stop waiting for the endpoint and give the button back.
+
+        Detach, not abort: the worker is blocked in a single blocking HTTP call
+        with the configured timeout behind it and there is no handle to
+        interrupt it with. Bumping the generation makes its eventual answer
+        arrive against a stale number, so the handler drops it; the daemon
+        thread then runs out on its own. Nothing was recorded or inserted, so
+        there is no state to unwind — only the wait.
+
+        Worth having because that wait is the user's, not the app's: the
+        request timeout goes up to 600 s and exists precisely for slow local
+        models, so "Testing…" against a wrong URL or a stopped Ollama could sit
+        there for ten minutes with the page frozen on it. Every other test and
+        download in this window already offered a way out.
+        """
+        if not self._assistant_busy:
+            return
+        self._assistant_gen += 1
+        self._end_assistant_test()
+        self.a_test_status.setText("Test cancelled.")
+
+    def _on_assistant_tested(self, gen: int, reply: str) -> None:
+        if gen != self._assistant_gen:
+            return  # detached by Cancel or superseded — see _cancel_assistant_test
         self._end_assistant_test()
         # What came back, not just "OK": an endpoint can answer perfectly while
         # the model or the prompt turns the sentence into a translation, a
@@ -2439,15 +2488,18 @@ class SettingsWindow(QDialog):
             preview = preview[:_A_TEST_PREVIEW_CHARS].rstrip() + "…"
         self.a_test_status.setText(f"Connection works ✓ — the endpoint returned: “{preview}”")
 
-    def _on_assistant_test_failed(self, message: str) -> None:
+    def _on_assistant_test_failed(self, gen: int, message: str) -> None:
+        if gen != self._assistant_gen:
+            return  # detached by Cancel or superseded — see _cancel_assistant_test
         self._end_assistant_test()
         self.a_test_status.setText(f"Test failed: {message}")
 
     def _end_assistant_test(self) -> None:
-        """Hand the button back to the user (both outcomes)."""
+        """Hand the button back to the user (all three outcomes)."""
         self._assistant_busy = False
         self.a_test_button.setEnabled(True)
         self.a_test_button.setText(_A_TEST_LABEL)
+        self.a_test_cancel_button.setEnabled(False)
 
     # --------------------------------------------------------- diagnostics
 
@@ -2904,6 +2956,10 @@ class SettingsWindow(QDialog):
         # swapping the exe after the user dismissed the dialog would surprise.
         if self._update_cancel_event is not None:
             self._update_cancel_event.set()
+        # Same for a running assistant test: its worker would otherwise come
+        # back to a status label on a closed page. Detaching costs nothing —
+        # nothing was recorded, inserted or written.
+        self._cancel_assistant_test()
         # Drop the cached test transcriber so a test model (potentially GBs of
         # RAM) doesn't stay loaded after the dialog closes — App keeps a
         # reference to the closed window until Settings is opened again. A

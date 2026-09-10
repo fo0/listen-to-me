@@ -4307,7 +4307,11 @@ def _gui_construction():
         # without touching the network, and (c) report BOTH outcomes and hand
         # the button back either way. Driven through the slots, never through
         # the worker: a check may not make a request or wait on a thread.
-        from listen_to_me.settings_ui import _A_TEST_LABEL, _A_TESTING_LABEL
+        from listen_to_me.settings_ui import (
+            _A_TEST_IDLE,
+            _A_TEST_LABEL,
+            _A_TESTING_LABEL,
+        )
 
         idle_width = _laid_out_width(window.a_test_button)
         window.a_test_button.setText(_A_TESTING_LABEL)
@@ -4351,17 +4355,57 @@ def _gui_construction():
         # error is shown verbatim, and the button comes back in either case.
         window.a_url_edit.setText("http://localhost:11434/v1")
         for drive, expected in (
-            (lambda: window._on_assistant_tested("This is a test of the assistant."), "test of the assistant"),
-            (lambda: window._on_assistant_test_failed("Connection refused"), "Connection refused"),
+            (
+                lambda: window._on_assistant_tested(
+                    window._assistant_gen, "This is a test of the assistant."
+                ),
+                "test of the assistant",
+            ),
+            (
+                lambda: window._on_assistant_test_failed(
+                    window._assistant_gen, "Connection refused"
+                ),
+                "Connection refused",
+            ),
         ):
             window._assistant_busy = True
             window.a_test_button.setEnabled(False)
             window.a_test_button.setText(_A_TESTING_LABEL)
+            window.a_test_cancel_button.setEnabled(True)
             drive()
             assert not window._assistant_busy
             assert window.a_test_button.isEnabled()
             assert window.a_test_button.text() == _A_TEST_LABEL
+            assert not window.a_test_cancel_button.isEnabled()
             assert expected in window.a_test_status.text(), window.a_test_status.text()
+
+        # Cancel detaches the waiting worker rather than aborting it: the
+        # request is blocked in a single HTTP call with a timeout of up to
+        # 600 s behind it, so the answer still arrives — against a generation
+        # that has moved on. It must not overwrite what the user is now
+        # reading, and the button must come back either way. Without the
+        # generation guard the stale reply would land in the status line
+        # minutes after the test was called off.
+        window._assistant_busy = True
+        window.a_test_button.setEnabled(False)
+        window.a_test_button.setText(_A_TESTING_LABEL)
+        window.a_test_cancel_button.setEnabled(True)
+        stale = window._assistant_gen
+        window._cancel_assistant_test()
+        assert not window._assistant_busy
+        assert window.a_test_button.isEnabled()
+        assert not window.a_test_cancel_button.isEnabled()
+        assert "cancelled" in window.a_test_status.text().lower(), window.a_test_status.text()
+        window._on_assistant_tested(stale, "a late answer nobody is waiting for")
+        assert "late answer" not in window.a_test_status.text(), window.a_test_status.text()
+        window._on_assistant_test_failed(stale, "a late failure nobody is waiting for")
+        assert "late failure" not in window.a_test_status.text(), window.a_test_status.text()
+
+        # Cancel with nothing running is a no-op, not a status line claiming a
+        # test was called off (the window-close path calls it unconditionally).
+        window.a_test_status.setText(_A_TEST_IDLE)
+        window._cancel_assistant_test()
+        assert window.a_test_status.text() == _A_TEST_IDLE, window.a_test_status.text()
 
         # "Reset position" for the floating icon. It exists because dragging is
         # unconstrained and a saved position survives as long as its centre is
