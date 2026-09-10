@@ -10,6 +10,9 @@ venv/
 build/
 dist/
 *.spec
+# The release job's PortAudio build tree — src/, build/ and out/ at the repo
+# root, from "Build PortAudio with WASAPI loopback" or a local repro (#194)
+/portaudio/
 
 # IDE / OS
 .idea/

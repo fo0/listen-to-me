@@ -64,7 +64,7 @@ Python >=3.10 (CI 3.12) · PySide6 (Qt 6) · faster-whisper (+ optional OpenVINO
 
 ## Project Overview
 
-**Listen To Me** is a push-to-talk voice-typing tray app: press a global hotkey, speak, and the recording is transcribed **locally** by a Whisper model and inserted at the cursor of whatever field is focused. A **second hotkey records what the computer plays** (a call, a meeting) through a loopback input device and inserts that transcript the same way (#191, ADR-0009). Windows-first, Linux/macOS paths prepared. Feature list: `README.md`.
+**Listen To Me** is a push-to-talk voice-typing tray app: press a global hotkey, speak, and the recording is transcribed **locally** by a Whisper model and inserted at the cursor of whatever field is focused. A **second hotkey records what the computer plays** through a loopback input device (#191, ADR-0009 + ADR-0010). Windows-first, Linux/macOS paths prepared. Feature list: `README.md`.
 
 ## Project Structure
 
@@ -109,7 +109,7 @@ npx -y -p @mermaid-js/mermaid-cli mmdc -i docs/ARCHITECTURE.mmd -o docs/ARCHITEC
 A lookup index, not documentation — every pattern, every module and its role, incl. the config keys each owns: `agent_docs/key-patterns.md`.
 
 - **App core & threading (critical)** (`app.py`) — `idle` → `recording` → `processing`; GUI/tray/overlay work is main-thread only, workers never touch Qt and post through the event queue (`App.post(...)` / `App.notify(...)`) · **Lazy heavy imports** — Qt, `sounddevice`, `pynput`, `faster_whisper`, `numpy` inside functions so `--version`/`--selftest` stay headless; never hoist.
-- **Backend abstraction** (`transcriber*.py`) — `create_transcriber(cfg)` by `cfg["backend"]` · **Config deep-merge over `DEFAULTS`** (`config.py`) — atomic writes, untrusted input · **Two recording sources** — the source travels with the event; `system_audio.py` resolves the loopback device (a `None` index means **refuse the take**, never "the default input"), `resample.py` converts to 16 kHz mono in the capture callback, `fillers.py` drops a transcript that is only an invented silence phrase, and `assistant.profile(acfg, source)` picks the per-source prompt. Keys: `system_audio.*`, `filler_filter`/`filler_phrases`, `assistant.system_audio.*`.
+- **Backend abstraction** (`transcriber*.py`) — `create_transcriber(cfg)` by `cfg["backend"]` · **Config deep-merge over `DEFAULTS`** (`config.py`) — atomic writes, untrusted input · **Two recording sources** — the source travels with the event; `system_audio.py` resolves the loopback **input** device (`None` = **refuse the take**, never "the default input") and `portaudio.py` picks _which_ PortAudio answers — the frozen build loads the `portaudio.dll` it bundles (WASAPI loopback), so `prepare_library_path()` stays `main()`'s first statement (ADR-0010). Keys: `system_audio.*`, `filler_filter`/`filler_phrases`, `assistant.system_audio.*`.
 
 ## Coding Conventions
 

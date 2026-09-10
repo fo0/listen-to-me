@@ -136,6 +136,20 @@ DEFAULTS: dict = {
         # A longer cap than max_seconds above: a recorded meeting is not a
         # dictation.
         "max_seconds": 900,
+        # ESCAPE HATCH, not a feature switch. The frozen Windows build ships
+        # its own portaudio.dll (#194, ADR-0010) because the one in the
+        # sounddevice wheel enumerates no WASAPI loopback device; once ours is
+        # loaded, nothing reverts to the wheel's. A DLL that loads but fails
+        # Pa_Initialize would therefore break ALL audio — microphone dictation
+        # included — with no recovery until a new release is dispatched, and
+        # nothing in CI captures audio with it (the release runner has no audio
+        # hardware). Setting this to false makes `portaudio.prepare_library_path`
+        # leave PATH alone, so sounddevice loads its own copy exactly as a
+        # source install does: it costs loopback capture on Windows and nothing
+        # else. Deliberately NOT in the Settings UI — it is a lever a support
+        # instruction names, and the README settings table is where a user
+        # finds it. Ignored everywhere but a frozen build that carries the DLL.
+        "bundled_portaudio": True,
     },
     # How to insert text at the cursor: "paste" (clipboard + Ctrl+V) or "type".
     "injection_mode": "paste",
@@ -411,6 +425,48 @@ def _coerce(key: str, default, value):
         key, type(value).__name__, value, type(default).__name__, default,
     )
     return default
+
+
+def bundled_portaudio_enabled() -> bool:
+    """Whether a frozen build may load the `portaudio.dll` it ships
+    (`system_audio.bundled_portaudio`) — read straight off `config.json`,
+    without building a :class:`Config`.
+
+    For the one caller that runs before there is anything to build one with:
+    `portaudio.prepare_library_path()` is `app.main()`'s first statement, ahead
+    of `_setup_logging()`, of Qt, and of the `--version` / `--help` answers.
+    A `Config` there would be wrong three times over — it writes the defaults
+    file when none exists, it sweeps stale temp files, and it would put that
+    work in front of `--version`. So this opens the file, reads one key, and
+    keeps the DEFAULTS answer for everything else.
+
+    **Anything unreadable means "on"**, the shipped default: no config file
+    (first run), broken JSON, a truncated write, a missing section, a value of
+    the wrong type. The escape hatch exists to recover a broken audio stack,
+    and a config the app cannot parse must never be what costs the app its
+    start — nor the feature that a hand-edit was not even about. `_coerce`
+    supplies the type rule so this answers exactly what a normal load would
+    (a bool, or the `0`/`1` of a plausible hand-edit; a string "false" is not
+    one — it keeps the default and `Config` warns about it later).
+
+    Never raises. Stdlib-only, and no `Config`, no logging setup, no Qt.
+    """
+    # The literal is the last-resort answer if the section is ever renamed:
+    # "on" is the shipped behaviour, and this function may not raise to say so.
+    default = bool(DEFAULTS.get("system_audio", {}).get("bundled_portaudio", True))
+    try:
+        path = config_dir() / "config.json"
+        with open(path, encoding="utf-8") as fh:
+            stored = json.load(fh)
+        section = stored.get("system_audio")
+        if not isinstance(section, dict) or "bundled_portaudio" not in section:
+            return default
+        value = _coerce("bundled_portaudio", default, section["bundled_portaudio"])
+        return value if isinstance(value, bool) else default
+    except Exception:
+        # Deliberately not log.exception: there is no logging configured yet at
+        # the one call site, and a missing config.json is the normal first run.
+        return default
 
 
 # Keys clamp_setting() has already warned about in this process.

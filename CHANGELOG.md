@@ -42,6 +42,37 @@ changes at a glance.
   because that one is a microphone — recording the room while you asked for what
   the computer plays is a wrong result, not a degraded one, and nothing about
   the resulting text would give it away.
+- **Recording what the computer plays now needs no setup on Windows — and the
+  device list finally names your outputs.** The released `.exe` brings its own
+  PortAudio, built with WASAPI loopback and pinned by commit SHA like every
+  action in the release workflow, so Windows offers a recordable
+  “… [Loopback]” input for **every** output device: no “Stereo Mix” to un-hide
+  and switch on, no virtual audio cable, and a laptop with nothing but a USB
+  headset can record a call at all — until now it could not, because the
+  PortAudio inside the audio library's own wheel enumerates no loopback device
+  whatsoever. The picker was the other half of the same failure: it can only
+  ever list _input_ devices, so a machine without “Stereo Mix” showed a list of
+  microphones under a card headed “System audio” and nothing that answered
+  “where are my speakers?”. It is now two labelled groups — the devices that
+  record what the computer plays first, each named after the **output** it
+  records, then the microphones — the first heading stays visible with a “None
+  found” row under it when nothing was found, and the hint below names the
+  outputs that no loopback device covers (three by name, then a count) followed
+  by the fix for your platform. Two consequences worth knowing: the swap is not
+  scoped to this feature — the bundled binary answers for **all** audio in the
+  exe, microphone dictation included, which is why the release refuses to
+  publish a DLL that does not export `PaWasapi_IsLoopback` and why the exe's
+  self-test has to pass; and the version string cannot tell the two binaries
+  apart, because a correct new build reports `PortAudio V19.7.0-devel, revision
+unknown` — byte for byte what the old bundled one reports — so the log line
+  names the **file** that was loaded and whether loopback is supported instead
+  of a version. Running from source is deliberately unchanged: `pip install -e .`
+  ships no DLL, so there “Stereo Mix” or a virtual cable is still required
+  ([ADR-0010](docs/adr/0010-the-windows-release-ships-its-own-portaudio.md)) —
+  and because that swap reaches all audio, there is a way back out of it:
+  `system_audio.bundled_portaudio: false` in `config.json` loads the wheel's
+  old binary again, at the price of recording what the computer plays on
+  Windows and nothing else.
 - **A silent take no longer inserts a phrase nobody spoke — and the recording
   decides that, not the wording.** A transcript is dropped only when the take's
   own audio carried no usable signal: the clip statistics that already decide

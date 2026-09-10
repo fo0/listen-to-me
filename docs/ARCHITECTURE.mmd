@@ -24,6 +24,7 @@ flowchart TD
 
     subgraph "Processing (worker threads)"
         Recorder("Recorder — sounddevice (microphone or loopback input)"):::backend
+        PortAudio("portaudio — which PortAudio answers: bundle dir onto PATH, then probe what loaded"):::infra
         SysAudio("system_audio — rank/resolve the loopback device, refuse the take when there is none"):::backend
         Resample("Resampler — native format → 16 kHz mono, in the capture callback"):::backend
         Transcriber("Transcriber — faster-whisper"):::backend
@@ -49,11 +50,13 @@ flowchart TD
         LLM{{"OpenAI-compatible API (Ollama, ...)"}}:::external
         GH{{"GitHub Releases API"}}:::external
         OS{{"Focused window / other apps"}}:::external
-        Loopback{{"Loopback / monitor input device — 'Monitor of …', Stereo Mix, BlackHole"}}:::external
+        Loopback{{"Loopback / monitor input device — 'Monitor of …', Stereo Mix, BlackHole, '… [Loopback]'"}}:::external
+        PaDll{{"portaudio.dll — built with WASAPI loopback, bundled in the one-file exe; else the sounddevice wheel's own"}}:::external
     end
 
     Main -->|"acquire"| Single
     Single -->|"post activate (second launch)"| Events
+    Main -->|"prepare_library_path() — first statement, prepends sys._MEIPASS to PATH"| PortAudio
     Main -->|"run"| App
     App --> Config
     App -->|"apply insecure_ssl (verify= + HF backend)"| Net
@@ -79,6 +82,9 @@ flowchart TD
     SysAudio -->|"loopback input index"| Recorder
     SysAudio -->|"no candidate → refuse: (None, the platform fix)"| App
     App -->|"post notify (the refusal, forced)"| Events
+    PortAudio -->|"decides which binary sounddevice resolves"| PaDll
+    PaDll -->|"WASAPI loopback: every output is enumerated again as an input"| Loopback
+    Recorder -->|"log_once(): loaded path, loopback support, device counts"| PortAudio
     Loopback -->|"what the computer plays"| Recorder
     Recorder -->|"downmix + resample per block"| Resample
     App -->|"_process worker"| Transcriber
@@ -99,6 +105,7 @@ flowchart TD
     LiveType -->|"type stable text"| Injector
 
     Settings -->|"loopback candidates for the device list"| SysAudio
+    Settings -->|"input profiles + list_output_devices() for the two-group picker and its hint"| Recorder
     Settings -->|"phrase-list status while it is edited"| Fillers
     Settings -->|"model download / mic + transcription test"| Diag
     Diag -->|"test clip"| Recorder
@@ -137,6 +144,7 @@ flowchart TD
     click Recorder "src/listen_to_me/audio.py"
     click SysAudio "src/listen_to_me/system_audio.py"
     click Resample "src/listen_to_me/resample.py"
+    click PortAudio "src/listen_to_me/portaudio.py"
     click Fillers "src/listen_to_me/fillers.py"
     click Transcriber "src/listen_to_me/transcriber.py"
     click TranscriberOV "src/listen_to_me/transcriber_openvino.py"

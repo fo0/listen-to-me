@@ -14,13 +14,27 @@ perfectly ordinary PortAudio *input* device that the OS already provides:
   (BlackHole, Soundflower, Rogue Amoeba Loopback).
 
 Why through a device at all, rather than asking WASAPI for a loopback stream
-of the output directly: the shipped stack cannot. sounddevice 0.5.6 exposes no
-loopback option, and the PortAudio binary in its Windows wheel is
-V19.7.0-devel, which does not export `PaWasapi_IsLoopback`. A newer PortAudio
-additionally enumerates every output device a second time as "<name>
-[Loopback]" — so the ranking below scores that suffix highest although today's
-binary never emits it, and the day the wheel carries a newer PortAudio the
-auto-pick simply gets better with no code change.
+of the output directly: sounddevice 0.5.6 exposes no loopback option, so the
+only way in is a device. Which devices exist then depends on the PortAudio
+binary that answers, and since #194 that differs between the two builds:
+
+* **Released Windows exe:** it ships its own newer `portaudio.dll` (ADR-0010,
+  `portaudio.py`), which enumerates every WASAPI render endpoint a second time
+  as a "<name> [Loopback]" input. So every output has a candidate, "Stereo
+  Mix" or a virtual cable is needed for nothing, and the ranking below picks
+  the twin because "[loopback]" is its strongest hint.
+* **Source install / non-Windows build:** `sounddevice` loads the PortAudio
+  inside its own wheel. That binary is V19.7.0-devel and does not export
+  `PaWasapi_IsLoopback`; it emits no "[Loopback]" twin at all, which is why
+  the Windows list above (Stereo Mix, virtual cable) is what a `pip install`
+  has to work with. The same is true of a released exe whose bundled DLL was
+  turned off through `system_audio.bundled_portaudio`.
+
+The version string cannot tell the two binaries apart — both report
+`V19.7.0-devel` — which is the reason `portaudio.py` exists and reports the
+loaded *file* instead. Nothing in this module branches on any of it: the
+ranking is name matching, so it is the same code either way and simply finds
+more candidates on the build that enumerates more.
 
 Qt-free, and `audio` is imported lazily inside the functions, so these rules
 stay testable headless and `--version` / `--selftest` pull in no PortAudio.
@@ -42,9 +56,10 @@ log = logging.getLogger(__name__)
 # comparison. Where each group comes from:
 #
 # * "<name> [Loopback]" — a newer PortAudio enumerates every *output* device a
-#   second time as a loopback input: the strongest hint there is. Matched on
-#   purpose although the PortAudio binary in today's sounddevice wheel
-#   (V19.7.0-devel) never emits it — the day it does, this keeps working.
+#   second time as a loopback input: the strongest hint there is, and what the
+#   released Windows exe actually sees since it ships such a binary (#194).
+#   The PortAudio in the sounddevice wheel — every source install — never
+#   emits it, so both builds keep working off this one list.
 # * "Monitor of …" / "Monitor von …" — PulseAudio/PipeWire give every sink a
 #   monitor source, so Linux always has a candidate. The localized spelling is
 #   listed because that label comes from the desktop, not from us.
