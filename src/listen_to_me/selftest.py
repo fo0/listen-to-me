@@ -5754,6 +5754,181 @@ def _overlay_preview_follows_the_pointer():
             overlay.destroy()
 
 
+def _the_poll_ticks_the_cursor_preview():
+    """`App._poll` is what drives #196's cursor tracking — the one line no
+    overlay check can see.
+
+    The overlay side of the anchor is complete and covered (placement, both
+    previews, the still-pointer no-op), and all of it is dead code until
+    something calls `tick_cursor_preview`. The tracking deliberately owns no
+    timer — a second QTimer would have to be started and stopped with every
+    take — so the only thing that can drive it is the 100 ms poll that already
+    drains the event queue. That call sits in another module, out of reach of
+    every overlay check, and a finished feature nobody calls looks exactly
+    like one that works.
+
+    `App._poll` is borrowed unbound onto a stub, the way
+    `_recorder_events_carry_their_take` and
+    `_hotkeys_route_to_their_own_source` borrow `_handle`: a real App needs a
+    tray, a recorder and a transcriber, while the drain reads a queue and
+    three attributes.
+
+    Pinned on the stub: the tick happens; on every drain, not only the first
+    (the pointer keeps moving while the user speaks); *after* the event
+    handling, so a bubble a drained event has just put up is followed in the
+    same tick instead of one tick late; added to the drain rather than put in
+    place of the handling or the two riders that were there before; and
+    skipped when the overlay is `None` — an Overlay that could not be
+    constructed stays `None` for the whole run, and without the guard every
+    poll tick would raise AttributeError out of a Qt slot.
+
+    Then the same borrowed poll drives a real Overlay with a stubbed pointer,
+    the only thing that shows both halves working as one: the bubble follows a
+    pointer that moved, stays put for one that did not, and survives a
+    placement that raises. The poll calls the tick bare — no `try` at the call
+    site, like the two riders above it — so `tick_cursor_preview`'s own
+    wrapper is what has to hold that last one; a raising tick would be a
+    traceback out of a Qt slot every 100 ms for the rest of the session.
+    """
+    import queue
+
+    from listen_to_me.app import App
+
+    class _Overlay:
+        """Records what the poll does to it, on the trace the stub App shares
+        with it so the *order* of the two is visible."""
+
+        def __init__(self, trace):
+            self.trace = trace
+            self.ticks = 0
+
+        def tick_cursor_preview(self):
+            self.ticks += 1
+            self.trace.append("tick")
+
+    class _App:
+        # Borrowed unbound: a real App needs a tray, a recorder, a transcriber.
+        _poll = App._poll
+
+        def __init__(self, with_overlay=True):
+            self.trace: list[str] = []
+            self.overlay = _Overlay(self.trace) if with_overlay else None
+            self.events: queue.Queue = queue.Queue()
+            self.warned = self.clocked = 0
+
+        def _handle(self, kind, payload):
+            self.trace.append("handle")
+
+        def _check_length_warning(self):
+            self.warned += 1
+
+        def _tick_recording_clock(self):
+            self.clocked += 1
+
+    app = _App()
+    app._poll()
+    assert app.overlay.ticks == 1, "the poll does not tick the cursor preview at all"
+    app._poll()
+    assert app.overlay.ticks == 2, app.overlay.ticks
+    app.events.put(("live_text", "half a sentence"))
+    app.events.put(("transcript", "the whole sentence"))
+    app._poll()
+    assert app.overlay.ticks == 3, app.overlay.ticks
+    # The queue is still drained, the riders still run: the tick was added to
+    # the poll, not put in place of what it already did.
+    assert app.trace[-3:] == ["handle", "handle", "tick"], app.trace
+    assert app.warned == 3 and app.clocked == 3, (app.warned, app.clocked)
+
+    blind = _App(with_overlay=False)
+    blind.events.put(("toggle", None))
+    blind._poll()  # must not raise: there is nothing to tick
+    assert blind.trace == ["handle"], blind.trace
+    assert blind.warned == 1 and blind.clocked == 1
+
+    # --- the same poll, a real bubble, a pointer that moves ---------------
+    _ensure_qapp()
+    from PySide6.QtCore import QPoint
+
+    from listen_to_me.overlay import ANCHOR_CURSOR, Overlay, cursor_bubble_position
+
+    class _PollApp(_StubApp):
+        """A _StubApp a real Overlay attaches to, drained by the real poll.
+        `_handle` stands in for the live-preview event that puts the bubble up
+        (App._handle would need a tray and a recorder to get there)."""
+
+        _poll = App._poll
+
+        def __init__(self, tmp):
+            super().__init__(tmp)
+            self.overlay = None
+            self.events: queue.Queue = queue.Queue()
+            self.clocked = 0
+
+        def _handle(self, kind, payload):
+            self.overlay.show_live(str(payload))
+
+        def _check_length_warning(self):
+            pass
+
+        def _tick_recording_clock(self):
+            self.clocked += 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _PollApp(Path(tmp))
+        app.cfg["overlay"]["preview_anchor"] = ANCHOR_CURSOR
+        app.overlay = Overlay(app)
+        try:
+            app.overlay.set_visible(True)
+            geo = app.overlay._screen_geometry()
+            # Stubbed, not moved: the offscreen platform has one fake cursor,
+            # and driving it would assert about the platform plugin.
+            pointer = QPoint(geo.left() + 140, geo.top() + 110)
+            app.overlay._cursor_pos = lambda: pointer  # noqa: E731 — see above
+
+            def _bubble_at():
+                return (app.overlay.bubble.x(), app.overlay.bubble.y())
+
+            def _at_pointer():
+                return cursor_bubble_position(
+                    pointer.x(),
+                    pointer.y(),
+                    app.overlay.bubble.width(),
+                    app.overlay.bubble.height(),
+                    app.overlay._screen_geometry(pointer),
+                )
+
+            # One drain: the event puts the bubble up, and the tick that
+            # follows it in the same poll finds the pointer it was placed at.
+            app.events.put(("live_text", "speaking while the pointer sits still"))
+            app._poll()
+            assert app.overlay.bubble.isVisible()
+            placed = _bubble_at()
+            assert placed == _at_pointer(), (placed, _at_pointer())
+
+            # The pointer moves mid-take. Nothing posts an event for that —
+            # the next poll tick is the only thing that can notice.
+            pointer = QPoint(geo.right() - 60, geo.bottom() - 40)
+            app._poll()
+            moved = _bubble_at()
+            assert moved != placed, "the bubble did not follow the pointer through the poll"
+            assert moved == _at_pointer(), (moved, _at_pointer())
+
+            # A pointer that has not moved costs the window nothing.
+            app._poll()
+            assert _bubble_at() == moved, "a still pointer moved the bubble"
+
+            def _boom():
+                raise RuntimeError("placement failed")
+
+            app.overlay.reposition_bubble = _boom
+            pointer = QPoint(geo.left() + 5, geo.top() + 5)
+            app._poll()  # must not raise — the tick swallows its own failure
+            assert _bubble_at() == moved, "a failed placement moved the bubble"
+            assert app.clocked == 4, app.clocked
+        finally:
+            app.overlay.destroy()
+
+
 def _overlay_preview_anchor_round_trips():
     """The #196 setting survives the Settings window.
 
@@ -9509,6 +9684,7 @@ _LIGHT_CHECKS = [
     ("overlay position is anchored to its monitor", _overlay_position_is_anchored_to_its_monitor),
     ("overlay preview anchor places the bubble", _overlay_preview_anchor_places_the_bubble),
     ("overlay preview follows the pointer", _overlay_preview_follows_the_pointer),
+    ("the poll ticks the cursor preview", _the_poll_ticks_the_cursor_preview),
     ("overlay preview anchor round-trips", _overlay_preview_anchor_round_trips),
     ("overlay counts the recording time", _overlay_counts_the_recording_time),
     ("overlay lists recent transcripts", _overlay_lists_recent_transcripts),

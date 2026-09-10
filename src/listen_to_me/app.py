@@ -691,6 +691,17 @@ class App:
             pass
         self._check_length_warning()
         self._tick_recording_clock()
+        if self.overlay is not None:
+            # Rides this timer for the same reason the two calls above do: the
+            # alternative is a second timer that would have to be started and
+            # stopped with every take, and a pointer that has not moved costs
+            # nothing here — the tick returns before it touches the window.
+            # Last in the poll, so a bubble a drained event has just put up is
+            # followed in the same tick. No try/except around it: the tick
+            # swallows and logs its own failures, exactly like _poll_levels;
+            # the None guard is the Overlay(self) construction in run(), which
+            # is allowed to fail without taking the app with it.
+            self.overlay.tick_cursor_preview()
 
     def _check_length_warning(self) -> None:
         """Warn once, shortly before the maximum length ends the running take.
