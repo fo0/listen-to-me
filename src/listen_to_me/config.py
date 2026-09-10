@@ -186,10 +186,12 @@ DEFAULTS: dict = {
         # still there but buried, which reads as "it vanished". Off leaves it an
         # ordinary window that other windows may cover.
         "always_on_top": True,
-        # Briefly show the transcribed text next to the icon after a recording.
+        # Briefly show the transcribed text in a bubble after a recording;
+        # overlay.preview_anchor below decides where that bubble appears.
         "show_preview": True,
         # Experimental: transcribe in the background *while* recording and show
-        # a rolling live preview of what was understood so far. Costs CPU.
+        # a rolling live preview of what was understood so far, in the same
+        # bubble. Costs CPU.
         "live_preview": False,
         # How long the finished transcript stays visible (seconds).
         "preview_seconds": 6,
