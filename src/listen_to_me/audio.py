@@ -429,26 +429,6 @@ def list_input_devices() -> list[tuple[int, str]]:
     return devices
 
 
-def list_output_devices() -> list[tuple[int, str]]:
-    """(index, name) of every device PortAudio can play to.
-
-    Mirror of `list_input_devices` for the Settings UI: a loopback candidate
-    ("Monitor of ...", "Stereo Mix", a virtual cable) only means something
-    next to the output it belongs to. Never raises — a page that cannot name
-    the outputs still has to render."""
-    try:
-        import sounddevice as sd
-
-        return [
-            (idx, dev.get("name", f"Device {idx}"))
-            for idx, dev in enumerate(sd.query_devices())
-            if dev.get("max_output_channels", 0) > 0
-        ]
-    except Exception:
-        log.exception("could not list output devices")
-        return []
-
-
 def input_device_profiles() -> list[dict]:
     """One dict per input device, with the keys `index`, `name`, `hostapi`
     (the host API *name*), `channels` (max input channels) and `samplerate`
