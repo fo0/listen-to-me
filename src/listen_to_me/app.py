@@ -318,7 +318,9 @@ def _collect_issue(issues: list[str] | None, issue: str) -> None:
         issues.append(issue)
 
 
-def parse_replacements(spec: str, issues: list[str] | None = None) -> list[tuple[str, str]]:
+def parse_replacements(
+    spec: str, issues: list[str] | None = None, counts: dict | None = None
+) -> list[tuple[str, str]]:
     """The `find => replace` rules in `spec`, in the order they are written.
 
     One rule per line. Blank lines and lines starting with `#` are comments; a
@@ -342,11 +344,25 @@ def parse_replacements(spec: str, issues: list[str] | None = None) -> list[tuple
     rules at all, so the rule cap never fires and the whole file was walked
     after every dictation, on the worker thread the user is waiting for.
 
+    Pass a dict as `counts` to learn what the line ceiling cost: `unread_lines`
+    is True when it stopped the walk with text left over. That is the one thing
+    neither the rules nor the issues can show — a spec of nothing but comments
+    produces neither of them — and it is what lets `describe_replacements` stay
+    exact about reporting a prefix instead of the whole list.
+    `fillers.parse_filler_phrases` reports the same key, plus an `ignored`
+    total this parser does not need: it collects only the three bad lines its
+    status can name, while this one keeps fifty and says "50+" where it stopped.
+
     Qt-free and side-effect free so the rule syntax is testable headlessly.
     """
     rules: list[tuple[str, str]] = []
+    unread_lines = False
     for number, line in enumerate(str(spec or "").splitlines(), start=1):
         if number > _MAX_REPLACEMENT_LINES:
+            # Getting handed this line is the proof that one exists, so the flag
+            # is set only when something really was left unread — a spec of
+            # exactly _MAX_REPLACEMENT_LINES lines is read whole and says so.
+            unread_lines = True
             log.warning(
                 "replacement rules are longer than %d lines — the rest is ignored",
                 _MAX_REPLACEMENT_LINES,
@@ -369,6 +385,8 @@ def parse_replacements(spec: str, issues: list[str] | None = None) -> list[tuple
         if len(rules) >= _MAX_REPLACEMENT_RULES:
             log.warning("more than %d replacement rules — the rest is ignored", _MAX_REPLACEMENT_RULES)
             break
+    if counts is not None:
+        counts["unread_lines"] = unread_lines
     return rules
 
 
@@ -385,10 +403,19 @@ def describe_replacements(spec: str) -> str:
 
     Empty for an empty field: a field nobody has written in yet needs its
     placeholder, not a count of zero.
+
+    A list long enough to hit the line ceiling gets its own sentence, and that
+    sentence has to survive the empty case: 2 000 lines of comments produce no
+    rule and no bad line either, so an early return that looked at those two
+    alone said nothing at all about a spec whose tail was never read — the same
+    silent shortening this line exists to prevent. Such a walk therefore reports
+    "0 rules active" plus the ceiling, exactly like its sibling
+    `fillers.describe_filler_phrases`, whose status is read next to this one.
     """
     issues: list[str] = []
-    rules = parse_replacements(spec, issues)
-    if not rules and not issues:
+    counts: dict = {}
+    rules = parse_replacements(spec, issues, counts)
+    if not rules and not issues and not counts.get("unread_lines"):
         return ""
     status = f"{len(rules)} rule{'' if len(rules) == 1 else 's'} active"
     if issues:
@@ -408,11 +435,13 @@ def describe_replacements(spec: str) -> str:
         # Its own sentence, not one of the ignored lines: the parser stops
         # counting at the cap, so it does not know how many lines came after it.
         status += f" Only the first {_MAX_REPLACEMENT_RULES} rules are used."
-    elif len(str(spec or "").splitlines()) > _MAX_REPLACEMENT_LINES:
+    elif counts.get("unread_lines"):
         # The other cap, and only when the rule cap did not fire: a list this
         # long that still holds fewer than the maximum number of rules is
         # mostly comments or typos, and the lines past the ceiling were never
         # read at all — a truncation nothing else on this line would mention.
+        # From the parser's own flag, not a second splitlines() over a spec
+        # whose size is the reason the ceiling exists.
         status += f" Only the first {_MAX_REPLACEMENT_LINES} lines are read."
     return status
 
@@ -1250,8 +1279,9 @@ class App:
         the diagnosis, never the message.
 
         Runs on the processing thread (notify() posts, so this stays off Qt).
-        Forced only for the two verdicts that name a fixable device problem —
-        "no speech" itself stays an ordinary notification.
+        Forced only for the verdicts in `_NO_SIGNAL_VERDICTS`, the ones whose
+        message names a fixable device problem — "no speech" itself stays an
+        ordinary notification.
         """
         from .diagnostics import no_speech_message
 
@@ -1279,7 +1309,14 @@ class App:
                 f" {dropped} audio buffers were dropped during the recording — the "
                 "system was overloaded."
             )
-        self.notify(message, force=verdict in ("silent", "quiet"))
+        # The filter gate's own tuple, deliberately not a second copy of the
+        # same two strings: "the clip carried no signal" is one property of the
+        # take, read in `_process` to drop a transcript and here to force the
+        # message about it, and two literals drift apart the first time a
+        # verdict is added. `diagnostics.no_speech_message` still owns its own
+        # membership test for the *wording*, so a verdict added here has to be
+        # taught there too — otherwise this forces the generic sentence.
+        self.notify(message, force=verdict in _NO_SIGNAL_VERDICTS)
 
     def _insert_transcript(self, text: str) -> None:
         """Insert `text` at the cursor and say where it ended up.

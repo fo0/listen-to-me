@@ -20,6 +20,17 @@ transcript. "Vielen Dank" is a sentence people really dictate, and a filter
 that removed it from inside a text would corrupt real dictations to fix an
 empty one.
 
+That narrowness is only half of the rule that ships — the other half lives in
+the caller. `app._process` drops a matched transcript only when the take's own
+audio carried no usable signal (`app._clip_verdict(audio)` in
+`app._NO_SIGNAL_VERDICTS`), because the phrase list alone cannot tell a
+hallucinated "Vielen Dank." from a dictated one, and dropping a dictated one
+leaves nothing at the cursor, nothing in the history and nothing on the
+clipboard. A match here is therefore a candidate and not a verdict: do not read
+this module as the whole filter, and do not simplify that gate away as a
+redundant second test — classifying the audio stays the caller's job, since the
+statistics need numpy and this module is stdlib-only on purpose.
+
 Qt-free, numpy-free, pure stdlib — `app.py` calls `is_filler` on the worker
 thread, the Settings window calls `describe_filler_phrases` while the list is
 being edited, and the headless self-test exercises both.

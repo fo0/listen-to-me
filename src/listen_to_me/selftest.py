@@ -7060,7 +7060,15 @@ def _no_speech_report_names_its_own_source():
     The sentence being right is only half of it, so `App._notify_no_speech` is
     borrowed unbound onto a stub as well: the source has to reach the wording
     from the take, and the verdict the caller already computed has to be the
-    one it reports."""
+    one it reports.
+
+    Whether the message is *forced* is part of that job: a take whose clip
+    carried no signal names a device problem that is fixed in seconds once
+    something says so, so it is forced past the notification settings — and the
+    verdicts it forces for are the filler filter's own `_NO_SIGNAL_VERDICTS`,
+    read from the module rather than kept as a second copy of the same two
+    strings."""
+    from listen_to_me import app as app_module
     from listen_to_me import diagnostics as diagnostics_module
     from listen_to_me.app import App
     from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
@@ -7150,12 +7158,44 @@ def _no_speech_report_names_its_own_source():
         app = _App()
         app._notify_no_speech([], SOURCE_SYSTEM)
         assert app.notified == [(sys_quiet, True)], app.notified
-        # Forced only for the two verdicts that name a fixable device problem
-        # — "no speech" itself stays an ordinary notification.
+        # Forced only for the verdicts that name a fixable device problem —
+        # "no speech" itself stays an ordinary notification.
         for quiet_verdict in ("ok", "unknown"):
+            assert quiet_verdict not in app_module._NO_SIGNAL_VERDICTS, quiet_verdict
             app = _App()
             app._notify_no_speech([], SOURCE_MIC, quiet_verdict)
             assert app.notified == [(generic, False)], app.notified
+        # …and every verdict that *is* one of them is forced, with the wording
+        # diagnostics gives that verdict.
+        for verdict in app_module._NO_SIGNAL_VERDICTS:
+            app = _App()
+            app._notify_no_speech([], SOURCE_MIC, verdict)
+            expected = (no_speech_message(verdict, source=SOURCE_MIC), True)
+            assert app.notified == [expected], (verdict, app.notified)
+        # The set it reads is the filler filter's gate, not a second literal
+        # holding the same two strings: driven through the module constant, so
+        # a check that would pass just as well with two copies goes red here.
+        # A verdict added to the tuple therefore cannot leave the notification
+        # disagreeing with the transcript that was dropped for it.
+        real_verdicts = app_module._NO_SIGNAL_VERDICTS
+        try:
+            app_module._NO_SIGNAL_VERDICTS = ("quiet", "muted")
+            for forced in ("quiet", "muted"):
+                app = _App()
+                app._notify_no_speech([], SOURCE_MIC, forced)
+                assert app.notified[-1][1] is True, (forced, app.notified)
+            # The other half of the rule stays where it is: the *wording* is
+            # diagnostics.no_speech_message's own membership test, so a verdict
+            # this app has learned and that module has not reads as the generic
+            # sentence — forced, but generic (the comment at the call site says
+            # so, and this is the behaviour it warns about).
+            assert app.notified == [(generic, True)], app.notified
+            # "silent" is no longer in the tuple, so it is no longer forced.
+            app = _App()
+            app._notify_no_speech([], SOURCE_MIC, "silent")
+            assert app.notified == [(mic_silent, False)], app.notified
+        finally:
+            app_module._NO_SIGNAL_VERDICTS = real_verdicts
         # Dropped buffers are a third reason for an empty transcript and the
         # one the recorder can count: named where the user is already being
         # told the take came back empty, and only there.
@@ -7501,8 +7541,10 @@ def _the_parsers_bound_the_lines_they_walk():
     rule_junk = "\n".join(["a => b"] + ["# a comment", "posgres -> PostgreSQL", ""] * 2000)
     assert len(rule_junk.splitlines()) > _MAX_REPLACEMENT_LINES * 2
     issues = []
-    rules = parse_replacements(rule_junk, issues)
+    counts = {}
+    rules = parse_replacements(rule_junk, issues, counts)
     assert rules == [("a", "b")], rules
+    assert counts["unread_lines"] is True, counts
     assert len(issues) == _MAX_RULE_ISSUES, len(issues)
     status = describe_replacements(rule_junk)
     # "50+" once the collection cap was hit: the parser stopped collecting
@@ -7513,8 +7555,24 @@ def _the_parsers_bound_the_lines_they_walk():
     # The ceiling: a rule on the last line read is in force, one line further
     # down is not read at all.
     head = ["# rule"] * (_MAX_REPLACEMENT_LINES - 1)
-    assert parse_replacements("\n".join([*head, "a => b"])) == [("a", "b")]
-    assert parse_replacements("\n".join([*head, "# rule", "a => b"])) == []
+    counts = {}
+    assert parse_replacements("\n".join([*head, "a => b"]), None, counts) == [("a", "b")]
+    # Being handed the line past the ceiling is the proof that one exists, so a
+    # spec of exactly _MAX_REPLACEMENT_LINES lines is read whole and says so.
+    assert counts["unread_lines"] is False, counts
+    counts = {}
+    assert parse_replacements("\n".join([*head, "# rule", "a => b"]), None, counts) == []
+    assert counts["unread_lines"] is True, counts
+    # The same cut-short walk with nothing to report about the part it read —
+    # the half that used to stay silent. `describe_replacements` returned ""
+    # here, because its early return fired on "no rules and no bad lines"
+    # before the ceiling was ever mentioned, so a pasted file whose every line
+    # is a comment past the ceiling said nothing at all. Both parsers now
+    # answer the same input the same way.
+    rule_unread = describe_replacements("\n".join(["# rule"] * (_MAX_REPLACEMENT_LINES + 1)))
+    assert rule_unread == (
+        f"0 rules active. Only the first {_MAX_REPLACEMENT_LINES} lines are read."
+    ), rule_unread
     # Both caps are their own sentence, and only one of them fires: whichever
     # ceiling came first is the one that says what happened to the rest.
     over_the_rule_cap = "\n".join(f"w{n} => x" for n in range(_MAX_REPLACEMENT_RULES + 5))
