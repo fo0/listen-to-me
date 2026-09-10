@@ -42,6 +42,13 @@ We will **build `portaudio.dll` from a pinned PortAudio master commit inside the
 - **Not verifiable in a pull request.** `release.yml` is `workflow_dispatch`-only and guarded to `main`, so both gates first run on the first dispatch after the merge; earlier verification means running the `cmake` commands by hand on a Windows machine.
 - **The release job carries a native toolchain step** (fetch, CMake configure, MSVC build) and its wall clock, on every dispatch — and the DLL is as unsigned as the exe, so nothing changes about SmartScreen.
 
+### The way back
+
+- **The trade-off above is why there is a way out of the swap at all.** Once our DLL is loaded nothing reverts to the wheel's, so a binary that loads but works worse — or fails `Pa_Initialize` — would break every recording, microphone dictation included, with no recovery until a new release is dispatched. `system_audio.bundled_portaudio` (bool, default `true`) is that recovery: `false` makes `prepare_library_path()` leave `PATH` alone, `sounddevice` loads its own copy, and the exe is back to pre-#194 behaviour at the price of loopback capture on Windows and nothing else. What a user is told to do with it lives in `README.md` → _Recording system audio_ and the settings table, not here.
+- **It is read stdlib-only, not through `Config`.** `config.bundled_portaudio_enabled()` opens `config.json` for the one key, because `prepare_library_path()` is `main()`'s first statement: a `Config` there would write the defaults file and sweep stale temp files ahead of `--version`. Anything unreadable — no file, broken JSON, a value of the wrong type — reads as **on**, the shipped default; a config the app cannot parse must not also cost it the DLL.
+- **The flag is checked last**, after `sys.frozen`, `sys._MEIPASS` and the DLL's presence, so only the case that is about to change `PATH` pays a file read — a source install is told there is nothing to do without touching the disk.
+- **There is deliberately no Settings control.** It is a recovery lever a support instruction names, not a feature a dialog offers — and a Save cannot silently revert it either, because `settings_ui._collect()` does not carry the key and `_merge_section` merges the section key by key instead of replacing it.
+
 ### Neutral
 
 - **Pinned by commit SHA, like every action in the workflow** (#22) — for a stronger reason here, since this is native code inside a binary the in-app updater hands to end users.
