@@ -10,6 +10,7 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from . import APP_NAME, REPO_URL
+from .choices import SOURCE_MIC, SOURCE_SYSTEM
 from .history import entry_timestamp
 from .keymap import hotkey_label
 from .qtutil import tray_icon
@@ -36,6 +37,12 @@ _STATE_LABELS = {
 # that looks idle while its hotkey does nothing is indistinguishable from a
 # broken one, and this line is the first place anyone looks.
 _PAUSED_LABEL = "Hotkey paused — switch it back on in this menu"
+
+# The two labels of the second source's entry (#191). Both name the source:
+# with two start entries in one menu, a bare "Stop recording" would not say
+# which of the two takes it ends.
+_SYSTEM_START_LABEL = "Record system audio"
+_SYSTEM_STOP_LABEL = "Stop recording system audio (insert text)"
 
 
 def format_duration(seconds) -> str:
@@ -126,6 +133,7 @@ class Tray:
         self._menu = None
         self._act_state = None
         self._act_toggle = None
+        self._act_system = None  # the second source's start/stop entry (#191)
         self._act_cancel = None
         self._act_pause = None
         self._act_overlay = None
@@ -153,6 +161,28 @@ class Tray:
         self._act_toggle = QAction("Start recording", menu)
         self._act_toggle.triggered.connect(lambda: app.post("toggle"))
         menu.addAction(self._act_toggle)
+
+        # The second recording source (#191): what the computer plays — a call,
+        # a meeting, a video — instead of the microphone. Its own entry rather
+        # than a mode switch on the one above, so a click here can never change
+        # what the dictation hotkey records.
+        #
+        # Deliberately always enabled, never greyed out with "no hotkey set":
+        # this entry needs neither the hotkey (it posts the toggle itself) nor a
+        # configured device (App resolves the loopback device, auto-picks the
+        # best candidate and refuses the take with an actionable notification
+        # when the machine has none). Disabling it would hide the whole second
+        # source behind a setting — while a click that explains what is missing
+        # is the discoverable path, and the only one for a user who wants a
+        # single recording without giving up a global hotkey for it.
+        self._act_system = QAction(_SYSTEM_START_LABEL, menu)
+        self._act_system.setToolTip(
+            "Record what the computer plays (a call, a meeting, a video) instead of "
+            "the microphone, through a loopback device. No hotkey needed for this "
+            "entry; the device is picked automatically."
+        )
+        self._act_system.triggered.connect(lambda: app.post("toggle", SOURCE_SYSTEM))
+        menu.addAction(self._act_system)
 
         self._act_cancel = QAction("Cancel recording", menu)
         self._act_cancel.triggered.connect(lambda: app.post("cancel"))
@@ -378,9 +408,20 @@ class Tray:
         # fetched during "processing"), so it keeps the line it is on.
         self._icon.setToolTip(f"{APP_NAME} — {self._progress or label}")
         self._act_state.setText(self._progress or label)
+        # Which of the two entries turns into a "Stop" depends on the source of
+        # the running take, not on the state alone: App refuses a hotkey (and a
+        # click) for one source while the other is recording, so an entry
+        # offering to stop a take it cannot stop would be a label that lies.
+        recording_source = self._source() if state == "recording" else None
         self._act_toggle.setText(
-            "Stop recording (insert text)" if state == "recording" else "Start recording"
+            "Stop recording (insert text)"
+            if recording_source == SOURCE_MIC
+            else "Start recording"
         )
+        if self._act_system is not None:
+            self._act_system.setText(
+                _SYSTEM_STOP_LABEL if recording_source == SOURCE_SYSTEM else _SYSTEM_START_LABEL
+            )
         self._act_cancel.setVisible(state == "recording")
         # Re-read rather than left to the click that toggled it: App refuses to
         # pause during a recording, and the tick must then go back where it was.
@@ -391,6 +432,12 @@ class Tray:
         """Whether the app currently has its global hotkey suspended. getattr:
         the self-test's App stub predates the flag and only knows the state."""
         return bool(getattr(self.app, "hotkey_paused", False))
+
+    def _source(self) -> str:
+        """Which source the app's running take records from. getattr for the
+        same reason as `_paused`: the self-test's App stub predates the second
+        source, and a menu label must never be what breaks against it."""
+        return getattr(self.app, "recording_source", SOURCE_MIC)
 
     def set_elapsed(self, seconds) -> None:
         """Put the running take's clock into the status line and the tooltip.
