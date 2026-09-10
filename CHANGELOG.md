@@ -14,6 +14,69 @@ changes at a glance.
 
 ### Added
 
+- **A second hotkey records what the computer plays.** A call, a meeting, a
+  video, a voice message — transcribed by the same local model and inserted at
+  the cursor like a dictation, and controlled exactly like one (press once to
+  start, again to stop; hold mode works too). The app could only ever hear the
+  microphone, so getting a call into text meant playing it into the room and
+  recording that back, with everything the speakers and the room added to it.
+  The second source brings its own device, its own maximum length (900 s by
+  default, because a recorded meeting is not a dictation) and its own assistant
+  profile: the Assistant page is now one shared connection with two profiles,
+  **Microphone dictation** and **System audio**, each with its own switch and
+  its own prompt, the second one with a model override as well. It is reachable
+  by hotkey, from the tray menu and from the floating icon's menu; the Home hub
+  shows a second row of key caps once a hotkey is set, and every control that
+  used to say "Stop recording" now names and stops the source that is actually
+  running. What it records from is an ordinary loopback/monitor **input** device
+  the operating system provides — Linux (PulseAudio/PipeWire) has a
+  "Monitor of …" source for every output and needs no setup, Windows has
+  "Stereo Mix" on most onboard audio but ships it disabled (Sound Control Panel
+  → Recording tab → right-click → **Show Disabled Devices**) and otherwise takes
+  a virtual cable such as VB-CABLE, macOS needs a virtual output device such as
+  BlackHole — because the shipped audio stack cannot ask Windows for a loopback
+  stream directly
+  ([ADR-0009](docs/adr/0009-system-audio-is-captured-through-a-loopback-input-device.md)).
+  Without such a device the take is **refused**, with that instruction in the
+  notification: falling back to the default input is deliberately not done,
+  because that one is a microphone — recording the room while you asked for what
+  the computer plays is a wrong result, not a degraded one, and nothing about
+  the resulting text would give it away.
+- **A silent take no longer inserts a phrase nobody spoke — and the recording
+  decides that, not the wording.** A transcript is dropped only when the take's
+  own audio carried no usable signal: the clip statistics that already decide
+  whether an empty result is reported as a dead microphone or as unrecognized
+  speech have to come back **silent or too quiet** first, and a verdict that
+  could not be computed at all keeps the text. Only then is the transcript
+  matched against the phrase list, and only as a whole — a listed phrase inside
+  a longer dictation is never touched. A take that carried real speech is never
+  filtered, however it reads, so a "Vielen Dank." you really did dictate lands
+  at the cursor like any other dictation. What the filter is for is the take
+  you meant to be empty: press the hotkey, say nothing, press it again, and
+  what landed at the cursor was "Vielen Dank.", "Thank you." or a subtitle
+  credit. Not one of those strings exists anywhere in this app — a repo-wide
+  grep finds none of them; they come out of the model. Whisper's training data
+  is subtitle-heavy, and a stretch of video without speech is usually subtitled
+  with the clip's closing phrase, so near-silence decodes to the most likely
+  "silence continuation" the model ever saw. Neither guard already in place
+  catches that: the VAD silence filter (`vad_filter`, Silero) keeps a chunk as
+  soon as there is room noise or a keyboard click, and faster-whisper's
+  `no_speech_threshold` only drops a segment when `no_speech_prob` is high
+  _and_ `avg_logprob` is low — while these hallucinations are decoded with high
+  confidence and pass every quality gate the decoder has. The audio is what
+  tells the two cases apart, because the wording cannot: "Vielen Dank" and
+  "Thank you" are complete messages people dictate, and going by the list alone
+  would answer a spoken one with nothing at the cursor, nothing in the history
+  and no way to get it back. A take the recording does condemn is dropped and
+  reported exactly like one with no speech: nothing is inserted, and nothing
+  goes into the history. The single drop neither the list nor the recording has
+  a say in is a transcript with **no letter and no digit** left in it (`...`,
+  `♪♪`) — there is nothing there to insert either way. The list is editable on
+  the Engine settings page (18 phrases ship by default, German and English) and
+  the whole filter switches off. Matching ignores case and the punctuation
+  around the phrase but keeps brackets — so the annotation `[Musik]` is caught
+  while a dictated `Musik` is inserted as spoken — and a take that has already
+  live-typed text is never filtered, because that text cannot be taken back.
 - **The assistant's "Test connection" can be cancelled.** It was the one test
   in the settings window with no way out: the microphone test, the model
   download, the transcription test and the update download all have a

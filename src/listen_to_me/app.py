@@ -3,7 +3,9 @@
 Threading model:
 - main thread: Qt event loop (QApplication) + a QTimer that drains the event
   queue, so every state transition and all GUI work happens here.
-- hotkey thread: pynput global hotkey listener
+- hotkey threads: the pynput global hotkey listeners — one for the microphone,
+  one for the second recording source (system audio, #191); each names its
+  source in the event payload.
 - worker thread: transcription + assistant + text injection
 All background threads talk to the main thread via App.post(); helpers that
 would touch the tray/GUI from a worker (notify) post instead of calling in.
@@ -22,13 +24,21 @@ import time
 from . import APP_NAME, REPO_URL, __version__
 from . import assistant, autostart, netutil, singleinstance
 from .audio import SAMPLE_RATE, Recorder
-from .choices import resolve_input_device
+from .choices import (
+    SOURCE_MIC,
+    SOURCE_SYSTEM,
+    known_source,
+    resolve_input_device,
+    source_label,
+)
 from .config import Config, clamp_setting, config_dir
+from .fillers import EMPTY_TRANSCRIPT, is_filler
 from .history import TranscriptHistory
 from .hotkeys import Hotkeys
 from .injector import Injector, ModifierHeldError, sanitize_typed_text
 from .integrations import MuteIntegrations
 from .livetype import LiveTyper
+from .system_audio import resolve_loopback_device, system_audio_help
 from .transcriber import _PREVIEW_WINDOW_SECONDS, create_transcriber, is_cuda_library_error
 
 log = logging.getLogger(__name__)
@@ -78,16 +88,239 @@ def length_warning_message(
     )
 
 
+# How a message names the source a take records from (#191) now lives in
+# choices.py — `source_label`, imported above and therefore still reachable as
+# `app.source_label`. The wording is load bearing (a system-audio take
+# reporting "the microphone stream ended unexpectedly" sends the user to a
+# setting, and a device, that is working fine), and five modules build a
+# message about the same take: none of them should have to import this one —
+# the heaviest in the package — to name it.
+
+# Where a source's own hotkey settings live in the config. `None` is the top
+# level, where the microphone's `hotkey` / `hotkey_mode` have always been; the
+# second source keeps the same key names inside its own section. One entry per
+# registered source (`choices.SOURCES`): a source missing from here would be
+# routed by the microphone's mode instead, which is how a hold-mode take ends
+# up waiting for a release event that is never posted.
+_HOTKEY_SECTIONS = {SOURCE_MIC: None, SOURCE_SYSTEM: "system_audio"}
+
+
+def event_source(payload) -> str:
+    """Which recording source a `toggle`/`hotkey_*` event belongs to.
+
+    Only the system-audio listener names itself. Everything else — the tray's
+    and the floating icon's "Start recording", the Home page's button, any
+    event posted with no payload at all — is the microphone. Decided in one
+    place rather than at every branch of `_handle`, so a payload that is not a
+    source (the plain `None` of `post("toggle")`) can never route a take to the
+    wrong device.
+
+    Membership in `choices.SOURCES` does the routing, so a registered source
+    routes to itself and adding a third one is that tuple plus a section below.
+    A payload that names something *unregistered* still reads as the microphone
+    — a hotkey press has to start something — but is logged on the way through
+    (`choices.known_source`) instead of being answered silently.
+    """
+    return known_source(payload) or SOURCE_MIC
+
+
+def hotkey_mode(cfg, source: str) -> str:
+    """The press/release mode of the hotkey that owns `source`.
+
+    The two hotkeys are configured separately (`hotkey_mode` vs.
+    `system_audio.hotkey_mode`), so a press has to be routed by its own: taking
+    the microphone's "hold" for a system-audio press would start a take whose
+    release event never comes, and it would sit there until the maximum length
+    cut it off. The section comes from `_HOTKEY_SECTIONS`, so a registered
+    source can no longer fall through to the microphone's mode unheard.
+    """
+    resolved = known_source(source) or SOURCE_MIC
+    if resolved not in _HOTKEY_SECTIONS:
+        # A registered source with no section of its own is a wiring mistake,
+        # not untrusted input — so it is loud, but it still answers: reading
+        # the microphone's mode is wrong, and crashing the event drain that
+        # calls this would be worse.
+        log.error("recording source %r has no hotkey section — reading the microphone's", resolved)
+    section = _HOTKEY_SECTIONS.get(resolved)
+    keys = cfg if section is None else cfg[section]
+    return keys["hotkey_mode"]
+
+
+# --- the four helpers below take the app rather than being App methods ---
+# `App._handle`, `App._register_hotkey` and `App._toggle_hotkey_pause` are
+# borrowed *unbound* by the headless self-test, onto stubs that define a
+# handful of attributes and nothing else. Anything those paths reach for has to
+# work on such an object, which a new App method would not — so the second
+# source is read through attributes, with the pre-#191 behaviour as the
+# default (same reasoning as `tray._paused`).
+
+
+def _take_source(app) -> str:
+    """The source the app's running (or most recent) take records from."""
+    return getattr(app, "_source", SOURCE_MIC)
+
+
+# The clip verdicts that mean "nothing was really spoken" (see `_clip_verdict`
+# and the filler filter in `_process`). Membership, not `!= "ok"`, so anything
+# else — "unknown" from a classifier that could not run, a verdict diagnostics
+# grows later — keeps the transcript. That direction costs the filter; the
+# other one costs the user their words.
+_NO_SIGNAL_VERDICTS = ("silent", "quiet")
+
+
+def _clip_verdict(audio) -> str:
+    """`diagnostics.clip_stats`' verdict for a whole take — "silent", "quiet",
+    "ok", or "unknown" when it could not be computed at all.
+
+    Computed once per take and passed on: the filler filter decides with it
+    whether a phrase the model may have invented is dropped, and
+    `_notify_no_speech` picks its wording from it. Running the statistics twice
+    over the same array is waste in the one place the user is already waiting
+    for their text.
+
+    "unknown" is an answer, not an exception: numpy missing from a stripped
+    install, or an array the classifier chokes on. Callers treat it as "the
+    audio says nothing either way" — never as a reason to drop anything.
+
+    A module function rather than an App method, for the reason the four
+    helpers above are: `App._process` is borrowed unbound by the headless
+    self-test onto a stub that defines a handful of attributes and nothing
+    else.
+    """
+    try:
+        from .diagnostics import clip_stats
+
+        return str(clip_stats(audio)["verdict"])
+    except Exception:
+        log.debug("could not classify the recorded audio", exc_info=True)
+        return "unknown"
+
+
+def _notify_source_busy(app, source: str) -> None:
+    """Refuse a hotkey (or a menu click) for one source while the other one is
+    recording, out loud.
+
+    The alternative — letting the second hotkey stop the running take — is the
+    worst outcome the two sources have between them: a system-audio hotkey
+    pressed during a dictation would insert that dictation into whatever window
+    happens to be focused, and the microphone hotkey would end a recorded
+    meeting the same way. So the press does nothing but say why, because a
+    hotkey that silently does nothing is the one thing it must not do.
+
+    Not forced, exactly like the "Still transcribing…" message next to it: this
+    is a transient collision between two hotkeys, not a device or settings
+    problem the user has to go and fix.
+    """
+    running = source_label(_take_source(app))
+    log.info("%s hotkey ignored — a %s recording is running", source, running)
+    app.notify(f"A {running} recording is already running — stop that one first.")
+
+
+def _stop_hotkeys(app) -> None:
+    """Stop both global listeners. Every path that suspends the hotkey has to
+    take the second source with it — a pause that left the system-audio
+    listener live would still start recordings on a hotkey the user just
+    switched off."""
+    app.hotkeys.stop()
+    listener = getattr(app, "system_hotkeys", None)
+    if listener is not None:
+        listener.stop()
+
+
+def _register_system_hotkey(app, mic_combo: str) -> None:
+    """(Re-)register the hotkey of the second recording source (#191).
+
+    An empty combo is the documented "feature off" state, and the listener is
+    then stopped rather than left running from a previous configuration —
+    clearing the combination has to switch the source off for real.
+
+    A combo equal to the microphone's is refused (order-insensitively, so
+    "<alt>+<ctrl>+m" is caught against "<ctrl>+<alt>+m"): two listeners on one
+    chord both fire, so one source would start the take and the other would
+    immediately report that a recording of the other kind is already running.
+    Reported once per clashing combination — this runs on every save, every
+    finished hotkey test and every closed key picker, and the complaint belongs
+    to the configuration, not to those events.
+    """
+    listener = getattr(app, "system_hotkeys", None)
+    if listener is None:
+        return
+    scfg = app.cfg["system_audio"]
+    combo = str(scfg["hotkey"] or "").strip()
+    if not combo:
+        listener.stop()
+        app._hotkey_clash_notified = object()
+        return
+    try:
+        clashes = Hotkeys.equal(combo, str(mic_combo or ""))
+    except Exception:
+        # Cannot compare (no pynput at all): let the registration below try
+        # instead of silently disabling the feature — the microphone's own
+        # register() has already reported that case out loud.
+        log.debug("could not compare the two hotkey combos", exc_info=True)
+        clashes = False
+    if clashes:
+        listener.stop()
+        log.warning("system-audio hotkey %r is the microphone hotkey — not registered", combo)
+        if app._hotkey_clash_notified != combo:
+            app._hotkey_clash_notified = combo
+            # Forced: the second source is silently dead until this is changed,
+            # which is exactly what the user would blame the feature for.
+            app.notify(
+                f"The system-audio hotkey {combo!r} is the same as the dictation "
+                "hotkey — it stays off until you give it its own combination.",
+                force=True,
+            )
+        return
+    app._hotkey_clash_notified = object()
+    try:
+        listener.register(combo, mode=scfg["hotkey_mode"])
+    except Exception:
+        log.exception("failed to register the system-audio hotkey %r", combo)
+        app.notify(
+            f"Could not register the system-audio hotkey {combo!r} — change it in Settings.",
+            force=True,
+        )
+
+
 # Hard cap on the rule list. A hand-edited config is untrusted input, and the
 # rules are compiled and applied after every single dictation.
 _MAX_REPLACEMENT_RULES = 500
+# …and on the *lines walked*, which is the cap that actually bounds the work:
+# the rule cap only stops at accepted rules, so blank lines, `#` comments and
+# malformed lines were free — 200 000 of them cost ~90 ms (and ~140 ms while
+# collecting the issues, plus a log line each) after every single dictation, on
+# the worker thread, for zero rules. Four times the rule cap, so a full list
+# can be written with a comment and a blank line around every rule and still
+# fit. Mirrors fillers.parse_filler_phrases, which is capped the same way.
+_MAX_REPLACEMENT_LINES = _MAX_REPLACEMENT_RULES * 4
 # How many skipped lines describe_replacements names before it counts the rest:
 # the status is one line under a text field, and a rule list pasted in from
 # somewhere else can have dozens of bad lines.
 _MAX_REPORTED_ISSUES = 3
+# How many are collected at all. The status names three and counts the rest, so
+# past a few dozen the exact number is not information any more — and the
+# `issues` list belongs to the caller, which is a Qt widget refreshing on every
+# keystroke. Where the cap bites, describe_replacements says "50+" rather than
+# a total it no longer knows.
+_MAX_COLLECTED_ISSUES = 50
 
 
-def parse_replacements(spec: str, issues: list[str] | None = None) -> list[tuple[str, str]]:
+def _collect_issue(issues: list[str] | None, issue: str) -> None:
+    """Append `issue` to the caller's optional list, up to the collection cap.
+
+    A no-op without a list (the dictation path passes none) and a no-op once
+    the cap is reached: the report names three of them, and holding thousands
+    of short strings for a status line nobody can read is the kind of work a
+    hand-edited config should not be able to ask for.
+    """
+    if issues is not None and len(issues) < _MAX_COLLECTED_ISSUES:
+        issues.append(issue)
+
+
+def parse_replacements(
+    spec: str, issues: list[str] | None = None, counts: dict | None = None
+) -> list[tuple[str, str]]:
     """The `find => replace` rules in `spec`, in the order they are written.
 
     One rule per line. Blank lines and lines starting with `#` are comments; a
@@ -101,33 +334,59 @@ def parse_replacements(spec: str, issues: list[str] | None = None) -> list[tuple
     the log file, which is not where anyone editing the rules is looking — see
     `describe_replacements`, the one caller that wants them. The list is
     appended to and never read here, so the rules a call returns are exactly
-    the same with and without it. Only per-line problems land in it; hitting
-    the rule cap is not one of them, and `describe_replacements` reports that
-    from the rule count instead.
+    the same with and without it, and it is capped at _MAX_COLLECTED_ISSUES.
+    Only per-line problems land in it; hitting either cap is not one of them,
+    and `describe_replacements` reports those from the counts instead.
+
+    Two caps, because they bound different things: _MAX_REPLACEMENT_RULES stops
+    the rules that get compiled and applied, and _MAX_REPLACEMENT_LINES stops
+    the *walk* — a spec that is 200 000 comment or malformed lines produces no
+    rules at all, so the rule cap never fires and the whole file was walked
+    after every dictation, on the worker thread the user is waiting for.
+
+    Pass a dict as `counts` to learn what the line ceiling cost: `unread_lines`
+    is True when it stopped the walk with text left over. That is the one thing
+    neither the rules nor the issues can show — a spec of nothing but comments
+    produces neither of them — and it is what lets `describe_replacements` stay
+    exact about reporting a prefix instead of the whole list.
+    `fillers.parse_filler_phrases` reports the same key, plus an `ignored`
+    total this parser does not need: it collects only the three bad lines its
+    status can name, while this one keeps fifty and says "50+" where it stopped.
 
     Qt-free and side-effect free so the rule syntax is testable headlessly.
     """
     rules: list[tuple[str, str]] = []
+    unread_lines = False
     for number, line in enumerate(str(spec or "").splitlines(), start=1):
+        if number > _MAX_REPLACEMENT_LINES:
+            # Getting handed this line is the proof that one exists, so the flag
+            # is set only when something really was left unread — a spec of
+            # exactly _MAX_REPLACEMENT_LINES lines is read whole and says so.
+            unread_lines = True
+            log.warning(
+                "replacement rules are longer than %d lines — the rest is ignored",
+                _MAX_REPLACEMENT_LINES,
+            )
+            break
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         if "=>" not in line:
             log.warning("replacement rule on line %d has no “=>” separator, ignored: %.60r", number, line)
-            if issues is not None:
-                issues.append(f"line {number} has no “=>”")
+            _collect_issue(issues, f"line {number} has no “=>”")
             continue
         find, replace = line.split("=>", 1)
         find = find.strip()
         if not find:
             log.warning("replacement rule on line %d has an empty search term, ignored", number)
-            if issues is not None:
-                issues.append(f"line {number} has nothing to search for")
+            _collect_issue(issues, f"line {number} has nothing to search for")
             continue
         rules.append((find, replace.strip()))
         if len(rules) >= _MAX_REPLACEMENT_RULES:
             log.warning("more than %d replacement rules — the rest is ignored", _MAX_REPLACEMENT_RULES)
             break
+    if counts is not None:
+        counts["unread_lines"] = unread_lines
     return rules
 
 
@@ -144,10 +403,19 @@ def describe_replacements(spec: str) -> str:
 
     Empty for an empty field: a field nobody has written in yet needs its
     placeholder, not a count of zero.
+
+    A list long enough to hit the line ceiling gets its own sentence, and that
+    sentence has to survive the empty case: 2 000 lines of comments produce no
+    rule and no bad line either, so an early return that looked at those two
+    alone said nothing at all about a spec whose tail was never read — the same
+    silent shortening this line exists to prevent. Such a walk therefore reports
+    "0 rules active" plus the ceiling, exactly like its sibling
+    `fillers.describe_filler_phrases`, whose status is read next to this one.
     """
     issues: list[str] = []
-    rules = parse_replacements(spec, issues)
-    if not rules and not issues:
+    counts: dict = {}
+    rules = parse_replacements(spec, issues, counts)
+    if not rules and not issues and not counts.get("unread_lines"):
         return ""
     status = f"{len(rules)} rule{'' if len(rules) == 1 else 's'} active"
     if issues:
@@ -156,12 +424,25 @@ def describe_replacements(spec: str) -> str:
         hidden = len(issues) - len(shown)
         if hidden:
             listed += f", and {hidden} more"
-        status += f" · {len(issues)} line{'' if len(issues) == 1 else 's'} ignored: {listed}"
+        # "50+" once the collection cap was hit: the parser stopped collecting
+        # there and does not know the real total, and a count that quietly
+        # understates is worse than one that admits where it stops.
+        total = len(issues)
+        counted = f"{total}+" if total >= _MAX_COLLECTED_ISSUES else str(total)
+        status += f" · {counted} line{'' if total == 1 else 's'} ignored: {listed}"
     status += "."
     if len(rules) >= _MAX_REPLACEMENT_RULES:
         # Its own sentence, not one of the ignored lines: the parser stops
         # counting at the cap, so it does not know how many lines came after it.
         status += f" Only the first {_MAX_REPLACEMENT_RULES} rules are used."
+    elif counts.get("unread_lines"):
+        # The other cap, and only when the rule cap did not fire: a list this
+        # long that still holds fewer than the maximum number of rules is
+        # mostly comments or typos, and the lines past the ceiling were never
+        # read at all — a truncation nothing else on this line would mention.
+        # From the parser's own flag, not a second splitlines() over a spec
+        # whose size is the reason the ceiling exists.
+        status += f" Only the first {_MAX_REPLACEMENT_LINES} lines are read."
     return status
 
 
@@ -255,8 +536,21 @@ class App:
             self.cfg.path.parent / "history.json",
             max_entries=clamp_setting("history_max", self.cfg["history_max"], 10, 5000),
         )
+        # Both listeners name their source in the payload — the handler could
+        # default a missing one to the microphone, but an event that says which
+        # source it belongs to is what keeps a system-audio press from ever
+        # being read as a dictation.
         self.hotkeys = Hotkeys(
-            lambda: self.post("hotkey_press"), lambda: self.post("hotkey_release")
+            lambda: self.post("hotkey_press", SOURCE_MIC),
+            lambda: self.post("hotkey_release", SOURCE_MIC),
+        )
+        # The second recording source (#191): what the computer plays, on its
+        # own hotkey. Two pynput listeners coexist fine; this one is only
+        # registered while a combo is configured (see _register_system_hotkey),
+        # so the feature costs nothing while it is off.
+        self.system_hotkeys = Hotkeys(
+            lambda: self.post("hotkey_press", SOURCE_SYSTEM),
+            lambda: self.post("hotkey_release", SOURCE_SYSTEM),
         )
         # Imported here (not at module top) so `--version`/`--selftest` don't
         # pull in Qt just to import app.py.
@@ -270,10 +564,25 @@ class App:
         self._recording_id = 0  # invalidates live-preview workers of old takes
         self._recording_started = 0.0  # monotonic start of the running take
         self._length_warned = False  # one max-length heads-up per take
-        # The configured microphone index the "recording with the system
-        # default instead" notice was last shown for, so a mic that stays
-        # unplugged does not repeat it before every single take.
-        self._device_fallback_notified = object()
+        # Which source the running take records from, and the length cap that
+        # belongs to it: the two sources have separate caps (max_seconds vs.
+        # system_audio.max_seconds), so the running take's own cap is
+        # remembered here instead of being re-read — from the wrong key — while
+        # it runs. 0 until the first take: length_warning_message stays silent
+        # for a cap that short, so there is no window with a wrong warning.
+        self._source = SOURCE_MIC
+        self._take_max_seconds = 0
+        # The configured device index the "recording from something else
+        # instead" notice was last shown for, so a device that stays unplugged
+        # does not repeat it before every single take. One marker per source:
+        # the microphone and the loopback device are configured separately, and
+        # a take on one must not swallow the other's notice.
+        self._device_fallback_notified = {SOURCE_MIC: object(), SOURCE_SYSTEM: object()}
+        # The system-audio combo the "same as the microphone hotkey" clash was
+        # last reported for — _register_hotkey runs on every save, every
+        # finished hotkey test and every closed key picker, and the complaint
+        # belongs to the configuration, not to those events.
+        self._hotkey_clash_notified = object()
         self._clock_seconds = -1  # whole second the tray clock currently shows
         # Global hotkey suspended by the user (tray menu → Pause hotkey).
         # Deliberately not a config key — see _toggle_hotkey_pause.
@@ -390,12 +699,17 @@ class App:
         owning a timer that would have to be started and stopped with every
         take: the check is two comparisons on the main thread, and it can
         never outlive a recording it no longer belongs to.
+
+        The cap is the one the running take was started with (`_start_recording`
+        stores it), not a fresh read of the config: the two sources have
+        different caps, so re-reading `max_seconds` here would warn a
+        system-audio take about a limit that is not its own — and it is the
+        value the recorder was opened with that this take really stops at.
         """
         if self._length_warned or self.state != STATE_RECORDING:
             return
         message = length_warning_message(
-            time.monotonic() - self._recording_started,
-            clamp_setting("max_seconds", self.cfg["max_seconds"], 10, 3600),
+            time.monotonic() - self._recording_started, self._take_max_seconds
         )
         if message is None:
             return
@@ -450,25 +764,43 @@ class App:
 
     def _handle(self, kind: str, payload) -> None:
         if kind == "toggle":
+            source = event_source(payload)
             if self.state == STATE_IDLE:
-                self._start_recording()
+                self._start_recording(source)
             elif self.state == STATE_RECORDING:
-                self._finish_recording()
+                if _take_source(self) != source:
+                    _notify_source_busy(self, source)
+                else:
+                    self._finish_recording()
             else:
                 self.notify("Still transcribing the previous recording…")
         elif kind == "hotkey_press":
-            if self.cfg["hotkey_mode"] == "hold":
+            source = event_source(payload)
+            # That source's own mode: the two hotkeys are configured
+            # separately, and reading the microphone's mode for a system-audio
+            # press would leave a hold-mode take running with no release.
+            if hotkey_mode(self.cfg, source) == "hold":
                 # push-to-talk: start on press, stop on release
                 if self.state == STATE_IDLE:
-                    self._start_recording()
+                    self._start_recording(source)
+                elif self.state == STATE_RECORDING and _take_source(self) != source:
+                    _notify_source_busy(self, source)
                 elif self.state == STATE_PROCESSING:
                     # Same feedback as the toggle branch: the user is already
                     # speaking into a dead mic — silence here loses dictation.
                     self.notify("Still transcribing the previous recording…")
             else:
-                self._handle("toggle", None)
+                self._handle("toggle", source)
         elif kind == "hotkey_release":
-            if self.cfg["hotkey_mode"] == "hold" and self.state == STATE_RECORDING:
+            source = event_source(payload)
+            if (
+                hotkey_mode(self.cfg, source) == "hold"
+                and self.state == STATE_RECORDING
+                # Only the source that started this take may stop it: releasing
+                # the *other* hotkey mid-take would insert a recorded meeting
+                # into whatever window the dictation was meant for.
+                and _take_source(self) == source
+            ):
                 self._finish_recording()
         elif kind == "preview_text":
             if self.overlay is not None and self.state == STATE_RECORDING:
@@ -496,14 +828,23 @@ class App:
             self._copy_transcript(str(payload))
         elif kind == "auto_stop":
             if self._owns_take(payload):
-                self.notify("Maximum recording length reached.")
+                # The two sources have their own caps, so the message names
+                # which one hit. The microphone wording is unchanged — it is
+                # the sentence the rest of the app documents.
+                extra = "" if _take_source(self) == SOURCE_MIC else " for system audio"
+                self.notify(f"Maximum recording length{extra} reached.")
                 self._finish_recording()
         elif kind == "stream_died":
             # The input stream ended on its own (device unplugged, PortAudio
             # abort): finish with what was captured instead of showing a
-            # recording that silently stopped listening.
+            # recording that silently stopped listening. Named after the source
+            # that died — "the microphone stream" for a system-audio take would
+            # send the user to a device that is working fine.
             if self._owns_take(payload):
-                self.notify("The microphone stream ended unexpectedly.", force=True)
+                self.notify(
+                    f"The {source_label(_take_source(self))} stream ended unexpectedly.",
+                    force=True,
+                )
                 self._finish_recording()
         elif kind == "done":
             self._set_state(STATE_IDLE)
@@ -538,41 +879,95 @@ class App:
             return False
         return recording_id is None or recording_id == self._recording_id
 
-    def _start_recording(self) -> None:
+    @property
+    def recording_source(self) -> str:
+        """Which source the running (or most recent) take records from.
+
+        The tray labels its two start/stop entries from this, so that surface
+        reads a public property rather than the private attribute — and gets
+        the same answer `_handle` routes by.
+        """
+        return _take_source(self)
+
+    def _start_recording(self, source: str = SOURCE_MIC) -> None:
         # Reserved before start(): the callbacks are handed to the recorder
         # here, and a stream that dies during start() already fires them.
         take = self._recording_id + 1
-        # PortAudio indices are positional: unplugging the configured
-        # microphone (or plugging anything else in) makes the stored index
-        # point at nothing or at another device. Resolve before opening the
-        # stream so the take survives on the system default instead of dying
-        # with a raw PortAudio error naming no fix.
-        configured = self.cfg["input_device"]
-        device, device_note = resolve_input_device(configured)
+        system = source == SOURCE_SYSTEM
+        if system:
+            scfg = self.cfg["system_audio"]
+            configured = scfg["device"]
+            # A refusal means REFUSE the take — it does NOT mean "the system
+            # default", the one place this contract differs from
+            # resolve_input_device. The default input *is* a microphone:
+            # recording the room while the user asked for what the computer
+            # plays is a wrong result, not a degraded one, and nothing about
+            # the transcript would give it away (system_audio.py). Read by
+            # name, because the two functions have the identical signature and
+            # only the flag cannot be mistaken for the sibling's meaning.
+            choice = resolve_loopback_device(configured)
+            if choice.refuse:
+                note = choice.note or (
+                    "No device for recording what the computer plays was found — "
+                    "nothing was recorded. " + system_audio_help()
+                )
+                log.warning("system-audio take refused: %s", note)
+                # Forced: nothing at all was recorded, and the note is the only
+                # place the fix is named.
+                self.notify(note, force=True)
+                return
+            device, device_note = choice.index, choice.note
+            cap = clamp_setting("system_audio.max_seconds", scfg["max_seconds"], 10, 3600)
+        else:
+            # PortAudio indices are positional: unplugging the configured
+            # microphone (or plugging anything else in) makes the stored index
+            # point at nothing or at another device. Resolve before opening the
+            # stream so the take survives on the system default instead of dying
+            # with a raw PortAudio error naming no fix.
+            configured = self.cfg["input_device"]
+            device, device_note = resolve_input_device(configured)
+            cap = clamp_setting("max_seconds", self.cfg["max_seconds"], 10, 3600)
         try:
             self.recorder.start(
                 device=device,
-                max_seconds=clamp_setting("max_seconds", self.cfg["max_seconds"], 10, 3600),
+                max_seconds=cap,
                 on_limit=lambda: self.post("auto_stop", take),
                 on_ended=lambda: self.post("stream_died", take),
+                # A loopback device is why the recorder has this switch: many
+                # offer only 48 kHz stereo, and letting WASAPI convert beats
+                # resampling in our own callback. Deliberately off for the
+                # microphone, which opens at 16 kHz mono wherever it can — and
+                # where it cannot, the recorder's native-format fallback (not
+                # gated on this switch) records at the device's own rate and
+                # converts in the callback instead of losing the take.
+                os_convert=system,
             )
         except Exception as exc:
             log.exception("could not start recording")
             self.notify(f"Could not start recording: {exc}", force=True)
             return
         if device_note is not None:
-            log.warning("input device %r is gone — recording with the system default", configured)
+            if not system:
+                log.warning(
+                    "input device %r is gone — recording with the system default", configured
+                )
+            # The system-audio case logs inside resolve_loopback_device, which
+            # is where both device *names* are known — the configured index is
+            # as likely to have moved onto another device as to have vanished,
+            # and only the name says which.
             # Forced (this is a device problem the user has to fix in the
             # settings), but only once per configured device: the alternative
             # is an interruption before every dictation until the microphone
-            # comes back.
-            if self._device_fallback_notified != configured:
-                self._device_fallback_notified = configured
+            # comes back. Per source, so the two cannot suppress each other.
+            if self._device_fallback_notified.get(source) != configured:
+                self._device_fallback_notified[source] = configured
                 self.notify(device_note, force=True)
         else:
             # Plugged back in — re-arm, so a second disappearance is reported
             # again instead of being swallowed by the first one's marker.
-            self._device_fallback_notified = object()
+            self._device_fallback_notified[source] = object()
+        self._source = source
+        self._take_max_seconds = cap
         # Bump on every take so a lingering worker from a previous recording
         # sees a changed id and exits, even if this take has no worker. Before
         # the state change: _set_state re-enters RECORDING first, and a stale
@@ -584,9 +979,15 @@ class App:
         self._set_state(STATE_RECORDING)
         self._beep(880)
         ocfg = self.cfg["overlay"]
+        # The overlay preview may run for both sources — it only shows text.
         want_preview = bool(ocfg["enabled"] and ocfg["live_preview"])
         self._live_typer = None
-        if self.cfg["live_typing"]:
+        # Live typing is the microphone's alone. _live_typing_gate reasons about
+        # the *microphone* hotkey — whether our own injected keystrokes could
+        # re-fire it — which says nothing at all about the system-audio combo;
+        # and typing a meeting into the focused window while it is still being
+        # recorded is not what the second source is for.
+        if self.cfg["live_typing"] and not system:
             reason = self._live_typing_gate()
             if reason is None:
                 # The live typer runs the decode loop, so it also feeds the
@@ -611,6 +1012,10 @@ class App:
 
     def _live_typing_gate(self) -> str | None:
         """Why live typing must stay off for this take (None = it can run).
+
+        Asked about the microphone hotkey only, because live typing itself is
+        microphone-only (see `_start_recording`): every rule below is about our
+        own injected keystrokes re-firing the combination that started the take.
 
         Hold mode is only safe with a hotkey that (a) contains no modifier —
         off Windows the modifier state can't be polled while the chord is held,
@@ -655,8 +1060,14 @@ class App:
             self.notify("Recording too short — nothing inserted.")
             return
         self._set_state(STATE_PROCESSING)
+        # The source travels with the take, not read from self in the worker:
+        # the next take may start while this one is still being transcribed,
+        # and the assistant profile belongs to the audio being processed.
         threading.Thread(
-            target=self._process, args=(audio, live), name="process", daemon=True
+            target=self._process,
+            args=(audio, live, _take_source(self)),
+            name="process",
+            daemon=True,
         ).start()
 
     def _cancel_recording(self) -> None:
@@ -673,7 +1084,7 @@ class App:
         self._set_state(STATE_IDLE)
         self.notify("Recording cancelled.")
 
-    def _process(self, audio, live=None) -> None:
+    def _process(self, audio, live=None, source: str = SOURCE_MIC) -> None:
         """Worker thread: transcribe, optionally refine, insert at the cursor.
 
         With live typing (`live` is this take's LiveTyper), part of the
@@ -681,7 +1092,11 @@ class App:
         committed offset is transcribed here, and only the still-missing text
         is typed (never pasted). The assistant is skipped in that case — it
         rewrites the whole text, but the typed part can't be taken back
-        (append-only by design)."""
+        (append-only by design).
+
+        `source` is the take's recording source and only decides which
+        assistant profile post-processes the transcript — a dictation wants
+        punctuation, a recorded meeting wants minutes (assistant.profile)."""
         try:
             # The whole take, kept before live typing slices the already
             # committed part off `audio` below: a recording that produced no
@@ -710,9 +1125,66 @@ class App:
                 )
             full_text = f"{prefix} {text}" if prefix and text else (prefix or text)
             if not full_text:
-                self._notify_no_speech(captured)
+                self._notify_no_speech(captured, source, _clip_verdict(captured))
                 return
-            acfg = self.cfg["assistant"]
+            # Text this take already put at the cursor. Live typing is
+            # append-only and cannot take anything back, so the filler filter
+            # below must not run once something was typed: dropping the
+            # transcript then would leave the typed part on screen while the
+            # app reports "no speech" and writes nothing to the history — the
+            # one outcome worse than the hallucination itself. Armed but silent
+            # live typing (nothing committed, nothing pending) is not that
+            # case, and the filter applies to it normally.
+            typed_already = live is not None and bool(typed_any or prefix)
+            if self.cfg["filler_filter"] and not typed_already:
+                # Before the assistant and before apply_replacements: there is
+                # nothing to gain from sending a hallucination to an LLM, and a
+                # replacement rule that rewrote it would only hide it from the
+                # filter. Applies to both sources — a silent loopback device
+                # produces exactly the same invented sentence.
+                matched = is_filler(full_text, self.cfg["filler_phrases"])
+                if matched == EMPTY_TRANSCRIPT:
+                    # A fixed marker, not one of the configured phrases —
+                    # printing it as one would invent a list entry. Dropped
+                    # whatever the audio says, unlike a phrase match below:
+                    # there is no letter and no digit in this transcript, so
+                    # nothing anybody said can be lost with it, and a lone
+                    # ellipsis or music glyph at the cursor is not a take
+                    # somebody wants back.
+                    log.info("transcript dropped: no letter or digit in %.60r", full_text)
+                    self._notify_no_speech(captured, source, _clip_verdict(captured))
+                    return
+                if matched is not None:
+                    # The phrase list alone cannot tell a hallucinated "Vielen
+                    # Dank." from a dictated one — the clip can. This filter
+                    # exists for a take with NO speech (near-silence decodes to
+                    # a subtitle-style closing phrase, with high confidence),
+                    # so a take that *had* speech is never filtered however it
+                    # reads: two of the shipped phrases are complete messages
+                    # people dictate constantly in this project's own default
+                    # language, and dropping one leaves nothing at the cursor,
+                    # nothing in the history and nothing on the clipboard —
+                    # there is no recovery path from it at all.
+                    verdict = _clip_verdict(captured)
+                    if verdict not in _NO_SIGNAL_VERDICTS:
+                        # Includes a verdict that could not be computed: fail
+                        # towards keeping the user's words.
+                        log.info(
+                            "filler phrase %r kept — the clip carries a signal (verdict %r)",
+                            matched, verdict,
+                        )
+                    else:
+                        log.info(
+                            "transcript dropped as filler: %.80r matched the phrase %r "
+                            "(clip verdict %r)",
+                            full_text, matched, verdict,
+                        )
+                        # Reported exactly like a take that produced no text at
+                        # all, which is what this take really was: nothing is
+                        # inserted, and nothing goes into the history either.
+                        self._notify_no_speech(captured, source, verdict)
+                        return
+            acfg = assistant.profile(self.cfg["assistant"], source)
             if acfg["enabled"]:
                 if live is not None:
                     log.info("assistant post-processing skipped — text was live-typed")
@@ -789,24 +1261,42 @@ class App:
         finally:
             self.post("done")
 
-    def _notify_no_speech(self, audio) -> None:
-        """Report a take that produced no text — naming a microphone that
+    def _notify_no_speech(
+        self, audio, source: str = SOURCE_MIC, verdict: str | None = None
+    ) -> None:
+        """Report a take that produced no text — naming the device that
         delivered nothing instead of leaving the recognition to take the blame.
 
-        Runs on the processing thread (notify() posts, so this stays off Qt)
-        and is deliberately best-effort: the statistics only decide the
-        wording, so failing to compute them costs the diagnosis, never the
-        message. Forced only for the two verdicts that name a fixable device
-        problem — "no speech" itself stays an ordinary notification.
-        """
-        from .diagnostics import clip_stats, no_speech_message
+        `source` decides which device the diagnosis names: a system-audio take
+        whose loopback device carries digital silence used to read "No sound
+        reached the microphone — check the input device … and whether the
+        microphone is muted", which points at a device that is working fine.
+        Same class as the wording `stream_died` and `auto_stop` already fixed.
 
-        verdict = "unknown"
-        try:
-            verdict = str(clip_stats(audio)["verdict"])
-        except Exception:
-            log.debug("could not classify the recorded audio", exc_info=True)
-        message = no_speech_message(verdict)
+        `verdict` is this take's `_clip_verdict`, computed once by the caller.
+        Left out it is computed here, so this stays best-effort either way: the
+        statistics only decide the wording, and failing to compute them costs
+        the diagnosis, never the message.
+
+        Runs on the processing thread (notify() posts, so this stays off Qt).
+        Forced only for the verdicts in `_NO_SIGNAL_VERDICTS`, the ones whose
+        message names a fixable device problem — "no speech" itself stays an
+        ordinary notification.
+        """
+        from .diagnostics import no_speech_message
+
+        if verdict is None:
+            verdict = _clip_verdict(audio)
+        message = no_speech_message(verdict, source=source)
+        # The format the stream actually ran at — log only, never in the
+        # notification: a loopback device delivering silence at 48 kHz stereo
+        # is exactly the take somebody debugs from the log file afterwards,
+        # while the numbers say nothing to the user reading the message.
+        log.info(
+            "%s take produced no text (verdict %s, stream %s%s)",
+            source_label(source), verdict, self.recorder.stream_format,
+            ", converted to 16 kHz mono" if self.recorder.resampling else "",
+        )
         # Dropped audio buffers (PortAudio input overflow) are a third reason
         # for an empty transcript, and the one the recorder can actually
         # count: named here, where the user is already being told the take
@@ -819,7 +1309,14 @@ class App:
                 f" {dropped} audio buffers were dropped during the recording — the "
                 "system was overloaded."
             )
-        self.notify(message, force=verdict in ("silent", "quiet"))
+        # The filter gate's own tuple, deliberately not a second copy of the
+        # same two strings: "the clip carried no signal" is one property of the
+        # take, read in `_process` to drop a transcript and here to force the
+        # message about it, and two literals drift apart the first time a
+        # verdict is added. `diagnostics.no_speech_message` still owns its own
+        # membership test for the *wording*, so a verdict added here has to be
+        # taught there too — otherwise this forces the generic sentence.
+        self.notify(message, force=verdict in _NO_SIGNAL_VERDICTS)
 
     def _insert_transcript(self, text: str) -> None:
         """Insert `text` at the cursor and say where it ended up.
@@ -1058,9 +1555,29 @@ class App:
         # recording. Deactivation on any exit from RECORDING (finish, cancel,
         # too-short, auto-stop) happens here — always before _process pastes,
         # since that runs only after the PROCESSING transition below.
+        #
+        # Only a MICROPHONE take activates it (#191). The integration exists to
+        # keep a dictation out of a call; a system-audio take has no dictation
+        # to hide — it is recording that call — so muting there mutes the user
+        # in the meeting they just started recording, for up to the 900 s cap,
+        # with nothing on screen explaining it. It would also mis-fire twice
+        # over: `integrations._hold_mode_hotkey` reads cfg["hotkey_mode"] /
+        # cfg["hotkey"], always the *microphone's*, so with mic=toggle and
+        # system=hold its guard sees no held chord and taps toggle keybinds
+        # through the physically held system-audio chord — the corruption that
+        # guard was written to prevent — while the reverse pair skips targets
+        # with a forced notification about a hotkey nobody is holding. Making
+        # muting-while-recording-system-audio possible would need its own
+        # switch AND a source-aware `_hold_mode_hotkey`; until then the feature
+        # stays what README.md promises it is: "while you dictate".
+        #
+        # The deactivation stays unconditional. It is the cleanup path, it is a
+        # no-op when nothing was activated, and no cleanup path may be the
+        # thing that leaves a target app stuck muted.
         try:
             if state == STATE_RECORDING and previous != STATE_RECORDING:
-                self.integrations.on_recording_start()
+                if _take_source(self) == SOURCE_MIC:
+                    self.integrations.on_recording_start()
             elif previous == STATE_RECORDING and state != STATE_RECORDING:
                 self.integrations.on_recording_stop()
         except Exception:
@@ -1110,7 +1627,7 @@ class App:
             # test finished, key picker closed) comes through here, so the
             # pause survives all of them instead of being undone by the next
             # unrelated action.
-            self.hotkeys.stop()
+            _stop_hotkeys(self)
             log.info("hotkey stays paused — not registering")
             return
         combo = self.cfg["hotkey"]
@@ -1119,9 +1636,18 @@ class App:
         except Exception:
             log.exception("failed to register hotkey %r", combo)
             self.notify(f"Could not register hotkey {combo!r} — change it in Settings.", force=True)
+        # Last and in its own function: whatever the second source does here —
+        # unconfigured, unparseable, clashing — must never be what keeps the
+        # dictation hotkey above from being registered.
+        _register_system_hotkey(self, combo)
 
     def _toggle_hotkey_pause(self) -> None:
-        """Suspend or resume the global hotkey without touching the settings.
+        """Suspend or resume the global hotkeys without touching the settings.
+
+        Both of them (#191): the pause exists because another app wants the
+        keyboard, and a second listener that kept firing would defeat exactly
+        that. One switch, so there is no half-paused state to explain in the
+        tray status line.
 
         The hotkey is global by definition: while a game, a remote session or
         another app wants the same combination, the only way out so far was to
@@ -1144,7 +1670,7 @@ class App:
             return
         self.hotkey_paused = not self.hotkey_paused
         if self.hotkey_paused:
-            self.hotkeys.stop()
+            _stop_hotkeys(self)
             self.notify(
                 "Hotkey paused — switch it back on in the tray or floating-icon "
                 "menu when you need it.",
@@ -1384,7 +1910,7 @@ class App:
                 self._settings_window.force_close()
             except Exception:
                 log.debug("error closing the settings window during shutdown", exc_info=True)
-        self.hotkeys.stop()
+        _stop_hotkeys(self)
         self.tray.stop()
         if self.overlay is not None:
             try:

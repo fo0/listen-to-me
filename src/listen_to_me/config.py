@@ -32,6 +32,51 @@ unless they carry meaning.
 Return ONLY the cleaned text — no explanations, no quotes, no markdown fences.\
 """
 
+DEFAULT_FILLER_PHRASES = """\
+# Phrases Whisper invents for a take that contains no speech, one per line
+# ("#" comments and blank lines are ignored). Matching is case-insensitive and
+# ignores surrounding punctuation and whitespace, and a phrase only counts when
+# it is the WHOLE transcript — so the base form is enough, no need for both
+# "Vielen Dank" and "Vielen Dank!". Brackets and parentheses are part of the
+# comparison — that is what tells the annotation "[Musik]" from somebody
+# dictating the word "Musik" — so each bracketing style needs its own line.
+Vielen Dank
+Vielen Dank für Ihre Aufmerksamkeit
+Untertitel von Stephanie Geiges
+Untertitelung des ZDF, 2020
+Untertitel im Auftrag des ZDF, 2021
+Copyright WDR
+Thank you
+Thanks for watching
+Thank you for watching
+Subtitles by the Amara.org community
+[Musik]
+[Music]
+(Musik)
+(Music)
+[Applaus]
+[Applause]
+[Gelächter]
+[Laughter]\
+"""
+
+# A starting point, meant to be replaced with the user's own flow (minutes,
+# a summary, a translation) — this one only cleans the transcript up.
+DEFAULT_SYSTEM_AUDIO_PROMPT = """\
+You are a transcript editor. You receive the raw output of a speech-to-text \
+engine that recorded computer audio — a call, a meeting or a video, not a \
+dictation.
+
+Your job:
+- Fix punctuation, capitalization and obvious transcription mistakes.
+- Keep speaker turns readable where the transcript shows them: one turn per \
+line, speaker labels kept as they are.
+- Keep the language of the input text. Never translate.
+- Do not summarize, comment on or add content unless this prompt says so.
+
+Return ONLY the cleaned text — no explanations, no quotes, no markdown fences.\
+"""
+
 DEFAULTS: dict = {
     # Global hotkey in pynput format, e.g. "<ctrl>+<alt>+<space>".
     "hotkey": "<ctrl>+<alt>+<space>",
@@ -74,6 +119,24 @@ DEFAULTS: dict = {
     "input_device": None,
     # Hard cap for a single recording.
     "max_seconds": 300,
+    # A second global hotkey that records what the computer PLAYS (a meeting,
+    # a video) instead of the microphone, through a loopback/monitor input
+    # device the OS provides ("Monitor of …" on Linux, "Stereo Mix" or a
+    # virtual cable on Windows). An empty hotkey means this second recording
+    # source is off entirely.
+    "system_audio": {
+        "hotkey": "",
+        "hotkey_mode": "toggle",
+        # PortAudio *input* device index of the loopback/monitor capture
+        # device — an input, not the output device it mirrors. null =
+        # auto-pick the best detected candidate. Like input_device the null
+        # default carries no type information, so _coerce passes whatever is
+        # stored here through unchanged and it is resolved later.
+        "device": None,
+        # A longer cap than max_seconds above: a recorded meeting is not a
+        # dictation.
+        "max_seconds": 900,
+    },
     # How to insert text at the cursor: "paste" (clipboard + Ctrl+V) or "type".
     "injection_mode": "paste",
     # Experimental: type already-stable parts of the transcript at the cursor
@@ -137,6 +200,20 @@ DEFAULTS: dict = {
     # fixes what the recognizer got wrong anyway — see app.apply_replacements.
     # Not applied to live typing (that text is already at the cursor).
     "replacements": "",
+    # Drop a transcript that is nothing but a phrase Whisper made up for
+    # silence. Its training data is subtitle-heavy, so a take with no speech
+    # comes back as a closing phrase ("Vielen Dank.", "Thank you.") or a
+    # subtitle credit, and the app inserts a sentence nobody spoke. Neither
+    # vad_filter nor faster-whisper's no_speech_threshold catches it: the
+    # hallucination is high-confidence, so avg_logprob stays good and the
+    # segment survives every quality gate. Only a match against the WHOLE
+    # transcript drops a take — the same phrase inside a longer text was
+    # really spoken. Skipped for live typing: that text is already at the
+    # cursor and cannot be taken back. The list lives in filler_phrases, one
+    # phrase per line with "#" comments and blank lines allowed, exactly like
+    # replacements above — see DEFAULT_FILLER_PHRASES for the matching rules.
+    "filler_filter": True,
+    "filler_phrases": DEFAULT_FILLER_PHRASES,
     "vad_filter": True,
     # Decoding beam size (faster-whisper backend only): 5 = best accuracy
     # (default), 1 = greedy — roughly 1.5-2x faster at slightly lower accuracy.
@@ -166,6 +243,20 @@ DEFAULTS: dict = {
         "system_prompt": DEFAULT_ASSISTANT_PROMPT,
         "temperature": 0.2,
         "timeout": 120,
+        # Second profile, for the transcript of recorded system audio (see
+        # the system_audio section above): a dictation wants punctuation and
+        # filler removal, a recorded meeting minutes or a summary. The
+        # connection is shared (base_url, api_key, temperature, timeout),
+        # only the switch, the model and the prompt are separate. "enabled"
+        # and "system_prompt" above keep their meaning — they ARE the
+        # microphone profile, deliberately not renamed so no existing
+        # config.json needs a migration.
+        "system_audio": {
+            "enabled": False,
+            # Empty = use the shared "model" above.
+            "model": "",
+            "system_prompt": DEFAULT_SYSTEM_AUDIO_PROMPT,
+        },
     },
     # Mute other applications (Discord, Teams, …) while a recording runs, so the
     # dictation isn't transmitted into a voice call. Each target sends a global

@@ -8,7 +8,7 @@ Read `MEMORY.md` (long-term knowledge) → `SCRATCHPAD.md` (working context) →
 
 Skills live at `.claude/skills/<name>/SKILL.md` — load the one whose trigger fires; the full trigger list is each skill's frontmatter `description`, this is the routing index: `done` ("done" / "fertig") · `pr` · `review` · `security-review` · `rollback` ("revert" / "undo") · `ci` ("fix CI" / "check the build") · `stuck` ("going in circles") · `beacon` ("check dependencies" / "update deps") · `scheduler` ("schedule" / "nightly" / "later") · `orca` (`/orca <objective>`). Diagram request → `agent_docs/diagram_prompt.md` → `docs/ARCHITECTURE.mmd`.
 
-> Review on demand (`review` skill — done-skill never auto-runs it); findings → `BACKLOG.md`, knowledge → `MEMORY.md` / `SCRATCHPAD.md` (rules: `agent_docs/backlog_process.md`, `memory_process.md`). Reference issues in commits: `Fix crash on empty audio #42`.
+> Review on demand (`review` skill — done-skill never auto-runs it); findings → `BACKLOG.md`, knowledge → `MEMORY.md` / `SCRATCHPAD.md` (rules: `agent_docs/backlog_process.md`, `memory_process.md`).
 
 ## Output Languages
 
@@ -19,7 +19,7 @@ Skills live at `.claude/skills/<name>/SKILL.md` — load the one whose trigger f
 ## Performance / Modes
 
 - **Default model:** the session's — never pin one here or in `.claude/settings.json`; `/model` switches mid-session, **`/fast`** is that model at faster output, not a downgrade.
-- **Caveman** (`full`) and **orca** (width 5) are defaults with their own sections below; **plan mode** for non-trivial strategy only — a plan put up for approval ends the turn on the user, so it carries the _Handoff Prompt_ block. Full reference: `agent_docs/autonomy.md → Mode reference`.
+- **Plan mode** for non-trivial strategy only — a plan put up for approval ends the turn on the user, so it carries the _Handoff Prompt_ block. Mode reference (incl. the Caveman and orca defaults, which have their own sections below): `agent_docs/autonomy.md`.
 
 ## Caveman Mode — chat compression (default `full`)
 
@@ -60,11 +60,11 @@ Three lifetimes — **Routines** (cloud, durable, ≥1 h), **`/loop` + `Cron*`**
 
 ## Tech Stack
 
-Python >=3.10 (CI 3.12) · PySide6 (Qt 6) >=6.11.2 · faster-whisper >=1.2.1 (+ optional OpenVINO / Parakeet backends) · sounddevice · pynput · pip + setuptools, PyInstaller one-file in CI. **No linter, formatter, type-checker or test framework for Python** — Prettier (via `npx`) formats Markdown only. Full table, version reasoning, packaging asymmetry: `agent_docs/tech_stack.md`; dep bounds: `requirements.txt`.
+Python >=3.10 (CI 3.12) · PySide6 (Qt 6) · faster-whisper (+ optional OpenVINO / Parakeet backends) · sounddevice · pynput · pip + setuptools, PyInstaller one-file in CI. **No linter, formatter, type-checker or test framework for Python** — Prettier (via `npx`) formats Markdown only. Version reasoning + packaging asymmetry: `agent_docs/tech_stack.md`; the pinned floors are `requirements.txt` / `pyproject.toml`, never copied here.
 
 ## Project Overview
 
-**Listen To Me** is a push-to-talk voice-typing tray app: press a global hotkey, speak, and the recording is transcribed **locally** by a Whisper model and inserted at the cursor of whatever field is focused. Windows-first, Linux/macOS paths prepared. Feature list: `README.md`.
+**Listen To Me** is a push-to-talk voice-typing tray app: press a global hotkey, speak, and the recording is transcribed **locally** by a Whisper model and inserted at the cursor of whatever field is focused. A **second hotkey records what the computer plays** (a call, a meeting) through a loopback input device and inserts that transcript the same way (#191, ADR-0009). Windows-first, Linux/macOS paths prepared. Feature list: `README.md`.
 
 ## Project Structure
 
@@ -91,7 +91,7 @@ python -m listen_to_me --version     # print version, no Qt import
 python -m listen_to_me --selftest    # packaging self-test (needs all deps installed)
 python -m listen_to_me --help        # flag list + config location, no Qt import
 
-# Automated Checks — install → format-check → build → test (no Python linter/typecheck exists)
+# Automated Checks — install → format-check → build → test
 npx --yes prettier@3.9.6 --write "**/*.md"   # format write — Markdown only; version pinned in docs-format.yml
 npx --yes prettier@3.9.6 --check "**/*.md"   # format check — matches CI; read-only
 python -m compileall -q src scripts          # syntax-check every source file (fast, no deps)
@@ -106,22 +106,21 @@ npx -y -p @mermaid-js/mermaid-cli mmdc -i docs/ARCHITECTURE.mmd -o docs/ARCHITEC
 
 ## Key Patterns
 
-Top 5 — a lookup index, not documentation; every module and its role: `agent_docs/key-patterns.md`.
+A lookup index, not documentation — every pattern, every module and its role, incl. the config keys each owns: `agent_docs/key-patterns.md`.
 
-- **App core & state machine** (`app.py`) — `idle` → `recording` → `processing`, a thread-safe event queue drained by a `QTimer` on the Qt main thread · **Threading model (critical)** — GUI/tray/overlay work is main-thread only; workers never touch Qt, they call `App.post(...)` / `App.notify(...)`.
-- **Lazy heavy imports** — Qt, `sounddevice`, `pynput`, `faster_whisper`, `numpy` inside functions so `--version`/`--selftest` stay headless; never hoist · **Backend abstraction** (`transcriber*.py`) — `create_transcriber(cfg)` picks faster-whisper / OpenVINO / Parakeet by `cfg["backend"]` · **Config deep-merge over `DEFAULTS`** (`config.py`) — atomic writes; a non-dict stored value never replaces a dict section; untrusted input.
+- **App core & threading (critical)** (`app.py`) — `idle` → `recording` → `processing`; GUI/tray/overlay work is main-thread only, workers never touch Qt and post through the event queue (`App.post(...)` / `App.notify(...)`) · **Lazy heavy imports** — Qt, `sounddevice`, `pynput`, `faster_whisper`, `numpy` inside functions so `--version`/`--selftest` stay headless; never hoist.
+- **Backend abstraction** (`transcriber*.py`) — `create_transcriber(cfg)` by `cfg["backend"]` · **Config deep-merge over `DEFAULTS`** (`config.py`) — atomic writes, untrusted input · **Two recording sources** — the source travels with the event; `system_audio.py` resolves the loopback device (a `None` index means **refuse the take**, never "the default input"), `resample.py` converts to 16 kHz mono in the capture callback, `fillers.py` drops a transcript that is only an invented silence phrase, and `assistant.profile(acfg, source)` picks the per-source prompt. Keys: `system_audio.*`, `filler_filter`/`filler_phrases`, `assistant.system_audio.*`.
 
 ## Coding Conventions
 
 - **`from __future__ import annotations`** at the top of every module · **English** comments/docstrings explaining _why_; UI strings are inline English literals · **Logging, not print.**
-- **Naming:** modules/functions `snake_case`, classes `PascalCase`, private helpers `_`-prefixed · **Imports:** stdlib → third-party → local; heavy/optional deps lazily inside functions · **Type hints** on public signatures, `X | None` unions (3.10+).
-- **Max file length:** ~300 lines (split), ~500 (strongly recommended) — exceptions in Refactoring Notes.
+- **Naming:** modules/functions `snake_case`, classes `PascalCase`, private helpers `_`-prefixed · **Imports:** stdlib → third-party → local; heavy/optional deps lazily inside functions · **Type hints** on public signatures, `X | None` unions (3.10+) · **file length** see _Refactoring Notes_.
 
 Formatting (hand-kept, black-style), the never-translate term list and **error handling** (broad `except` at boundaries, `log.exception`, never a silent no-op): `agent_docs/coding_conventions.md`.
 
 ## Architecture Principles
 
-Two rules an agent violates by accident: **`App.state` (via `_set_state`) is the single source of truth** — tray, overlay and mute integrations move together, cross-thread traffic goes one-way through the event queue; and **degrade gracefully, never silently** — no mic / GPU / network / clipboard each fail soft with a user-visible notification. Full set (config-without-restart, no-cloud-for-core, security boundaries, untrusted on-disk input): `agent_docs/architecture_principles.md`.
+Two rules an agent violates by accident: **`App.state` (via `_set_state`) is the single source of truth** — tray, overlay and mute integrations move together; and **degrade gracefully, never silently** — no mic / GPU / network / clipboard each fail soft with a user-visible notification. Full set: `agent_docs/architecture_principles.md`.
 
 ## Architecture Decisions
 
@@ -131,7 +130,7 @@ Recorded as ADRs under `docs/adr/`; triggers + format: `agent_docs/adr_template.
 
 - **Branch Naming:** `claude/<short-slug>`; feature branches, never commit straight to `main`.
 - **Commit Messages:** imperative, capitalized subject (~50–72 chars), e.g. `Add in-app Help page and auto CPU fallback`; an occasional lowercase `area:` prefix is fine (`ci: run the check job`). **Not** Conventional Commits — never force `feat:`/`fix:`. Reference issues/PRs with `#N`.
-- **Merge Strategy:** GitHub **merge commits**, not squash. **CI/CD:** `ci.yml` check job on every PR, `docs-format.yml` on `**.md`; `release.yml` = manual dispatch only, guarded to `main`.
+- **Merge Strategy:** GitHub **merge commits**, not squash. **CI/CD:** `ci.yml` check job on every PR, `docs-format.yml` on `**.md`; for `release.yml` see _Deployment_.
 - **Cloud / routine runs:** unattended work starts on `claude/<slug>` unless the task names a branch — a `claude/`-prefixed branch is always accepted; which other pushes are rejected: `agent_docs/autonomy.md → Branch rule`.
 - **Actions are pinned by commit SHA, never by tag** (#22) — rationale + bump procedure: `agent_docs/deployment.md`. **Never bypass a git hook with `--no-verify`.**
 
@@ -145,8 +144,8 @@ No custom env vars for the app's own config — settings live in `config.json` (
 
 ## Deployment
 
-- **Trigger:** manual `workflow_dispatch` on `.github/workflows/release.yml` → Windows one-file exe + GitHub Release, guarded to `main`. PRs run only the CI checks.
-- **Agent scope:** feature branches, PRs, suggest merge. Merging needs an explicit user command or an owner-authorized routine (gate: `.claude/skills/pr/SKILL.md → /pr merge`, ADR-0005); a release dispatch never runs unattended. **Rollback:** `.claude/skills/rollback/SKILL.md`. Pipeline, distribution, routine wording, SHA-pin bump: `agent_docs/deployment.md`.
+- **Trigger:** manual `workflow_dispatch` on `.github/workflows/release.yml` → Windows one-file exe + GitHub Release, guarded to `main`.
+- **Agent scope:** feature branches, PRs, suggest merge. Merging needs an explicit user command or an owner-authorized routine (gate: `.claude/skills/pr/SKILL.md → /pr merge`, ADR-0005); a release dispatch never runs unattended. Pipeline, distribution, routine wording, SHA-pin bump: `agent_docs/deployment.md`.
 
 ## API / Interfaces
 
@@ -154,11 +153,11 @@ Desktop GUI app, no HTTP API. A small **CLI** (`--version`, `--selftest`, `-h`/`
 
 ## Testing
 
-No framework (no pytest) — the `check` job's two commands under _Automated Checks_, plus `python -m listen_to_me --selftest` with all deps installed; checks live in `selftest.py` (`gui_smoke()` = the dependency-light subset). Constraints: `agent_docs/review_process.md → Test execution constraints`; guards + adding a check: `agent_docs/testing.md`.
+No pytest — the `check` job's two commands under _Automated Checks_, plus `--selftest` with all deps installed; checks live in `selftest.py` (`gui_smoke()` = the dependency-light subset). Constraints: `agent_docs/review_process.md → Test execution constraints`; guards + adding a check: `agent_docs/testing.md`.
 
 ## External Integrations / MCPs
 
-Host MCP availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch`, never hard-require an MCP. One canonical file covers the rest, `agent_docs/mcp_catalog.md`: the `gh` → `mcp__github__*` equivalence the PR/CI/rollback skills rely on, the allowlist rationale, cloud/routine reachability (no `.mcp.json` here) and the **trigger-tool self-heal** (`→ Self-heal`: local sessions only, append the missing `mcp__<server>__*` glob, never `deny`/`ask`, never remove one; web/cloud appends nothing and names the one-time user-scope fix once).
+Host MCP availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch`, never hard-require an MCP. Everything else is stated once in `agent_docs/mcp_catalog.md` and nowhere else: the `gh` → `mcp__github__*` equivalence, the allowlist rationale, cloud/routine reachability, and the trigger-tool self-heal (`→ Self-heal`).
 
 ## CI
 
@@ -182,7 +181,7 @@ Contract (type vs. role, quality parity, write scopes, verify-the-diff): `.claud
 
 ## Refactoring Notes
 
-**Refactor only when it blocks work.** `settings_ui.py` and `selftest.py` are far over the size guideline — keep new behavior in the component modules rather than growing `App` or the settings window. Files, split plans, invariants to preserve, line counts (they drift — re-measure, never copy a number): `agent_docs/refactoring_guidelines.md`.
+**Refactor only when it blocks work.** Split around ~300 lines, ~500 strongly recommended; `settings_ui.py`, `selftest.py`, `app.py`, `overlay.py` and `home_page.py` are all over it — keep new behavior in the component modules rather than growing `App` or the settings window. Files, split plans, invariants to preserve, line counts (they drift — re-measure, never copy a number): `agent_docs/refactoring_guidelines.md`.
 
 ## Documentation Rules
 

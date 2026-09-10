@@ -1,12 +1,27 @@
-"""Microphone recording via sounddevice/PortAudio."""
+"""Audio capture via sounddevice/PortAudio — microphones and loopback inputs.
+
+A loopback (monitor) input is what makes recording the computer's *output*
+possible: "Monitor of ..." on PipeWire/PulseAudio, "Stereo Mix" or a virtual
+cable (VB-CABLE, VoiceMeeter) on Windows, BlackHole on macOS. Nothing here can
+request a WASAPI loopback stream — sounddevice 0.5.6 exposes no loopback
+option and the PortAudio in its Windows wheel (V19.7.0-devel) does not export
+`PaWasapi_IsLoopback` — so such a device is a plain input device with an
+awkward format. Hence `input_device_profiles()`, which the ranking in
+`system_audio.py` reads to identify the candidates, and the recorder's
+native-format fallback: a loopback input rarely offers 16 kHz mono, and
+PortAudio does not resample.
+"""
 
 from __future__ import annotations
 
 import logging
 import math
+import sys
 import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING
+
+from .resample import Resampler, downmix_to_mono
 
 if TYPE_CHECKING:
     import numpy as np
@@ -28,6 +43,10 @@ MAX_RECORDING_SECONDS = 3600
 _LOW_CUT_HZ = 50.0
 _BAND_SPLIT_HZ = (300.0, 2000.0)
 _LEVEL_REF_RMS = 0.12
+
+# Opened instead when a device refuses 16 kHz mono and reports no usable rate
+# of its own — every loopback input seen in the wild runs at the output's rate.
+_FALLBACK_SAMPLE_RATE = 48000
 
 
 def band_levels(samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> tuple[float, float, float]:
@@ -53,6 +72,50 @@ def band_levels(samples: np.ndarray, sample_rate: int = SAMPLE_RATE) -> tuple[fl
     return levels[0], levels[1], levels[2]
 
 
+def _wasapi_auto_convert(sd, device: int | str | None) -> object | None:
+    """`WasapiSettings(auto_convert=True)` for a WASAPI device, else None —
+    which is what `extra_settings` defaults to anyway.
+
+    Called only for a caller that passed `os_convert` (see `Recorder.start`).
+    WASAPI in shared mode can insert the OS rate/channel converter, and then a
+    loopback device locked to 48 kHz stereo accepts a 16 kHz mono stream
+    outright: nothing to resample here at all. Everything is guarded because
+    none of it may cost us the plain open attempt that works today — the
+    settings class exists only in the Windows PortAudio build, and the host
+    API of a device index that just disappeared cannot be resolved.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        info = sd.query_devices(device, "input")
+        api = sd.query_hostapis(int(info["hostapi"]))
+        if "wasapi" not in str(api.get("name", "")).lower():
+            return None
+        return sd.WasapiSettings(auto_convert=True)
+    except Exception:
+        log.debug("could not build the WASAPI auto-convert settings", exc_info=True)
+        return None
+
+
+def _native_input_format(sd, device: int | str | None) -> tuple[int, int]:
+    """The `(samplerate, channels)` to open `device` with after it refused
+    16 kHz mono: its own default rate, and at most two channels.
+
+    Two is plenty — they are averaged into mono immediately, and an 8-channel
+    loopback would only pay bandwidth for six more copies of the same
+    programme. A device offering a single channel gets one.
+    """
+    info = sd.query_devices(device, "input")
+    rate = int(round(float(info.get("default_samplerate", 0) or 0)))
+    if rate <= 0:
+        log.debug(
+            "device %s reports no default samplerate — trying %d Hz",
+            device, _FALLBACK_SAMPLE_RATE,
+        )
+        rate = _FALLBACK_SAMPLE_RATE
+    return rate, max(1, min(2, int(info.get("max_input_channels", 1) or 1)))
+
+
 class Recorder:
     def __init__(self):
         self._stream = None
@@ -68,6 +131,11 @@ class Recorder:
         # stop() so the caller can mention it next to an empty transcript.
         self._dropped = 0
         self._status_warned = False
+        # Set only when the device refused 16 kHz mono (see start()). Like
+        # _dropped, both survive stop() so the finished take can still be
+        # asked what it recorded; start() resets them.
+        self._resampler: Resampler | None = None
+        self._stream_format: tuple[int, int] | None = None
 
     @property
     def active(self) -> bool:
@@ -79,17 +147,44 @@ class Recorder:
         running or most recent take."""
         return self._dropped
 
+    @property
+    def stream_format(self) -> tuple[int, int] | None:
+        """The `(samplerate, channels)` the running (or most recent) stream was
+        actually opened with — `(16000, 1)` unless the device refused it. None
+        before the first start()."""
+        return self._stream_format
+
+    @property
+    def resampling(self) -> bool:
+        """Whether the callback is converting to 16 kHz mono, i.e. the
+        native-format fallback was used. What the recorder stores is 16 kHz
+        mono either way; the callers that care are the frame-exact features."""
+        return self._resampler is not None
+
     def start(
         self,
         device: int | str | None = None,
         max_seconds: int = 300,
         on_limit: Callable[[], None] | None = None,
         on_ended: Callable[[], None] | None = None,
+        *,
+        os_convert: bool = False,
     ) -> None:
         """Open the input stream. `on_limit` fires when max_seconds is reached;
         `on_ended` fires when the stream dies on its own (device unplugged,
         PortAudio abort) — never for stop() or the max-length case. Both are
-        invoked on PortAudio's callback thread."""
+        invoked on PortAudio's callback thread.
+
+        `os_convert` asks the OS to convert the format where it can — on
+        Windows through WASAPI's `auto_convert` in shared mode, which often
+        makes a device offering only 48 kHz stereo accept a 16 kHz mono stream
+        outright and skips this module's resampler entirely. Opt-in, and off
+        for the microphone: it changes how the stream is opened and no
+        Windows driver's reaction to that can be predicted from the outside,
+        while a microphone gains nothing from it — it already opens at 16 kHz
+        mono. System audio is the source that needs it, its loopback devices
+        being the ones that refuse the plain format.
+        """
         import sounddevice as sd
 
         if self._stream is not None:
@@ -109,6 +204,9 @@ class Recorder:
         self._on_ended = on_ended
         self._dropped = 0
         self._status_warned = False
+        # Per take: the fallback below installs a fresh converter, and a
+        # previous take's filter tail must never bleed into this one.
+        self._resampler = None
 
         def callback(indata, frames, time_info, status):
             if status:
@@ -127,8 +225,24 @@ class Recorder:
                         "transcript may miss words (the system is overloaded)",
                         status,
                     )
+            resampler = self._resampler
+            if resampler is None:
+                block = indata.copy()  # PortAudio reuses its buffer
+            else:
+                # Converted here, inside the callback, deliberately:
+                # everything downstream — snapshot(), stop(), self._frames,
+                # the max-length cap, the live preview, livetype.py — counts
+                # in 16 kHz mono frames, so converting later would need a
+                # frame-domain translation in every one of them. The cost is
+                # two numpy ops on a ~1024-frame block (a mean and one 64-tap
+                # convolution). The downmix allocates, so PortAudio's buffer
+                # is not retained here either.
+                block = resampler.process(downmix_to_mono(indata))
+                frames = len(block)
+                if frames == 0:
+                    return  # nothing came out of this block: nothing to count
             with self._lock:
-                self._chunks.append(indata.copy())
+                self._chunks.append(block)
                 self._frames += frames
                 if self._frames >= self._max_frames:
                     raise sd.CallbackStop
@@ -154,18 +268,54 @@ class Recorder:
                 # ordering that no longer applies.
                 ended()
 
+        # 16 kHz mono first — what Whisper wants and what every microphone
+        # delivers, so the ordinary dictation path is what it always was:
+        # os_convert defaults off, and `extra_settings=None` is what
+        # sounddevice fills in by itself. With os_convert the WASAPI
+        # auto-convert hint rides along on this attempt: it often makes a
+        # loopback device accept 16 kHz mono outright, and then there is
+        # nothing to convert below.
+        native: tuple[int, int] | None = None
+        try:
+            stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype="float32",
+                device=device,
+                callback=callback,
+                finished_callback=finished,
+                extra_settings=_wasapi_auto_convert(sd, device) if os_convert else None,
+            )
+        except sd.PortAudioError as exc:
+            # A loopback input is usually locked to the output's format
+            # (48 kHz stereo) and PortAudio does not resample, so an invalid
+            # sample rate / channel count is not a broken device here: record
+            # in the device's own format and convert. `sd.PortAudioError` is
+            # looked up only in this handler, so a stand-in sounddevice module
+            # carrying no more than InputStream/CallbackStop still drives the
+            # attempt above.
+            native = _native_input_format(sd, device)
+            stream = sd.InputStream(
+                samplerate=native[0],
+                channels=native[1],
+                dtype="float32",
+                device=device,
+                callback=callback,
+                finished_callback=finished,
+            )
+            # Assigned before start(): the callback reads it, and the first
+            # callback can fire the moment the stream runs.
+            self._resampler = Resampler(native[0], SAMPLE_RATE)
+            log.info(
+                "device %s refused %d Hz mono (%s) — recording at %d Hz / %d channel(s), "
+                "converted to %d Hz mono in the callback",
+                device, SAMPLE_RATE, exc, native[0], native[1], SAMPLE_RATE,
+            )
+        self._stream_format = (SAMPLE_RATE, 1) if native is None else native
         # Published to self._stream only once it actually runs: a stream that
         # opens but fails to start (device pulled between open and start) would
         # otherwise leave `active` True forever, so every later start() raised
         # "recording already active" and the hotkey was dead until restart.
-        stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=1,
-            dtype="float32",
-            device=device,
-            callback=callback,
-            finished_callback=finished,
-        )
         try:
             stream.start()
         except Exception:
@@ -241,6 +391,21 @@ class Recorder:
                     stream.close()
             except Exception:
                 log.exception("error closing audio stream")
+        resampler = self._resampler
+        if resampler is not None:
+            # The stream is closed, so no callback can be in flight: the last
+            # few milliseconds still inside the filter and the interpolator
+            # can be appended here. Without this they are simply cut off the
+            # end of every take.
+            try:
+                tail = resampler.flush()
+            except Exception:
+                log.exception("could not flush the resampler — the take loses its last few ms")
+                tail = None
+            if tail is not None and len(tail):
+                with self._lock:
+                    self._chunks.append(tail)
+                    self._frames += len(tail)
         with self._lock:
             chunks, self._chunks = self._chunks, []
         if not chunks:
@@ -262,3 +427,53 @@ def list_input_devices() -> list[tuple[int, str]]:
         if dev.get("max_input_channels", 0) > 0:
             devices.append((idx, dev.get("name", f"Device {idx}")))
     return devices
+
+
+def input_device_profiles() -> list[dict]:
+    """One dict per input device, with the keys `index`, `name`, `hostapi`
+    (the host API *name*), `channels` (max input channels) and `samplerate`
+    (the device default, as a float).
+
+    What the loopback-candidate ranking in `system_audio.py` reads
+    (`loopback_candidates` / `resolve_loopback_device`): the host API name
+    separates a WASAPI monitor entry from the same card's WDM-KS one, and the
+    channels plus the rate say whether a candidate can be recorded at all.
+    Every value is a plain JSON-able type, and every step is best-effort — an
+    unresolvable host API index yields `""`, an unreadable device entry is
+    skipped, and a PortAudio that cannot be asked gives `[]` rather than
+    raising into a settings page.
+    """
+    try:
+        import sounddevice as sd
+
+        devices = list(enumerate(sd.query_devices()))
+    except Exception:
+        log.exception("could not enumerate the input devices")
+        return []
+    try:
+        hostapis = list(sd.query_hostapis())
+    except Exception:
+        log.debug("could not resolve the host API names", exc_info=True)
+        hostapis = []
+    profiles: list[dict] = []
+    for idx, dev in devices:
+        try:
+            channels = int(dev.get("max_input_channels", 0) or 0)
+            if channels <= 0:
+                continue
+            api = dev.get("hostapi")
+            hostapi = ""
+            if isinstance(api, int) and 0 <= api < len(hostapis):
+                hostapi = str(hostapis[api].get("name", "") or "")
+            profiles.append(
+                {
+                    "index": idx,
+                    "name": str(dev.get("name", f"Device {idx}")),
+                    "hostapi": hostapi,
+                    "channels": channels,
+                    "samplerate": float(dev.get("default_samplerate", 0.0) or 0.0),
+                }
+            )
+        except Exception:
+            log.debug("input device %s has an unreadable profile — skipped", idx, exc_info=True)
+    return profiles

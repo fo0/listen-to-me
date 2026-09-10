@@ -4,7 +4,8 @@ A small frameless, translucent, draggable window that mirrors the app state
 through the animated VoiceMicWidget (idle = gently shimmering ring, recording
 = ring pulsing with the live microphone band levels + red mic glyph,
 transcribing = orange mic glyph):
-- left click (without dragging): start/stop recording
+- left click (without dragging): start a dictation — or stop the running
+  take, whichever of the two sources it records from
 - drag: move the icon; the position is saved, anchored to the monitor it was
   dropped on, so it comes back there across restarts and monitor changes
 - right click: context menu
@@ -28,14 +29,22 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QLabel, QMenu, QVBoxLayout, QWidget
 
 from .audio import SAMPLE_RATE, band_levels
+from .choices import SOURCE_MIC, SOURCE_SYSTEM, source_label
 from .history import entry_timestamp
 from .keymap import hotkey_label
 
-# From the tray on purpose, private constant included: the take clock and the
-# "Recent transcripts" submenu exist on both surfaces and must render the same
-# second and list the same transcripts. A second copy here would be a second
+# From the tray on purpose, private constants included: the take clock, the
+# "Recent transcripts" submenu and the second source's two menu labels exist
+# on both surfaces and must render the same second, list the same transcripts
+# and name the same take identically. A second copy here would be a second
 # thing to keep in step. (tray.py imports nothing from overlay.py — no cycle.)
-from .tray import _RECENT_LIMIT, format_duration, recent_entry_label
+from .tray import (
+    _RECENT_LIMIT,
+    _SYSTEM_START_LABEL,
+    _SYSTEM_STOP_LABEL,
+    format_duration,
+    recent_entry_label,
+)
 from .voice_mic_widget import VoiceMicWidget
 
 log = logging.getLogger(__name__)
@@ -60,14 +69,20 @@ _UNEXPOSED = "no longer exposed"
 _PLACE_RETRY_MS = 2_000  # look again while the saved monitor is still missing
 _PLACE_RETRY_LIMIT = 15  # …for ~30 s after start; later hot-plug arrives as a signal
 
+# What a click on the icon does while a take runs. Its own constant so the
+# recording tooltip keeps it while everything in front of it varies — the take
+# clock, and the name of the source the take records from (_recording_label).
+_STOP_HINT = "click again to stop"
+# No "recording" entry: _state_tooltip answers that state from
+# _recording_label before it ever reaches this map, so an entry here would be a
+# second, unreachable wording — one waiting to be found and used by mistake.
 _STATE_LABELS = {
     "idle": "Idle — click or press the hotkey to record",
-    "recording": "Recording… click again to stop",
     "processing": "Transcribing…",
 }
 
 
-def _recording_label(elapsed=None) -> str:
+def _recording_label(elapsed=None, source: str = SOURCE_MIC) -> str:
     """The recording tooltip, counting the running take up once a second.
 
     The tray has carried this clock since the take-length cap became visible
@@ -79,10 +94,16 @@ def _recording_label(elapsed=None) -> str:
 
     `None` (no clock yet, e.g. the state change that starts the take) keeps the
     wording the label always had.
+
+    `source` puts the second recording source into the label (#191). The
+    floating icon is the one control that never leaves the screen while a take
+    runs, and a bare "Recording…" over a system-audio take is indistinguishable
+    from a dictation — both end up inserted at the cursor. The microphone keeps
+    the wording it always had, so nothing about a dictation reads differently.
     """
-    if elapsed is None:
-        return _STATE_LABELS["recording"]
-    return f"Recording {format_duration(elapsed)}… click again to stop"
+    what = "Recording" if source == SOURCE_MIC else f"Recording {source_label(source)}"
+    clock = "" if elapsed is None else f" {format_duration(elapsed)}"
+    return f"{what}{clock}… {_STOP_HINT}"
 
 
 def _idle_label(cfg) -> str:
@@ -192,7 +213,12 @@ class _FloatingIcon(QWidget):
         if now - self._last_toggle < _TOGGLE_DEBOUNCE_S:
             return
         self._last_toggle = now
-        self._overlay.app.post("toggle")
+        # Toggles the *running* take's source, not always the microphone's: App
+        # refuses a toggle for the other source mid-take (it never stops the
+        # running one), so a click that always meant the microphone left this
+        # icon animating a recording its own click could not stop — see
+        # Overlay.post_toggle.
+        self._overlay.post_toggle()
 
 
 class _Bubble(QWidget):
@@ -294,7 +320,29 @@ class Overlay:
         # tray menu has always labelled itself after the state; this is the
         # same treatment for the icon that never leaves the screen, and the
         # wording is taken from there so the two menus stay in step.
-        self._act_toggle = self._menu.addAction("Start recording", lambda: app.post("toggle"))
+        self._act_toggle = self._menu.addAction("Start recording", lambda: self.post_toggle())
+        # The second recording source (#191): what the computer plays — a call,
+        # a meeting, a video — instead of the microphone. On this menu as well
+        # as in the tray for the reason the pause and the recent transcripts
+        # below are duplicated: someone working from the floating icon may have
+        # the tray icon switched off entirely, and with no hotkey configured for
+        # the second source (its documented "off" state) this entry is then the
+        # only way to start such a take at all. Always enabled, exactly like the
+        # tray's — App resolves the loopback device itself and refuses the take
+        # with an actionable notification when the machine has none.
+        #
+        # Hidden while a take runs rather than re-labelled like the tray's: the
+        # entry above is already the stop entry for whatever is running, so a
+        # second one would only earn App's "a recording is already running"
+        # refusal — and this is a context menu on a 64 px icon.
+        self._act_system = self._menu.addAction(
+            _SYSTEM_START_LABEL, lambda: app.post("toggle", SOURCE_SYSTEM)
+        )
+        self._act_system.setToolTip(
+            "Record what the computer plays (a call, a meeting, a video) instead of "
+            "the microphone, through a loopback device. No hotkey needed for this "
+            "entry; the device is picked automatically."
+        )
         self._act_cancel = self._menu.addAction("Cancel recording", lambda: app.post("cancel"))
         self._menu.addAction("Copy last transcript", lambda: app.post("copy_last"))
         # …and the ones before it, exactly as in the tray menu. Reaching the
@@ -808,8 +856,47 @@ class Overlay:
         if state == "idle":
             return _idle_label(self.app.cfg)
         if state == "recording":
-            return _recording_label(self._elapsed)
+            return _recording_label(self._elapsed, self._source())
         return _STATE_LABELS.get(state, state)
+
+    def _source(self) -> str:
+        """Which source the app's running (or most recent) take records from.
+
+        getattr for the same reason as `Tray._source`: the self-test's App stub
+        predates the second source, and a tooltip must never be what breaks
+        against it."""
+        return getattr(self.app, "recording_source", SOURCE_MIC)
+
+    def toggle_source(self) -> str:
+        """The source a click on the icon — or on the menu's toggle entry —
+        posts its toggle for.
+
+        While a take is running that is the take's own source. App refuses a
+        toggle for the *other* source mid-take and never stops the running one,
+        so a click that always meant the microphone left the one control that
+        never leaves the screen unable to stop the recording it was showing.
+        Otherwise the microphone: the icon's click is the dictation control, and
+        the second source has its own entry on the menu to start from.
+
+        Reads the app's state rather than the mirrored one, for the reason
+        `_sync_menu_state` does: a click arrives whenever the user gets to it,
+        which can be after the take it was aimed at ended."""
+        if getattr(self.app, "state", self.state) == "recording":
+            return self._source()
+        return SOURCE_MIC
+
+    def post_toggle(self) -> None:
+        """Post the toggle a click on the icon — or on the menu's toggle entry —
+        means, for the source `toggle_source` picked.
+
+        Only the second source names itself in the payload: a microphone toggle
+        stays the payload-free event every other surface posts (see
+        `app.event_source`), so nothing about a dictation changes shape
+        here."""
+        if self.toggle_source() == SOURCE_SYSTEM:
+            self.app.post("toggle", SOURCE_SYSTEM)
+        else:
+            self.app.post("toggle")
 
     def set_elapsed(self, seconds) -> None:
         """Put the running take's clock on the icon (tooltip + accessible
@@ -840,9 +927,22 @@ class Overlay:
         if state is None:
             state = getattr(self.app, "state", self.state)
         try:
-            self._act_toggle.setText(
-                "Stop recording (insert text)" if state == "recording" else "Start recording"
-            )
+            # Which "Stop" this entry is depends on the running take's source,
+            # not on the state alone: the click posts a toggle for that source
+            # (see toggle_source), and a label naming the other one would
+            # describe a click App refuses. The system-audio wording comes from
+            # the tray so the two menus can never name one take differently.
+            recording_source = self._source() if state == "recording" else None
+            if recording_source == SOURCE_SYSTEM:
+                toggle_label = _SYSTEM_STOP_LABEL
+            elif recording_source == SOURCE_MIC:
+                toggle_label = "Stop recording (insert text)"
+            else:
+                toggle_label = "Start recording"
+            self._act_toggle.setText(toggle_label)
+            # While a take runs the entry above is what ends it; starting the
+            # other source would only be refused, so its entry steps aside.
+            self._act_system.setVisible(recording_source is None)
             self._act_cancel.setVisible(state == "recording")
             # Re-read rather than left to the click that toggled it: App
             # refuses to pause during a recording, and the tick has to go back
@@ -868,7 +968,15 @@ class Overlay:
         if state == "recording":
             self._level_timer.start(_LEVEL_POLL_MS)
             if self.app.cfg["overlay"]["live_preview"]:
-                self.show_live("● Listening…")
+                # Named after the source for the same reason as the tooltip: the
+                # preview runs for both sources, and "● Listening…" over a
+                # recorded meeting reads as an open microphone.
+                source = self._source()
+                self.show_live(
+                    "● Listening…"
+                    if source == SOURCE_MIC
+                    else f"● Recording {source_label(source)}…"
+                )
             else:
                 # Clear any leftover flash so a stale transcript doesn't linger.
                 self._hide_bubble()

@@ -1,11 +1,17 @@
 """Home page: the entry hub of the main window.
 
 Shows the live recording state with a start/stop control, the configured
-hotkey as key caps, an at-a-glance summary of the active setup (engine/model,
-language, microphone), quick actions into the relevant settings pages and the
-most recent transcripts. Pure presentation: every action either posts an
-event to App (start/stop/cancel) or navigates the owning window's sidebar —
-no state of its own beyond the widgets.
+hotkeys as key caps — the microphone's, plus the system-audio one when that
+second recording source is switched on (#191) — an at-a-glance summary of the
+active setup (engine/model, language, microphone), quick actions into the
+relevant settings pages and the most recent transcripts. Pure presentation:
+every action either posts an event to App (start/stop/cancel) or navigates the
+owning window's sidebar — no state of its own beyond the widgets.
+
+Nothing here assumes a take is a microphone take: the hero names the source
+that is actually recording and posts the toggle for *that* source, because App
+refuses a microphone toggle while system audio is running — a hero that posted
+one anyway could not stop the recording it is displaying.
 """
 
 from __future__ import annotations
@@ -25,7 +31,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .choices import SYSTEM_DEFAULT_DEVICE, input_device_choices, language_label
+from .choices import (
+    SOURCE_MIC,
+    SOURCE_SYSTEM,
+    SYSTEM_DEFAULT_DEVICE,
+    input_device_choices,
+    language_label,
+    source_label,
+)
 from .glyphs import glyph_icon
 from .keymap import pretty_keys
 from .qtutil import copy_with_feedback, elastic_label
@@ -49,6 +62,15 @@ _BACKEND_SHORT = {
     "openvino": "OpenVINO",
     "parakeet": "Parakeet",
 }
+
+# The hero button's tooltip while it starts a take. Set per state, not once at
+# construction: the same button becomes the "Stop" of whichever take is
+# running, and "Start a recording now" on a button labelled "Stop & insert" is
+# not terse, it is wrong.
+_START_TOOLTIP = (
+    "Start a recording now — same as pressing the global hotkey. "
+    "The text is inserted at the cursor of the focused field."
+)
 
 
 class _StatCard(QFrame):
@@ -178,19 +200,36 @@ class HomePage(QWidget):
         chips_wrap.addStretch(1)
         left.addSpacing(4)
         left.addLayout(chips_wrap)
+        # The second recording source's key caps (#191) get their own row: two
+        # combinations on one line would read as one long chord. A container
+        # widget rather than a bare layout, so hiding it takes its spacing with
+        # it — with the system-audio hotkey empty (the default) this hero has to
+        # look exactly as it always did.
+        self._sys_chips_wrap = QWidget()
+        sys_wrap = QHBoxLayout(self._sys_chips_wrap)
+        sys_wrap.setContentsMargins(0, 4, 0, 0)
+        sys_wrap.setSpacing(6)
+        self._sys_chips_row = QHBoxLayout()
+        self._sys_chips_row.setSpacing(6)
+        sys_wrap.addLayout(self._sys_chips_row)
+        sys_wrap.addStretch(1)
+        self._sys_chips_wrap.setVisible(False)
+        left.addWidget(self._sys_chips_wrap)
         left.addStretch(1)
         hv.addLayout(left, 1)
 
         buttons = QVBoxLayout()
         buttons.addStretch(1)
+        # Deliberately one button with two sources: it starts a microphone take
+        # and stops whichever take is running. A second button for *starting* a
+        # system-audio one would be a third surface to keep in sync — the tray
+        # menu carries that entry — while App refuses a second take anyway as
+        # long as one runs.
         self.record_button = QPushButton("Start recording")
         self.record_button.setObjectName("recordBtn")
         self.record_button.setAutoDefault(False)
         self.record_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.record_button.setToolTip(
-            "Start a recording now — same as pressing the global hotkey. "
-            "The text is inserted at the cursor of the focused field."
-        )
+        self.record_button.setToolTip(_START_TOOLTIP)
         self.record_button.clicked.connect(self._toggle)
         buttons.addWidget(self.record_button)
         self.cancel_button = QPushButton("Cancel")
@@ -243,6 +282,30 @@ class HomePage(QWidget):
             button.clicked.connect(lambda _checked=False, p=page: self._go(p))
             self._glyph_buttons.append((button, glyph))
             actions.addWidget(button, i // 3, i % 3)
+        # The seventh action, and the only conditional one: the second hotkey
+        # lives on Audio, next to the loopback device and the length cap it
+        # shares a card with, so "Change hotkey" above (General) cannot lead
+        # there. Same "keyboard" glyph on purpose — one hotkey action per
+        # source. Built once and added to / removed from the grid by
+        # _refresh_system_action; parented to `inner` so it is a hidden child
+        # of this page, never a stray top-level window, while it is out.
+        self._actions = actions
+        self._sys_action = QPushButton("  System audio hotkey", inner)
+        self._sys_action.setProperty("quick", True)
+        self._sys_action.setAutoDefault(False)
+        self._sys_action.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._sys_action.setIcon(glyph_icon("keyboard", colors["muted"], ACCENT))
+        self._sys_action.setToolTip(
+            "The hotkey that records what the computer plays, with its loopback "
+            "device and its own length cap."
+        )
+        self._sys_action.setVisible(False)
+        self._sys_action.clicked.connect(lambda: self._go("Audio"))
+        self._glyph_buttons.append((self._sys_action, "keyboard"))
+        # Whether that button is currently in the grid — the add/remove is
+        # skipped unless the setting actually changed (refresh runs on every
+        # visit to this page).
+        self._sys_action_shown = False
         for col in range(3):
             actions.setColumnStretch(col, 1)
         layout.addLayout(actions)
@@ -292,22 +355,62 @@ class HomePage(QWidget):
         except Exception:
             log.exception("could not open page %r", page)
 
+    def _system_setting(self, key: str, fallback: str) -> str:
+        """One string out of `cfg["system_audio"]`, never raising.
+
+        config.json is untrusted on-disk input: a hand-edited one can leave a
+        scalar where the section belongs (config._merge keeps the defaults and
+        logs it, so this is belt and braces) or a null where a combination
+        belongs. Anything that is not a string is the fallback — for `hotkey`
+        that means "off", the right answer for a value that is no combination.
+        """
+        try:
+            value = self.cfg["system_audio"][key]
+        except Exception:
+            log.debug("could not read system_audio.%s for the Home page", key, exc_info=True)
+            return fallback
+        return value if isinstance(value, str) else fallback
+
+    def _source(self) -> str:
+        """Which source the app's running (or most recent) take records from.
+        getattr for the reason tray._source spells out: the self-test's App
+        stub predates the second source, and a hero label must never be what
+        breaks against it."""
+        return getattr(self._app, "recording_source", SOURCE_MIC)
+
     def _toggle(self) -> None:
         """Post the start/stop toggle, debounced: a double-click emits two
         clicked signals before the 100 ms event poll runs, which would queue
-        start + stop back to back and end in "Recording too short"."""
+        start + stop back to back and end in "Recording too short".
+
+        Posted for the source of the *running* take, like the tray's two
+        entries: App refuses a microphone toggle while system audio is
+        recording ("A system audio recording is already running — stop that one
+        first."), so a plain toggle would leave this button unable to stop the
+        take it is labelled for. With nothing running it starts a microphone
+        take — the payload-less toggle every surface posts (app.event_source).
+        """
         now = time.monotonic()
         if now - self._last_toggle < 0.4:
             return
         self._last_toggle = now
+        if self._state == "recording" and self._source() == SOURCE_SYSTEM:
+            self._app.post("toggle", SOURCE_SYSTEM)
+            return
         self._app.post("toggle")
 
     # ---------------------------------------------------------------- refresh
 
     def refresh(self) -> None:
         """Re-read config + history into the cards. Called when the page is
-        shown, after settings were applied and when a recording finished."""
+        shown, after settings were applied and when a recording finished.
+
+        Everything the second recording source shows here hangs off this — its
+        key caps, its quick action and (via set_state) its line in the hero —
+        so switching it on in Settings updates the page as soon as
+        SettingsWindow._apply_values calls in, with no restart."""
         self._refresh_chips()
+        self._refresh_system_action(bool(self._system_setting("hotkey", "")))
         self._refresh_stats()
         self._refresh_recent()
         self.set_state(getattr(self._app, "state", "idle"))
@@ -326,12 +429,69 @@ class HomePage(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
 
-    def _refresh_chips(self) -> None:
-        self._clear_layout(self._chips_row)
-        for cap in pretty_keys(self.cfg["hotkey"]):
+    @staticmethod
+    def _source_caption(text: str) -> QLabel:
+        """The dimmed label that names which source a key-cap row belongs to.
+
+        `heroHint` is theme.py's only dimmed-on-the-gradient label style, and
+        it already follows the red recording state — so the caption cannot end
+        up as bright as the caps it explains. This only picks the hook; the
+        styling stays in theme.py.
+        """
+        label = QLabel(text)
+        label.setObjectName("heroHint")
+        return label
+
+    def _fill_caps(self, row, combo: str, caption: str) -> None:
+        """Render `combo` into `row` as key caps, followed by `caption`.
+
+        One renderer for both hotkeys — keymap.pretty_keys stays the single
+        source of a cap label, here as on the tray and the floating icon. An
+        empty `combo` renders nothing, and an empty `caption` is left out: with
+        one row there is nothing to confuse it with, so the hero keeps the bare
+        caps it always showed.
+        """
+        for cap in pretty_keys(combo):
             chip = QLabel(cap)
             chip.setObjectName("keycap")
-            self._chips_row.addWidget(chip)
+            row.addWidget(chip)
+        if caption:
+            row.addWidget(self._source_caption(caption))
+
+    def _refresh_chips(self) -> None:
+        self._clear_layout(self._chips_row)
+        self._clear_layout(self._sys_chips_row)
+        system = self._system_setting("hotkey", "")
+        # Captions only once there really are two rows, and taken from
+        # `choices.source_label` — the wording every notification about a take
+        # is built from — so this page cannot name a source differently than
+        # the message about it does.
+        mic_caption = source_label(SOURCE_MIC).capitalize() if system else ""
+        sys_caption = source_label(SOURCE_SYSTEM).capitalize() if system else ""
+        self._fill_caps(self._chips_row, self.cfg["hotkey"], mic_caption)
+        self._fill_caps(self._sys_chips_row, system, sys_caption)
+        self._sys_chips_wrap.setVisible(bool(system))
+
+    def _refresh_system_action(self, configured: bool) -> None:
+        """Show the "System audio hotkey" quick action exactly while that
+        source is on.
+
+        Added to and removed from the grid rather than hidden in place: the off
+        state has to be the same two-row block of six actions it always was,
+        and that is a guarantee about our own layout instead of a bet on how
+        Qt sizes a row whose only widget is hidden.
+        """
+        if configured == self._sys_action_shown:
+            return
+        if configured:
+            self._actions.addWidget(self._sys_action, 2, 0)
+            self._sys_action.setVisible(True)
+        else:
+            # Hidden before it is removed: a widget taken out of a layout keeps
+            # its geometry and would go on painting where the row used to be.
+            self._sys_action.setVisible(False)
+            self._actions.removeWidget(self._sys_action)
+        self._sys_action_shown = configured
 
     def _refresh_stats(self) -> None:
         backend = self.cfg["backend"]
@@ -501,10 +661,17 @@ class HomePage(QWidget):
         """The hero headline of a running take, with its clock once one has
         ticked. Same wording and same `format_duration` as the tray and the
         floating icon, so the three surfaces cannot render one second three
-        ways."""
-        if self._elapsed is None:
-            return "Recording — speak now"
-        return f"Recording {format_duration(self._elapsed)} — speak now"
+        ways.
+
+        The source is named while system audio is recording, and "speak now"
+        drops with it: that take records what the computer plays, so telling
+        the user to speak would ask for the one thing that is not being
+        recorded."""
+        system = self._source() == SOURCE_SYSTEM
+        head = f"Recording {source_label(SOURCE_SYSTEM)}" if system else "Recording"
+        if self._elapsed is not None:
+            head = f"{head} {format_duration(self._elapsed)}"
+        return head if system else f"{head} — speak now"
 
     def set_elapsed(self, seconds) -> None:
         """Count the running take up in the hero headline, once a second.
@@ -523,6 +690,28 @@ class HomePage(QWidget):
             return
         self._elapsed = seconds
         self.state_label.setText(self._recording_state_text())
+
+    def _idle_hint(self, mode_hint: str) -> str:
+        """The hero's idle line: which hotkey to press, and in which mode.
+
+        With the second source off this is the single sentence it always was.
+        With it on the first hotkey is named — two of them and an unqualified
+        "the hotkey" leaves the reader guessing which one this page means — and
+        one more sentence says what the other one does. Shortened to "the same
+        way" when both run in the same mode, which is the default pair, so a
+        summary does not spell one mode out twice.
+        """
+        if not self._system_setting("hotkey", ""):
+            return f"Press the hotkey in any app. {mode_hint}"
+        system_mode = self._system_setting("hotkey_mode", "toggle")
+        plays = f"The {source_label(SOURCE_SYSTEM)} hotkey records what the computer plays"
+        if system_mode == self.cfg["hotkey_mode"]:
+            tail = f"{plays}, the same way."
+        elif system_mode == "hold":
+            tail = f"{plays} while the keys are held."
+        else:
+            tail = f"{plays} — press once to start, again to insert."
+        return f"Press the {source_label(SOURCE_MIC)} hotkey in any app. {mode_hint} {tail}"
 
     def set_state(self, state: str) -> None:
         """Mirror the app state into the hero card. Called via
@@ -545,21 +734,35 @@ class HomePage(QWidget):
             else "Press once to start, press again to insert."
         )
         if state == "recording":
+            source = self._source()
+            name = source_label(source)
             self.state_label.setText(self._recording_state_text())
             self.hint_label.setText("Stop to transcribe and insert the text at the cursor.")
-            self.record_button.setText("Stop && insert")
+            # Which take this stops belongs on the button, not only in the
+            # headline: the microphone's label stays what it was, the second
+            # source names itself so the parenthesis and the posted event
+            # (see _toggle) always agree about what is being stopped.
+            self.record_button.setText(
+                "Stop && insert" if source == SOURCE_MIC else f"Stop && insert ({name})"
+            )
+            self.record_button.setToolTip(
+                f"Stop the running {name} recording — the transcript is inserted "
+                "at the cursor of the focused field."
+            )
             self.record_button.setEnabled(True)
             self.cancel_button.setVisible(True)
         elif state == "processing":
             self.state_label.setText("Transcribing…")
             self.hint_label.setText("The text is inserted at the cursor in a moment.")
             self.record_button.setText("Transcribing…")
+            self.record_button.setToolTip(_START_TOOLTIP)
             self.record_button.setEnabled(False)
             self.cancel_button.setVisible(False)
         else:
             self.state_label.setText("Ready to dictate")
-            self.hint_label.setText(f"Press the hotkey in any app. {mode_hint}")
+            self.hint_label.setText(self._idle_hint(mode_hint))
             self.record_button.setText("Start recording")
+            self.record_button.setToolTip(_START_TOOLTIP)
             self.record_button.setEnabled(True)
             self.cancel_button.setVisible(False)
             if previous in ("recording", "processing") and self.isVisible():

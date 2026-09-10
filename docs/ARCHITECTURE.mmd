@@ -13,7 +13,7 @@ flowchart TD
     end
 
     subgraph "Input and UI (Qt main thread)"
-        Hotkeys("Hotkeys — global hotkey, pynput"):::frontend
+        Hotkeys("Hotkeys — two global hotkeys (mic + system audio), pynput"):::frontend
         Tray("Tray — QSystemTrayIcon"):::frontend
         Overlay("Overlay + VoiceMicWidget"):::frontend
         Settings("SettingsWindow — main window: Home hub + settings pages"):::frontend
@@ -23,11 +23,14 @@ flowchart TD
     end
 
     subgraph "Processing (worker threads)"
-        Recorder("Recorder — sounddevice"):::backend
+        Recorder("Recorder — sounddevice (microphone or loopback input)"):::backend
+        SysAudio("system_audio — rank/resolve the loopback device, refuse the take when there is none"):::backend
+        Resample("Resampler — native format → 16 kHz mono, in the capture callback"):::backend
         Transcriber("Transcriber — faster-whisper"):::backend
         TranscriberOV("OpenVinoTranscriber — OpenVINO GenAI (Intel GPU/NPU)"):::backend
         TranscriberPK("ParakeetTranscriber — NVIDIA Parakeet TDT via onnx-asr"):::backend
-        Assistant("Assistant — LLM post-process"):::backend
+        Fillers("fillers — is the whole transcript one of the invented silence phrases?"):::backend
+        Assistant("Assistant — LLM post-process (one profile per source)"):::backend
         Injector("Injector — paste/type at cursor"):::backend
         LiveType("LiveTyper — live typing while recording"):::backend
         Mute("MuteIntegrations — mute other apps"):::backend
@@ -46,6 +49,7 @@ flowchart TD
         LLM{{"OpenAI-compatible API (Ollama, ...)"}}:::external
         GH{{"GitHub Releases API"}}:::external
         OS{{"Focused window / other apps"}}:::external
+        Loopback{{"Loopback / monitor input device — 'Monitor of …', Stereo Mix, BlackHole"}}:::external
     end
 
     Main -->|"acquire"| Single
@@ -70,13 +74,21 @@ flowchart TD
     Overlay --- Theme
     Settings --- Theme
 
-    App -->|"start/stop"| Recorder
+    App -->|"start/stop (microphone take)"| Recorder
+    App -->|"system-audio take: which device?"| SysAudio
+    SysAudio -->|"loopback input index"| Recorder
+    SysAudio -->|"no candidate → refuse: (None, the platform fix)"| App
+    App -->|"post notify (the refusal, forced)"| Events
+    Loopback -->|"what the computer plays"| Recorder
+    Recorder -->|"downmix + resample per block"| Resample
     App -->|"_process worker"| Transcriber
     App -->|"backend = openvino (factory)"| TranscriberOV
     App -->|"backend = parakeet (factory)"| TranscriberPK
     Recorder -->|"audio frames"| Transcriber
     Recorder -->|"audio frames"| TranscriberOV
     Recorder -->|"audio frames"| TranscriberPK
+    App -->|"silent/quiet audio + whole transcript = a listed phrase → drop the take"| Fillers
+    App -->|"clip_stats verdict (silent/quiet/ok) for a take with no text"| Diag
     Transcriber -->|"text"| Assistant
     Assistant -->|"cleaned text"| Injector
     Transcriber -->|"text (assistant off)"| Injector
@@ -86,6 +98,8 @@ flowchart TD
     LiveType -->|"preview_segments"| Transcriber
     LiveType -->|"type stable text"| Injector
 
+    Settings -->|"loopback candidates for the device list"| SysAudio
+    Settings -->|"phrase-list status while it is edited"| Fillers
     Settings -->|"model download / mic + transcription test"| Diag
     Diag -->|"test clip"| Recorder
     Diag -->|"snapshot transcriber"| Transcriber
@@ -121,6 +135,9 @@ flowchart TD
     click Home "src/listen_to_me/home_page.py"
     click Onboarding "src/listen_to_me/onboarding.py"
     click Recorder "src/listen_to_me/audio.py"
+    click SysAudio "src/listen_to_me/system_audio.py"
+    click Resample "src/listen_to_me/resample.py"
+    click Fillers "src/listen_to_me/fillers.py"
     click Transcriber "src/listen_to_me/transcriber.py"
     click TranscriberOV "src/listen_to_me/transcriber_openvino.py"
     click TranscriberPK "src/listen_to_me/transcriber_parakeet.py"
