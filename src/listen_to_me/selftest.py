@@ -11,6 +11,7 @@ construction) and is what the Linux CI check job calls from source.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import tempfile
@@ -73,7 +74,9 @@ def _config_defaults():
     # the best loopback candidate", never "the system default input", which is
     # a microphone (system_audio.resolve_loopback_device).
     system_audio = DEFAULTS["system_audio"]
-    assert set(system_audio) == {"hotkey", "hotkey_mode", "device", "max_seconds"}
+    assert set(system_audio) == {
+        "hotkey", "hotkey_mode", "device", "max_seconds", "bundled_portaudio",
+    }
     assert system_audio["hotkey"] == ""
     assert system_audio["hotkey_mode"] in ("toggle", "hold")
     assert system_audio["device"] is None
@@ -1357,6 +1360,530 @@ def _loopback_device_is_ranked_and_resolved():
         assert answer.refuse is (answer.index is None), answer
         if answer.refuse:
             assert answer.note is not None, answer
+
+
+# The four host APIs Windows PortAudio enumerates every endpoint through, in
+# its own order, plus the two entries that are not hardware at all. Fixture
+# data for the shape the other device fixtures in this file deliberately do not
+# have: ONE soundcard, seen four times.
+_WINDOWS_HOSTAPIS = [
+    {"name": "MME"},
+    {"name": "Windows DirectSound"},
+    {"name": "Windows WASAPI"},
+    {"name": "Windows WDM-KS"},
+]
+
+# What one output has to look like after the filter, whichever fixture built it.
+_ONE_SPEAKER = "Speakers (Realtek(R) Audio)"
+
+# The names that may never reach the user: MME's and DirectSound's
+# pseudo-devices (no hardware behind either) and the same speaker under a
+# second host API.
+_WINDOWS_PHANTOMS = (
+    "Microsoft Sound Mapper",
+    "Primary Sound Driver",
+    "Realtek HD Audio output",
+)
+
+
+def _windows_devices(twin: bool = True) -> list[dict]:
+    """One Realtek soundcard as Windows PortAudio really enumerates it: every
+    endpoint once per host API (MME, DirectSound, WASAPI, WDM-KS) plus
+    "Microsoft Sound Mapper - Output" and "Primary Sound Driver", which are
+    pseudo-devices.
+
+    `twin` adds the "<name> [Loopback]" input WASAPI emits for every render
+    endpoint with the PortAudio the release build ships (#194) — i.e. the
+    machine on which system audio works perfectly. Without it, the machine of
+    the #195 report: outputs, and nothing that can record them.
+    """
+    def device(name, hostapi, inputs, outputs):
+        return {
+            "name": name,
+            "hostapi": hostapi,
+            "max_input_channels": inputs,
+            "max_output_channels": outputs,
+            "default_samplerate": 48000.0,
+        }
+
+    devices = [
+        device("Microsoft Sound Mapper - Input", 0, 2, 0),
+        device("Microphone (Realtek(R) Audio)", 0, 2, 0),
+        device("Microsoft Sound Mapper - Output", 0, 0, 2),
+        device(_ONE_SPEAKER, 0, 0, 2),
+        device("Primary Sound Capture Driver", 1, 2, 0),
+        device("Microphone (Realtek(R) Audio)", 1, 2, 0),
+        device("Primary Sound Driver", 1, 0, 2),
+        device(_ONE_SPEAKER, 1, 0, 2),
+        device(_ONE_SPEAKER, 2, 0, 2),
+        device("Microphone (Realtek(R) Audio)", 2, 2, 0),
+    ]
+    if twin:
+        devices.append(device(f"{_ONE_SPEAKER} [Loopback]", 2, 2, 0))
+    devices += [
+        device("Speakers (Realtek HD Audio output)", 3, 0, 2),
+        device("Microphone (Realtek HD Audio Mic input)", 3, 2, 0),
+    ]
+    return devices
+
+
+def _fake_sounddevice(devices, hostapis, default_hostapi=0, exports_loopback=True):
+    """A stand-in `sounddevice` module answering the three questions the device
+    code asks — `query_devices()`, `query_hostapis()`, `default.hostapi` — and
+    counting the calls, because "did this enumerate?" is itself a contract here
+    (`_recording_path_asks_portaudio_nothing`).
+
+    `_libname` / `_lib` stand in for the loaded binary: `describe()` reads
+    `PaWasapi_IsLoopback` off it, and its absence is exactly what separates the
+    wheel's PortAudio from ours.
+    """
+    import types
+
+    fake = types.ModuleType("sounddevice")
+    fake.calls = {"query_devices": 0, "query_hostapis": 0}
+
+    def query_devices(device=None, kind=None):
+        fake.calls["query_devices"] += 1
+        return devices if device is None else devices[device]
+
+    def query_hostapis(index=None):
+        fake.calls["query_hostapis"] += 1
+        return hostapis if index is None else hostapis[index]
+
+    fake.query_devices = query_devices
+    fake.query_hostapis = query_hostapis
+    fake.default = types.SimpleNamespace(hostapi=default_hostapi)
+    fake.get_portaudio_version = lambda: (190700, "PortAudio V19.7.0-devel, revision unknown")
+    fake._libname = "C:\\bundle\\portaudio.dll"
+    fake._lib = (
+        types.SimpleNamespace(PaWasapi_IsLoopback=object())
+        if exports_loopback
+        else types.SimpleNamespace()
+    )
+    return fake
+
+
+@contextlib.contextmanager
+def _as_sounddevice(fake, platform="win32"):
+    """Install `fake` as the process's `sounddevice` and pretend to be
+    `platform`, restoring both.
+
+    A context manager because every user of it has a finally-block to get
+    wrong otherwise, and a leaked fake module would make every later check in
+    the run enumerate this fixture. `sys.platform` travels with it: the host
+    API pick branches on it (WASAPI only exists on Windows), so a Windows
+    machine's device list cannot be checked on the CI runner without it — the
+    same reason `_load_faked_system_devices` patches it.
+    """
+    previous = sys.modules.get("sounddevice")
+    saved_platform = sys.platform
+    sys.modules["sounddevice"] = fake
+    sys.platform = platform
+    try:
+        yield fake
+    finally:
+        sys.platform = saved_platform
+        if previous is None:
+            del sys.modules["sounddevice"]
+        else:
+            sys.modules["sounddevice"] = previous
+
+
+def _portaudio_counts_one_entry_per_output():
+    """Outputs are counted and named ONCE PER PHYSICAL DEVICE, not once per
+    host API that lists them — the filter, and the three consumers that were
+    wrong without it.
+
+    PortAudio enumerates every endpoint through every host API, so a
+    single-soundcard Windows box reports the same speaker four times (MME,
+    DirectSound, WASAPI, WDM-KS) plus two pseudo-devices that are not hardware
+    at all. Three things read that list, and each produced a false statement
+    from it:
+
+    * the System audio hint put the names into prose — a machine where #194
+      works perfectly still read “No loopback device was found for “Microsoft
+      Sound Mapper - Output”, “Primary Sound Driver” and “Speakers (Realtek HD
+      Audio output)”” (the hint half of this is asserted in
+      `_system_audio_hint_names_the_outputs_it_cannot_record`, shape 4);
+    * `portaudio.describe()`'s ratio read "1 loopback of 6 outputs" for one
+      speaker and its twin;
+    * the release gate below fails a build that reports outputs but no
+      loopback twin — so a runner whose MME phantom output exists while WASAPI
+      enumerates no render endpoint would have failed a *correct* build. That
+      is the case nobody can reproduce on this runner, which is why it is
+      asserted here against a fixture instead.
+
+    WASAPI is picked on Windows rather than PortAudio's own default host API
+    (MME here, as on a real machine): only WASAPI emits the "[Loopback]" twins,
+    and counting the twins on one host API and the outputs on another is
+    exactly how a ratio lies.
+    """
+    from listen_to_me import audio, portaudio
+
+    for twin in (True, False):
+        devices = _windows_devices(twin)
+        fake = _fake_sounddevice(devices, _WINDOWS_HOSTAPIS, default_hostapi=0)
+        # What the raw enumeration offers, i.e. what a "simplification" back to
+        # every device would name: six outputs for one speaker.
+        raw = [d["name"] for d in devices if d["max_output_channels"] > 0]
+        assert len(raw) == 6, raw
+        with _as_sounddevice(fake, "win32"):
+            assert portaudio.preferred_hostapi(fake) == (2, "Windows WASAPI")
+            outputs = audio.list_output_devices()
+            # One entry, the one the user has, at its WASAPI index.
+            assert outputs == [(8, _ONE_SPEAKER)], outputs
+            for phantom in _WINDOWS_PHANTOMS:
+                assert all(phantom not in name for _idx, name in outputs), (phantom, outputs)
+            info = portaudio.describe()
+            assert info["hostapi"] == "Windows WASAPI", info
+            assert info["output_devices"] == 1, info
+            assert info["loopback_devices"] == (1 if twin else 0), info
+            assert info["loopback_supported"] is True, info
+            # The input list is deliberately NOT filtered: it is what devices
+            # are picked from, by stored index, so every host API's copy stays.
+            names = [p["name"] for p in audio.input_device_profiles()]
+            assert len(names) == (7 if twin else 6), names
+            assert names.count("Microphone (Realtek(R) Audio)") == 3, names
+            assert [p["hostapi"] for p in audio.input_device_profiles()][:2] == [
+                "MME", "MME",
+            ]
+
+            # The release gate, counted the same way. With the twin it passes
+            # and reports the ratio; without it the machine really has an
+            # output and no loopback device, which is what the gate is for.
+            if twin:
+                note = _portaudio_supports_wasapi_loopback()
+                assert "1 loopback input(s) for 1 output(s) on Windows WASAPI" in note, note
+            else:
+                try:
+                    _portaudio_supports_wasapi_loopback()
+                except AssertionError as exc:
+                    assert "1 output device(s) on Windows WASAPI" in str(exc), exc
+                else:
+                    raise AssertionError("the gate must fail on outputs without a twin")
+
+    # A runner whose only output is an MME/DirectSound phantom while WASAPI
+    # enumerates no render endpoint: nothing to count, so the gate SKIPS its
+    # device half instead of failing a correct build. This is the one the
+    # reviewer could not run on Windows — it is the whole reason the gate and
+    # the hint count on the same host API.
+    phantom_only = [
+        d
+        for d in _windows_devices(twin=False)
+        if d["hostapi"] != 2 or d["max_output_channels"] == 0
+    ]
+    assert any(d["max_output_channels"] > 0 for d in phantom_only)
+    fake = _fake_sounddevice(phantom_only, _WINDOWS_HOSTAPIS)
+    with _as_sounddevice(fake, "win32"):
+        assert audio.list_output_devices() == []
+        info = portaudio.describe()
+        assert info["output_devices"] == 0 and info["loopback_devices"] == 0, info
+        note = _portaudio_supports_wasapi_loopback()
+        assert "no output device" in note and "Windows WASAPI" in note, note
+
+    # The wheel's own binary, which exports no `PaWasapi_IsLoopback`: the gate
+    # fails on its FIRST half, with the reason a release log can act on. Worth
+    # asserting here because that half never runs for real on this runner — off
+    # Windows the gate skips itself entirely.
+    old_binary = _fake_sounddevice(
+        _windows_devices(twin=False), _WINDOWS_HOSTAPIS, exports_loopback=False
+    )
+    with _as_sounddevice(old_binary, "win32"):
+        assert portaudio.describe()["loopback_supported"] is False
+        try:
+            _portaudio_supports_wasapi_loopback()
+        except AssertionError as exc:
+            assert "PaWasapi_IsLoopback is not reachable" in str(exc), exc
+        else:
+            raise AssertionError("the gate must fail when the symbol is missing")
+
+    # Off Windows the default host API is the pick — WASAPI does not exist
+    # there, and PortAudio's default is what the platform itself considers the
+    # one list of devices.
+    linux_hostapis = [{"name": "ALSA"}, {"name": "PulseAudio"}]
+    linux_devices = [
+        {"name": "HDA Intel PCH", "hostapi": 0, "max_input_channels": 2,
+         "max_output_channels": 2, "default_samplerate": 48000.0},
+        {"name": "pulse", "hostapi": 1, "max_input_channels": 2,
+         "max_output_channels": 2, "default_samplerate": 44100.0},
+        {"name": "Monitor of Built-in Audio", "hostapi": 1, "max_input_channels": 2,
+         "max_output_channels": 0, "default_samplerate": 44100.0},
+    ]
+    fake = _fake_sounddevice(linux_devices, linux_hostapis, default_hostapi=1)
+    with _as_sounddevice(fake, "linux"):
+        assert portaudio.preferred_hostapi(fake) == (1, "PulseAudio")
+        assert audio.list_output_devices() == [(1, "pulse")]
+        assert portaudio.describe()["hostapi"] == "PulseAudio"
+
+    # And a PortAudio that cannot say: "unknown", never "this machine has no
+    # outputs". The hint then names nothing (an omitted sentence beats a false
+    # one) and the gate skips its device half.
+    blind = _fake_sounddevice(_windows_devices(), _WINDOWS_HOSTAPIS)
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("PortAudio cannot be asked")
+
+    blind.query_hostapis = _raise
+    blind.default = None  # `sd.default.hostapi` raises AttributeError
+    with _as_sounddevice(blind, "win32"):
+        assert portaudio.preferred_hostapi(blind) == (None, "")
+        assert audio.list_output_devices() == []
+        info = portaudio.describe()
+        assert info["hostapi"] is None, info
+        assert info["output_devices"] == 0 and info["loopback_devices"] == 0, info
+        assert any("host API" in reason for reason in info["errors"]), info
+        note = _portaudio_supports_wasapi_loopback()
+        assert "no host API" in note, note
+
+
+def _recording_path_asks_portaudio_nothing():
+    """`Recorder.start()` must not enumerate devices — the one-per-process
+    PortAudio log line lives on the settings path instead.
+
+    start() runs on the Qt main thread (App._start_recording ← _handle ← the
+    100 ms drain timer) at the moment the user has pressed the hotkey and is
+    about to speak, and with the default `input_device: null` nothing else on
+    that path asks PortAudio anything. `portaudio.log_once()` sat here and cost
+    the first take of every session a full `sd.query_devices()` — the very
+    stall `settings_ui` defers its own enumeration for.
+
+    Two tripwires, because one is not enough. The fixture's `query_devices`
+    raises when called at all, which catches any *unguarded* enumeration put
+    back on this path — but a diagnostic swallows its own exceptions by
+    contract (`describe()` never raises), so the second one is what catches
+    that: nothing may have been logged and `_logged` must still be False, i.e.
+    `log_once()` did not run here.
+
+    `input_device_profiles()` is where the line moved, and it hands over the
+    lists it already holds — asserted by the call count, because a second
+    enumeration inside `describe()` would be exactly the stall this is about,
+    one page later.
+    """
+    import logging
+    import types
+
+    from listen_to_me import audio, portaudio
+
+    class _Stream:
+        def start(self):
+            pass
+
+    tripwire = types.ModuleType("sounddevice")
+    tripwire.InputStream = lambda **kwargs: _Stream()
+    tripwire.CallbackStop = RuntimeError
+
+    def _never(*args, **kwargs):
+        raise AssertionError("the recording path must not enumerate devices")
+
+    tripwire.query_devices = _never
+    tripwire.query_hostapis = _never
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    saved_state = {
+        name: getattr(portaudio, name)
+        for name in ("_prepared", "_prepare_note", "_prepare_done", "_logged")
+    }
+    handler = _Capture()
+    saved_level = portaudio.log.level
+    portaudio.log.addHandler(handler)
+    # The line is INFO and the root logger defaults to WARNING, so without this
+    # the capture below would be empty whether or not anything was logged.
+    portaudio.log.setLevel(logging.INFO)
+    try:
+        with _as_sounddevice(tripwire, "win32"):
+            portaudio._reset_state()
+            recorder = audio.Recorder()
+            recorder.start(max_seconds=30)
+            recorder._stream = None  # the fake stream holds nothing; skip stop()
+            recorder._chunks = []
+            assert portaudio._logged is False, "start() logged, so it enumerated"
+            assert records == [], [r.getMessage() for r in records]
+
+        fake = _fake_sounddevice(_windows_devices(), _WINDOWS_HOSTAPIS)
+        with _as_sounddevice(fake, "win32"):
+            portaudio._reset_state()
+            assert audio.input_device_profiles()
+            # Exactly one enumeration for the page AND the log line: the lists
+            # are handed to describe() instead of asked for twice.
+            assert fake.calls["query_devices"] == 1, fake.calls
+            assert portaudio._logged is True
+            lines = [r.getMessage() for r in records if r.levelno == logging.INFO]
+            assert len(lines) == 1, lines
+            # The host API is named, because "1 of 1" and "1 of 6" are the same
+            # machine and a release log cannot tell them apart otherwise.
+            assert "1 loopback input device(s) of 1 output(s) on Windows WASAPI" in lines[0]
+            assert "portaudio.dll" in lines[0], lines[0]
+            # One line per process, however often the page is opened.
+            assert audio.input_device_profiles()
+            assert fake.calls["query_devices"] == 2, fake.calls  # the page, not the log
+            assert len([r for r in records if r.levelno == logging.INFO]) == 1
+    finally:
+        portaudio.log.removeHandler(handler)
+        portaudio.log.setLevel(saved_level)
+        for name, value in saved_state.items():
+            setattr(portaudio, name, value)
+
+
+def _bundled_portaudio_can_be_switched_off():
+    """`system_audio.bundled_portaudio` — the escape hatch for a bundled
+    PortAudio that turns out worse than the one in the `sounddevice` wheel.
+
+    Once our DLL is loaded nothing reverts, so a binary that loads but fails
+    `Pa_Initialize` breaks ALL audio in the frozen build — microphone dictation
+    included — with no recovery until a new release is dispatched, and nothing
+    in CI captures audio with it (the release runner has no audio hardware).
+    False therefore has to reach `prepare_library_path()` before it touches
+    `PATH`, and everything else has to mean "on":
+
+    * no config file (first run), broken JSON, a config path that cannot be
+      opened at all, a missing section, a missing key, a value of the wrong
+      type — all keep the shipped default, because an unreadable config must
+      never cost the app its start (nor a feature the hand-edit was not about);
+    * `0` / `1` are honoured, matching `_coerce`, so the answer here is the one
+      a normal `Config` load would give.
+
+    The read happens before `_setup_logging()`, before Qt and before
+    `--version` answers, so "never raises" is the hard part and the last case
+    is `config.json` replaced by a *directory* — the shape of every "someone
+    else holds the file" failure. That the flag paths stay import-light is
+    `_cli_flags`' job, not this one's.
+    """
+    import json
+
+    from listen_to_me import portaudio
+    from listen_to_me.config import DEFAULTS, bundled_portaudio_enabled, config_dir
+    from listen_to_me.settings_ui import SettingsWindow
+
+    # One default, in DEFAULTS — the fallback literal inside the reader is the
+    # last resort if the section is ever renamed, not a second opinion.
+    assert DEFAULTS["system_audio"]["bundled_portaudio"] is True
+
+    # A Save must not silently revert the hatch. The Settings window offers no
+    # control for it on purpose, so the key survives only because the section
+    # is MERGED rather than replaced — `_collect()` does not know it exists,
+    # and a `target.update(values)` there would delete a user's recovery lever
+    # the first time they pressed Save.
+    section = {"hotkey": "", "device": None, "bundled_portaudio": False}
+    SettingsWindow._merge_section(section, {"hotkey": "<f9>", "device": 3})
+    assert section["bundled_portaudio"] is False, section
+
+    saved_env = {name: os.environ.get(name) for name in ("XDG_CONFIG_HOME", "APPDATA")}
+    saved_path = os.environ.get("PATH")
+    saved_frozen = getattr(sys, "frozen", None)
+    saved_meipass = getattr(sys, "_MEIPASS", None)
+    saved_state = {
+        name: getattr(portaudio, name)
+        for name in ("_prepared", "_prepare_note", "_prepare_done", "_logged")
+    }
+    sentinel = os.path.join(os.sep, "listen-to-me-no-such-dir")
+    with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as bundle:
+        try:
+            # Both, so the real config_dir() lands in the temp dir on Windows
+            # (APPDATA) as well as on Linux (XDG_CONFIG_HOME) — this check runs
+            # in the packaged exe too.
+            os.environ["XDG_CONFIG_HOME"] = home
+            os.environ["APPDATA"] = home
+            path = config_dir() / "config.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # A bundle that carries the DLL: without the opt-out, PATH changes.
+            Path(bundle, portaudio.DLL_NAME).write_bytes(b"")
+            sys.frozen = True
+            sys._MEIPASS = bundle
+
+            def attempt():
+                """What prepare_library_path() does with the config.json that is
+                on disk right now."""
+                os.environ["PATH"] = sentinel
+                portaudio._reset_state()
+                return (
+                    portaudio.prepare_library_path(),
+                    os.environ["PATH"],
+                    portaudio._prepare_note,
+                    bundled_portaudio_enabled(),
+                )
+
+            def prepared(stored):
+                """The same, with `stored` written to config.json first — a dict
+                as JSON, a string verbatim (a truncated write), None for no
+                file at all."""
+                if stored is None:
+                    if path.exists():
+                        path.unlink()
+                elif isinstance(stored, str):
+                    path.write_text(stored, encoding="utf-8")
+                else:
+                    path.write_text(json.dumps(stored), encoding="utf-8")
+                return attempt()
+
+            # 1 — on: the shipped default, explicit. PATH gets the bundle.
+            answer, env, note, flag = prepared({"system_audio": {"bundled_portaudio": True}})
+            assert (answer, flag) == (bundle, True), (answer, flag)
+            assert env == bundle + os.pathsep + sentinel, env
+            assert portaudio.DLL_NAME in note, note
+
+            # 2 — off: PATH untouched, and the note says which key did it, so
+            # the one line log_once() prints can be read as an answer.
+            answer, env, note, flag = prepared({"system_audio": {"bundled_portaudio": False}})
+            assert (answer, env, flag) == (None, sentinel, False), (answer, env, flag)
+            assert "bundled_portaudio" in note and "keeps its own PortAudio" in note, note
+            # 0/1 mean the same as false/true (the `_coerce` rule), so a
+            # hand-edit following a support instruction is not silently ignored.
+            assert prepared({"system_audio": {"bundled_portaudio": 0}})[0] is None
+            assert prepared({"system_audio": {"bundled_portaudio": 1}})[0] == bundle
+
+            # 3 — everything unreadable is ON: no file, no section, no key,
+            # broken JSON, a wrong type.
+            for stored in (
+                None,
+                {},
+                {"system_audio": {}},
+                {"system_audio": {"hotkey": "<f9>"}},
+                {"system_audio": "off"},
+                {"system_audio": {"bundled_portaudio": "false"}},
+                {"system_audio": {"bundled_portaudio": None}},
+                {"system_audio": {"bundled_portaudio": 2}},
+                "{ not json at all",
+                "",
+            ):
+                answer, env, note, flag = prepared(stored)
+                assert (answer, flag) == (bundle, True), (stored, answer, flag)
+                assert env == bundle + os.pathsep + sentinel, (stored, env)
+
+            # 4 — a config path that cannot be read at all must not cost the
+            # app its start: the file is a directory here, which is the shape
+            # of every "someone else holds it" failure (an AV scanner, an
+            # indexer, a half-restored profile).
+            path.unlink(missing_ok=True)
+            path.mkdir()
+            answer, env, note, flag = attempt()
+            assert (answer, flag) == (bundle, True), (answer, flag)
+            assert env == bundle + os.pathsep + sentinel, env
+            path.rmdir()
+        finally:
+            for name, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            for name, value in (("frozen", saved_frozen), ("_MEIPASS", saved_meipass)):
+                if value is None:
+                    if hasattr(sys, name):
+                        delattr(sys, name)
+                else:
+                    setattr(sys, name, value)
+            if saved_path is None:
+                os.environ.pop("PATH", None)
+            else:
+                os.environ["PATH"] = saved_path
+            for name, value in saved_state.items():
+                setattr(portaudio, name, value)
+
+    assert os.environ.get("PATH") == saved_path, "the check leaked its fake PATH"
 
 
 def _portaudio_path_prepend():
@@ -5896,6 +6423,24 @@ def _load_faked_system_devices(window, inputs, outputs, platform):
         audio.input_device_profiles, audio.list_output_devices, sys.platform = saved
 
 
+def _load_real_system_devices(window, devices, hostapis, platform="win32"):
+    """Fill `window`'s system-audio dropdown through the REAL enumeration —
+    `audio.list_output_devices()` and `audio.input_device_profiles()` against a
+    stand-in `sounddevice` — instead of patching those two out the way
+    `_load_faked_system_devices` does.
+
+    Both helpers are needed. Injecting profiles is how the *wording* is checked
+    against a machine shape (three of them, above); this one is the only way to
+    check the *enumeration* the wording is built from, and the enumeration is
+    what named PortAudio's host-API duplicates as "your outputs".
+    """
+    from listen_to_me.system_audio import system_audio_help
+
+    with _as_sounddevice(_fake_sounddevice(devices, hostapis), platform):
+        window._load_system_devices()
+        return system_audio_help()
+
+
 def _system_audio_rows(window):
     """Every row of the system-audio dropdown as a dict: `text`, `selectable`,
     `enabled` and `announce` (what a screen reader reads instead of the text).
@@ -6224,6 +6769,12 @@ def _system_audio_hint_names_the_outputs_it_cannot_record():
     assert _outputs_without_loopback(["USB"], [{"name": "USB Speaker [Loopback]",
                                                 "hint": "[loopback]"}]) == ["USB"]
 
+    # An empty list is a landmine, not an impossibility: `quoted[-1]` raised
+    # IndexError. Its only caller is guarded by `if missing:` today, which is
+    # exactly why the guard belongs in the function — the next caller reads the
+    # signature, and nothing in it says the list may not be empty.
+    assert _output_list_phrase([]) == ""
+    assert _output_list_phrase([], limit=0) == ""
     assert _output_list_phrase(["A"]) == "“A”"
     assert _output_list_phrase(["A", "B"]) == "“A” and “B”"
     assert _output_list_phrase(["A", "B", "C"]) == "“A”, “B” and “C”"
@@ -6299,6 +6850,40 @@ def _system_audio_hint_names_the_outputs_it_cannot_record():
                 "be recorded directly on this build." in hint
             ), hint
             assert help_text in hint, hint
+
+            # --- shape 4: one soundcard, four host APIs (the filter) --------
+            # PortAudio lists every endpoint once per host API, plus two
+            # pseudo-devices. Unfiltered, this machine's hint read “No loopback
+            # device was found for “Microsoft Sound Mapper - Output”, “Primary
+            # Sound Driver” and “Speakers (Realtek HD Audio output)”” — while
+            # #194 was working perfectly. Two of those the user does not have;
+            # the third is the same speaker under WDM-KS.
+            help_text = _load_real_system_devices(
+                window, _windows_devices(twin=True), _WINDOWS_HOSTAPIS
+            )
+            hint = window._sys_audio_hint.text()
+            assert window._sys_candidates == 1, window._sys_candidates
+            assert window._sys_missing_outputs == [], window._sys_missing_outputs
+            assert "cannot be recorded" not in hint and "Your outputs are" not in hint, hint
+            for phantom in _WINDOWS_PHANTOMS:
+                assert phantom not in hint, (phantom, hint)
+            assert help_text in hint, hint
+
+            # …and with no twin, the reported machine: ONE output named, the
+            # one that exists, not six entries for one speaker.
+            help_text = _load_real_system_devices(
+                window, _windows_devices(twin=False), _WINDOWS_HOSTAPIS
+            )
+            hint = window._sys_audio_hint.text()
+            assert window._sys_candidates == 0
+            assert window._sys_missing_outputs == [_ONE_SPEAKER], window._sys_missing_outputs
+            assert (
+                f"Your outputs are “{_ONE_SPEAKER}” — none of them can be recorded "
+                "directly on this build." in hint
+            ), hint
+            for phantom in _WINDOWS_PHANTOMS:
+                assert phantom not in hint, (phantom, hint)
+            assert "and 3 more" not in hint, hint  # the bound spent on duplicates
 
             # --- bounded: three outputs vs fifteen of the same names --------
             _load_faked_system_devices(window, ["Microphone"], many[:3], "win32")
@@ -8474,6 +9059,10 @@ _LIGHT_CHECKS = [
     ("missing microphone falls back", _missing_microphone_falls_back),
     ("loopback device is ranked and resolved", _loopback_device_is_ranked_and_resolved),
     ("PortAudio DLL path is prepended only in a frozen bundle", _portaudio_path_prepend),
+    ("the bundled PortAudio can be switched off", _bundled_portaudio_can_be_switched_off),
+    ("outputs are counted once per device, not once per host API",
+     _portaudio_counts_one_entry_per_output),
+    ("the recording path asks PortAudio nothing", _recording_path_asks_portaudio_nothing),
     ("assistant failure is actionable", _assistant_failure_is_actionable),
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
     ("no-speech report names its own source", _no_speech_report_names_its_own_source),
@@ -8587,6 +9176,14 @@ def _portaudio_supports_wasapi_loopback():
     The device half is skipped on a machine with no output device (a CI runner
     with no audio hardware has nothing to enumerate a loopback for), so it
     reports what it could not test instead of failing on it.
+
+    Both counts come from ONE host API (`portaudio.preferred_hostapi`, WASAPI
+    here) and the message names it. Counted across all of them, a runner
+    reporting an MME or DirectSound pseudo-output while WASAPI enumerates no
+    render endpoint would fail this gate on a perfectly correct build — the
+    ratio has to be "loopback twins of WASAPI outputs", because only WASAPI
+    emits the twins. A host API that cannot be resolved is reported as such,
+    for the same reason: not counted is not the same as none there.
     """
     try:
         import sounddevice  # noqa: F401
@@ -8605,17 +9202,24 @@ def _portaudio_supports_wasapi_loopback():
             f"the bundled {portaudio.DLL_NAME} was not loaded, or was built without "
             f"WASAPI. {where}, errors={info.get('errors')}"
         )
+    hostapi = info.get("hostapi")
+    if not hostapi:
+        return (
+            f"{version} supports loopback; no host API could be resolved, so no device "
+            f"was counted ({where}, errors={info.get('errors')})"
+        )
     outputs = int(info.get("output_devices") or 0)
     loopbacks = int(info.get("loopback_devices") or 0)
     if outputs and not loopbacks:
         raise AssertionError(
             f"The loaded library ({version}) exports PaWasapi_IsLoopback but enumerated "
             f"no input device carrying the '[Loopback]' marker, although the machine "
-            f"reports {outputs} output device(s) — loopback enumeration is missing. {where}"
+            f"reports {outputs} output device(s) on {hostapi} — loopback enumeration is "
+            f"missing. {where}"
         )
     if not outputs:
-        return f"{version} supports loopback; no output device to enumerate one for"
-    return f"{version}, {loopbacks} loopback input(s) for {outputs} output(s)"
+        return f"{version} supports loopback; no output device on {hostapi} to enumerate one for"
+    return f"{version}, {loopbacks} loopback input(s) for {outputs} output(s) on {hostapi}"
 
 
 _FULL_EXTRA = [

@@ -399,7 +399,14 @@ def _output_list_phrase(names: list[str], limit: int = _SYS_OUTPUTS_NAMED) -> st
     outputs and on one with fifteen, and the count carries the rest. Quoted
     because an output name can be a whole phrase ("Speakers (Realtek(R)
     Audio)") that would otherwise dissolve into the sentence around it.
+
+    An empty list gives an empty string rather than an `IndexError` on
+    `quoted[-1]`. Its only caller today is guarded by `if missing:`, which is
+    exactly why the guard belongs here: nothing about the signature says the
+    list may not be empty, and the next caller reads the signature.
     """
+    if not names:
+        return ""
     quoted = [f"“{name}”" for name in names[:limit]]
     rest = len(names) - len(quoted)
     if rest > 0:

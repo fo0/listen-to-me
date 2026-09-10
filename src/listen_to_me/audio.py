@@ -15,7 +15,9 @@ The wheel's binary is no longer the only possibility: the frozen Windows build
 ships a newer `portaudio.dll` that enumerates every output device a second
 time as a "<name> [Loopback]" input (#194, `portaudio.py`). That changes
 nothing here — such an entry is still a plain input device, found by name —
-which is why `log_once()` below names the binary that answered.
+which is why `input_device_profiles()` below has `portaudio.log_once()` name
+the binary that answered. That line sits on the settings/profiles path and
+deliberately NOT in `Recorder.start()`, which must not enumerate anything.
 """
 
 from __future__ import annotations
@@ -194,12 +196,15 @@ class Recorder:
         """
         import sounddevice as sd
 
-        # One INFO line per process naming the PortAudio that answered and
-        # whether it supports WASAPI loopback (#194). Here because start()
-        # always runs before any capture, so the log of a session that recorded
-        # anything at all carries it; the module flag inside makes every call
-        # after the first free.
-        portaudio.log_once()
+        # NO device enumeration here, and no diagnostic that costs one —
+        # `portaudio.log_once()` used to sit on this line and was moved to
+        # `input_device_profiles()` for it. start() runs on the Qt main thread
+        # (App._start_recording ← _handle ← the 100 ms drain timer), and with
+        # the default `input_device: null` nothing else on this path asks
+        # PortAudio anything: the first take of a session paid a full
+        # `sd.query_devices()` — a stall of hundreds of milliseconds, the very
+        # one `settings_ui` defers its own enumeration for — at the moment the
+        # user has pressed the hotkey and is about to speak.
 
         if self._stream is not None:
             raise RuntimeError("recording already active")
@@ -444,8 +449,8 @@ def list_input_devices() -> list[tuple[int, str]]:
 
 
 def list_output_devices() -> list[tuple[int, str]]:
-    """Every OUTPUT device as `(index, name)` — the speakers and headsets this
-    machine plays through.
+    """This machine's OUTPUT devices as `(index, name)` — **one entry per
+    physical output**, not one per host API that lists it.
 
     Nothing records from one of these: PortAudio captures from inputs only,
     which is why system audio goes through a loopback *input* (ADR-0009). They
@@ -456,9 +461,27 @@ def list_output_devices() -> list[tuple[int, str]]:
     outputs went was missing. So: the data source of a sentence, not dead code
     — it was deleted as such once.
 
-    Never raises, like `input_device_profiles()`: an unaskable PortAudio yields
-    `[]` and the hint then names no outputs, rather than an exception reaching
-    a settings page.
+    Because it feeds prose, the host-API filter is load-bearing rather than
+    tidiness. PortAudio enumerates every endpoint once per host API, so the
+    unfiltered list made the hint say, on a single-soundcard Windows machine
+    where #194 works perfectly: “No loopback device was found for “Microsoft
+    Sound Mapper - Output”, “Primary Sound Driver” and “Speakers (Realtek HD
+    Audio output)”.” Two of those are pseudo-devices the user does not have and
+    the third is the same speaker under WDM-KS — a false sentence about the
+    primary platform. `portaudio.preferred_hostapi` picks the one host API that
+    lists each endpoint once (WASAPI on Windows, the default host API
+    elsewhere) and carries the full reasoning; a "simplification" back to every
+    device brings the false sentence back.
+
+    Note the deliberate asymmetry with `input_device_profiles()` below, which
+    filters nothing: that list is what devices are *picked* from, by stored
+    index, so a user's WDM-KS headset entry has to stay in it. This one answers
+    "what does this machine play through", where a four-fold list is wrong.
+
+    Never raises, like `input_device_profiles()`: an unaskable PortAudio, or a
+    host API that cannot be resolved, yields `[]` and the hint then names no
+    outputs — an omitted sentence, rather than a false one or an exception
+    reaching a settings page.
     """
     try:
         import sounddevice as sd
@@ -467,13 +490,27 @@ def list_output_devices() -> list[tuple[int, str]]:
     except Exception:
         log.exception("could not enumerate the output devices")
         return []
+    api_index, api_name = portaudio.preferred_hostapi(sd)
+    if api_index is None:
+        # Not silent, and not a guess: naming every host API's copy of the same
+        # speaker is what this function exists to stop, so an unresolved host
+        # API reports nothing and says why.
+        log.warning(
+            "could not resolve the host API that lists this machine's outputs once — "
+            "the System audio hint will name no outputs"
+        )
+        return []
     outputs: list[tuple[int, str]] = []
     for idx, dev in devices:
         try:
-            if int(dev.get("max_output_channels", 0) or 0) > 0:
-                outputs.append((idx, str(dev.get("name", f"Device {idx}"))))
+            if int(dev.get("max_output_channels", 0) or 0) <= 0:
+                continue
+            if portaudio.device_hostapi(dev) != api_index:
+                continue  # the same endpoint under another host API
+            outputs.append((idx, str(dev.get("name", f"Device {idx}"))))
         except Exception:
             log.debug("output device %s has an unreadable entry — skipped", idx, exc_info=True)
+    log.debug("%d output device(s) on %s", len(outputs), api_name or api_index)
     return outputs
 
 
@@ -490,27 +527,40 @@ def input_device_profiles() -> list[dict]:
     unresolvable host API index yields `""`, an unreadable device entry is
     skipped, and a PortAudio that cannot be asked gives `[]` rather than
     raising into a settings page.
+
+    Every host API's entries stay in, deliberately — the opposite of
+    `list_output_devices()` above. This list is what devices are *picked* from,
+    and the pick is stored as a PortAudio index: dropping the WDM-KS or MME
+    entry of a card would drop a device someone has already configured, and the
+    host API name is reported per entry precisely so the ranking can tell one
+    card's WASAPI monitor from its WDM-KS one. Naming outputs is the question
+    that needs one entry per endpoint, not this one.
     """
-    # The same one-per-process line as in Recorder.start, because this is what
-    # the Audio settings page calls — exactly where someone hunting a missing
-    # loopback device is looking, and the path in that line tells them which
-    # binary answered (the version string cannot: the DLL we build and the
-    # wheel's own report the same one). Never raises, so it sits ahead
-    # of the enumeration guard rather than inside it, where the broad except
-    # would mislabel it as a failed enumeration.
-    portaudio.log_once()
     try:
         import sounddevice as sd
 
         devices = list(enumerate(sd.query_devices()))
     except Exception:
         log.exception("could not enumerate the input devices")
+        # Still logged, and still once: which binary answered (or that none
+        # could be asked) is exactly what a failed enumeration leaves someone
+        # asking. It never raises, so it cannot turn this into a second
+        # failure.
+        portaudio.log_once()
         return []
     try:
         hostapis = list(sd.query_hostapis())
     except Exception:
         log.debug("could not resolve the host API names", exc_info=True)
         hostapis = []
+    # The one-per-process PortAudio line (#194), from this path and not from
+    # `Recorder.start()`: this is what the Audio settings page calls — exactly
+    # where someone hunting a missing loopback device is looking, and the path
+    # in that line tells them which binary answered (the version string cannot:
+    # the DLL we build and the wheel's own report the same one). Handed the two
+    # lists just enumerated, so the diagnostic costs no second `query_devices()`
+    # — the stall this whole placement is about.
+    portaudio.log_once([dev for _idx, dev in devices], hostapis)
     profiles: list[dict] = []
     for idx, dev in devices:
         try:
