@@ -192,6 +192,11 @@ _A_TESTING_LABEL = "Testing…"
 # Status line under the button while nothing runs — the same promise the
 # Engine page's diagnostics make.
 _A_TEST_IDLE = "Uses the values entered above — no Save needed."
+# One constant because the flash restores this label after "Reset ✓" — spelled
+# out in two places, the two would drift apart. Carries the "…" for the same
+# reason the other destructive buttons do: it asks first, whenever the prompt
+# below is not already the default one.
+_A_PROMPT_RESET_LABEL = "Reset to default…"
 # What the test sends. Deliberately shaped like raw dictation (no punctuation,
 # a filler word), so the reply shows not just that the endpoint answers but
 # whether the prompt and model actually clean text up.
@@ -1790,8 +1795,12 @@ class SettingsWindow(QDialog):
         pv = QVBoxLayout(prompt)
         header = QHBoxLayout()
         header.addStretch(1)
-        reset = QPushButton("Reset to default")
-        reset.setToolTip("Replace the prompt below with the built-in default cleanup prompt.")
+        reset = QPushButton(_A_PROMPT_RESET_LABEL)
+        reset.setAutoDefault(False)
+        reset.setToolTip(
+            "Replace the prompt below with the built-in default cleanup prompt. "
+            "Asks first if you have edited it — the replacement cannot be undone."
+        )
         reset.clicked.connect(self._reset_prompt)
         self.a_prompt_reset_button = reset
         header.addWidget(reset)
@@ -2375,9 +2384,34 @@ class SettingsWindow(QDialog):
         all — in both cases the click was visually indistinguishable from one
         that never registered. Same confirmation-where-you-clicked contract as
         the device rescan, the overlay reset and the history export.
+
+        An edited prompt is asked about first. It is free text the user wrote —
+        the one field on this page with no second copy anywhere — and
+        `setPlainText` drops the edit history with it, so Ctrl+Z does not bring
+        it back either. The button sits directly above the box, which makes it
+        an easy mis-click on the way to the text.
+
+        A prompt that already matches the default has nothing to lose, so that
+        click still acts at once and only flashes: the question would be
+        guarding an identity.
         """
+        current = self.a_prompt_edit.toPlainText()
+        if current.strip() != DEFAULT_ASSISTANT_PROMPT.strip():
+            confirm = QMessageBox.question(
+                self,
+                APP_NAME,
+                "Replace your edited system prompt with the built-in default?\n\n"
+                "What you wrote is not kept anywhere else and this cannot be "
+                "undone.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
         self.a_prompt_edit.setPlainText(DEFAULT_ASSISTANT_PROMPT)
-        self._flash_button(self.a_prompt_reset_button, "Reset ✓", "Reset to default")
+        self._flash_button(
+            self.a_prompt_reset_button, "Reset ✓", _A_PROMPT_RESET_LABEL
+        )
 
     # ---------------------------------------------------- assistant test
 

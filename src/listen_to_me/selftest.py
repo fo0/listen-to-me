@@ -4407,6 +4407,50 @@ def _gui_construction():
         window._cancel_assistant_test()
         assert window.a_test_status.text() == _A_TEST_IDLE, window.a_test_status.text()
 
+        # "Reset to default…" asks before discarding an edited system prompt.
+        # It is free text with no second copy anywhere, setPlainText drops the
+        # undo history with it, and the button sits directly above the box it
+        # overwrites. An unedited prompt has nothing to lose and resets at once
+        # — which is what keeps the flash-only behaviour it was built for.
+        from listen_to_me import settings_ui as _settings_module
+        from listen_to_me.config import DEFAULT_ASSISTANT_PROMPT as _DEFAULT_PROMPT
+        from listen_to_me.settings_ui import _A_PROMPT_RESET_LABEL
+        from PySide6.QtWidgets import QMessageBox as _RealPromptBox
+
+        assert _A_PROMPT_RESET_LABEL.endswith("…"), (
+            "the label must promise the confirmation it now performs"
+        )
+
+        class _FakePromptBox:
+            StandardButton = _RealPromptBox.StandardButton
+            answer = _RealPromptBox.StandardButton.No
+            asked = 0
+
+            @classmethod
+            def question(cls, *_args, **_kwargs):
+                cls.asked += 1
+                return cls.answer
+
+        real_prompt_box = _settings_module.QMessageBox
+        _settings_module.QMessageBox = _FakePromptBox
+        try:
+            window.a_prompt_edit.setPlainText("Only ever answer in rhyming couplets.")
+            window._reset_prompt()  # declined
+            assert _FakePromptBox.asked == 1
+            assert "rhyming" in window.a_prompt_edit.toPlainText(), (
+                "a declined reset threw the edited prompt away anyway"
+            )
+            _FakePromptBox.answer = _RealPromptBox.StandardButton.Yes
+            window._reset_prompt()  # confirmed
+            assert _FakePromptBox.asked == 2
+            assert window.a_prompt_edit.toPlainText() == _DEFAULT_PROMPT
+            # Already the default: no question, still resets and flashes.
+            window._reset_prompt()
+            assert _FakePromptBox.asked == 2, "asked about a reset with nothing to lose"
+            assert window.a_prompt_edit.toPlainText() == _DEFAULT_PROMPT
+        finally:
+            _settings_module.QMessageBox = real_prompt_box
+
         # "Reset position" for the floating icon. It exists because dragging is
         # unconstrained and a saved position survives as long as its centre is
         # on some screen, so a stranded icon had no way back but config.json.
@@ -4782,7 +4826,47 @@ def _gui_construction():
         window._add_target_row({"name": "", "enabled": False, "mode": "hold", "hotkey": ""})
         row = window._target_rows[-1]
         assert row.mode_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus
+        # A blank row has nothing to lose and goes without a question — which
+        # is also why the line above can call this unpatched: a modal box here
+        # would hang this run.
         window._remove_target_row(row)
+        assert row not in window._target_rows
+
+        # A configured row is asked about first. It carries the app's mute
+        # keybind, normally looked up in that app's own settings, and there is
+        # no undo once Save writes the shortened list.
+        from PySide6.QtWidgets import QMessageBox as _RealRemoveBox
+
+        class _FakeRemoveBox:
+            StandardButton = _RealRemoveBox.StandardButton
+            answer = _RealRemoveBox.StandardButton.No
+            asked: list = []
+
+            @classmethod
+            def question(cls, *args, **_kwargs):
+                cls.asked.append(args[-3] if len(args) >= 3 else args[-1])
+                return cls.answer
+
+        real_remove_box = _settings_module.QMessageBox
+        _settings_module.QMessageBox = _FakeRemoveBox
+        try:
+            window._add_target_row(
+                {"name": "Discord", "enabled": True, "mode": "hold", "hotkey": "<ctrl>+<alt>+m"}
+            )
+            configured = window._target_rows[-1]
+            assert configured.remove_button.text().endswith("…"), (
+                "the label must promise the confirmation it now performs"
+            )
+            window._remove_target_row(configured)  # declined
+            assert configured in window._target_rows, "a declined Remove dropped the row"
+            assert _FakeRemoveBox.asked and "Discord" in _FakeRemoveBox.asked[-1], (
+                _FakeRemoveBox.asked
+            )
+            _FakeRemoveBox.answer = _RealRemoveBox.StandardButton.Yes
+            window._remove_target_row(configured)  # confirmed
+            assert configured not in window._target_rows
+        finally:
+            _settings_module.QMessageBox = real_remove_box
 
         def wheel_tick(widget):
             event = QWheelEvent(

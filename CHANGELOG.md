@@ -148,6 +148,13 @@ changes at a glance.
 
 ### Changed
 
+- **"Reset to default" for the assistant system prompt asks before discarding
+  an edited one.** The button sits directly above the box it overwrites, and
+  the prompt is free text with no second copy anywhere — replacing it also
+  drops the edit history, so Ctrl+Z did not bring it back either. It is now
+  **Reset to default…** and asks whenever the prompt differs from the built-in
+  one; a prompt that already is the default has nothing to lose and still
+  resets on the first click.
 - **Removing an app from "Mute other apps while recording" asks first.** The
   button is now **Remove…** and names the app and its keybind before the row
   goes — every other destructive button in the settings window (Clear history…,
