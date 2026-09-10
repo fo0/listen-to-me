@@ -128,9 +128,29 @@ jobs:
           #     follows BUILD_SHARED_LIBS whenever that is set.
           #   PA_USE_WASAPI  the point of the build; with it off,
           #     cmake/portaudio.def.in drops every PaWasapi_* export.
-          #   PA_DLL_LINK_WITH_STATIC_RUNTIME  rewrites /MD to /MT, so the DLL
-          #     needs no MSVC redistributable on a user's machine. Upstream
-          #     defaults it ON only while PortAudio is the top-level project.
+          #   PA_DLL_LINK_WITH_STATIC_RUNTIME + CMAKE_MSVC_RUNTIME_LIBRARY
+          #     two ways to the same static runtime (/MT), so the DLL needs no
+          #     MSVC redistributable on a user's machine. Both are passed
+          #     because each covers the other's blind spot, and they cannot
+          #     collide:
+          #     - PA_DLL_LINK_WITH_STATIC_RUNTIME string-replaces /MD with
+          #       /MT in CMAKE_C_FLAGS_*. That only bites while policy CMP0091
+          #       is OLD, which here is a side effect of upstream still asking
+          #       for cmake_minimum_required(VERSION 3.10): a bump past 3.15
+          #       flips the policy, leaves the runtime flag out of those
+          #       variables, and turns the replace into a silent no-op.
+          #       Upstream also defaults the option ON only while PortAudio is
+          #       the top-level project.
+          #     - CMAKE_MSVC_RUNTIME_LIBRARY is the abstraction that replaced
+          #       those flags, ignored unless CMP0091 is NEW before project()
+          #       runs - hence CMAKE_POLICY_DEFAULT_CMP0091, which sets the
+          #       policy upstream leaves unset. MultiThreaded is /MT; a Debug
+          #       build would need a generator expression and nothing here
+          #       builds Debug.
+          #     Whichever way the policy lands, exactly one of the two is
+          #     live: under NEW there is no /MD left for the option to match,
+          #     under OLD the variable is ignored. The verification step below
+          #     asserts the outcome rather than trusting either.
           #   PA_BUILD_TESTS / PA_BUILD_EXAMPLES  nothing here consumes them.
           # -A x64 selects the 64-bit toolchain of the runner's Visual Studio
           # generator; that generator is multi-config, hence --config Release
@@ -139,6 +159,8 @@ jobs:
             -DPA_BUILD_SHARED_LIBS=ON \
             -DPA_USE_WASAPI=ON \
             -DPA_DLL_LINK_WITH_STATIC_RUNTIME=ON \
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW \
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded \
             -DPA_BUILD_TESTS=OFF \
             -DPA_BUILD_EXAMPLES=OFF \
             -DCMAKE_INSTALL_PREFIX=portaudio/out
@@ -153,16 +175,105 @@ jobs:
       # surfaces as "no loopback device" on a user's machine, so the release
       # stops here instead. cmake/portaudio.def.in gates every PaWasapi_*
       # export behind PA_USE_WASAPI, which makes the export the proof that the
-      # option took effect. Loading the DLL first covers the two other ways
-      # this build can be wrong: a 32-bit one, and one that needs the MSVC
-      # redistributable to load.
+      # option took effect. Loading the DLL first proves it is a 64-bit build
+      # this Python can load at all; it proves nothing about the MSVC
+      # redistributable, because the runner has Visual Studio and therefore
+      # that runtime, so a /MD-linked DLL loads here too. Only the DLL's own
+      # import table can show it needs no redistributable on a machine without
+      # one, which is the last assertion below.
       - name: Verify the PortAudio DLL exports WASAPI loopback
         shell: bash
         run: |
           python - <<'PY'
           import ctypes
           import os
+          import re
+          import struct
           import sys
+          import traceback
+
+
+          def imported_dlls(path):
+              """Names in a PE image's import and delay-load import tables.
+
+              Read out of the file because nothing on the runner can answer
+              this: dumpbin is not on PATH in a bash step, and a ctypes load
+              cannot tell a /MT build from a /MD one on a machine that has the
+              MSVC runtime installed - both load.
+              """
+              with open(path, "rb") as fh:
+                  img = fh.read()
+
+              def u16(off):
+                  return struct.unpack_from("<H", img, off)[0]
+
+              def u32(off):
+                  return struct.unpack_from("<I", img, off)[0]
+
+              if img[:2] != b"MZ":
+                  raise ValueError("no MZ signature - not a PE image")
+              pe = u32(0x3C)
+              if img[pe:pe + 4] != b"PE\0\0":
+                  raise ValueError("no PE signature - not a PE image")
+              # COFF header is 20 bytes, then the optional header, then the
+              # section table. Data directories sit at a fixed offset inside
+              # the optional header that differs per bitness.
+              opt = pe + 24
+              magic = u16(opt)
+              if magic == 0x20B:  # PE32+ (x64, arm64)
+                  dirs = opt + 112
+                  image_base = struct.unpack_from("<Q", img, opt + 24)[0]
+              elif magic == 0x10B:  # PE32 (32-bit)
+                  dirs = opt + 96
+                  image_base = u32(opt + 28)
+              else:
+                  raise ValueError(f"unknown optional header magic 0x{magic:x}")
+              directories = u32(dirs - 4)  # NumberOfRvaAndSizes precedes them
+
+              sections = []
+              table = opt + u16(pe + 20)  # SizeOfOptionalHeader
+              for index in range(u16(pe + 6)):  # NumberOfSections
+                  vsize, vaddr, rawsize, rawptr = struct.unpack_from(
+                      "<4I", img, table + index * 40 + 8)
+                  sections.append((vaddr, max(vsize, rawsize), rawptr))
+
+              def file_offset(rva):
+                  for vaddr, size, rawptr in sections:
+                      if vaddr <= rva < vaddr + size:
+                          return rawptr + rva - vaddr
+                  raise ValueError(f"RVA 0x{rva:x} is in no section")
+
+              def read_name(rva):
+                  start = file_offset(rva)
+                  end = img.index(b"\0", start)
+                  return img[start:end].decode("ascii", "replace")
+
+              names = []
+              # Directory 1: the import table, 20-byte descriptors closed by an
+              # all-zero one; field 3 is the RVA of the DLL name.
+              if directories > 1 and u32(dirs + 8):
+                  at = file_offset(u32(dirs + 8))
+                  while True:
+                      fields = struct.unpack_from("<5I", img, at)
+                      if not any(fields):
+                          break
+                      names.append(read_name(fields[3]))
+                      at += 20
+              # Directory 13: delay-loaded imports, 32-byte descriptors. A
+              # dependency parked here is loaded on first call instead of at
+              # load time, so it counts just the same. Bit 0 of Attributes says
+              # the fields are RVAs; without it they are virtual addresses.
+              if directories > 13 and u32(dirs + 13 * 8):
+                  at = file_offset(u32(dirs + 13 * 8))
+                  while True:
+                      fields = struct.unpack_from("<8I", img, at)
+                      if not any(fields):
+                          break
+                      rva = fields[1] if fields[0] & 1 else fields[1] - image_base
+                      names.append(read_name(rva))
+                      at += 32
+              return names
+
 
           path = os.path.abspath(os.environ["PORTAUDIO_DLL"])
           if not os.path.isfile(path):
@@ -179,6 +290,27 @@ jobs:
           if not hasattr(lib, "PaWasapi_IsLoopback"):
               sys.exit("no PaWasapi_IsLoopback export - built without WASAPI")
           print("PaWasapi_IsLoopback: exported")
+          try:
+              imports = imported_dlls(path)
+          except Exception as exc:  # a gate that cannot read the file fails closed
+              traceback.print_exc()
+              sys.exit(f"cannot read the PE import table of {path}: {exc!r}")
+          print("imports: " + ", ".join(sorted(imports, key=str.lower)))
+          # Nothing in the build fails loudly when the static runtime is lost
+          # (see the cmake step above), and the runner cannot notice because it
+          # has the runtime. A user without the VC++ redistributable would:
+          # sounddevice swallows the OSError, falls back to the wheel's own DLL
+          # and system audio silently finds no loopback device. So assert the
+          # outcome on the file. A trailing digit is what separates the
+          # redistributable families from Windows' own msvcrt.dll.
+          redistributable = [n for n in imports
+                             if re.match(r"(vcruntime|msvcp|msvcr|concrt)\d",
+                                         n, re.IGNORECASE)]
+          if redistributable:
+              sys.exit("needs the MSVC redistributable: "
+                       + ", ".join(redistributable)
+                       + " - the static runtime did not take effect")
+          print("MSVC runtime: linked statically")
           PY
 
       - name: Build executable (PyInstaller)
