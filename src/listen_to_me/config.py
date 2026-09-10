@@ -37,7 +37,9 @@ DEFAULT_FILLER_PHRASES = """\
 # ("#" comments and blank lines are ignored). Matching is case-insensitive and
 # ignores surrounding punctuation and whitespace, and a phrase only counts when
 # it is the WHOLE transcript — so the base form is enough, no need for both
-# "Vielen Dank" and "Vielen Dank!".
+# "Vielen Dank" and "Vielen Dank!". Brackets and parentheses are part of the
+# comparison — that is what tells the annotation "[Musik]" from somebody
+# dictating the word "Musik" — so each bracketing style needs its own line.
 Vielen Dank
 Vielen Dank für Ihre Aufmerksamkeit
 Untertitel von Stephanie Geiges
@@ -49,7 +51,13 @@ Thanks for watching
 Thank you for watching
 Subtitles by the Amara.org community
 [Musik]
-[Music]\
+[Music]
+(Musik)
+(Music)
+[Applaus]
+[Applause]
+[Gelächter]
+[Laughter]\
 """
 
 # A starting point, meant to be replaced with the user's own flow (minutes,
