@@ -5810,6 +5810,35 @@ def _overlay_preview_follows_the_pointer():
                     on_top = bool(flags & Qt.WindowType.WindowStaysOnTopHint)
                     assert on_top is wanted, (anchor, wanted)
                     assert flags & Qt.WindowType.WindowTransparentForInput, (anchor, wanted)
+
+            # …and the flag alone is not the whole of staying on top (BACKLOG #59).
+            # WS_EX_TOPMOST gets stripped behind Qt's back, raise_() only
+            # orders the window against its Qt siblings, and the bubble has no
+            # watchdog ladder of its own — so it re-asserts natively once, at
+            # show time, on *itself* and not on the icon. The call is all an
+            # offscreen run can see: SetWindowPos is Windows-only and the real
+            # method returns early everywhere else, so it is recorded here
+            # rather than executed.
+            reasserted: list[object] = []
+            real_reassert_topmost = overlay._reassert_topmost
+            # Takes the same optional argument the real method does, and is
+            # put back straight after: `apply_always_on_top` and the watchdog
+            # ladder both call `_reassert_topmost()` with no argument at all,
+            # so a recorder that only accepts one would turn any later call
+            # into a TypeError instead of into a finding.
+            overlay._reassert_topmost = lambda window=None: reasserted.append(window)
+            try:
+                ocfg["enabled"] = True
+                ocfg["always_on_top"] = True
+                for anchor in (ANCHOR_ICON, ANCHOR_CURSOR):
+                    ocfg["preview_anchor"] = anchor
+                    overlay.set_visible(True)
+                    reasserted.clear()
+                    overlay.flash("a bubble that has to stay on top")
+                    assert overlay.bubble.isVisible(), anchor
+                    assert reasserted == [overlay.bubble], (anchor, reasserted)
+            finally:
+                overlay._reassert_topmost = real_reassert_topmost
         finally:
             overlay.destroy()
 

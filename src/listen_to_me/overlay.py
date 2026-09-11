@@ -964,7 +964,7 @@ class Overlay:
         except Exception:
             log.debug("overlay re-assert failed", exc_info=True)
 
-    def _reassert_topmost(self) -> None:
+    def _reassert_topmost(self, window: QWidget | None = None) -> None:
         """Re-apply always-on-top + shown at the OS level (Windows only).
 
         An explorer.exe restart strips WS_EX_TOPMOST from every topmost
@@ -975,16 +975,27 @@ class Overlay:
         changes nothing (so ticking it every 5 s costs no flicker), on a
         stripped or natively hidden one it repairs the state in place.
 
-        Skipped when the user turned always-on-top off — forcing the icon back
-        over their windows is then exactly what they asked us not to do.
+        `window` defaults to the icon, the one the 5 s watchdog ladder owns.
+        The bubble passes itself at show time instead, and deliberately gets
+        no ladder of its own: it lives for seconds, so probing it every 5 s
+        would cost more than it could ever repair. What it does need is this
+        one call — with the cursor anchor the bubble can be the *only* visible
+        surface (`set_visible(False)` leaves it up by design), and a stripped
+        topmost band then buries the one thing the user is looking at while
+        nothing anywhere is watching (BACKLOG #59).
+
+        Skipped when the user turned always-on-top off — forcing the window
+        back over theirs is then exactly what they asked us not to do, and the
+        bubble follows the same switch as the icon (BACKLOG #60).
         """
-        if not self._always_on_top or sys.platform != "win32" or not self.win.isVisible():
+        window = self.win if window is None else window
+        if not self._always_on_top or sys.platform != "win32" or not window.isVisible():
             return
         try:
             import ctypes
 
             ctypes.windll.user32.SetWindowPos(
-                ctypes.c_void_p(int(self.win.winId())),
+                ctypes.c_void_p(int(window.winId())),
                 ctypes.c_void_p(-1),  # HWND_TOPMOST
                 0,
                 0,
@@ -1265,6 +1276,11 @@ class Overlay:
         self.reposition_bubble()
         self.bubble.show()
         self.bubble.raise_()
+        # raise_() only orders the window against its Qt siblings; the native
+        # topmost band is a separate thing and the bubble has no watchdog of
+        # its own to notice it missing (BACKLOG #59). Once, here, is enough — the
+        # window is re-shown for every take.
+        self._reassert_topmost(self.bubble)
 
     def reposition_bubble(self) -> None:
         # Safe to run whether the bubble is shown or hidden (moving a hidden
