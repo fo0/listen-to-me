@@ -6,8 +6,11 @@ Pillow>=10.0
 pynput>=1.8.2
 pyperclip>=1.11.0
 requests>=2.34.2
-# Optional Intel GPU/NPU backend — not installed by default; use
-# `pip install openvino-genai` / `pip install -e ".[openvino]"` (or uncomment):
+# Optional Intel GPU/NPU backend — not installed by default. The complete path
+# is `pip install -e ".[openvino]"`: that extra is two packages, openvino-genai
+# plus huggingface_hub>=0.23 for the model download. Installing the backend by
+# name therefore means `pip install openvino-genai "huggingface_hub>=0.23"`
+# (or uncomment):
 # openvino-genai>=2025.2
 # Optional NVIDIA Parakeet backend (fast multilingual ONNX engine) — use
 # `pip install "onnx-asr[cpu,hub]"` / `pip install -e ".[parakeet]"` (or uncomment):
