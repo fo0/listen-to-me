@@ -5810,6 +5810,35 @@ def _overlay_preview_follows_the_pointer():
                     on_top = bool(flags & Qt.WindowType.WindowStaysOnTopHint)
                     assert on_top is wanted, (anchor, wanted)
                     assert flags & Qt.WindowType.WindowTransparentForInput, (anchor, wanted)
+
+            # …and the flag alone is not the whole of staying on top (BACKLOG #59).
+            # WS_EX_TOPMOST gets stripped behind Qt's back, raise_() only
+            # orders the window against its Qt siblings, and the bubble has no
+            # watchdog ladder of its own — so it re-asserts natively once, at
+            # show time, on *itself* and not on the icon. The call is all an
+            # offscreen run can see: SetWindowPos is Windows-only and the real
+            # method returns early everywhere else, so it is recorded here
+            # rather than executed.
+            reasserted: list[object] = []
+            real_reassert_topmost = overlay._reassert_topmost
+            # Takes the same optional argument the real method does, and is
+            # put back straight after: `apply_always_on_top` and the watchdog
+            # ladder both call `_reassert_topmost()` with no argument at all,
+            # so a recorder that only accepts one would turn any later call
+            # into a TypeError instead of into a finding.
+            overlay._reassert_topmost = lambda window=None: reasserted.append(window)
+            try:
+                ocfg["enabled"] = True
+                ocfg["always_on_top"] = True
+                for anchor in (ANCHOR_ICON, ANCHOR_CURSOR):
+                    ocfg["preview_anchor"] = anchor
+                    overlay.set_visible(True)
+                    reasserted.clear()
+                    overlay.flash("a bubble that has to stay on top")
+                    assert overlay.bubble.isVisible(), anchor
+                    assert reasserted == [overlay.bubble], (anchor, reasserted)
+            finally:
+                overlay._reassert_topmost = real_reassert_topmost
         finally:
             overlay.destroy()
 
@@ -6175,6 +6204,41 @@ def _the_take_starts_the_preview_its_anchor_needs():
         app_module.LiveTyper = real_typer
 
 
+# Placement claims that were true while the bubble only ever sat beside the
+# floating icon, and are wrong for anything anchored to the pointer (#196).
+# One tuple, read by every half of the guard below — two copies of a phrase
+# list drift exactly the way the wording it guards did.
+_STALE_PLACEMENT_PHRASES = ("next to the icon", "beside the icon")
+
+
+def _config_source_block(key: str) -> str:
+    """The source text of one top-level `config.DEFAULTS` block, comments and all.
+
+    `DEFAULTS` is a plain dict literal, so its comments are gone by the time
+    the module is imported: a check that wants to assert about them cannot go
+    through an attribute and has to read the file. Scoped to a single block
+    rather than to the whole file on purpose — a phrase test spread over all
+    of `config.py` would answer for keys the caller never meant to guard.
+
+    Raises `AssertionError` when the block cannot be located, which is the
+    reason this is a helper and not two inline `find()` calls: a renamed,
+    moved or re-indented block has to fail loudly here, never quietly match
+    nothing and hand the caller an empty string that passes every phrase test
+    it is put to.
+    """
+    from listen_to_me import config
+
+    source = Path(config.__file__).read_text(encoding="utf-8")
+    opening = f'\n    "{key}": {{\n'
+    start = source.find(opening)
+    assert start >= 0, f"no top-level {key!r} block in config.py — renamed or re-indented?"
+    end = source.find("\n    },\n", start + len(opening))
+    assert end > start, f"the {key!r} block in config.py is not closed at its own indent"
+    block = source[start + len(opening) : end]
+    assert block.strip(), f"the {key!r} block in config.py came back empty"
+    return block
+
+
 def _overlay_preview_anchor_round_trips():
     """The #196 setting survives the Settings window.
 
@@ -6222,8 +6286,25 @@ def _overlay_preview_anchor_round_trips():
             # notices it going stale again.
             for box in (window.chk_o_preview, window.chk_o_live):
                 for wording in (box.text(), box.toolTip()):
-                    assert "next to the icon" not in wording, wording
-                    assert "beside the icon" not in wording, wording
+                    for phrase in _STALE_PLACEMENT_PHRASES:
+                        assert phrase not in wording, (phrase, wording)
+
+            # The same claim lives a third time, in `config.py`'s comments —
+            # and that copy is the one that went stale while this very check
+            # stayed green: `show_preview`'s comment still said the transcript
+            # appears next to the icon long after both labels had stopped
+            # saying it, and a reader caught it a pass later, which is exactly
+            # the round a wording guard exists to save (BACKLOG #61). Read out of the
+            # source rather than off an attribute, because the comments are
+            # stripped at import and unreachable at runtime; `_config_source_block`
+            # is what makes a renamed or moved block fail loudly instead of
+            # matching nothing. Scoped to the `overlay` block and stopped
+            # there on purpose — the claim is also prose in both README
+            # settings tables and in the Settings hint, and a guard that grows
+            # until it greps the repo is a different, worse check.
+            overlay_block = _config_source_block("overlay")
+            for phrase in _STALE_PLACEMENT_PHRASES:
+                assert phrase not in overlay_block, (phrase, overlay_block)
 
             combo.setCurrentIndex(combo.findData(ANCHOR_CURSOR))
             values = window._collect()
