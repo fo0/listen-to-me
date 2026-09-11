@@ -2,6 +2,7 @@ flowchart TD
     subgraph "Entry"
         Main["__main__ / app.main()"]:::infra
         Single(["single-instance guard — mutex/flock + activate ping (localhost:52697)"]):::infra
+        Selftest("selftest — checks the real modules: run() for --selftest (+ bundled-import probe), gui_smoke() for the light CI subset"):::infra
     end
 
     subgraph "Core"
@@ -15,10 +16,12 @@ flowchart TD
     subgraph "Input and UI (Qt main thread)"
         Hotkeys("Hotkeys — two global hotkeys (mic + system audio), pynput"):::frontend
         Tray("Tray — QSystemTrayIcon"):::frontend
-        Overlay("Overlay + VoiceMicWidget"):::frontend
+        Overlay("Overlay — floating always-on-top status icon + transcript bubble"):::frontend
+        VoiceMic("VoiceMicWidget — animated ring/mic icon of the overlay"):::frontend
         Settings("SettingsWindow — main window: Home hub + settings pages"):::frontend
         Home("HomePage — live state, quick actions, recent transcripts"):::frontend
         Onboarding("OnboardingWizard — first-run setup"):::frontend
+        Help["help_content — Qt-free Help/Troubleshooting topics → help_html()"]:::frontend
         Theme["theme / icons / glyphs / qtutil / keymap / widgets / choices"]:::frontend
     end
 
@@ -56,6 +59,7 @@ flowchart TD
 
     Main -->|"acquire"| Single
     Single -->|"post activate (second launch)"| Events
+    Main -->|"--selftest → run(), before logging and the app itself starts"| Selftest
     Main -->|"prepare_library_path() — first statement, prepends sys._MEIPASS to PATH"| PortAudio
     Main -->|"run"| App
     App --> Config
@@ -74,8 +78,11 @@ flowchart TD
     Onboarding -->|"essential settings"| Config
     Settings -->|"first page; set_app_state mirrors state"| Home
     Home -->|"post toggle/cancel"| Events
+    Overlay -->|"set_recording/set_processing on state, set_progress(%) while a model downloads"| VoiceMic
+    Settings -->|"Help page: setHtml(help_html()), re-rendered on a theme change"| Help
     Overlay --- Theme
     Settings --- Theme
+    VoiceMic --- Theme
 
     App -->|"start/stop (microphone take)"| Recorder
     App -->|"system-audio take: which device?"| SysAudio
@@ -87,6 +94,7 @@ flowchart TD
     Recorder -->|"log_once(): loaded path, loopback support, device counts"| PortAudio
     Loopback -->|"what the computer plays"| Recorder
     Recorder -->|"downmix + resample per block"| Resample
+    Recorder -->|"snapshot() → band_levels(), polled by the overlay on the main thread"| VoiceMic
     App -->|"_process worker"| Transcriber
     App -->|"backend = openvino (factory)"| TranscriberOV
     App -->|"backend = parakeet (factory)"| TranscriberPK
@@ -131,16 +139,25 @@ flowchart TD
     App -->|"record text"| History
     App --> Autostart
 
+    Selftest -->|"roundtrip, defaults, corrupt-section recovery, clamping"| Config
+    Selftest -->|"constructs the window headless (offscreen off Windows)"| Settings
+    Selftest -->|"release gate: the loaded library must enumerate WASAPI loopback"| PortAudio
+    Selftest -->|"help_html() renders every topic"| Help
+    Selftest -->|"paints in recording / processing / download state"| VoiceMic
+
     click Main "src/listen_to_me/app.py"
     click Single "src/listen_to_me/singleinstance.py"
+    click Selftest "src/listen_to_me/selftest.py"
     click App "src/listen_to_me/app.py"
     click Config "src/listen_to_me/config.py"
     click Hotkeys "src/listen_to_me/hotkeys.py"
     click Tray "src/listen_to_me/tray.py"
     click Overlay "src/listen_to_me/overlay.py"
+    click VoiceMic "src/listen_to_me/voice_mic_widget.py"
     click Settings "src/listen_to_me/settings_ui.py"
     click Home "src/listen_to_me/home_page.py"
     click Onboarding "src/listen_to_me/onboarding.py"
+    click Help "src/listen_to_me/help_content.py"
     click Recorder "src/listen_to_me/audio.py"
     click SysAudio "src/listen_to_me/system_audio.py"
     click Resample "src/listen_to_me/resample.py"
