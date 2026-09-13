@@ -4,7 +4,7 @@ Temporary working context. **Clean up aggressively — delete when resolved.** R
 
 ## Current Work
 
-- **`claude/overlay-cursor-anchor` (2026-09-10) — #196, `2fc4942` + a merge of `main`, no PR yet.** `overlay.preview_anchor` (`"icon"` default / `"cursor"`) moves **both** transcript previews to the mouse pointer: placed by the pure `cursor_bubble_position()` (edge flip, clamped to the screen the _pointer_ is on, never over the pointer), followed via `tick_cursor_preview()` on `App._poll`'s 100 ms drain — no second timer. The two questions #196 left open are answered in code and in the Settings hint: it works with the icon **off**, and it obeys `overlay.always_on_top` in both anchors. Found on the way: the bubble never carried `WindowTransparentForInput`, so it swallowed every click — latent beside the icon, not under the cursor. Docs pass done here (`README*.md`, `CHANGELOG.md`, `key-patterns.md`, BACKLOG #56–#58); `ARCHITECTURE.mmd` and `CLAUDE.md` need nothing. **Open:** real pointer behaviour, click-through and mixed-scaling multi-monitor are all unverifiable offscreen (#56–#58) — a manual pass on a two-monitor Windows box is what is left before this is done.
+_(none)_ — the overlay cursor-anchor work (#196) shipped with PR #198; what is still open from it needs a real desktop and is tracked as `BACKLOG.md` #56–#58.
 
 > Finished work does not belong here. What a merged branch produced is recorded in `BACKLOG.md → Done`, `agent_docs/key-patterns.md`, `MEMORY.md` and the git history — don't re-add closed branches to this section.
 
