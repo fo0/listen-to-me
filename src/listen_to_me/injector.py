@@ -336,13 +336,22 @@ class Injector:
                 "restored the previous clipboard %.1fs after Ctrl+V", _PASTE_READ_WINDOW_S
             )
             return False
-        if previous == "" and self.clipboard_mode() == "off":
+        if previous == "" and self.clipboard_mode() != "always":
             # Restore was configured but the old content was non-text
             # (pyperclip reads images/files as ""), so there is nothing to put
-            # back — yet "off" is the explicit promise that dictated text
-            # never lingers on the clipboard, so scrub it like the restore
-            # would have. Only while the clipboard is still ours, same as the
-            # restore branch above.
+            # back — yet the transcript must not be what stays behind, so
+            # scrub it like the restore would have. Only while the clipboard is
+            # still ours, same as the restore branch above.
+            #
+            # "off" promises dictated text never lingers at all; "on_failure"
+            # promises it only when the insertion failed (config.py, and the
+            # README settings table) — and Ctrl+V went out above, so this is
+            # the success path for both. Leaving the transcript here made the
+            # outcome depend on whether the previous clipboard happened to be
+            # text: a non-empty one is restored two branches up under exactly
+            # the same settings. "always" is the one mode that wants it kept,
+            # and it never reaches this branch — it arrives as `keep`, which
+            # leaves `previous` at None — so the guard is belt and braces.
             try:
                 still_ours = _clip_text_equal(pyperclip.paste(), text)
             except Exception:
@@ -355,9 +364,18 @@ class Injector:
             except Exception:
                 log.debug("could not clear the clipboard", exc_info=True)
                 return True  # scrub failed — the transcript is still there
+            # The sibling of the restore branch's line, and it earns its place
+            # for the same reason: this is now the default mode's success path,
+            # so "my clipboard is empty after dictating" has to be answerable
+            # from the log the user is told to send.
+            log.debug(
+                "cleared the transcript off the clipboard %.1fs after Ctrl+V "
+                "— the previous content was not text",
+                _PASTE_READ_WINDOW_S,
+            )
             return False
-        # No restore (keep requested, restoring disabled, or empty previous in
-        # a keep-friendly mode): read the write back before the caller
+        # No restore (keep requested, restoring disabled, or the read-back of
+        # the old content failed): read the write back before the caller
         # promises a working Ctrl+V.
         try:
             return _clip_text_equal(pyperclip.paste(), text)
