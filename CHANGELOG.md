@@ -260,6 +260,14 @@ unknown` — byte for byte what the old bundled one reports — so the log line
   number belongs, `null` where a value belongs) no longer reaches the code that
   uses it: plausible hand-edits are repaired, anything else falls back to that
   one option's default instead of failing during startup.
+- **A successful paste no longer leaves the transcript on the clipboard when
+  there was no text to restore.** With "Restore the previous clipboard content"
+  on and the clipboard copy at its default `on_failure`, the dictated text
+  stayed behind whenever the clipboard had held something that cannot be read
+  back as text — an image, a file list, or nothing at all — while the very same
+  settings cleared it again when the previous content happened to be text.
+  `on_failure` keeps the transcript only when it could not be inserted, so a
+  paste that went out now scrubs it either way, and says so in the log.
 
 ### Changed
 
