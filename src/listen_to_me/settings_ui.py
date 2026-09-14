@@ -4790,12 +4790,12 @@ class SettingsWindow(QDialog):
         header.addWidget(delete_btn)
         rv.addLayout(header)
 
+        from .history import preview_text
+
         # A recorded meeting is up to fifteen minutes of speech in one row, and
         # rendered in full it buries every dictation under it. Long transcripts
         # therefore start collapsed; Copy, Delete, Export and the search still
         # see the whole text — only the label is shortened.
-        from .history import preview_text
-
         shown, truncated = preview_text(text)
         body = QLabel(shown)
         # Plain text, never Qt's AutoText guess — same reasoning as
@@ -4805,9 +4805,11 @@ class SettingsWindow(QDialog):
         body.setTextFormat(Qt.TextFormat.PlainText)
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        # One long unbreakable token (a URL, a hash) in a transcript otherwise
-        # demands its full width as the row's minimum and clips the whole card
-        # — the Home page's recent rows already carry this guard.
+        # Arrives with the toggle below: expanding a row swaps in the full
+        # transcript, which is exactly where a long unbreakable token (a URL, a
+        # dictated hash) turns up — and a wrapping label demands its longest
+        # word as its minimum width, clipping every card on the page. The Home
+        # page's recent rows already carry this guard for the same reason.
         elastic_label(body)
         rv.addWidget(body)
         if truncated:

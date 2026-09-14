@@ -446,9 +446,15 @@ def _history_preview_cuts_long_transcripts():
 
     wall = "word " * (PREVIEW_CHARS // 2)  # one long line, no breaks to stop at
     shown, truncated = preview_text(wall)
-    assert truncated and len(shown) <= PREVIEW_CHARS + 2, len(shown)
-    # Cut on a word boundary, never mid-word.
-    assert shown.removesuffix(" …").endswith("word"), shown[-30:]
+    assert truncated and len(shown) <= PREVIEW_CHARS + 1, len(shown)
+    # Cut on a word boundary, never mid-word — and the ellipsis is spelled the
+    # way every other preview in this app spells it, with no leading space.
+    assert shown.endswith("word…"), shown[-30:]
+
+    # Trailing blank lines are not content: cutting them away must not hang a
+    # "Show more" button on a transcript that has nothing more to show.
+    padded = "One dictated sentence.\n\n\n\n\n\n\n\n"
+    assert preview_text(padded) == (padded, False)
 
     token = "x" * (PREVIEW_CHARS * 2)  # one unbreakable token, no spaces at all
     shown, truncated = preview_text(token)
@@ -6782,11 +6788,11 @@ def _tray_lists_recent_transcripts():
 
 
 def _the_log_file_can_be_reached():
-    """"See the log file." is answerable now.
+    """The app can now show the file it keeps telling users to read.
 
-    A dozen notifications end in that sentence, and the file it means had no
-    path, no menu entry and one line in the README pointing at "Open config
-    folder". Three things have to hold for the entry to be worth having: the
+    A dozen notifications end in "See the log file.", and the file they mean
+    had no path, no menu entry and one line in the README pointing at "Open
+    config folder". Three things have to hold for the entry to be worth it: the
     path the tray opens must be the one the logging handler writes (two
     spellings is how a menu entry ends up opening a file nothing writes to),
     the entry must post rather than open the file from the Qt thread, and both
@@ -6810,7 +6816,9 @@ def _the_log_file_can_be_reached():
         tray = tray_module.Tray(stub)
         tray.start()
         try:
-            entries = [action for action in tray._menu.actions() if action.text() == "Open log file"]
+            entries = [
+                action for action in tray._menu.actions() if action.text() == "Open log file"
+            ]
             assert len(entries) == 1, [action.text() for action in tray._menu.actions()]
             stub.posts.clear()
             entries[0].trigger()

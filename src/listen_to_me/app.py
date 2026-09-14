@@ -1462,11 +1462,19 @@ class App:
         if self.cfg["language"] == code:
             return
         self.cfg["language"] = code
-        if not self.cfg.save():
-            self.notify("Could not save the settings — see the log file.", force=True)
-        # force: the user just chose this from a menu that closed itself, so
-        # the notification is the only confirmation the choice arrived.
-        self.notify(f"Dictation language: {language_label(code)}", force=True)
+        # One notification, not a confirmation stacked on top of a failure:
+        # the language really did change either way (the next take uses it),
+        # and what a failed write costs is only that it survives a restart.
+        # force: the menu closed itself, so this is the choice's only receipt.
+        label = language_label(code)
+        if self.cfg.save():
+            self.notify(f"Dictation language: {label}", force=True)
+        else:
+            self.notify(
+                f"Dictation language: {label} — but the settings could not be saved, "
+                "so the old one is back after a restart. See the log file.",
+                force=True,
+            )
         window = self._settings_window
         if window is None:
             return
@@ -1974,18 +1982,22 @@ class App:
         sentence asked the user to read something the app would not show them.
 
         Both ways this can fail are reported rather than logged into the very
-        file the user cannot reach: no log file yet (a frozen build that could
-        not create one, a first run that has written nothing) and no handler
-        for a .log file, which is the ordinary case on a fresh Windows install
-        where the extension is unregistered.
+        file the user cannot reach: no file at that path, and no handler for a
+        .log file, which is the ordinary case on a fresh Windows install where
+        the extension is unregistered. Each message names the full path — a
+        support instruction can then ask for that file by name even when
+        neither branch could open it.
         """
         from .config import log_path, open_path
 
         path = log_path()
         if not path.exists():
+            # `_setup_logging` opens the handler on every start, so the file
+            # exists unless creating it failed — a read-only or missing config
+            # directory. "Not written yet" would be the wrong promise.
             self.notify(
-                f"No log file yet — it is written to {path} once there is "
-                "something to report.",
+                f"No log file at {path} — this start could not create one, so "
+                "there is nothing to open.",
                 force=True,
             )
             return

@@ -114,9 +114,11 @@ def preview_text(
     reason; a character cut trims the trailing partial word instead of
     stopping mid-syllable.
 
-    Returns ``(shown, truncated)``. `truncated` is what the caller offers a
-    "Show more" button for — it must never be guessed from ``len(shown) <
-    len(text)``, because trailing whitespace alone can differ.
+    Returns ``(shown, truncated)``. `truncated` is what the caller hangs a
+    "Show more" button on, and it is compared on the stripped texts on
+    purpose: `TranscriptHistory.add` strips what it stores, but history.json
+    is hand-editable, and a transcript whose only excess is trailing blank
+    lines would otherwise get a button that reveals nothing but whitespace.
 
     str(): history.json is untrusted input and the store's own normalization
     is not this function's to assume.
@@ -131,9 +133,11 @@ def preview_text(
         head, space, _tail = cut.rpartition(" ")
         if space and head:
             cut = head
-    if cut == text:
+    if cut.rstrip() == text.rstrip():
         return text, False
-    return cut.rstrip() + " …", True
+    # "…" with no space, the spelling the tray labels and every other preview
+    # in this app already use.
+    return cut.rstrip() + "…", True
 
 
 def entry_timestamp(entry: dict) -> str:
