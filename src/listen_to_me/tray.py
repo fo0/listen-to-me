@@ -313,6 +313,18 @@ class Tray:
         act_config.triggered.connect(lambda: app.post("open_config"))
         menu.addAction(act_config)
 
+        # "See the log file." is how a dozen of this app's notifications end,
+        # and until now none of them said where that file is: the only route
+        # was "Open config folder" above plus knowing the file name. The entry
+        # that the sentence sends people looking for now exists.
+        act_log = QAction("Open log file", menu)
+        act_log.setToolTip(
+            "Open listen-to-me.log — the file every “see the log file” message "
+            "means. It lives in the config folder above."
+        )
+        act_log.triggered.connect(lambda: app.post("open_log"))
+        menu.addAction(act_log)
+
         act_project = QAction("Project page", menu)
         act_project.triggered.connect(self._open_project_page)
         menu.addAction(act_project)

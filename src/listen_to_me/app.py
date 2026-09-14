@@ -33,7 +33,7 @@ from .choices import (
     resolve_input_device,
     source_label,
 )
-from .config import Config, clamp_setting, config_dir
+from .config import Config, clamp_setting, config_dir, log_path
 from .fillers import EMPTY_TRANSCRIPT, is_filler
 from .history import TranscriptHistory
 from .hotkeys import Hotkeys
@@ -878,6 +878,8 @@ class App:
             self._open_help()
         elif kind == "open_config":
             self._open_config_folder()
+        elif kind == "open_log":
+            self._open_log_file()
         elif kind == "factory_reset":
             self._factory_reset()
         elif kind == "quit":
@@ -1962,6 +1964,40 @@ class App:
 
         open_path(folder)
 
+    def _open_log_file(self) -> None:
+        """Tray → "Open log file": show the file a dozen notifications name.
+
+        "See the log file." is what this app says when saving fails, when the
+        clipboard fails, when the floating icon cannot be moved — and until
+        now it named a file with no path, no menu entry and one line in the
+        README's autostart section pointing at "Open config folder". The
+        sentence asked the user to read something the app would not show them.
+
+        Both ways this can fail are reported rather than logged into the very
+        file the user cannot reach: no log file yet (a frozen build that could
+        not create one, a first run that has written nothing) and no handler
+        for a .log file, which is the ordinary case on a fresh Windows install
+        where the extension is unregistered.
+        """
+        from .config import log_path, open_path
+
+        path = log_path()
+        if not path.exists():
+            self.notify(
+                f"No log file yet — it is written to {path} once there is "
+                "something to report.",
+                force=True,
+            )
+            return
+        if not open_path(path):
+            # The folder is the fallback worth offering: it always opens, and
+            # the file is sitting in it.
+            self.notify(
+                f"Could not open the log file — it is {path}. "
+                "Use “Open config folder” and open it from there.",
+                force=True,
+            )
+
     def _quit(self) -> None:
         log.info("shutting down")
         self._quitting = True
@@ -2026,11 +2062,14 @@ def _setup_logging() -> None:
     handlers: list[logging.Handler] = []
     file_error: Exception | None = None
     try:
-        log_dir = config_dir()
-        log_dir.mkdir(parents=True, exist_ok=True)
+        # log_path(), not a name spelled here: the tray's "Open log file"
+        # resolves the same helper, and a second spelling is how a menu entry
+        # ends up opening a file nothing writes to.
+        target = log_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(
             logging.handlers.RotatingFileHandler(
-                log_dir / "listen-to-me.log", maxBytes=512 * 1024, backupCount=2, encoding="utf-8"
+                target, maxBytes=512 * 1024, backupCount=2, encoding="utf-8"
             )
         )
     except Exception as exc:

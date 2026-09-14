@@ -6781,6 +6781,85 @@ def _tray_lists_recent_transcripts():
             tray.stop()
 
 
+def _the_log_file_can_be_reached():
+    """"See the log file." is answerable now.
+
+    A dozen notifications end in that sentence, and the file it means had no
+    path, no menu entry and one line in the README pointing at "Open config
+    folder". Three things have to hold for the entry to be worth having: the
+    path the tray opens must be the one the logging handler writes (two
+    spellings is how a menu entry ends up opening a file nothing writes to),
+    the entry must post rather than open the file from the Qt thread, and both
+    failure modes must be reported to the user instead of logged into the very
+    file they cannot reach.
+    """
+    from listen_to_me import app as app_module
+    from listen_to_me import tray as tray_module
+    from listen_to_me.config import LOG_FILE_NAME, config_dir, log_path
+
+    _ensure_qapp()
+    assert log_path() == config_dir() / LOG_FILE_NAME, log_path()
+    # The writer and the menu entry must resolve the *same* helper, not two
+    # spellings of the same name: _setup_logging points its RotatingFileHandler
+    # at log_path(), and this is what stops a later edit from hardcoding the
+    # file name back into app.py while the tray keeps opening the other one.
+    assert app_module.log_path is log_path, "app.py no longer shares config.log_path"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        tray = tray_module.Tray(stub)
+        tray.start()
+        try:
+            entries = [action for action in tray._menu.actions() if action.text() == "Open log file"]
+            assert len(entries) == 1, [action.text() for action in tray._menu.actions()]
+            stub.posts.clear()
+            entries[0].trigger()
+            assert stub.posts == [("open_log",)], stub.posts
+        finally:
+            tray.stop()
+
+        # App's half, through the unbound method: a missing file and a platform
+        # with no handler for .log both have to say so, and both have to name
+        # the path — the whole point is that the user can find the file.
+        missing = Path(tmp) / "not-written-yet.log"
+        opened: list[Path] = []
+
+        class _LogApp:
+            def __init__(self):
+                self.notes: list[str] = []
+
+            def notify(self, message, force=False):
+                self.notes.append(str(message))
+
+        fake = _LogApp()
+        # _open_log_file imports both names at call time, so patching the
+        # module reaches it — no seam had to be added to production code.
+        from listen_to_me import config as config_module
+
+        real_path, real_open = config_module.log_path, config_module.open_path
+        try:
+            config_module.log_path = lambda: missing
+            config_module.open_path = lambda path: opened.append(Path(path)) or True
+            app_module.App._open_log_file(fake)
+            assert not opened, opened
+            assert any(str(missing) in note for note in fake.notes), fake.notes
+
+            missing.write_text("a line", encoding="utf-8")
+            fake.notes.clear()
+            app_module.App._open_log_file(fake)
+            assert opened == [missing], opened
+            assert not fake.notes, fake.notes  # a successful open says nothing
+
+            config_module.open_path = lambda _path: False
+            fake.notes.clear()
+            app_module.App._open_log_file(fake)
+            # Named path plus the fallback that always works.
+            assert any(str(missing) in note for note in fake.notes), fake.notes
+            assert any("Open config folder" in note for note in fake.notes), fake.notes
+        finally:
+            config_module.log_path, config_module.open_path = real_path, real_open
+
+
 def _tray_switches_the_dictation_language():
     """The tray's "Dictation language" submenu.
 
@@ -10222,6 +10301,7 @@ _LIGHT_CHECKS = [
     ("tray lists recent transcripts", _tray_lists_recent_transcripts),
     ("hotkey pause is visible and temporary", _hotkey_pause_is_visible_and_temporary),
     ("tray click opens the window", _tray_click_opens_the_window),
+    ("the log file can be reached", _the_log_file_can_be_reached),
     ("tray switches the dictation language", _tray_switches_the_dictation_language),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("source-aware controls stop their take", _source_aware_controls_stop_their_take),

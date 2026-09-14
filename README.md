@@ -856,8 +856,11 @@ place; anything else names the problem and how to fix it.
   the environment (`pip install -e .`), because the system starts the command
   without your `PYTHONPATH`. The app probes this and says so instead of
   registering something that would silently do nothing.
-- Every launch is logged to `listen-to-me.log` in the config folder (tray menu →
-  _Open config folder_) — if the app really didn't start, there is no new line.
+- Every launch is logged to `listen-to-me.log` in the config folder — **tray
+  menu → _Open log file_** opens it directly, which is also the file every
+  "see the log file" message in the app means. If the app really didn't start,
+  there is no new line. (_Open config folder_ right above it shows the folder
+  the file sits in, for when your system has no handler for `.log`.)
 
 The in-app Help page also covers the hotkey not firing, text not being inserted,
 where models are stored, and assistant/Ollama setup.
