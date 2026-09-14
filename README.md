@@ -148,6 +148,11 @@ standalone system-tray app that works in _every_ application.
   (the search filter applies) to a text file, and **Copy all** puts that same
   set on the clipboard as one block — so a searched-down handful of dictations
   goes straight into a mail or a note without a detour through a file.
+  A **long transcript is collapsed** to its opening lines with a **Show more**
+  toggle under it, so one recorded fifteen-minute meeting no longer buries
+  every dictation below it under screens of scrolling — the collapse is what
+  the row _shows_ and nothing else: the search still matches words the row is
+  hiding, and Copy, Export and Copy all keep handing over the whole text.
   The newest one is a single click away: **Copy last transcript** in the
   tray menu and in the floating icon's right-click menu puts it straight back
   on the clipboard — and a **Recent transcripts** submenu in both of those

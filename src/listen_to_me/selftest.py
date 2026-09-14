@@ -415,6 +415,50 @@ def _history_export_format():
     assert format_entries([]) == ""  # nothing listed → empty file, not a stray newline
 
 
+def _history_preview_cuts_long_transcripts():
+    """The collapsed History row's text rule.
+
+    A recorded meeting (#191) is up to fifteen minutes of speech in one entry,
+    so the row that used to render every transcript in full buries the whole
+    list under one of them. Two limits, whichever bites first: a wall of text
+    with no line breaks is cut by characters, a many-line note by lines.
+
+    The guards are the point. A short transcript must come back untouched and
+    flagged as untruncated — a "Show more" button under a complete transcript
+    promises text that is not there. Line breaks are kept, because Copy hands
+    back the real text and the row must not misrepresent it. And a single
+    unbroken token longer than the limit must still leave something visible
+    rather than collapse to the ellipsis alone."""
+    from listen_to_me.history import PREVIEW_CHARS, PREVIEW_LINES, preview_text
+
+    short = "One dictated sentence."
+    assert preview_text(short) == (short, False)
+    # Untouched includes the line breaks: this is the History page, not the
+    # tray's one-line menu labels.
+    lines = "\n".join(f"line {i}" for i in range(PREVIEW_LINES))
+    assert preview_text(lines) == (lines, False)
+
+    many = "\n".join(f"line {i}" for i in range(PREVIEW_LINES + 3))
+    shown, truncated = preview_text(many)
+    assert truncated and shown.endswith("…"), shown
+    assert shown.count("\n") == PREVIEW_LINES - 1, shown
+    assert "line 0" in shown and f"line {PREVIEW_LINES}" not in shown, shown
+
+    wall = "word " * (PREVIEW_CHARS // 2)  # one long line, no breaks to stop at
+    shown, truncated = preview_text(wall)
+    assert truncated and len(shown) <= PREVIEW_CHARS + 2, len(shown)
+    # Cut on a word boundary, never mid-word.
+    assert shown.removesuffix(" …").endswith("word"), shown[-30:]
+
+    token = "x" * (PREVIEW_CHARS * 2)  # one unbreakable token, no spaces at all
+    shown, truncated = preview_text(token)
+    assert truncated and shown.startswith("x" * 20), shown[:30]
+
+    # Untrusted input: history.json is hand-editable, so a non-string must not
+    # raise here — the row would take the whole page with it.
+    assert preview_text(None) == ("", False)
+
+
 def _history_delete_one_entry():
     """Deleting a single transcript removes exactly that one and keeps the
     rest. The row is identified by its own values, never by position: a
@@ -8316,6 +8360,59 @@ def _gui_construction():
         assert window.history_copy_all_button.isEnabled()
         assert len(window._history_export_entries) == 2
 
+        # A long transcript is collapsed to a preview with a "Show more"
+        # toggle, and everything that hands the transcript out keeps handing
+        # out all of it. One fifteen-minute meeting rendered in full is many
+        # screens of scrolling before yesterday's dictation is even reachable.
+        from PySide6.QtWidgets import QPushButton
+
+        from listen_to_me import settings_ui as _history_module
+        from listen_to_me.history import preview_text
+
+        # .strip(): the store strips what it is handed, so this is the text
+        # the page will actually render and export.
+        meeting = ("The meeting went on. " * 120).strip()
+        stub.history.add(meeting)
+        window._refresh_history()
+        collapsed, _cut = preview_text(meeting)
+        assert collapsed in _history_text(), "the long transcript was not collapsed"
+        assert meeting not in _history_text(), "the long transcript was rendered in full"
+
+        buttons = [
+            button
+            for button in window._history_inner.findChildren(QPushButton)
+            if button.text() == _history_module._HISTORY_MORE_LABEL
+        ]
+        assert len(buttons) == 1, [b.text() for b in buttons]
+        buttons[0].click()
+        assert meeting in _history_text(), "Show more did not expand the row"
+        assert buttons[0].text() == _history_module._HISTORY_LESS_LABEL
+        buttons[0].click()  # …and back, on the same button
+        assert meeting not in _history_text()
+        assert buttons[0].text() == _history_module._HISTORY_MORE_LABEL
+
+        # Collapsing is a rendering decision only: the search still matches
+        # words the row does not show, and Export/Copy all still carry the
+        # whole transcript.
+        window.history_filter_edit.setText("meeting went")
+        window._refresh_history()
+        assert len(window._history_export_entries) == 1
+        assert window._history_export_entries[0]["text"] == meeting
+        window.history_filter_edit.clear()
+        window._refresh_history()
+
+        # A short transcript keeps its full text and offers no toggle at all —
+        # "Show more" under a complete transcript promises text that is not
+        # there.
+        stub.history.remove(meeting)
+        window._refresh_history()
+        assert not [
+            button
+            for button in window._history_inner.findChildren(QPushButton)
+            if button.text()
+            in (_history_module._HISTORY_MORE_LABEL, _history_module._HISTORY_LESS_LABEL)
+        ]
+
         # Ctrl+F reaches the search field from anywhere on this page — the key
         # everyone presses to find something, and the one the Help page's own
         # find field already assumes this page owns. Scoped to the page, so the
@@ -10029,6 +10126,7 @@ _LIGHT_CHECKS = [
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
     ("history search matches the date", _history_search_matches_the_date),
+    ("history preview cuts long transcripts", _history_preview_cuts_long_transcripts),
     ("history deletes one entry", _history_delete_one_entry),
     ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
