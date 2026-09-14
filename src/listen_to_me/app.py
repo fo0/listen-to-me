@@ -25,13 +25,15 @@ from . import APP_NAME, REPO_URL, __version__
 from . import assistant, autostart, netutil, portaudio, singleinstance
 from .audio import SAMPLE_RATE, Recorder
 from .choices import (
+    LANGUAGES,
     SOURCE_MIC,
     SOURCE_SYSTEM,
     known_source,
+    language_label,
     resolve_input_device,
     source_label,
 )
-from .config import Config, clamp_setting, config_dir
+from .config import Config, clamp_setting, config_dir, log_path
 from .fillers import EMPTY_TRANSCRIPT, is_filler
 from .history import TranscriptHistory
 from .hotkeys import Hotkeys
@@ -829,6 +831,8 @@ class App:
             if self.overlay is not None:
                 self.overlay.set_visible(bool(ocfg["enabled"]))
             self.tray.set_state(self.state)  # refresh the "Show floating icon" tick
+        elif kind == "set_language":
+            self._set_language(str(payload))
         elif kind == "reset_overlay_position":
             self._reset_overlay_position()
         elif kind == "cancel":
@@ -874,6 +878,8 @@ class App:
             self._open_help()
         elif kind == "open_config":
             self._open_config_folder()
+        elif kind == "open_log":
+            self._open_log_file()
         elif kind == "factory_reset":
             self._factory_reset()
         elif kind == "quit":
@@ -1433,6 +1439,52 @@ class App:
             return False
         return self.injector.copy_to_clipboard(text)
 
+    def _set_language(self, code: str) -> None:
+        """Tray → "Dictation language": switch the recognition language now.
+
+        Nothing is reloaded. The transcriber reads ``cfg["language"]`` on every
+        take and the model itself is language-independent, so the next
+        recording already uses the new one — which is what makes this worth a
+        menu entry rather than a trip through Settings → Engine.
+
+        An open settings window is corrected instead of left alone: its
+        Language combo still holds the value the window was built with, and
+        pressing Save there would write that straight back over the choice
+        just made. Same guarded access as `_set_state` — Qt may have destroyed
+        the window since, which surfaces as RuntimeError on attribute access.
+        """
+        if code not in {known for known, _label in LANGUAGES}:
+            # The tray builds these events from that same list, so a code that
+            # is not in it means the two drifted — a log line, not a silent
+            # write of an unusable language into the config.
+            log.warning("ignoring an unknown dictation language %r", code)
+            return
+        if self.cfg["language"] == code:
+            return
+        self.cfg["language"] = code
+        # One notification, not a confirmation stacked on top of a failure:
+        # the language really did change either way (the next take uses it),
+        # and what a failed write costs is only that it survives a restart.
+        # force: the menu closed itself, so this is the choice's only receipt.
+        label = language_label(code)
+        if self.cfg.save():
+            self.notify(f"Dictation language: {label}", force=True)
+        else:
+            self.notify(
+                f"Dictation language: {label} — but the settings could not be saved, "
+                "so the old one is back after a restart. See the log file.",
+                force=True,
+            )
+        window = self._settings_window
+        if window is None:
+            return
+        try:
+            window.sync_language()
+        except RuntimeError:
+            self._settings_window = None
+        except Exception:
+            log.exception("could not update the open settings window's language")
+
     def _copy_last_transcript(self) -> None:
         """Put the most recent transcript back on the clipboard.
 
@@ -1920,6 +1972,44 @@ class App:
 
         open_path(folder)
 
+    def _open_log_file(self) -> None:
+        """Tray → "Open log file": show the file a dozen notifications name.
+
+        "See the log file." is what this app says when saving fails, when the
+        clipboard fails, when the floating icon cannot be moved — and until
+        now it named a file with no path, no menu entry and one line in the
+        README's autostart section pointing at "Open config folder". The
+        sentence asked the user to read something the app would not show them.
+
+        Both ways this can fail are reported rather than logged into the very
+        file the user cannot reach: no file at that path, and no handler for a
+        .log file, which is the ordinary case on a fresh Windows install where
+        the extension is unregistered. Each message names the full path — a
+        support instruction can then ask for that file by name even when
+        neither branch could open it.
+        """
+        from .config import log_path, open_path
+
+        path = log_path()
+        if not path.exists():
+            # `_setup_logging` opens the handler on every start, so the file
+            # exists unless creating it failed — a read-only or missing config
+            # directory. "Not written yet" would be the wrong promise.
+            self.notify(
+                f"No log file at {path} — this start could not create one, so "
+                "there is nothing to open.",
+                force=True,
+            )
+            return
+        if not open_path(path):
+            # The folder is the fallback worth offering: it always opens, and
+            # the file is sitting in it.
+            self.notify(
+                f"Could not open the log file — it is {path}. "
+                "Use “Open config folder” and open it from there.",
+                force=True,
+            )
+
     def _quit(self) -> None:
         log.info("shutting down")
         self._quitting = True
@@ -1984,11 +2074,14 @@ def _setup_logging() -> None:
     handlers: list[logging.Handler] = []
     file_error: Exception | None = None
     try:
-        log_dir = config_dir()
-        log_dir.mkdir(parents=True, exist_ok=True)
+        # log_path(), not a name spelled here: the tray's "Open log file"
+        # resolves the same helper, and a second spelling is how a menu entry
+        # ends up opening a file nothing writes to.
+        target = log_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(
             logging.handlers.RotatingFileHandler(
-                log_dir / "listen-to-me.log", maxBytes=512 * 1024, backupCount=2, encoding="utf-8"
+                target, maxBytes=512 * 1024, backupCount=2, encoding="utf-8"
             )
         )
     except Exception as exc:

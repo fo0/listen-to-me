@@ -148,11 +148,29 @@ standalone system-tray app that works in _every_ application.
   (the search filter applies) to a text file, and **Copy all** puts that same
   set on the clipboard as one block — so a searched-down handful of dictations
   goes straight into a mail or a note without a detour through a file.
+  A **long transcript is collapsed** to its opening lines with a **Show more**
+  toggle under it, so one recorded fifteen-minute meeting no longer buries
+  every dictation below it under screens of scrolling — the collapse is what
+  the row _shows_ and nothing else: the search still matches words the row is
+  hiding, and Copy, Export and Copy all keep handing over the whole text.
   The newest one is a single click away: **Copy last transcript** in the
   tray menu and in the floating icon's right-click menu puts it straight back
   on the clipboard — and a **Recent transcripts** submenu in both of those
   menus lists the last five, so the one before last is a click away too,
   whichever of the two icons you work from.
+- **Switch the dictation language from the tray** — **Dictation language** in
+  the tray menu lists the same languages as Settings → Engine and ticks the one
+  in use, so the next recording is transcribed in another language without
+  opening the settings window at all. Naming the language instead of leaving it
+  on _Auto-detect_ is what makes the recognition more accurate, and it is the
+  one engine setting that changes between two dictations — anyone who works in
+  two languages was paying for that accuracy with a walk through the sidebar
+  several times a day. Both places write the same setting: change it here while
+  the settings window happens to be open and its Language box follows, so
+  saving there can never put the old language back. With the **Parakeet**
+  backend the submenu says so instead of offering a list — that engine detects
+  the language itself and ignores the setting, exactly as the Engine page
+  already shows.
 - **Home hub** — the main window opens on a **Home page**: the live recording
   state with a big **Start/Stop** button (red while recording), your hotkey
   shown as key caps, at-a-glance cards for the active engine/model, language
@@ -838,8 +856,11 @@ place; anything else names the problem and how to fix it.
   the environment (`pip install -e .`), because the system starts the command
   without your `PYTHONPATH`. The app probes this and says so instead of
   registering something that would silently do nothing.
-- Every launch is logged to `listen-to-me.log` in the config folder (tray menu →
-  _Open config folder_) — if the app really didn't start, there is no new line.
+- Every launch is logged to `listen-to-me.log` in the config folder — **tray
+  menu → _Open log file_** opens it directly, which is also the file every
+  "see the log file" message in the app means. If the app really didn't start,
+  there is no new line. (_Open config folder_ right above it shows the folder
+  the file sits in, for when your system has no handler for `.log`.)
 
 The in-app Help page also covers the hotkey not firing, text not being inserted,
 where models are stored, and assistant/Ollama setup.

@@ -305,19 +305,27 @@ DEFAULTS: dict = {
 }
 
 
-def open_path(path: str | os.PathLike[str]) -> None:
-    """Open a folder (or file) in the platform's file manager. User-invoked."""
+def open_path(path: str | os.PathLike[str]) -> bool:
+    """Open a folder (or file) in the platform's file manager. User-invoked.
+
+    Returns whether the handler was launched, so a caller that promised to
+    show something can say it could not — a click that logs and then does
+    nothing visible is indistinguishable from a dead menu entry. Callers that
+    have nothing to add ignore it and keep the log line as the only report.
+    """
     path = str(path)
     try:
         if sys.platform == "win32":
             os.startfile(path)  # noqa: S606 — user-invoked
-            return
+            return True
         import subprocess
 
         cmd = ["open", path] if sys.platform == "darwin" else ["xdg-open", path]
         subprocess.Popen(cmd)
+        return True
     except Exception:
         log.exception("could not open %s", path)
+        return False
 
 
 def default_model_dir() -> Path:
@@ -343,6 +351,17 @@ def config_dir() -> Path:
         return Path.home() / "Library" / "Application Support" / "ListenToMe"
     base = Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config"))
     return base / "listen-to-me"
+
+
+# The rotating log file `app._setup_logging` writes, beside the config it
+# belongs to. Named here rather than only at the handler, because a dozen
+# notifications end in "see the log file" and the surfaces that offer to open
+# it must not each spell the name themselves.
+LOG_FILE_NAME = "listen-to-me.log"
+
+
+def log_path() -> Path:
+    return config_dir() / LOG_FILE_NAME
 
 
 def _finite_number(default, value):

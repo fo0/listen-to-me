@@ -135,6 +135,12 @@ _NAV_GLYPHS = {
     "Help": "help",
 }
 
+# The two states of a collapsed History row's toggle. Constants because the
+# button's own label is what tells `_toggle_history_row` which way to go —
+# comparing against a literal typed twice is how those two drift apart.
+_HISTORY_MORE_LABEL = "Show more"
+_HISTORY_LESS_LABEL = "Show less"
+
 
 class _UpdateSignals(QObject):
     """Marshals results from updater worker threads back to the Qt main thread."""
@@ -932,6 +938,21 @@ class SettingsWindow(QDialog):
     def _build_home(self, title: str) -> QWidget:
         self.home = HomePage(self)
         return self.home
+
+    def sync_language(self) -> None:
+        """Re-select the Language combo from the config (called by
+        App._set_language on the Qt main thread).
+
+        The tray's "Dictation language" submenu writes the same key this
+        window edits. Without this, the combo would still show the language
+        the window was opened with and pressing Save would write it back over
+        the one just chosen — a setting that quietly reverts is worse than one
+        that cannot be changed from two places at all.
+        """
+        self._select_combo(self.language_combo, language_label(self.cfg["language"]))
+        # The Home hub prints the language on a stat card; it is the surface
+        # the user is most likely looking at when the tray menu closes.
+        self.home.refresh()
 
     def set_app_state(self, state: str) -> None:
         """Mirror the app state into the Home hero (called by App._set_state
@@ -4769,7 +4790,14 @@ class SettingsWindow(QDialog):
         header.addWidget(delete_btn)
         rv.addLayout(header)
 
-        body = QLabel(text)
+        from .history import preview_text
+
+        # A recorded meeting is up to fifteen minutes of speech in one row, and
+        # rendered in full it buries every dictation under it. Long transcripts
+        # therefore start collapsed; Copy, Delete, Export and the search still
+        # see the whole text — only the label is shortened.
+        shown, truncated = preview_text(text)
+        body = QLabel(shown)
         # Plain text, never Qt's AutoText guess — same reasoning as
         # HomePage._recent_row: a stored transcript whose first line looks like
         # markup would be rendered as HTML, so the History page would show
@@ -4777,8 +4805,50 @@ class SettingsWindow(QDialog):
         body.setTextFormat(Qt.TextFormat.PlainText)
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # Arrives with the toggle below: expanding a row swaps in the full
+        # transcript, which is exactly where a long unbreakable token (a URL, a
+        # dictated hash) turns up — and a wrapping label demands its longest
+        # word as its minimum width, clipping every card on the page. The Home
+        # page's recent rows already carry this guard for the same reason.
+        elastic_label(body)
         rv.addWidget(body)
+        if truncated:
+            more_row = QHBoxLayout()
+            more_btn = QPushButton(_HISTORY_MORE_LABEL)
+            more_btn.setAutoDefault(False)
+            # Named per row for the reason Copy and Delete are: a screen reader
+            # otherwise reads "Show more button" once per collapsed transcript
+            # with nothing to tell them apart.
+            more_btn.setAccessibleName(f"Show the full transcript {which}")
+            more_btn.setToolTip(
+                "Show this transcript in full. Copy and Export always hand over "
+                "the whole text, collapsed or not."
+            )
+            more_btn.clicked.connect(
+                lambda _checked=False, b=more_btn, label=body, full=text, short=shown: (
+                    self._toggle_history_row(b, label, full, short)
+                )
+            )
+            more_row.addWidget(more_btn)
+            more_row.addStretch(1)
+            rv.addLayout(more_row)
         return row
+
+    def _toggle_history_row(
+        self, button: QPushButton, label: QLabel, full: str, collapsed: str
+    ) -> None:
+        """Expand or re-collapse the one History row this button belongs to.
+
+        The state lives on the button rather than in a set of expanded
+        entries: `_refresh_history` rebuilds every row from scratch (a finished
+        dictation and every keystroke in the search field do that), so a
+        remembered expansion would have to be matched back onto rows that no
+        longer exist — and matching a transcript by index is the mistake
+        `TranscriptHistory.remove` exists to avoid.
+        """
+        expanded = button.text() == _HISTORY_MORE_LABEL
+        label.setText(full if expanded else collapsed)
+        button.setText(_HISTORY_LESS_LABEL if expanded else _HISTORY_MORE_LABEL)
 
     def _copy_history(self, text: str, button: QPushButton) -> None:
         # Reports a failed clipboard write on the button — see copy_with_feedback.

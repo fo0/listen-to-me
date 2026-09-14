@@ -87,6 +87,59 @@ def filter_entries(entries: list[dict], query: str) -> list[dict]:
     return matched
 
 
+# How much of a transcript a collapsed History row shows before it is cut.
+# Both limits bite, whichever comes first: a recorded meeting is one very long
+# paragraph (no line breaks to stop at) and a dictated note is a dozen short
+# lines (few characters, a lot of height).
+PREVIEW_CHARS = 320
+PREVIEW_LINES = 5
+
+
+def preview_text(
+    text: str, max_chars: int = PREVIEW_CHARS, max_lines: int = PREVIEW_LINES
+) -> tuple[str, bool]:
+    """The opening of `text` for a collapsed History row, and whether it was cut.
+
+    The History page renders every stored transcript in full, which was fine
+    while a transcript was a dictated sentence. The second recording source
+    (#191) stores what the computer played for up to fifteen minutes, and one
+    such entry fills the page many screens deep — scrolling past a single
+    meeting to reach yesterday's dictation is the whole list becoming unusable
+    because of one row.
+
+    Line breaks are kept, unlike the tray's one-line labels: the History row
+    shows the real text, and folding a transcript's paragraphs into one blob
+    would misrepresent what Copy hands back. The cut is on whole lines where a
+    line limit ends it, so a collapsed row never breaks mid-word for that
+    reason; a character cut trims the trailing partial word instead of
+    stopping mid-syllable.
+
+    Returns ``(shown, truncated)``. `truncated` is what the caller hangs a
+    "Show more" button on, and it is compared on the stripped texts on
+    purpose: `TranscriptHistory.add` strips what it stores, but history.json
+    is hand-editable, and a transcript whose only excess is trailing blank
+    lines would otherwise get a button that reveals nothing but whitespace.
+
+    str(): history.json is untrusted input and the store's own normalization
+    is not this function's to assume.
+    """
+    text = str(text or "")
+    lines = text.split("\n")
+    cut = "\n".join(lines[:max_lines]) if len(lines) > max_lines else text
+    if len(cut) > max_chars:
+        cut = cut[:max_chars].rstrip()
+        # Drop the word the cut landed inside — but only when there is another
+        # word left, or a single 400-character token would collapse to "…".
+        head, space, _tail = cut.rpartition(" ")
+        if space and head:
+            cut = head
+    if cut.rstrip() == text.rstrip():
+        return text, False
+    # "…" with no space, the spelling the tray labels and every other preview
+    # in this app already use.
+    return cut.rstrip() + "…", True
+
+
 def entry_timestamp(entry: dict) -> str:
     """The entry's local ``YYYY-MM-DD HH:MM`` stamp, or "" when it has none
     that can be rendered.

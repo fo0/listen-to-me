@@ -415,6 +415,56 @@ def _history_export_format():
     assert format_entries([]) == ""  # nothing listed → empty file, not a stray newline
 
 
+def _history_preview_cuts_long_transcripts():
+    """The collapsed History row's text rule.
+
+    A recorded meeting (#191) is up to fifteen minutes of speech in one entry,
+    so the row that used to render every transcript in full buries the whole
+    list under one of them. Two limits, whichever bites first: a wall of text
+    with no line breaks is cut by characters, a many-line note by lines.
+
+    The guards are the point. A short transcript must come back untouched and
+    flagged as untruncated — a "Show more" button under a complete transcript
+    promises text that is not there. Line breaks are kept, because Copy hands
+    back the real text and the row must not misrepresent it. And a single
+    unbroken token longer than the limit must still leave something visible
+    rather than collapse to the ellipsis alone."""
+    from listen_to_me.history import PREVIEW_CHARS, PREVIEW_LINES, preview_text
+
+    short = "One dictated sentence."
+    assert preview_text(short) == (short, False)
+    # Untouched includes the line breaks: this is the History page, not the
+    # tray's one-line menu labels.
+    lines = "\n".join(f"line {i}" for i in range(PREVIEW_LINES))
+    assert preview_text(lines) == (lines, False)
+
+    many = "\n".join(f"line {i}" for i in range(PREVIEW_LINES + 3))
+    shown, truncated = preview_text(many)
+    assert truncated and shown.endswith("…"), shown
+    assert shown.count("\n") == PREVIEW_LINES - 1, shown
+    assert "line 0" in shown and f"line {PREVIEW_LINES}" not in shown, shown
+
+    wall = "word " * (PREVIEW_CHARS // 2)  # one long line, no breaks to stop at
+    shown, truncated = preview_text(wall)
+    assert truncated and len(shown) <= PREVIEW_CHARS + 1, len(shown)
+    # Cut on a word boundary, never mid-word — and the ellipsis is spelled the
+    # way every other preview in this app spells it, with no leading space.
+    assert shown.endswith("word…"), shown[-30:]
+
+    # Trailing blank lines are not content: cutting them away must not hang a
+    # "Show more" button on a transcript that has nothing more to show.
+    padded = "One dictated sentence.\n\n\n\n\n\n\n\n"
+    assert preview_text(padded) == (padded, False)
+
+    token = "x" * (PREVIEW_CHARS * 2)  # one unbreakable token, no spaces at all
+    shown, truncated = preview_text(token)
+    assert truncated and shown.startswith("x" * 20), shown[:30]
+
+    # Untrusted input: history.json is hand-editable, so a non-string must not
+    # raise here — the row would take the whole page with it.
+    assert preview_text(None) == ("", False)
+
+
 def _history_delete_one_entry():
     """Deleting a single transcript removes exactly that one and keeps the
     rest. The row is identified by its own values, never by position: a
@@ -6737,6 +6787,179 @@ def _tray_lists_recent_transcripts():
             tray.stop()
 
 
+def _the_log_file_can_be_reached():
+    """The app can now show the file it keeps telling users to read.
+
+    A dozen notifications end in "See the log file.", and the file they mean
+    had no path, no menu entry and one line in the README pointing at "Open
+    config folder". Three things have to hold for the entry to be worth it: the
+    path the tray opens must be the one the logging handler writes (two
+    spellings is how a menu entry ends up opening a file nothing writes to),
+    the entry must post rather than open the file from the Qt thread, and both
+    failure modes must be reported to the user instead of logged into the very
+    file they cannot reach.
+    """
+    from listen_to_me import app as app_module
+    from listen_to_me import tray as tray_module
+    from listen_to_me.config import LOG_FILE_NAME, config_dir, log_path
+
+    _ensure_qapp()
+    assert log_path() == config_dir() / LOG_FILE_NAME, log_path()
+    # The writer and the menu entry must resolve the *same* helper, not two
+    # spellings of the same name: _setup_logging points its RotatingFileHandler
+    # at log_path(), and this is what stops a later edit from hardcoding the
+    # file name back into app.py while the tray keeps opening the other one.
+    assert app_module.log_path is log_path, "app.py no longer shares config.log_path"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        tray = tray_module.Tray(stub)
+        tray.start()
+        try:
+            entries = [
+                action for action in tray._menu.actions() if action.text() == "Open log file"
+            ]
+            assert len(entries) == 1, [action.text() for action in tray._menu.actions()]
+            stub.posts.clear()
+            entries[0].trigger()
+            assert stub.posts == [("open_log",)], stub.posts
+        finally:
+            tray.stop()
+
+        # App's half, through the unbound method: a missing file and a platform
+        # with no handler for .log both have to say so, and both have to name
+        # the path — the whole point is that the user can find the file.
+        missing = Path(tmp) / "not-written-yet.log"
+        opened: list[Path] = []
+
+        class _LogApp:
+            def __init__(self):
+                self.notes: list[str] = []
+
+            def notify(self, message, force=False):
+                self.notes.append(str(message))
+
+        fake = _LogApp()
+        # _open_log_file imports both names at call time, so patching the
+        # module reaches it — no seam had to be added to production code.
+        from listen_to_me import config as config_module
+
+        real_path, real_open = config_module.log_path, config_module.open_path
+        try:
+            config_module.log_path = lambda: missing
+            config_module.open_path = lambda path: opened.append(Path(path)) or True
+            app_module.App._open_log_file(fake)
+            assert not opened, opened
+            assert any(str(missing) in note for note in fake.notes), fake.notes
+
+            missing.write_text("a line", encoding="utf-8")
+            fake.notes.clear()
+            app_module.App._open_log_file(fake)
+            assert opened == [missing], opened
+            assert not fake.notes, fake.notes  # a successful open says nothing
+
+            config_module.open_path = lambda _path: False
+            fake.notes.clear()
+            app_module.App._open_log_file(fake)
+            # Named path plus the fallback that always works.
+            assert any(str(missing) in note for note in fake.notes), fake.notes
+            assert any("Open config folder" in note for note in fake.notes), fake.notes
+        finally:
+            config_module.log_path, config_module.open_path = real_path, real_open
+
+
+def _tray_switches_the_dictation_language():
+    """The tray's "Dictation language" submenu.
+
+    Three things make it more than a list. It is rebuilt every time it opens,
+    so the tick follows a language chosen on the Engine page instead of
+    freezing at whatever was configured when the app started. It posts the
+    change rather than writing the config itself, like every other entry in
+    this menu. And it refuses to pretend for the Parakeet backend, which
+    detects the language itself and ignores the setting entirely — thirty-five
+    entries that change nothing would be exactly the silent no-op the tray's
+    greyed-out entries exist to avoid.
+    """
+    from listen_to_me import tray as tray_module
+    from listen_to_me.choices import LANGUAGES, language_label
+
+    _ensure_qapp()
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        tray = tray_module.Tray(stub)
+        tray.start()
+        try:
+            tray._fill_language_menu()
+            actions = tray._language_menu.actions()
+            assert len(actions) == len(LANGUAGES), len(actions)
+            checked = [action.text() for action in actions if action.isChecked()]
+            # "auto" is the default config — exactly one entry may carry the
+            # tick, or the menu shows two current languages at once.
+            assert checked == [language_label("auto")], checked
+
+            # Choosing one posts it; App validates and saves. The tray writing
+            # the config here would give the setting two owners.
+            german = [a for a in actions if a.text() == language_label("de")][0]
+            stub.posts.clear()
+            german.trigger()
+            assert stub.posts == [("set_language", "de")], stub.posts
+
+            # Re-read on open: the Engine page writes the same key, and a tick
+            # rendered once at startup would point at the wrong language.
+            stub.cfg["language"] = "de"
+            tray._fill_language_menu()
+            checked = [
+                action.text() for action in tray._language_menu.actions() if action.isChecked()
+            ]
+            assert checked == [language_label("de")], checked
+
+            # Parakeet ignores the language setting (see the Home page and the
+            # Engine page, which grey the combo out for it).
+            stub.cfg["backend"] = "parakeet"
+            tray._fill_language_menu()
+            actions = tray._language_menu.actions()
+            assert len(actions) == 1, [a.text() for a in actions]
+            assert actions[0].text() == tray_module._LANGUAGE_PARAKEET_NOTE
+            assert not actions[0].isEnabled()
+        finally:
+            tray.stop()
+
+        # The App half of the same feature, through the unbound method: an
+        # unknown code must never reach the config, an unchanged one must not
+        # rewrite it, and an open settings window has to be corrected — its
+        # Language combo still holds the old value and Save would put that
+        # back over the choice just made.
+        from listen_to_me.app import App
+
+        class _OpenSettingsWindow:
+            def __init__(self):
+                self.synced = 0
+
+            def sync_language(self):
+                self.synced += 1
+
+        class _LanguageApp:
+            def __init__(self, cfg):
+                self.cfg = cfg
+                self.notes: list[str] = []
+                self._settings_window = _OpenSettingsWindow()
+
+            def notify(self, message, force=False):
+                self.notes.append(str(message))
+
+        fake = _LanguageApp(stub.cfg)
+        fake.cfg["language"] = "auto"
+        App._set_language(fake, "klingon")
+        assert fake.cfg["language"] == "auto", "an unknown language reached the config"
+        assert fake._settings_window.synced == 0
+        App._set_language(fake, "de")
+        assert fake.cfg["language"] == "de"
+        assert fake._settings_window.synced == 1
+        assert any("German" in note for note in fake.notes), fake.notes
+        App._set_language(fake, "de")  # already live — nothing to save, nothing to sync
+        assert fake._settings_window.synced == 1
+
+
 def _tray_survives_a_missing_notification_area():
     """Started by the OS autostart, the app can be up before the shell is: the
     tray icon is dropped and Qt still reports it visible. Tray.start() must keep
@@ -8223,6 +8446,59 @@ def _gui_construction():
         assert window.history_export_button.isEnabled()
         assert window.history_copy_all_button.isEnabled()
         assert len(window._history_export_entries) == 2
+
+        # A long transcript is collapsed to a preview with a "Show more"
+        # toggle, and everything that hands the transcript out keeps handing
+        # out all of it. One fifteen-minute meeting rendered in full is many
+        # screens of scrolling before yesterday's dictation is even reachable.
+        from PySide6.QtWidgets import QPushButton
+
+        from listen_to_me import settings_ui as _history_module
+        from listen_to_me.history import preview_text
+
+        # .strip(): the store strips what it is handed, so this is the text
+        # the page will actually render and export.
+        meeting = ("The meeting went on. " * 120).strip()
+        stub.history.add(meeting)
+        window._refresh_history()
+        collapsed, _cut = preview_text(meeting)
+        assert collapsed in _history_text(), "the long transcript was not collapsed"
+        assert meeting not in _history_text(), "the long transcript was rendered in full"
+
+        buttons = [
+            button
+            for button in window._history_inner.findChildren(QPushButton)
+            if button.text() == _history_module._HISTORY_MORE_LABEL
+        ]
+        assert len(buttons) == 1, [b.text() for b in buttons]
+        buttons[0].click()
+        assert meeting in _history_text(), "Show more did not expand the row"
+        assert buttons[0].text() == _history_module._HISTORY_LESS_LABEL
+        buttons[0].click()  # …and back, on the same button
+        assert meeting not in _history_text()
+        assert buttons[0].text() == _history_module._HISTORY_MORE_LABEL
+
+        # Collapsing is a rendering decision only: the search still matches
+        # words the row does not show, and Export/Copy all still carry the
+        # whole transcript.
+        window.history_filter_edit.setText("meeting went")
+        window._refresh_history()
+        assert len(window._history_export_entries) == 1
+        assert window._history_export_entries[0]["text"] == meeting
+        window.history_filter_edit.clear()
+        window._refresh_history()
+
+        # A short transcript keeps its full text and offers no toggle at all —
+        # "Show more" under a complete transcript promises text that is not
+        # there.
+        stub.history.remove(meeting)
+        window._refresh_history()
+        assert not [
+            button
+            for button in window._history_inner.findChildren(QPushButton)
+            if button.text()
+            in (_history_module._HISTORY_MORE_LABEL, _history_module._HISTORY_LESS_LABEL)
+        ]
 
         # Ctrl+F reaches the search field from anywhere on this page — the key
         # everyone presses to find something, and the one the Help page's own
@@ -9937,6 +10213,7 @@ _LIGHT_CHECKS = [
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
     ("history search matches the date", _history_search_matches_the_date),
+    ("history preview cuts long transcripts", _history_preview_cuts_long_transcripts),
     ("history deletes one entry", _history_delete_one_entry),
     ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
@@ -10032,6 +10309,8 @@ _LIGHT_CHECKS = [
     ("tray lists recent transcripts", _tray_lists_recent_transcripts),
     ("hotkey pause is visible and temporary", _hotkey_pause_is_visible_and_temporary),
     ("tray click opens the window", _tray_click_opens_the_window),
+    ("the log file can be reached", _the_log_file_can_be_reached),
+    ("tray switches the dictation language", _tray_switches_the_dictation_language),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("source-aware controls stop their take", _source_aware_controls_stop_their_take),
     ("settings window edits the new options", _settings_window_edits_the_new_options),
