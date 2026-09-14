@@ -153,6 +153,19 @@ standalone system-tray app that works in _every_ application.
   on the clipboard — and a **Recent transcripts** submenu in both of those
   menus lists the last five, so the one before last is a click away too,
   whichever of the two icons you work from.
+- **Switch the dictation language from the tray** — **Dictation language** in
+  the tray menu lists the same languages as Settings → Engine and ticks the one
+  in use, so the next recording is transcribed in another language without
+  opening the settings window at all. Naming the language instead of leaving it
+  on _Auto-detect_ is what makes the recognition more accurate, and it is the
+  one engine setting that changes between two dictations — anyone who works in
+  two languages was paying for that accuracy with a walk through the sidebar
+  several times a day. Both places write the same setting: change it here while
+  the settings window happens to be open and its Language box follows, so
+  saving there can never put the old language back. With the **Parakeet**
+  backend the submenu says so instead of offering a list — that engine detects
+  the language itself and ignores the setting, exactly as the Engine page
+  already shows.
 - **Home hub** — the main window opens on a **Home page**: the live recording
   state with a big **Start/Stop** button (red while recording), your hotkey
   shown as key caps, at-a-glance cards for the active engine/model, language

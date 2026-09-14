@@ -6737,6 +6737,98 @@ def _tray_lists_recent_transcripts():
             tray.stop()
 
 
+def _tray_switches_the_dictation_language():
+    """The tray's "Dictation language" submenu.
+
+    Three things make it more than a list. It is rebuilt every time it opens,
+    so the tick follows a language chosen on the Engine page instead of
+    freezing at whatever was configured when the app started. It posts the
+    change rather than writing the config itself, like every other entry in
+    this menu. And it refuses to pretend for the Parakeet backend, which
+    detects the language itself and ignores the setting entirely — thirty-five
+    entries that change nothing would be exactly the silent no-op the tray's
+    greyed-out entries exist to avoid.
+    """
+    from listen_to_me import tray as tray_module
+    from listen_to_me.choices import LANGUAGES, language_label
+
+    _ensure_qapp()
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        tray = tray_module.Tray(stub)
+        tray.start()
+        try:
+            tray._fill_language_menu()
+            actions = tray._language_menu.actions()
+            assert len(actions) == len(LANGUAGES), len(actions)
+            checked = [action.text() for action in actions if action.isChecked()]
+            # "auto" is the default config — exactly one entry may carry the
+            # tick, or the menu shows two current languages at once.
+            assert checked == [language_label("auto")], checked
+
+            # Choosing one posts it; App validates and saves. The tray writing
+            # the config here would give the setting two owners.
+            german = [a for a in actions if a.text() == language_label("de")][0]
+            stub.posts.clear()
+            german.trigger()
+            assert stub.posts == [("set_language", "de")], stub.posts
+
+            # Re-read on open: the Engine page writes the same key, and a tick
+            # rendered once at startup would point at the wrong language.
+            stub.cfg["language"] = "de"
+            tray._fill_language_menu()
+            checked = [
+                action.text() for action in tray._language_menu.actions() if action.isChecked()
+            ]
+            assert checked == [language_label("de")], checked
+
+            # Parakeet ignores the language setting (see the Home page and the
+            # Engine page, which grey the combo out for it).
+            stub.cfg["backend"] = "parakeet"
+            tray._fill_language_menu()
+            actions = tray._language_menu.actions()
+            assert len(actions) == 1, [a.text() for a in actions]
+            assert actions[0].text() == tray_module._LANGUAGE_PARAKEET_NOTE
+            assert not actions[0].isEnabled()
+        finally:
+            tray.stop()
+
+        # The App half of the same feature, through the unbound method: an
+        # unknown code must never reach the config, an unchanged one must not
+        # rewrite it, and an open settings window has to be corrected — its
+        # Language combo still holds the old value and Save would put that
+        # back over the choice just made.
+        from listen_to_me.app import App
+
+        class _OpenSettingsWindow:
+            def __init__(self):
+                self.synced = 0
+
+            def sync_language(self):
+                self.synced += 1
+
+        class _LanguageApp:
+            def __init__(self, cfg):
+                self.cfg = cfg
+                self.notes: list[str] = []
+                self._settings_window = _OpenSettingsWindow()
+
+            def notify(self, message, force=False):
+                self.notes.append(str(message))
+
+        fake = _LanguageApp(stub.cfg)
+        fake.cfg["language"] = "auto"
+        App._set_language(fake, "klingon")
+        assert fake.cfg["language"] == "auto", "an unknown language reached the config"
+        assert fake._settings_window.synced == 0
+        App._set_language(fake, "de")
+        assert fake.cfg["language"] == "de"
+        assert fake._settings_window.synced == 1
+        assert any("German" in note for note in fake.notes), fake.notes
+        App._set_language(fake, "de")  # already live — nothing to save, nothing to sync
+        assert fake._settings_window.synced == 1
+
+
 def _tray_survives_a_missing_notification_area():
     """Started by the OS autostart, the app can be up before the shell is: the
     tray icon is dropped and Qt still reports it visible. Tray.start() must keep
@@ -10032,6 +10124,7 @@ _LIGHT_CHECKS = [
     ("tray lists recent transcripts", _tray_lists_recent_transcripts),
     ("hotkey pause is visible and temporary", _hotkey_pause_is_visible_and_temporary),
     ("tray click opens the window", _tray_click_opens_the_window),
+    ("tray switches the dictation language", _tray_switches_the_dictation_language),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("source-aware controls stop their take", _source_aware_controls_stop_their_take),
     ("settings window edits the new options", _settings_window_edits_the_new_options),

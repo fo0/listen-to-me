@@ -933,6 +933,21 @@ class SettingsWindow(QDialog):
         self.home = HomePage(self)
         return self.home
 
+    def sync_language(self) -> None:
+        """Re-select the Language combo from the config (called by
+        App._set_language on the Qt main thread).
+
+        The tray's "Dictation language" submenu writes the same key this
+        window edits. Without this, the combo would still show the language
+        the window was opened with and pressing Save would write it back over
+        the one just chosen — a setting that quietly reverts is worse than one
+        that cannot be changed from two places at all.
+        """
+        self._select_combo(self.language_combo, language_label(self.cfg["language"]))
+        # The Home hub prints the language on a stat card; it is the surface
+        # the user is most likely looking at when the tray menu closes.
+        self.home.refresh()
+
     def set_app_state(self, state: str) -> None:
         """Mirror the app state into the Home hero (called by App._set_state
         on the Qt main thread)."""

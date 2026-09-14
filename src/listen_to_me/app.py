@@ -25,9 +25,11 @@ from . import APP_NAME, REPO_URL, __version__
 from . import assistant, autostart, netutil, portaudio, singleinstance
 from .audio import SAMPLE_RATE, Recorder
 from .choices import (
+    LANGUAGES,
     SOURCE_MIC,
     SOURCE_SYSTEM,
     known_source,
+    language_label,
     resolve_input_device,
     source_label,
 )
@@ -829,6 +831,8 @@ class App:
             if self.overlay is not None:
                 self.overlay.set_visible(bool(ocfg["enabled"]))
             self.tray.set_state(self.state)  # refresh the "Show floating icon" tick
+        elif kind == "set_language":
+            self._set_language(str(payload))
         elif kind == "reset_overlay_position":
             self._reset_overlay_position()
         elif kind == "cancel":
@@ -1432,6 +1436,44 @@ class App:
         if self.injector.clipboard_mode() == "off":
             return False
         return self.injector.copy_to_clipboard(text)
+
+    def _set_language(self, code: str) -> None:
+        """Tray → "Dictation language": switch the recognition language now.
+
+        Nothing is reloaded. The transcriber reads ``cfg["language"]`` on every
+        take and the model itself is language-independent, so the next
+        recording already uses the new one — which is what makes this worth a
+        menu entry rather than a trip through Settings → Engine.
+
+        An open settings window is corrected instead of left alone: its
+        Language combo still holds the value the window was built with, and
+        pressing Save there would write that straight back over the choice
+        just made. Same guarded access as `_set_state` — Qt may have destroyed
+        the window since, which surfaces as RuntimeError on attribute access.
+        """
+        if code not in {known for known, _label in LANGUAGES}:
+            # The tray builds these events from that same list, so a code that
+            # is not in it means the two drifted — a log line, not a silent
+            # write of an unusable language into the config.
+            log.warning("ignoring an unknown dictation language %r", code)
+            return
+        if self.cfg["language"] == code:
+            return
+        self.cfg["language"] = code
+        if not self.cfg.save():
+            self.notify("Could not save the settings — see the log file.", force=True)
+        # force: the user just chose this from a menu that closed itself, so
+        # the notification is the only confirmation the choice arrived.
+        self.notify(f"Dictation language: {language_label(code)}", force=True)
+        window = self._settings_window
+        if window is None:
+            return
+        try:
+            window.sync_language()
+        except RuntimeError:
+            self._settings_window = None
+        except Exception:
+            log.exception("could not update the open settings window's language")
 
     def _copy_last_transcript(self) -> None:
         """Put the most recent transcript back on the clipboard.

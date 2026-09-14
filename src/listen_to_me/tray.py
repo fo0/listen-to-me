@@ -6,11 +6,11 @@ import logging
 import webbrowser
 
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from . import APP_NAME, REPO_URL
-from .choices import SOURCE_MIC, SOURCE_SYSTEM, source_label
+from .choices import LANGUAGES, SOURCE_MIC, SOURCE_SYSTEM, language_label, source_label
 from .history import entry_timestamp
 from .keymap import hotkey_label
 from .qtutil import tray_icon
@@ -43,6 +43,12 @@ _PAUSED_LABEL = "Hotkey paused — switch it back on in this menu"
 # which of the two takes it ends.
 _SYSTEM_START_LABEL = "Record system audio"
 _SYSTEM_STOP_LABEL = "Stop recording system audio (insert text)"
+
+# Shown instead of the language list while the Parakeet backend is selected:
+# it detects the language itself and ignores the setting, exactly as the Home
+# page and the Engine page already say. Thirty-five entries that change
+# nothing would be the silent no-op this menu exists to avoid.
+_LANGUAGE_PARAKEET_NOTE = "Parakeet detects the language itself"
 
 
 def format_duration(seconds) -> str:
@@ -160,6 +166,8 @@ class Tray:
         self._act_pause = None
         self._act_overlay = None
         self._recent_menu = None
+        self._language_menu = None
+        self._language_group = None
         self._retry_timer = None
         self._retries = 0
         # Text of a running download; while set it owns the tooltip and
@@ -231,6 +239,33 @@ class Tray:
         # hints above would exist but never render on any platform.
         menu.setToolTipsVisible(True)
         menu.addSeparator()
+
+        # The dictation language, without the walk through Settings → Engine.
+        # It is the one recognition setting that changes between two takes: a
+        # fixed language transcribes more accurately than "Auto-detect", so
+        # anyone who dictates in two languages either pays that accuracy for
+        # the convenience of leaving it on auto, or opens the settings window
+        # several times a day. Tray-only, like "Check for updates" and "Open
+        # config folder" — the floating icon's menu is deliberately the short
+        # one and carries what a running take needs, not what configures it.
+        self._language_menu = QMenu("Dictation language", menu)
+        self._language_menu.setToolTipsVisible(True)
+        # One long-lived group rather than one per fill: menu.clear() deletes
+        # the actions it owns and a destroyed QAction leaves its group by
+        # itself, so nothing accumulates across openings.
+        self._language_group = QActionGroup(self._language_menu)
+        self._language_group.setExclusive(True)
+        # Filled when it opens, for the reason the recent-transcripts menu is:
+        # the same setting lives on the Engine page, and a tick rendered once
+        # at startup would point at the language the app no longer uses.
+        self._language_menu.aboutToShow.connect(self._fill_language_menu)
+        act_language = menu.addMenu(self._language_menu)
+        act_language.setToolTip(
+            "Switch the language the recording is transcribed in — the same "
+            "setting as Settings → Engine → Language, one click away. Naming "
+            "the language instead of leaving it on “Auto-detect” makes the "
+            "recognition more accurate."
+        )
 
         self._act_pause = QAction("Pause hotkey", menu)
         self._act_pause.setCheckable(True)
@@ -340,6 +375,51 @@ class Tray:
             )
             action.triggered.connect(
                 lambda _checked=False, t=text: self.app.post("copy_text", t)
+            )
+
+    def _fill_language_menu(self) -> None:
+        """(Re-)build the "Dictation language" submenu from the current config.
+
+        Runs on the Qt main thread every time the submenu opens, so the tick
+        follows a language picked on the Engine page just as readily as one
+        picked here — the two surfaces write the same key and must never
+        disagree about which language is live.
+
+        A config that cannot be read says so rather than offering a list of
+        languages none of which is ticked: an app that shows no current value
+        looks exactly like one set to the first entry, which is the mistake
+        the recent-transcripts menu avoids the same way.
+        """
+        menu = self._language_menu
+        if menu is None:
+            return
+        menu.clear()
+        try:
+            backend = self.app.cfg["backend"]
+            current = str(self.app.cfg["language"])
+        except Exception:
+            log.exception("could not read the configured dictation language")
+            failed = menu.addAction("Could not read the settings")
+            failed.setEnabled(False)
+            return
+        if backend == "parakeet":
+            note = menu.addAction(_LANGUAGE_PARAKEET_NOTE)
+            note.setEnabled(False)
+            return
+        for code, _name in LANGUAGES:
+            # language_label, not the bare name: the Engine page's combo lists
+            # exactly these strings, and two surfaces for one setting that
+            # spell the same language differently read as two settings.
+            action = menu.addAction(language_label(code))
+            action.setCheckable(True)
+            action.setChecked(code == current)
+            if self._language_group is not None:
+                self._language_group.addAction(action)
+            # App validates the code against this same list and does the
+            # saving: the tray never writes the config itself, exactly like
+            # every other entry in this menu.
+            action.triggered.connect(
+                lambda _checked=False, chosen=code: self.app.post("set_language", chosen)
             )
 
     def _open_project_page(self) -> None:
