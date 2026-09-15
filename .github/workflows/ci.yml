@@ -48,7 +48,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgl1 libegl1 libxkbcommon0 libdbus-1-3 libfontconfig1 libfreetype6
           python -m pip install --upgrade pip
-          pip install "PySide6>=6.6" Pillow
+          # Floors mirrored from pyproject.toml / requirements.txt, not invented
+          # here. Two wheels instead of `-r requirements.txt`: the smoke test
+          # imports Qt and renders the icon, so faster-whisper, sounddevice and
+          # pynput would only cost install time. Dependabot raises the floors in
+          # the manifests (versioning-strategy: increase) and cannot see this
+          # string, so re-sync it when a PySide6 or Pillow bump lands — the gate
+          # must not keep certifying a version the project no longer declares.
+          pip install "PySide6>=6.11.2" "Pillow>=10.0"
       - name: Qt UI smoke test (offscreen)
         env:
           QT_QPA_PLATFORM: offscreen
