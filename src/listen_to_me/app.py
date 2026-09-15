@@ -1704,7 +1704,7 @@ class App:
             except Exception:
                 log.debug("could not play the %d Hz beep", frequency, exc_info=True)
 
-        threading.Thread(target=play, daemon=True).start()
+        threading.Thread(target=play, name="beep", daemon=True).start()
 
     def _sync_autostart(self, repair_block: bool = False) -> None:
         """Match the OS autostart entry to the setting — and say so when that
