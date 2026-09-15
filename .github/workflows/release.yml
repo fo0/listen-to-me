@@ -18,6 +18,11 @@ jobs:
   guard:
     name: Refuse builds off main
     runs-on: ubuntu-latest
+    # Two echoes and a ref comparison — 3 seconds on run 34. Without a cap even
+    # this job falls back to GitHub's 6-hour default, and a runner that never
+    # reports holds the whole release behind it: `check` needs this one first,
+    # and `build-windows` needs `check`. 5 minutes is all runner startup.
+    timeout-minutes: 5
     steps:
       - name: Ensure the workflow was dispatched from main
         if: github.ref != 'refs/heads/main'
@@ -38,6 +43,15 @@ jobs:
     name: Build Windows executable
     needs: check
     runs-on: windows-latest
+    # Same reason as the cap in ci.yml, with more at stake: this job clones and
+    # compiles PortAudio, installs the full dependency set and runs PyInstaller,
+    # and it is the only one holding `contents: write`. A hung CMake, pip mirror
+    # or PyInstaller pass would otherwise occupy a Windows runner for GitHub's
+    # 6-hour default while the release shows "in progress" instead of failing.
+    # Measured: 5m45s end to end on run 34 (PyInstaller 2m36s, dependency
+    # install 1m11s, PortAudio 35s). 30 minutes is ~5x that — room for a cold
+    # cache or a slow runner, while a hang is still reported inside the hour.
+    timeout-minutes: 30
     # The one job that needs it: the release-creation step below tags the
     # commit and uploads the exe.
     permissions:
