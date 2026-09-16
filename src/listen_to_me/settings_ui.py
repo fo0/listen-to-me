@@ -3783,7 +3783,16 @@ class SettingsWindow(QDialog):
                 self._dsig.model_done.emit(gen, message)
             except Exception as exc:  # surfaced in the UI
                 log.exception("model download/load failed")
-                self._dsig.model_failed.emit(gen, str(exc))
+                # The Whisper download from Hugging Face is the case netutil
+                # names first: a proxy that intercepts HTTPS, an unreachable
+                # host or a timeout arrived here as the whole requests
+                # transport chain ("HTTPSConnectionPool(host=…): Max retries
+                # exceeded …") and went straight into a one-line status label.
+                # describe_error passes anything it does not recognise through
+                # unchanged, so a local load failure still reads as it did.
+                from . import netutil
+
+                self._dsig.model_failed.emit(gen, netutil.describe_error(exc))
 
         threading.Thread(target=work, name="diag-model", daemon=True).start()
 
