@@ -4434,15 +4434,19 @@ class SettingsWindow(QDialog):
         """Open the GitHub releases page (footer button, bottom left)."""
         self._open_project_url(RELEASES_URL, "releases page")
 
-    def _open_project_url(self, url: str, what: str) -> None:
-        """Hand one of the project's own URLs to the browser.
+    def _launch_browser(self, url: str, what: str) -> bool:
+        """Hand `url` to the browser and say on the footer when that failed.
 
-        Both are built from the REPO_URL package constant, not from
-        network-supplied text, so they need none of the scheme/host checks the
-        changelog and release links get. The launch itself can still fail (no
-        browser registered, a broken BROWSER env), and webbrowser.open()
-        reports that as False instead of raising — unreported, the button would
-        just look dead.
+        Every way out of this window ends here, and the failure mode is the
+        same for all of them: ``webbrowser.open()`` reports "no browser was
+        launched" as a False return rather than by raising (no browser
+        registered, a broken BROWSER env) and can still raise on top of that.
+        Unreported, a control whose entire result is "a browser opened" is
+        indistinguishable from one that never registered the click.
+
+        The footer is the one row visible on every page, which is why one
+        place can report for all of them. Callers are responsible for
+        validating the URL first — see `_open_changelog_link`.
         """
         opened = False
         try:
@@ -4454,6 +4458,16 @@ class SettingsWindow(QDialog):
             # stretch the footer and push the action buttons around.
             self.footer_status.setText("Could not open your browser")
             self._footer_status_timer.start()
+        return opened
+
+    def _open_project_url(self, url: str, what: str) -> None:
+        """Hand one of the project's own URLs to the browser.
+
+        Both are built from the REPO_URL package constant, not from
+        network-supplied text, so they need none of the scheme/host checks the
+        changelog and release links get.
+        """
+        self._launch_browser(url, what)
 
     def _open_changelog_link(self, url) -> None:
         """Open a link the user clicked inside a release changelog.
@@ -4470,7 +4484,7 @@ class SettingsWindow(QDialog):
         if url.scheme().lower() not in ("http", "https"):
             log.warning("ignoring a changelog link with an unexpected scheme: %r", target)
             return
-        webbrowser.open(target)
+        self._launch_browser(target, "changelog link")
 
     def _install_selected_update(self) -> None:
         row = self.update_list.currentRow()
@@ -4482,7 +4496,9 @@ class SettingsWindow(QDialog):
         if not (updater.can_self_update() and release.asset_url):
             # Via updater, not release.html_url directly: the URL comes from the
             # API response and webbrowser.open() would hand any scheme to the OS.
-            webbrowser.open(updater.release_page_url(release))
+            # This is the whole of "Install" on a build that cannot self-update,
+            # so a browser that never came up must not pass for a started update.
+            self._launch_browser(updater.release_page_url(release), "release page")
             return
         size = updater.format_size(release.asset_size)
         # The switch covers updates too (ADR-0006), and this dialog is the last
