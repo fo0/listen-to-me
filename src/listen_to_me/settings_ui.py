@@ -105,6 +105,7 @@ from .keymap import hotkey_label
 # TYPE_CHECKING, and Qt is already loaded by this module.
 from .overlay import ANCHOR_ICON, PREVIEW_ANCHORS, preview_anchor
 from .qtutil import (
+    busy_cursor,
     copy_with_feedback,
     elastic_combo,
     elastic_label,
@@ -2915,11 +2916,16 @@ class SettingsWindow(QDialog):
         # PortAudio can stall, and at construction time nothing is on screen
         # yet to explain the wait.
         if index == self._audio_index and not self._devices_loaded:
-            self._load_devices()
-            # One PortAudio enumeration is what stalls, and both dropdowns on
-            # this page need one, so the system-audio list is filled in the
-            # same visit rather than on a second trigger.
-            self._load_system_devices()
+            # The stall happens on the Qt main thread, and the page above has
+            # already been switched — without a wait cursor the user sits in
+            # front of a frozen window showing an empty dropdown, which reads
+            # as a hung app at the exact moment it is working.
+            with busy_cursor():
+                self._load_devices()
+                # One PortAudio enumeration is what stalls, and both dropdowns
+                # on this page need one, so the system-audio list is filled in
+                # the same visit rather than on a second trigger.
+                self._load_system_devices()
             # The deferred load can land on a different value than the config
             # holds: a configured microphone that is currently unplugged
             # resolves to "System default". Nobody edited anything, so the
@@ -3162,7 +3168,10 @@ class SettingsWindow(QDialog):
         outcome is the very same list — with no confirmation the button reads
         as doing nothing at all. The count says what the scan actually found.
         """
-        self._load_devices()
+        # Same PortAudio stall as the first visit to this page, and the button
+        # cannot even flash its confirmation until it is over.
+        with busy_cursor():
+            self._load_devices()
         # Counted by the "<index>: <name>" shape, not by row count: the list
         # also carries "System default" and, when enumeration failed, an
         # inline error entry — neither is a microphone that was found.
@@ -3329,7 +3338,9 @@ class SettingsWindow(QDialog):
         enabling "Stereo Mix" or installing a virtual cable is exactly the
         moment this button gets pressed.
         """
-        self._load_system_devices()
+        # Same PortAudio stall as the microphone Refresh next to it.
+        with busy_cursor():
+            self._load_system_devices()
         found = self._sys_candidates or 0
         self._flash_button(
             self._sys_refresh_button,
