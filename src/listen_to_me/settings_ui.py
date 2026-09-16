@@ -105,6 +105,7 @@ from .keymap import hotkey_label
 # TYPE_CHECKING, and Qt is already loaded by this module.
 from .overlay import ANCHOR_ICON, PREVIEW_ANCHORS, preview_anchor
 from .qtutil import (
+    busy_cursor,
     copy_with_feedback,
     elastic_combo,
     elastic_label,
@@ -2915,11 +2916,16 @@ class SettingsWindow(QDialog):
         # PortAudio can stall, and at construction time nothing is on screen
         # yet to explain the wait.
         if index == self._audio_index and not self._devices_loaded:
-            self._load_devices()
-            # One PortAudio enumeration is what stalls, and both dropdowns on
-            # this page need one, so the system-audio list is filled in the
-            # same visit rather than on a second trigger.
-            self._load_system_devices()
+            # The stall happens on the Qt main thread, and the page above has
+            # already been switched — without a wait cursor the user sits in
+            # front of a frozen window showing an empty dropdown, which reads
+            # as a hung app at the exact moment it is working.
+            with busy_cursor():
+                self._load_devices()
+                # One PortAudio enumeration is what stalls, and both dropdowns
+                # on this page need one, so the system-audio list is filled in
+                # the same visit rather than on a second trigger.
+                self._load_system_devices()
             # The deferred load can land on a different value than the config
             # holds: a configured microphone that is currently unplugged
             # resolves to "System default". Nobody edited anything, so the
@@ -3162,7 +3168,10 @@ class SettingsWindow(QDialog):
         outcome is the very same list — with no confirmation the button reads
         as doing nothing at all. The count says what the scan actually found.
         """
-        self._load_devices()
+        # Same PortAudio stall as the first visit to this page, and the button
+        # cannot even flash its confirmation until it is over.
+        with busy_cursor():
+            self._load_devices()
         # Counted by the "<index>: <name>" shape, not by row count: the list
         # also carries "System default" and, when enumeration failed, an
         # inline error entry — neither is a microphone that was found.
@@ -3329,7 +3338,9 @@ class SettingsWindow(QDialog):
         enabling "Stereo Mix" or installing a virtual cable is exactly the
         moment this button gets pressed.
         """
-        self._load_system_devices()
+        # Same PortAudio stall as the microphone Refresh next to it.
+        with busy_cursor():
+            self._load_system_devices()
         found = self._sys_candidates or 0
         self._flash_button(
             self._sys_refresh_button,
@@ -3772,7 +3783,16 @@ class SettingsWindow(QDialog):
                 self._dsig.model_done.emit(gen, message)
             except Exception as exc:  # surfaced in the UI
                 log.exception("model download/load failed")
-                self._dsig.model_failed.emit(gen, str(exc))
+                # The Whisper download from Hugging Face is the case netutil
+                # names first: a proxy that intercepts HTTPS, an unreachable
+                # host or a timeout arrived here as the whole requests
+                # transport chain ("HTTPSConnectionPool(host=…): Max retries
+                # exceeded …") and went straight into a one-line status label.
+                # describe_error passes anything it does not recognise through
+                # unchanged, so a local load failure still reads as it did.
+                from . import netutil
+
+                self._dsig.model_failed.emit(gen, netutil.describe_error(exc))
 
         threading.Thread(target=work, name="diag-model", daemon=True).start()
 
@@ -4423,15 +4443,19 @@ class SettingsWindow(QDialog):
         """Open the GitHub releases page (footer button, bottom left)."""
         self._open_project_url(RELEASES_URL, "releases page")
 
-    def _open_project_url(self, url: str, what: str) -> None:
-        """Hand one of the project's own URLs to the browser.
+    def _launch_browser(self, url: str, what: str) -> bool:
+        """Hand `url` to the browser and say on the footer when that failed.
 
-        Both are built from the REPO_URL package constant, not from
-        network-supplied text, so they need none of the scheme/host checks the
-        changelog and release links get. The launch itself can still fail (no
-        browser registered, a broken BROWSER env), and webbrowser.open()
-        reports that as False instead of raising — unreported, the button would
-        just look dead.
+        Every way out of this window ends here, and the failure mode is the
+        same for all of them: ``webbrowser.open()`` reports "no browser was
+        launched" as a False return rather than by raising (no browser
+        registered, a broken BROWSER env) and can still raise on top of that.
+        Unreported, a control whose entire result is "a browser opened" is
+        indistinguishable from one that never registered the click.
+
+        The footer is the one row visible on every page, which is why one
+        place can report for all of them. Callers are responsible for
+        validating the URL first — see `_open_changelog_link`.
         """
         opened = False
         try:
@@ -4443,6 +4467,16 @@ class SettingsWindow(QDialog):
             # stretch the footer and push the action buttons around.
             self.footer_status.setText("Could not open your browser")
             self._footer_status_timer.start()
+        return opened
+
+    def _open_project_url(self, url: str, what: str) -> None:
+        """Hand one of the project's own URLs to the browser.
+
+        Both are built from the REPO_URL package constant, not from
+        network-supplied text, so they need none of the scheme/host checks the
+        changelog and release links get.
+        """
+        self._launch_browser(url, what)
 
     def _open_changelog_link(self, url) -> None:
         """Open a link the user clicked inside a release changelog.
@@ -4459,7 +4493,7 @@ class SettingsWindow(QDialog):
         if url.scheme().lower() not in ("http", "https"):
             log.warning("ignoring a changelog link with an unexpected scheme: %r", target)
             return
-        webbrowser.open(target)
+        self._launch_browser(target, "changelog link")
 
     def _install_selected_update(self) -> None:
         row = self.update_list.currentRow()
@@ -4471,7 +4505,9 @@ class SettingsWindow(QDialog):
         if not (updater.can_self_update() and release.asset_url):
             # Via updater, not release.html_url directly: the URL comes from the
             # API response and webbrowser.open() would hand any scheme to the OS.
-            webbrowser.open(updater.release_page_url(release))
+            # This is the whole of "Install" on a build that cannot self-update,
+            # so a browser that never came up must not pass for a started update.
+            self._launch_browser(updater.release_page_url(release), "release page")
             return
         size = updater.format_size(release.asset_size)
         # The switch covers updates too (ADR-0006), and this dialog is the last
@@ -4819,14 +4855,13 @@ class SettingsWindow(QDialog):
             # Named per row for the reason Copy and Delete are: a screen reader
             # otherwise reads "Show more button" once per collapsed transcript
             # with nothing to tell them apart.
-            more_btn.setAccessibleName(f"Show the full transcript {which}")
-            more_btn.setToolTip(
-                "Show this transcript in full. Copy and Export always hand over "
-                "the whole text, collapsed or not."
-            )
+            # Name and tooltip are set by the same helper the toggle uses, so
+            # the collapsed and the expanded wording can only ever be written
+            # once (see _label_history_toggle).
+            self._label_history_toggle(more_btn, which, expanded=False)
             more_btn.clicked.connect(
-                lambda _checked=False, b=more_btn, label=body, full=text, short=shown: (
-                    self._toggle_history_row(b, label, full, short)
+                lambda _checked=False, b=more_btn, label=body, full=text, short=shown, w=which: (
+                    self._toggle_history_row(b, label, full, short, w)
                 )
             )
             more_row.addWidget(more_btn)
@@ -4834,8 +4869,33 @@ class SettingsWindow(QDialog):
             rv.addLayout(more_row)
         return row
 
+    @staticmethod
+    def _label_history_toggle(button: QPushButton, which: str, *, expanded: bool) -> None:
+        """Name a History row's Show more / Show less button for its state.
+
+        Qt reads an explicit accessible name *instead of* a button's text
+        (QAccessibleButton::text), so a name written once at construction
+        survives every toggle: an expanded row kept announcing "Show the full
+        transcript from …" on the button that now collapses it, and its
+        tooltip kept promising the same. Both have to move with the label,
+        and a row still has to be told apart from the one below it — which is
+        why the name carries `which` in either direction.
+        """
+        if expanded:
+            button.setAccessibleName(f"Collapse the transcript {which}")
+            button.setToolTip(
+                "Show this transcript shortened again. Copy and Export always "
+                "hand over the whole text, collapsed or not."
+            )
+            return
+        button.setAccessibleName(f"Show the full transcript {which}")
+        button.setToolTip(
+            "Show this transcript in full. Copy and Export always hand over "
+            "the whole text, collapsed or not."
+        )
+
     def _toggle_history_row(
-        self, button: QPushButton, label: QLabel, full: str, collapsed: str
+        self, button: QPushButton, label: QLabel, full: str, collapsed: str, which: str
     ) -> None:
         """Expand or re-collapse the one History row this button belongs to.
 
@@ -4849,6 +4909,7 @@ class SettingsWindow(QDialog):
         expanded = button.text() == _HISTORY_MORE_LABEL
         label.setText(full if expanded else collapsed)
         button.setText(_HISTORY_LESS_LABEL if expanded else _HISTORY_MORE_LABEL)
+        self._label_history_toggle(button, which, expanded=expanded)
 
     def _copy_history(self, text: str, button: QPushButton) -> None:
         # Reports a failed clipboard write on the button — see copy_with_feedback.

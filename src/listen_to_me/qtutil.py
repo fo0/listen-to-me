@@ -2,7 +2,8 @@
 pixmaps/icons, the wheel guard for value widgets on scrollable pages, the
 Return guard for search fields inside a dialog, the width cap for combo
 boxes with unbounded item texts, the font-derived height for boxes that
-should show a fixed number of lines, and the one clipboard
+should show a fixed number of lines, the wait cursor for a blocking
+main-thread call, and the one clipboard
 path every "Copy" in the app uses — plus the button feedback that reports how
 that copy went, and the generic on-the-button confirmation every one-shot
 action uses.
@@ -14,10 +15,11 @@ self-test and make_icon.py import it without pulling in PySide6).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer
-from PySide6.QtGui import QIcon, QImage, QPixmap
+from PySide6.QtGui import QCursor, QIcon, QImage, QPixmap
 
 from .icons import mic_image
 
@@ -169,6 +171,34 @@ def text_rows_height(widget, rows: int, *, extra: int = 12) -> int:
     return widget.fontMetrics().lineSpacing() * max(1, rows) + extra
 
 
+@contextmanager
+def busy_cursor() -> Iterator[None]:
+    """Show the wait cursor for the duration of a blocking main-thread call.
+
+    Enumerating audio devices goes through PortAudio, which is documented all
+    over this app as able to stall for hundreds of milliseconds — and it runs
+    on the Qt main thread, so for that whole time the window neither repaints
+    nor answers. Opening the Audio page switches the page *first*, so what the
+    user gets is the new page with an empty dropdown and a frozen window: the
+    app looks hung exactly when it is working.
+
+    Qt applies an override cursor straight through the platform plugin rather
+    than via an event, so it is on screen before the blocking call starts —
+    which is what makes this worth anything without moving the enumeration to
+    a worker thread (it feeds Qt widgets, and workers never touch Qt here).
+
+    Qt main thread only, and restored in `finally` so a raising call cannot
+    leave the whole application stuck behind an hourglass.
+    """
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+    try:
+        yield
+    finally:
+        QApplication.restoreOverrideCursor()
+
+
 def copy_to_clipboard(text: str) -> bool:
     """Put `text` on the system clipboard; True when it got there.
 
@@ -231,7 +261,9 @@ def copy_with_feedback(text: str, button, *, label: str = "Copy") -> bool:
     looking, so they report it here instead.
 
     The failure state stays up longer than the confirmation: "Copied ✓" only
-    has to be noticed, "Copy failed" has to be read and acted on.
+    has to be noticed, "Copy failed" has to be read and acted on. The outcome
+    also goes into the button's accessible description, so it is reported to
+    assistive tech too and not only to the eye.
 
     Qt main thread only — `copy_to_clipboard`'s fallback touches QApplication.
     """
@@ -243,6 +275,10 @@ def copy_with_feedback(text: str, button, *, label: str = "Copy") -> bool:
     # SettingsWindow._pin_width, applied where the labels are known.
     if not button.property("copyWidthPinned"):
         button.setProperty("copyWidthPinned", True)
+        # Captured in the same one-shot branch, because `restore` below puts it
+        # back: reading it at every call would let a second click while the
+        # first flash is still pending "restore" that flash's own outcome.
+        button.setProperty("copyBaseDescription", button.accessibleDescription())
         widest = 0
         for candidate in (label, "Copied ✓", "Copy failed"):
             button.setText(candidate)
@@ -250,13 +286,23 @@ def copy_with_feedback(text: str, button, *, label: str = "Copy") -> bool:
         button.setText(label)
         button.setMinimumWidth(widest)
     ok = copy_to_clipboard(text)
-    button.setText("Copied ✓" if ok else "Copy failed")
+    outcome = "Copied ✓" if ok else "Copy failed"
+    button.setText(outcome)
+    # The swapped label is the whole report, and Qt reads an explicit
+    # accessible name *instead of* a button's text (QAccessibleButton::text) —
+    # so on the Copy buttons that carry one, which is every per-transcript one
+    # on the Home and History pages, assistive tech keeps announcing "Copy the
+    # transcript from …" and never hears the failure this helper exists to
+    # report. The description is the channel that still gets through, and the
+    # one the settings window already uses to voice a field's status.
+    button.setAccessibleDescription(outcome)
 
     def restore():
         # The window (and with it this button) may be gone by now — a deleted
         # C++ object raises RuntimeError through the Python wrapper.
         try:
             button.setText(label)
+            button.setAccessibleDescription(button.property("copyBaseDescription") or "")
         except RuntimeError:
             pass
 
