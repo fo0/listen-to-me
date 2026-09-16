@@ -640,6 +640,10 @@ class SettingsWindow(QDialog):
         self._asig.test_failed.connect(self._on_assistant_test_failed)
         self._assistant_busy = False
         self._assistant_gen = 0
+        # Which profile the running (or last) test belongs to, so the two
+        # result slots can name it. Seeded with the combo's first entry, which
+        # is also its default selection.
+        self._assistant_test_name = "Microphone dictation"
 
         # Diagnostics state (Download model / Test transcription on the Engine
         # page, Test microphone on the Audio page, Test hotkey on General),
@@ -2309,14 +2313,30 @@ class SettingsWindow(QDialog):
         th = QHBoxLayout(test_row)
         th.setContentsMargins(0, 0, 0, 0)
         th.setSpacing(8)
+        # Which profile the sample sentence goes through. The button used to
+        # test the microphone one unconditionally, so the system-audio profile's
+        # model override — the one value the two do not share — was never
+        # exercised: a green tick for a model the meeting path would not use,
+        # and an override the endpoint does not have failing for the first time
+        # after a 15-minute recording.
+        self.a_test_source_combo = QComboBox()
+        self.a_test_source_combo.addItem("Microphone dictation", SOURCE_MIC)
+        self.a_test_source_combo.addItem("System audio", SOURCE_SYSTEM)
+        self.a_test_source_combo.setAccessibleName("Profile to test")
+        self.a_test_source_combo.setToolTip(
+            "Which profile the sample sentence goes through. The connection is "
+            "shared between the two, the model override and the system prompt "
+            "are not — so a green test of one says nothing about the other."
+        )
+        th.addWidget(self.a_test_source_combo)
         self.a_test_button = QPushButton(_A_TEST_LABEL)
         self.a_test_button.setAutoDefault(False)
         self._pin_width(self.a_test_button, _A_TEST_LABEL, _A_TESTING_LABEL)
         self.a_test_button.setToolTip(
             "Send one short sample sentence to the endpoint above and show what "
             "comes back. Uses the values currently entered — no Save needed — "
-            "with the microphone profile's model and system prompt, so the reply "
-            "shows what that profile would make of a dictation. Nothing is "
+            "with the selected profile's model and system prompt, so the reply "
+            "shows what that profile would make of a recording. Nothing is "
             "recorded, inserted or written to the history."
         )
         self.a_test_button.clicked.connect(self._test_assistant)
@@ -3464,15 +3484,24 @@ class SettingsWindow(QDialog):
 
     # ---------------------------------------------------- assistant test
 
-    def _assistant_values(self) -> dict:
-        """The assistant config exactly as entered right now, in the shape
-        `refine()` reads.
+    def _assistant_values(self, source: str = SOURCE_MIC) -> dict:
+        """The assistant config for one recording source, exactly as entered
+        right now, in the shape `refine()` reads.
 
-        Enabled unconditionally: the checkbox says whether dictations go
-        through the assistant, not whether the fields below may be tried. Being
-        able to verify an endpoint *before* switching it on is the point.
+        Resolved through `assistant.profile`, the same function the recording
+        path uses, so the test sends what that source really would: the shared
+        connection from the Connection card plus *that* profile's own model
+        override and system prompt. Building the microphone shape by hand here
+        is what made the button test the wrong profile — the override the user
+        points their meetings at was never in the request.
+
+        Both switches are set unconditionally: the checkboxes say whether
+        recordings go through the assistant, not whether the fields below may
+        be tried, and being able to verify an endpoint *before* switching it on
+        is the point. `profile()` reads them, so an off profile would otherwise
+        come back disabled.
         """
-        return {
+        section = {
             "enabled": True,
             "base_url": self.a_url_edit.text().strip(),
             "model": self.a_model_edit.text().strip(),
@@ -3482,7 +3511,16 @@ class SettingsWindow(QDialog):
                 self.a_prompt_edit.toPlainText().strip() or DEFAULT_ASSISTANT_PROMPT
             ),
             "timeout": int(self.a_timeout_spin.value()),
+            "system_audio": {
+                "enabled": True,
+                "model": self.a_sys_model_edit.text().strip(),
+                "system_prompt": (
+                    self.a_sys_prompt_edit.toPlainText().strip()
+                    or DEFAULT_SYSTEM_AUDIO_PROMPT
+                ),
+            },
         }
+        return assistant_profile(section, source)
 
     def _test_assistant(self) -> None:
         """Send one sample sentence through the assistant as configured here.
@@ -3501,14 +3539,30 @@ class SettingsWindow(QDialog):
         """
         if self._assistant_busy:
             return
-        values = self._assistant_values()
+        source = self.a_test_source_combo.currentData() or SOURCE_MIC
+        # Kept for the two result slots: they run after the combo may have been
+        # changed again, and a tick that does not say which profile it belongs
+        # to is the ambiguity this button had in the first place.
+        self._assistant_test_name = self.a_test_source_combo.currentText()
+        values = self._assistant_values(source)
         problem = assistant_config_problem(values)
         if problem is not None:
             # Answerable without the network: say it instantly and put the
             # caret in the offending field, exactly as Save does.
             field, reason = problem
-            self.a_test_status.setText(f"Cannot test — {reason}.")
-            (self.a_url_edit if field == "base_url" else self.a_model_edit).setFocus()
+            self.a_test_status.setText(
+                f"Cannot test “{self._assistant_test_name}” — {reason}."
+            )
+            if field == "base_url":
+                widget = self.a_url_edit
+            else:
+                # An empty per-profile override means "use the shared model",
+                # so the box to fill in is then the shared one — the same rule
+                # `_validate` follows for the identical answer.
+                widget = self.a_model_edit
+                if source == SOURCE_SYSTEM and self.a_sys_model_edit.text().strip():
+                    widget = self.a_sys_model_edit
+            widget.setFocus()
             return
         self._assistant_busy = True
         self._assistant_gen += 1
@@ -3516,12 +3570,17 @@ class SettingsWindow(QDialog):
         self.a_test_button.setEnabled(False)
         self.a_test_button.setText(_A_TESTING_LABEL)
         self.a_test_cancel_button.setEnabled(True)
+        # Frozen with the button, like every other busy control in this window.
+        # The running test is unaffected either way — the source was read above
+        # — but a combo left live invites changing it mid-wait and then reading
+        # the answer as the other profile's.
+        self.a_test_source_combo.setEnabled(False)
         timeout = values["timeout"]
         # Name the wait: a cold local model can take a while to answer, and a
         # button that just sits there reads as a hang rather than as patience.
         self.a_test_status.setText(
-            f"Sending a sample sentence to {values['base_url']} — "
-            f"waiting up to {timeout:.0f} s…"
+            f"Sending a sample sentence to {values['base_url']} as "
+            f"“{self._assistant_test_name}” — waiting up to {timeout:.0f} s…"
         )
 
         def work():
@@ -3569,13 +3628,15 @@ class SettingsWindow(QDialog):
         preview = " ".join(reply.split())
         if len(preview) > _A_TEST_PREVIEW_CHARS:
             preview = preview[:_A_TEST_PREVIEW_CHARS].rstrip() + "…"
-        self.a_test_status.setText(f"Connection works ✓ — the endpoint returned: “{preview}”")
+        self.a_test_status.setText(
+            f"“{self._assistant_test_name}” works ✓ — the endpoint returned: “{preview}”"
+        )
 
     def _on_assistant_test_failed(self, gen: int, message: str) -> None:
         if gen != self._assistant_gen:
             return  # detached by Cancel or superseded — see _cancel_assistant_test
         self._end_assistant_test()
-        self.a_test_status.setText(f"Test failed: {message}")
+        self.a_test_status.setText(f"“{self._assistant_test_name}” failed: {message}")
 
     def _end_assistant_test(self) -> None:
         """Hand the button back to the user (all three outcomes)."""
@@ -3583,6 +3644,7 @@ class SettingsWindow(QDialog):
         self.a_test_button.setEnabled(True)
         self.a_test_button.setText(_A_TEST_LABEL)
         self.a_test_cancel_button.setEnabled(False)
+        self.a_test_source_combo.setEnabled(True)
 
     # --------------------------------------------------------- diagnostics
 

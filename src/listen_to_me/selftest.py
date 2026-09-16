@@ -8277,13 +8277,33 @@ def _gui_construction():
             SettingsWindow._to_int(stub.cfg["assistant"].get("timeout"), 120)
         )
 
+        # The test follows the profile picked beside the button. It used to
+        # build the microphone shape by hand, so the system-audio model
+        # override — the one value the two profiles do not share — was never in
+        # the request: a green tick for a model the meeting path would not use.
+        # Resolved through assistant.profile, so an empty override still means
+        # "the shared model" here exactly as it does for a real recording.
+        from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+
+        window.a_sys_model_edit.setText("qwen2.5:14b")
+        assert window._assistant_values(SOURCE_MIC)["model"] == "llama3.2"
+        assert window._assistant_values(SOURCE_SYSTEM)["model"] == "qwen2.5:14b"
+        window.a_sys_model_edit.setText("")
+        assert window._assistant_values(SOURCE_SYSTEM)["model"] == "llama3.2"
+        assert [
+            window.a_test_source_combo.itemData(row)
+            for row in range(window.a_test_source_combo.count())
+        ] == [SOURCE_MIC, SOURCE_SYSTEM]
+
         # A URL without a scheme is answerable without any request: it must be
-        # refused on the spot, not by starting a thread that fails later.
+        # refused on the spot, not by starting a thread that fails later. The
+        # message names the profile it refused, for the same reason Save does.
         window.a_url_edit.setText("localhost:11434/v1")
         window._test_assistant()
         assert not window._assistant_busy, "a statically invalid config started a request"
         assert window.a_test_button.isEnabled()
         assert "Cannot test" in window.a_test_status.text(), window.a_test_status.text()
+        assert "Microphone dictation" in window.a_test_status.text(), window.a_test_status.text()
 
         # Both outcomes: the reply is shown (an endpoint can answer and still
         # return something unusable — that is what would be inserted), the
@@ -8307,11 +8327,17 @@ def _gui_construction():
             window.a_test_button.setEnabled(False)
             window.a_test_button.setText(_A_TESTING_LABEL)
             window.a_test_cancel_button.setEnabled(True)
+            window.a_test_source_combo.setEnabled(False)
             drive()
             assert not window._assistant_busy
             assert window.a_test_button.isEnabled()
             assert window.a_test_button.text() == _A_TEST_LABEL
             assert not window.a_test_cancel_button.isEnabled()
+            # The profile picker is frozen with the button and comes back with
+            # it — a combo left disabled after a finished test is a dead
+            # control, and one left live during a test invites reading the
+            # answer as the other profile's.
+            assert window.a_test_source_combo.isEnabled()
             assert expected in window.a_test_status.text(), window.a_test_status.text()
 
         # Cancel detaches the waiting worker rather than aborting it: the
