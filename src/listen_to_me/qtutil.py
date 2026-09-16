@@ -231,7 +231,9 @@ def copy_with_feedback(text: str, button, *, label: str = "Copy") -> bool:
     looking, so they report it here instead.
 
     The failure state stays up longer than the confirmation: "Copied ✓" only
-    has to be noticed, "Copy failed" has to be read and acted on.
+    has to be noticed, "Copy failed" has to be read and acted on. The outcome
+    also goes into the button's accessible description, so it is reported to
+    assistive tech too and not only to the eye.
 
     Qt main thread only — `copy_to_clipboard`'s fallback touches QApplication.
     """
@@ -243,6 +245,10 @@ def copy_with_feedback(text: str, button, *, label: str = "Copy") -> bool:
     # SettingsWindow._pin_width, applied where the labels are known.
     if not button.property("copyWidthPinned"):
         button.setProperty("copyWidthPinned", True)
+        # Captured in the same one-shot branch, because `restore` below puts it
+        # back: reading it at every call would let a second click while the
+        # first flash is still pending "restore" that flash's own outcome.
+        button.setProperty("copyBaseDescription", button.accessibleDescription())
         widest = 0
         for candidate in (label, "Copied ✓", "Copy failed"):
             button.setText(candidate)
@@ -250,13 +256,23 @@ def copy_with_feedback(text: str, button, *, label: str = "Copy") -> bool:
         button.setText(label)
         button.setMinimumWidth(widest)
     ok = copy_to_clipboard(text)
-    button.setText("Copied ✓" if ok else "Copy failed")
+    outcome = "Copied ✓" if ok else "Copy failed"
+    button.setText(outcome)
+    # The swapped label is the whole report, and Qt reads an explicit
+    # accessible name *instead of* a button's text (QAccessibleButton::text) —
+    # so on the Copy buttons that carry one, which is every per-transcript one
+    # on the Home and History pages, assistive tech keeps announcing "Copy the
+    # transcript from …" and never hears the failure this helper exists to
+    # report. The description is the channel that still gets through, and the
+    # one the settings window already uses to voice a field's status.
+    button.setAccessibleDescription(outcome)
 
     def restore():
         # The window (and with it this button) may be gone by now — a deleted
         # C++ object raises RuntimeError through the Python wrapper.
         try:
             button.setText(label)
+            button.setAccessibleDescription(button.property("copyBaseDescription") or "")
         except RuntimeError:
             pass
 
