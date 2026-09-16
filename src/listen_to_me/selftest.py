@@ -2302,8 +2302,14 @@ def _copy_button_reports_failure():
             return self._width
 
     class _Button:
-        def __init__(self):
+        def __init__(self, description=""):
             self._text = "Copy"
+            # Every per-transcript Copy button has an accessible description,
+            # and that is where copy_with_feedback reports the outcome to
+            # assistive tech — so the double carries one too. Without these
+            # two methods the helper raises AttributeError before it decides
+            # anything, and the check tests the double instead of the app.
+            self._description = description
             self._props: dict = {}
             self.min_width = 0
 
@@ -2312,6 +2318,12 @@ def _copy_button_reports_failure():
 
         def setText(self, text):
             self._text = text
+
+        def accessibleDescription(self):
+            return self._description
+
+        def setAccessibleDescription(self, description):
+            self._description = description
 
         def property(self, name):
             return self._props.get(name)
@@ -2338,14 +2350,20 @@ def _copy_button_reports_failure():
             timer = _Timer()
             qtutil.QTimer = timer
             qtutil.copy_to_clipboard = lambda _text, ok=succeeded: ok
-            button = _Button()
+            base = "Copy the transcript from 14:03"
+            button = _Button(base)
             assert qtutil.copy_with_feedback("some transcript", button) is succeeded
             assert button.text() == ("Copied ✓" if succeeded else "Copy failed")
+            # An accessible name is read *instead of* the swapped label, so the
+            # outcome has to reach the description too — that is the channel
+            # assistive tech still hears it on.
+            assert button.accessibleDescription() == button.text()
             # Wide enough for the longest label, so the row doesn't reflow.
             assert button.min_width >= len("Copy failed")
             (delay, restore), = timer.scheduled
             restore()
             assert button.text() == "Copy"  # back to the original label
+            assert button.accessibleDescription() == base  # and its own description
             if succeeded:
                 confirmation_ms = delay
             else:
