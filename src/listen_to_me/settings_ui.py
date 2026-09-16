@@ -4819,14 +4819,13 @@ class SettingsWindow(QDialog):
             # Named per row for the reason Copy and Delete are: a screen reader
             # otherwise reads "Show more button" once per collapsed transcript
             # with nothing to tell them apart.
-            more_btn.setAccessibleName(f"Show the full transcript {which}")
-            more_btn.setToolTip(
-                "Show this transcript in full. Copy and Export always hand over "
-                "the whole text, collapsed or not."
-            )
+            # Name and tooltip are set by the same helper the toggle uses, so
+            # the collapsed and the expanded wording can only ever be written
+            # once (see _label_history_toggle).
+            self._label_history_toggle(more_btn, which, expanded=False)
             more_btn.clicked.connect(
-                lambda _checked=False, b=more_btn, label=body, full=text, short=shown: (
-                    self._toggle_history_row(b, label, full, short)
+                lambda _checked=False, b=more_btn, label=body, full=text, short=shown, w=which: (
+                    self._toggle_history_row(b, label, full, short, w)
                 )
             )
             more_row.addWidget(more_btn)
@@ -4834,8 +4833,33 @@ class SettingsWindow(QDialog):
             rv.addLayout(more_row)
         return row
 
+    @staticmethod
+    def _label_history_toggle(button: QPushButton, which: str, *, expanded: bool) -> None:
+        """Name a History row's Show more / Show less button for its state.
+
+        Qt reads an explicit accessible name *instead of* a button's text
+        (QAccessibleButton::text), so a name written once at construction
+        survives every toggle: an expanded row kept announcing "Show the full
+        transcript from …" on the button that now collapses it, and its
+        tooltip kept promising the same. Both have to move with the label,
+        and a row still has to be told apart from the one below it — which is
+        why the name carries `which` in either direction.
+        """
+        if expanded:
+            button.setAccessibleName(f"Collapse the transcript {which}")
+            button.setToolTip(
+                "Show this transcript shortened again. Copy and Export always "
+                "hand over the whole text, collapsed or not."
+            )
+            return
+        button.setAccessibleName(f"Show the full transcript {which}")
+        button.setToolTip(
+            "Show this transcript in full. Copy and Export always hand over "
+            "the whole text, collapsed or not."
+        )
+
     def _toggle_history_row(
-        self, button: QPushButton, label: QLabel, full: str, collapsed: str
+        self, button: QPushButton, label: QLabel, full: str, collapsed: str, which: str
     ) -> None:
         """Expand or re-collapse the one History row this button belongs to.
 
@@ -4849,6 +4873,7 @@ class SettingsWindow(QDialog):
         expanded = button.text() == _HISTORY_MORE_LABEL
         label.setText(full if expanded else collapsed)
         button.setText(_HISTORY_LESS_LABEL if expanded else _HISTORY_MORE_LABEL)
+        self._label_history_toggle(button, which, expanded=expanded)
 
     def _copy_history(self, text: str, button: QPushButton) -> None:
         # Reports a failed clipboard write on the button — see copy_with_feedback.
