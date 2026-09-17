@@ -7367,6 +7367,17 @@ def _settings_window_edits_the_new_options():
         window.chk_a_sys_enabled.setChecked(False)
         window.a_url_edit.setText(window.cfg["assistant"]["base_url"])
 
+        # --- the off state says so, and can be reached ----------------------
+        # Empty is this source's off switch AND its shipped default, so the
+        # field a first-time reader meets is blank under a label that promises
+        # a hotkey. The placeholder is the only thing on screen naming that
+        # state (the tooltip has to be hovered to be found), and the inline
+        # clear button is the only affordance for getting back to it — the way
+        # off used to be "select the combination and delete it".
+        placeholder = window.sys_hotkey_edit.placeholderText()
+        assert "off" in placeholder, placeholder
+        assert window.sys_hotkey_edit.isClearButtonEnabled()
+
         # --- _collect(): every new key round-trips --------------------------
         window.chk_filler.setChecked(False)
         window.filler_edit.setPlainText("Vielen Dank\nThank you")

@@ -1916,6 +1916,21 @@ class SettingsWindow(QDialog):
             "General page."
         )
         self.sys_hotkey_edit.setAccessibleName("System audio hotkey")
+        # Empty is this feature's off switch and its shipped default, so the
+        # field a first-time reader meets is a blank box under the label
+        # "System audio hotkey:" — which reads as something left unfilled, not
+        # as a source that is deliberately off. The tooltip has said so all
+        # along, but a tooltip has to be hovered to be found, and nobody hovers
+        # a field to learn that its emptiness means something. A placeholder
+        # shows exactly while the field is empty, which is exactly when that
+        # sentence is the answer.
+        self.sys_hotkey_edit.setPlaceholderText("Empty — system audio recording is off")
+        # And the way back: switching the source off again meant selecting the
+        # combination and deleting it, an affordance nothing on screen offered.
+        # The inline clear button appears only while there is text — so it is
+        # absent in the off state and reads as "turn this off" in the on one.
+        # Same control the two search fields in this window already use.
+        self.sys_hotkey_edit.setClearButtonEnabled(True)
         shk.addWidget(self.sys_hotkey_edit, 1)
         sys_pick = QPushButton("Change…")
         sys_pick.setAutoDefault(False)

@@ -271,6 +271,18 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **The system-audio hotkey field now says that empty means off, and offers
+  the way back.** Settings → Audio → **System audio** is switched on by putting
+  a combination in that field and off by emptying it — and empty is what it
+  ships as, so the first thing a reader meets there is a blank box under a
+  label promising a hotkey, which reads as something left unfilled rather than
+  as a source deliberately off. The field now carries that sentence as
+  placeholder text ("Empty — system audio recording is off"), visible exactly
+  while it is empty, instead of only in a tooltip nobody hovers a blank field
+  to find. And turning the source off again no longer means selecting the
+  combination and deleting it by hand: the field has the same inline clear
+  button the two search fields in this window use, shown only while there is
+  something to clear.
 - **"Reset to default" for the assistant system prompt asks before discarding
   an edited one.** The button sits directly above the box it overwrites, and
   the prompt is free text with no second copy anywhere — replacing it also
