@@ -512,6 +512,39 @@ class MuteTargetRow(QGroupBox):
         form.addRow("Mute keybind:", key_row)
         outer.addLayout(form)
 
+        # The third hotkey field in this window, and the only one whose reason
+        # surfaced nowhere but the modal at Save. Both recording hotkeys carry
+        # an inline reason while they are being typed (the wizard's rule); here
+        # a combination that does not parse was kept without a word until Save
+        # refused it — by which time the page has usually been left, and the
+        # box has to name which of a dozen stacked rows it means.
+        #
+        # Shown under exactly the condition `_validate` refuses on: the row is
+        # enabled and its keybind is non-empty but unparseable. An EMPTY field
+        # is "not configured yet", never an error — "Other app…" adds an
+        # enabled row with no keybind on purpose, and a red line on a row the
+        # user has just created is a complaint about their next keystroke. A
+        # disabled row may stay half-configured, so it says nothing either.
+        # The clash with the two recording hotkeys stays at Save: it is a
+        # property of values this row does not own.
+        #
+        # Added AFTER the form is installed on this row: `setRowVisible(True)`
+        # calls setVisible() on the row's widgets, and a QLabel a layout has
+        # not reparented yet is parentless — showing it would open a stray
+        # top-level window instead of a line under the field. Every other form
+        # in this window comes out of `_card()`, which parents it on creation,
+        # so this is the one place the order matters.
+        self._hotkey_error = QLabel("")
+        self._hotkey_error.setProperty("role", "error")  # danger colour, see theme.py
+        self._hotkey_error.setWordWrap(True)
+        form.addRow("", self._hotkey_error)
+        self._form = form
+        self.hotkey_edit.textChanged.connect(self._refresh_hotkey_error)
+        # Ticking "Enabled" is the moment a keybind nobody validated starts to
+        # matter, so it re-asks then too.
+        self.chk_enabled.toggled.connect(self._refresh_hotkey_error)
+        self._refresh_hotkey_error()
+
         # The Integrations page stacks one of these rows per configured app, so
         # "Enabled", "Mode", "Mute keybind", "Change…" and "Remove" are each
         # announced identically once per app with nothing to tell them apart —
@@ -546,6 +579,34 @@ class MuteTargetRow(QGroupBox):
         self.hotkey_edit.setAccessibleName(f"Mute keybind for {name}")
         self.change_button.setAccessibleName(f"Change the mute keybind for {name}")
         self.remove_button.setAccessibleName(f"Remove {name} from the list")
+
+    def _refresh_hotkey_error(self, *_args) -> None:
+        """Show or clear the inline reason under this row's mute keybind.
+
+        The modal in `SettingsWindow._validate` stays: a label is never
+        announced to a screen reader whose focus is on the Save button that
+        refused — which is also why the reason rides on the field itself, the
+        same contract the two recording hotkeys follow.
+        """
+        keys = self.hotkey_edit.text().strip()
+        reason = ""
+        if keys and self.chk_enabled.isChecked():
+            try:
+                valid = Hotkeys.validate(keys)
+            except Exception:
+                # Parsing needs pynput, which a headless run cannot import.
+                # Calling a combination broken because we could not look is
+                # worse than staying quiet, and Save checks it again anyway.
+                log.debug("could not check the mute keybind %r while editing", keys, exc_info=True)
+                valid = True
+            if not valid:
+                reason = (
+                    f"“{keys}” is not a valid combination — click “Change…” "
+                    "and press the keys."
+                )
+        self._hotkey_error.setText(reason)
+        self.hotkey_edit.setAccessibleDescription(reason)
+        self._form.setRowVisible(self._hotkey_error, bool(reason))
 
     def _change_hotkey(self) -> None:
         combo = self._capture_hotkey()

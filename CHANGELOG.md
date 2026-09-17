@@ -281,6 +281,19 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **A mute keybind that does not parse now says so while you are typing it.**
+  Settings → Integrations stacks one row per app to mute, and its keybind was
+  the third hotkey field in the window — the only one still reporting itself
+  nowhere but the modal at Save. Both recording hotkeys have carried an inline
+  reason under the field for a while; this one kept an unparseable combination
+  without a word until Save refused it, by which point the page has usually
+  been left and the box has to name which of a dozen stacked rows it means. The
+  note appears under exactly the condition Save refuses on: the row is switched
+  on and its keybind is there but unreadable. An empty field stays quiet — the
+  **Other app…** entry adds an enabled row without a keybind on purpose — and
+  so does a row that is switched off, which may be left half-configured. The
+  reason is also set on the field itself, so it reaches a screen reader whose
+  focus is on the Save button.
 - **The system-audio hotkey field now says that empty means off, and offers
   the way back.** Settings → Audio → **System audio** is switched on by putting
   a combination in that field and off by emptying it — and empty is what it
