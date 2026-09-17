@@ -512,6 +512,39 @@ class MuteTargetRow(QGroupBox):
         form.addRow("Mute keybind:", key_row)
         outer.addLayout(form)
 
+        # The third hotkey field in this window, and the only one whose reason
+        # surfaced nowhere but the modal at Save. Both recording hotkeys carry
+        # an inline reason while they are being typed (the wizard's rule); here
+        # a combination that does not parse was kept without a word until Save
+        # refused it — by which time the page has usually been left, and the
+        # box has to name which of a dozen stacked rows it means.
+        #
+        # Shown under exactly the condition `_validate` refuses on: the row is
+        # enabled and its keybind is non-empty but unparseable. An EMPTY field
+        # is "not configured yet", never an error — "Other app…" adds an
+        # enabled row with no keybind on purpose, and a red line on a row the
+        # user has just created is a complaint about their next keystroke. A
+        # disabled row may stay half-configured, so it says nothing either.
+        # The clash with the two recording hotkeys stays at Save: it is a
+        # property of values this row does not own.
+        #
+        # Added AFTER the form is installed on this row: `setRowVisible(True)`
+        # calls setVisible() on the row's widgets, and a QLabel a layout has
+        # not reparented yet is parentless — showing it would open a stray
+        # top-level window instead of a line under the field. Every other form
+        # in this window comes out of `_card()`, which parents it on creation,
+        # so this is the one place the order matters.
+        self._hotkey_error = QLabel("")
+        self._hotkey_error.setProperty("role", "error")  # danger colour, see theme.py
+        self._hotkey_error.setWordWrap(True)
+        form.addRow("", self._hotkey_error)
+        self._form = form
+        self.hotkey_edit.textChanged.connect(self._refresh_hotkey_error)
+        # Ticking "Enabled" is the moment a keybind nobody validated starts to
+        # matter, so it re-asks then too.
+        self.chk_enabled.toggled.connect(self._refresh_hotkey_error)
+        self._refresh_hotkey_error()
+
         # The Integrations page stacks one of these rows per configured app, so
         # "Enabled", "Mode", "Mute keybind", "Change…" and "Remove" are each
         # announced identically once per app with nothing to tell them apart —
@@ -546,6 +579,34 @@ class MuteTargetRow(QGroupBox):
         self.hotkey_edit.setAccessibleName(f"Mute keybind for {name}")
         self.change_button.setAccessibleName(f"Change the mute keybind for {name}")
         self.remove_button.setAccessibleName(f"Remove {name} from the list")
+
+    def _refresh_hotkey_error(self, *_args) -> None:
+        """Show or clear the inline reason under this row's mute keybind.
+
+        The modal in `SettingsWindow._validate` stays: a label is never
+        announced to a screen reader whose focus is on the Save button that
+        refused — which is also why the reason rides on the field itself, the
+        same contract the two recording hotkeys follow.
+        """
+        keys = self.hotkey_edit.text().strip()
+        reason = ""
+        if keys and self.chk_enabled.isChecked():
+            try:
+                valid = Hotkeys.validate(keys)
+            except Exception:
+                # Parsing needs pynput, which a headless run cannot import.
+                # Calling a combination broken because we could not look is
+                # worse than staying quiet, and Save checks it again anyway.
+                log.debug("could not check the mute keybind %r while editing", keys, exc_info=True)
+                valid = True
+            if not valid:
+                reason = (
+                    f"“{keys}” is not a valid combination — click “Change…” "
+                    "and press the keys."
+                )
+        self._hotkey_error.setText(reason)
+        self.hotkey_edit.setAccessibleDescription(reason)
+        self._form.setRowVisible(self._hotkey_error, bool(reason))
 
     def _change_hotkey(self) -> None:
         combo = self._capture_hotkey()
@@ -1916,6 +1977,21 @@ class SettingsWindow(QDialog):
             "General page."
         )
         self.sys_hotkey_edit.setAccessibleName("System audio hotkey")
+        # Empty is this feature's off switch and its shipped default, so the
+        # field a first-time reader meets is a blank box under the label
+        # "System audio hotkey:" — which reads as something left unfilled, not
+        # as a source that is deliberately off. The tooltip has said so all
+        # along, but a tooltip has to be hovered to be found, and nobody hovers
+        # a field to learn that its emptiness means something. A placeholder
+        # shows exactly while the field is empty, which is exactly when that
+        # sentence is the answer.
+        self.sys_hotkey_edit.setPlaceholderText("Empty — system audio recording is off")
+        # And the way back: switching the source off again meant selecting the
+        # combination and deleting it, an affordance nothing on screen offered.
+        # The inline clear button appears only while there is text — so it is
+        # absent in the off state and reads as "turn this off" in the on one.
+        # Same control the two search fields in this window already use.
+        self.sys_hotkey_edit.setClearButtonEnabled(True)
         shk.addWidget(self.sys_hotkey_edit, 1)
         sys_pick = QPushButton("Change…")
         sys_pick.setAutoDefault(False)
@@ -2756,6 +2832,21 @@ class SettingsWindow(QDialog):
         find_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), page)
         find_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         find_shortcut.activated.connect(self._focus_help_find)
+        # F3 / Shift+F3 — the keys that step through matches in every editor
+        # and browser. Enter in the find field already steps, but only while
+        # the caret is still in it: reading a hit means clicking into the
+        # document or scrolling it, and from there the only way on was the
+        # mouse, back up to "Next". Same page scope as Ctrl+F above, so the
+        # History page's own search never sees them.
+        for standard, backwards in (
+            (QKeySequence.StandardKey.FindNext, False),
+            (QKeySequence.StandardKey.FindPrevious, True),
+        ):
+            step = QShortcut(QKeySequence(standard), page)
+            step.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            step.activated.connect(
+                lambda back=backwards: self._step_help_find(backwards=back)
+            )
         self._set_help_find_enabled("")
         return page
 
@@ -2764,6 +2855,20 @@ class SettingsWindow(QDialog):
         twice in a row replaces the old term instead of appending to it."""
         self.help_find_edit.setFocus()
         self.help_find_edit.selectAll()
+
+    def _step_help_find(self, *, backwards: bool) -> None:
+        """F3 / Shift+F3: go to the next (or previous) match.
+
+        With no term entered yet the caret goes into the find field instead of
+        the key doing nothing at all. A keystroke that silently does nothing is
+        indistinguishable from one the window never received — the same reason
+        the step buttons are disabled with a tooltip rather than left looking
+        clickable — and the field is where the term has to be typed anyway.
+        """
+        if not self.help_find_edit.text().strip():
+            self._focus_help_find()
+            return
+        self._find_in_help(backwards=backwards)
 
     def _set_help_find_enabled(self, text: str) -> None:
         """Enable the step buttons only while there is a term to step through,

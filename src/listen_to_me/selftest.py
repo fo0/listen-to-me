@@ -7273,6 +7273,54 @@ def _help_page_find():
             assert window.help_find_status.text() == "Not found"
             window._render_help()
             assert window.help_find_status.text() == ""
+
+            # F3 / Shift+F3 step through the matches from anywhere on the page.
+            # Enter does it too, but only while the caret is still in the find
+            # field — and reading a hit means clicking into the document.
+            from PySide6.QtCore import Qt as _QtStep
+            from PySide6.QtGui import QKeySequence, QShortcut
+
+            help_page = window.stack.widget(window._help_index)
+            bound = [
+                shortcut.key()
+                for shortcut in help_page.findChildren(QShortcut)
+                if shortcut.context() == _QtStep.ShortcutContext.WidgetWithChildrenShortcut
+            ]
+            for standard in (
+                QKeySequence.StandardKey.Find,
+                QKeySequence.StandardKey.FindNext,
+                QKeySequence.StandardKey.FindPrevious,
+            ):
+                assert QKeySequence(standard) in bound, standard
+
+            # Stepping actually moves, and wrapping keeps it honest — a term
+            # that is in the document never reports a failure, whichever
+            # direction it is stepped in.
+            window.help_find_edit.setText("OpenVINO")
+            window._step_help_find(backwards=False)
+            assert window.help_find_status.text() in ("", "Wrapped around")
+            window._step_help_find(backwards=True)
+            assert window.help_find_status.text() in ("", "Wrapped around")
+
+            # With nothing to look for, the key lands the caret in the find
+            # field rather than doing nothing at all — a keystroke that is
+            # silently ignored cannot be told from one that never arrived.
+            # Asserted through the handler, not through hasFocus(): the
+            # offscreen platform has no active window to grant focus to.
+            focused: list[bool] = []
+            real_focus = window._focus_help_find
+            window._focus_help_find = lambda: focused.append(True)
+            try:
+                window.help_find_edit.setText("")
+                window._step_help_find(backwards=False)
+                assert focused == [True]
+                assert window.help_find_status.text() == ""
+                # …and a term that is there is stepped, never re-focused.
+                window.help_find_edit.setText("OpenVINO")
+                window._step_help_find(backwards=False)
+                assert focused == [True]
+            finally:
+                window._focus_help_find = real_focus
         finally:
             window.force_close()
             window.deleteLater()
@@ -7366,6 +7414,17 @@ def _settings_window_edits_the_new_options():
         assert "<b>" not in hint.text(), hint.text()  # no host to quote at all
         window.chk_a_sys_enabled.setChecked(False)
         window.a_url_edit.setText(window.cfg["assistant"]["base_url"])
+
+        # --- the off state says so, and can be reached ----------------------
+        # Empty is this source's off switch AND its shipped default, so the
+        # field a first-time reader meets is blank under a label that promises
+        # a hotkey. The placeholder is the only thing on screen naming that
+        # state (the tooltip has to be hovered to be found), and the inline
+        # clear button is the only affordance for getting back to it — the way
+        # off used to be "select the combination and delete it".
+        placeholder = window.sys_hotkey_edit.placeholderText()
+        assert "off" in placeholder, placeholder
+        assert window.sys_hotkey_edit.isClearButtonEnabled()
 
         # --- _collect(): every new key round-trips --------------------------
         window.chk_filler.setChecked(False)
@@ -8895,6 +8954,76 @@ def _gui_construction():
             window._remove_target_row(unparseable)
             assert "()" not in _FakeRemoveBox.asked[-1], _FakeRemoveBox.asked[-1]
             assert unparseable not in window._target_rows
+
+            # The mute keybind is the third hotkey field in this window, and
+            # was the only one whose reason appeared nowhere but the modal at
+            # Save — after the page had been left, and about one of a dozen
+            # stacked rows. It now says so inline, under exactly the condition
+            # `_validate` refuses on. The real parser imports pynput, which the
+            # light run has not got, so it is stood in for as elsewhere.
+            class _FakeMuteHotkeys:
+                @staticmethod
+                def validate(combo):
+                    return combo == "<ctrl>+<alt>+m"
+
+            real_mute_hotkeys = _settings_module.Hotkeys
+            _settings_module.Hotkeys = _FakeMuteHotkeys
+            try:
+                window._add_target_row(
+                    {
+                        "name": "Discord",
+                        "enabled": True,
+                        "mode": "hold",
+                        "hotkey": "<ctrl>+<alt>+m",
+                    }
+                )
+                checked = window._target_rows[-1]
+                assert not checked._hotkey_error.text()
+                # A combination that does not parse is named at once…
+                checked.hotkey_edit.setText("not-a-combo")
+                assert "not a valid combination" in checked._hotkey_error.text(), (
+                    checked._hotkey_error.text()
+                )
+                # …and the reason rides on the field too, because a label is
+                # never announced to a screen reader whose focus is on the Save
+                # button that refused.
+                assert "not a valid combination" in checked.hotkey_edit.accessibleDescription()
+                # A row that is switched off may stay half-configured — Save
+                # skips it, so the inline note must not complain about it.
+                checked.chk_enabled.setChecked(False)
+                assert not checked._hotkey_error.text()
+                checked.chk_enabled.setChecked(True)
+                assert checked._hotkey_error.text()
+                # An EMPTY keybind is "not configured yet", never an error:
+                # "Other app…" adds an enabled row without one on purpose, and
+                # a red line on a row just created complains about the user's
+                # next keystroke.
+                checked.hotkey_edit.setText("")
+                assert not checked._hotkey_error.text()
+                window._remove_target_row(checked)
+                assert checked not in window._target_rows
+
+                # A row restored from a config that already holds a broken
+                # keybind carries the reason from construction — and it has to
+                # be a line inside the row. `setRowVisible(True)` shows the
+                # row's widgets, so a label the form had not reparented yet
+                # would open as a top-level window of its own instead.
+                window._add_target_row(
+                    {
+                        "name": "Discord",
+                        "enabled": True,
+                        "mode": "hold",
+                        "hotkey": "not-a-combo",
+                    }
+                )
+                born_broken = window._target_rows[-1]
+                assert born_broken._hotkey_error.text()
+                assert not born_broken._hotkey_error.isWindow()
+                assert born_broken._hotkey_error.window() is window
+                window._remove_target_row(born_broken)
+                assert born_broken not in window._target_rows
+            finally:
+                _settings_module.Hotkeys = real_mute_hotkeys
         finally:
             _settings_module.QMessageBox = real_remove_box
 

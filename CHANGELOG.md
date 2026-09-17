@@ -14,6 +14,16 @@ changes at a glance.
 
 ### Added
 
+- **`F3` and `Shift+F3` step through the matches in the Help page's search.**
+  The find field has had `Ctrl+F` and a pair of **Previous** / **Next**
+  buttons, and Enter stepped on — but only while the caret was still in the
+  field. Reading a hit means clicking into the document or scrolling it, and
+  from there the only way to the next one was the mouse, back up to the button
+  row above. The two keys every editor and browser binds for this now do it
+  from anywhere on the page, with the same wrap-around the buttons use. Pressed
+  with the field still empty they put the caret in it rather than doing
+  nothing, because a keystroke that is silently ignored cannot be told from one
+  the window never received.
 - **The transcript can now appear at the mouse pointer instead of beside the
   floating icon.** Settings → Overlay → **Show the transcript at** moves both
   previews — the rolling live one while you speak and the flash after a take —
@@ -271,6 +281,31 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **A mute keybind that does not parse now says so while you are typing it.**
+  Settings → Integrations stacks one row per app to mute, and its keybind was
+  the third hotkey field in the window — the only one still reporting itself
+  nowhere but the modal at Save. Both recording hotkeys have carried an inline
+  reason under the field for a while; this one kept an unparseable combination
+  without a word until Save refused it, by which point the page has usually
+  been left and the box has to name which of a dozen stacked rows it means. The
+  note appears under exactly the condition Save refuses on: the row is switched
+  on and its keybind is there but unreadable. An empty field stays quiet — the
+  **Other app…** entry adds an enabled row without a keybind on purpose — and
+  so does a row that is switched off, which may be left half-configured. The
+  reason is also set on the field itself, so it reaches a screen reader whose
+  focus is on the Save button.
+- **The system-audio hotkey field now says that empty means off, and offers
+  the way back.** Settings → Audio → **System audio** is switched on by putting
+  a combination in that field and off by emptying it — and empty is what it
+  ships as, so the first thing a reader meets there is a blank box under a
+  label promising a hotkey, which reads as something left unfilled rather than
+  as a source deliberately off. The field now carries that sentence as
+  placeholder text ("Empty — system audio recording is off"), visible exactly
+  while it is empty, instead of only in a tooltip nobody hovers a blank field
+  to find. And turning the source off again no longer means selecting the
+  combination and deleting it by hand: the field has the same inline clear
+  button the two search fields in this window use, shown only while there is
+  something to clear.
 - **"Reset to default" for the assistant system prompt asks before discarding
   an edited one.** The button sits directly above the box it overwrites, and
   the prompt is free text with no second copy anywhere — replacing it also
