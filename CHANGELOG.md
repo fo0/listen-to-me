@@ -14,6 +14,16 @@ changes at a glance.
 
 ### Added
 
+- **`F3` and `Shift+F3` step through the matches in the Help page's search.**
+  The find field has had `Ctrl+F` and a pair of **Previous** / **Next**
+  buttons, and Enter stepped on — but only while the caret was still in the
+  field. Reading a hit means clicking into the document or scrolling it, and
+  from there the only way to the next one was the mouse, back up to the button
+  row above. The two keys every editor and browser binds for this now do it
+  from anywhere on the page, with the same wrap-around the buttons use. Pressed
+  with the field still empty they put the caret in it rather than doing
+  nothing, because a keystroke that is silently ignored cannot be told from one
+  the window never received.
 - **The transcript can now appear at the mouse pointer instead of beside the
   floating icon.** Settings → Overlay → **Show the transcript at** moves both
   previews — the rolling live one while you speak and the flash after a take —

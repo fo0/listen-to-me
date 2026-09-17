@@ -7273,6 +7273,54 @@ def _help_page_find():
             assert window.help_find_status.text() == "Not found"
             window._render_help()
             assert window.help_find_status.text() == ""
+
+            # F3 / Shift+F3 step through the matches from anywhere on the page.
+            # Enter does it too, but only while the caret is still in the find
+            # field — and reading a hit means clicking into the document.
+            from PySide6.QtCore import Qt as _QtStep
+            from PySide6.QtGui import QKeySequence, QShortcut
+
+            help_page = window.stack.widget(window._help_index)
+            bound = [
+                shortcut.key()
+                for shortcut in help_page.findChildren(QShortcut)
+                if shortcut.context() == _QtStep.ShortcutContext.WidgetWithChildrenShortcut
+            ]
+            for standard in (
+                QKeySequence.StandardKey.Find,
+                QKeySequence.StandardKey.FindNext,
+                QKeySequence.StandardKey.FindPrevious,
+            ):
+                assert QKeySequence(standard) in bound, standard
+
+            # Stepping actually moves, and wrapping keeps it honest — a term
+            # that is in the document never reports a failure, whichever
+            # direction it is stepped in.
+            window.help_find_edit.setText("OpenVINO")
+            window._step_help_find(backwards=False)
+            assert window.help_find_status.text() in ("", "Wrapped around")
+            window._step_help_find(backwards=True)
+            assert window.help_find_status.text() in ("", "Wrapped around")
+
+            # With nothing to look for, the key lands the caret in the find
+            # field rather than doing nothing at all — a keystroke that is
+            # silently ignored cannot be told from one that never arrived.
+            # Asserted through the handler, not through hasFocus(): the
+            # offscreen platform has no active window to grant focus to.
+            focused: list[bool] = []
+            real_focus = window._focus_help_find
+            window._focus_help_find = lambda: focused.append(True)
+            try:
+                window.help_find_edit.setText("")
+                window._step_help_find(backwards=False)
+                assert focused == [True]
+                assert window.help_find_status.text() == ""
+                # …and a term that is there is stepped, never re-focused.
+                window.help_find_edit.setText("OpenVINO")
+                window._step_help_find(backwards=False)
+                assert focused == [True]
+            finally:
+                window._focus_help_find = real_focus
         finally:
             window.force_close()
             window.deleteLater()

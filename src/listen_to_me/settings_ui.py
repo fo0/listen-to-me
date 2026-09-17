@@ -2771,6 +2771,21 @@ class SettingsWindow(QDialog):
         find_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), page)
         find_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         find_shortcut.activated.connect(self._focus_help_find)
+        # F3 / Shift+F3 — the keys that step through matches in every editor
+        # and browser. Enter in the find field already steps, but only while
+        # the caret is still in it: reading a hit means clicking into the
+        # document or scrolling it, and from there the only way on was the
+        # mouse, back up to "Next". Same page scope as Ctrl+F above, so the
+        # History page's own search never sees them.
+        for standard, backwards in (
+            (QKeySequence.StandardKey.FindNext, False),
+            (QKeySequence.StandardKey.FindPrevious, True),
+        ):
+            step = QShortcut(QKeySequence(standard), page)
+            step.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            step.activated.connect(
+                lambda back=backwards: self._step_help_find(backwards=back)
+            )
         self._set_help_find_enabled("")
         return page
 
@@ -2779,6 +2794,20 @@ class SettingsWindow(QDialog):
         twice in a row replaces the old term instead of appending to it."""
         self.help_find_edit.setFocus()
         self.help_find_edit.selectAll()
+
+    def _step_help_find(self, *, backwards: bool) -> None:
+        """F3 / Shift+F3: go to the next (or previous) match.
+
+        With no term entered yet the caret goes into the find field instead of
+        the key doing nothing at all. A keystroke that silently does nothing is
+        indistinguishable from one the window never received — the same reason
+        the step buttons are disabled with a tooltip rather than left looking
+        clickable — and the field is where the term has to be typed anyway.
+        """
+        if not self.help_find_edit.text().strip():
+            self._focus_help_find()
+            return
+        self._find_in_help(backwards=backwards)
 
     def _set_help_find_enabled(self, text: str) -> None:
         """Enable the step buttons only while there is a term to step through,
