@@ -23,7 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 # Intel GPU/NPU transcription backend (Settings → Whisper → Backend = OpenVINO).
 openvino = [
-    "openvino-genai>=2025.2",
+    "openvino-genai>=2026.3.1.0",
     "huggingface_hub>=0.23",
 ]
 # NVIDIA Parakeet transcription backend (Settings → Whisper → Backend = Parakeet).
