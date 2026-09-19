@@ -23,6 +23,7 @@ import os
 import socket
 import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import IO
@@ -66,6 +67,42 @@ def _set_address_reuse(server: socket.socket) -> None:
             server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     except (OSError, AttributeError):
         log.debug("could not set the address option on the activation socket", exc_info=True)
+
+
+def _read_activate_token(conn: socket.socket) -> bool:
+    """Read the activation token under one deadline for the whole handshake.
+
+    ``settimeout()`` bounds a single ``recv()``, not the exchange: a peer that
+    dribbles one byte just under the timeout renews it on every call and can
+    hold the connection open for as long as it cares to. The accept loop is
+    deliberately serial — a later launch must not race an earlier one — so a
+    single such peer is enough to keep every genuine "show yourself" ping from
+    ever being served. Any local process can open that connection, since the
+    listener is reachable by everything on the loopback interface.
+
+    An absolute deadline bounds the handshake as a whole instead. A real ping
+    writes the token in one ``sendall`` and answers well inside it, so nothing
+    about the legitimate path changes.
+
+    Returns True only for the exact token. That exact-match is also what keeps
+    a browser from forging a ping at this port on a malicious page's behalf:
+    every HTTP request starts with its method and URL, never with our token.
+    """
+    deadline = time.monotonic() + _PING_TIMEOUT
+    data = b""
+    while len(data) < len(_ACTIVATE_TOKEN):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False  # out of time — treat it as foreign, not as a ping
+        conn.settimeout(remaining)
+        try:
+            chunk = conn.recv(len(_ACTIVATE_TOKEN) - len(data))
+        except TimeoutError:
+            return False
+        if not chunk:
+            break  # peer closed early
+        data += chunk
+    return data == _ACTIVATE_TOKEN
 
 
 class SingleInstance:
@@ -114,14 +151,12 @@ class SingleInstance:
             except OSError:
                 return  # socket closed by release() / interpreter teardown
             try:
-                conn.settimeout(_PING_TIMEOUT)
-                data = b""
-                while len(data) < len(_ACTIVATE_TOKEN):
-                    chunk = conn.recv(len(_ACTIVATE_TOKEN) - len(data))
-                    if not chunk:
-                        break
-                    data += chunk
-                if data == _ACTIVATE_TOKEN:
+                if _read_activate_token(conn):
+                    # A fresh timeout for the reply: the read above may have
+                    # spent the deadline down to near zero, and that value
+                    # would otherwise make sendall() fail on a slow-but-honest
+                    # ping.
+                    conn.settimeout(_PING_TIMEOUT)
                     conn.sendall(b"OK\n")
                     on_activate()
                 else:
