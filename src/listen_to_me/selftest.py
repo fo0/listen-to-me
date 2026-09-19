@@ -3342,6 +3342,77 @@ def _activation_port_is_exclusive():
         holder.release()
 
 
+def _activation_handshake_has_a_deadline():
+    """A peer that dribbles bytes cannot hold the activation channel open.
+
+    The read timeout applies per recv(), so one byte sent just under it renews
+    the clock forever; the accept loop is serial, so that one connection would
+    starve every real "show yourself" ping. The whole handshake therefore runs
+    under one absolute deadline. Asserted through a real socket, and against
+    the outcome (the dribbler is dropped, the next honest ping is served)
+    rather than against how the deadline is implemented.
+    """
+    import select
+    import socket
+    import threading
+    import time
+
+    from listen_to_me import singleinstance
+
+    holder = singleinstance.SingleInstance(0)
+    try:
+        fired = threading.Event()
+        port = holder.start_server(fired.set)
+        assert port, "activation server must bind an OS-assigned port"
+
+        token = singleinstance._ACTIVATE_TOKEN
+        timeout = singleinstance._PING_TIMEOUT
+        dribble = 16  # fewer bytes than the token, sent over ~4s
+        slow = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        try:
+            # Dribble a byte at a time, faster than the per-recv timeout and
+            # never completing the token. That the peer is dropped *eventually*
+            # proves nothing — a per-recv timeout drops it too, just one
+            # timeout after its last byte, which the peer itself decides when
+            # to send. What matters is how long it held the channel, measured
+            # from connect: the deadline caps that, renewing a per-recv
+            # timeout does not.
+            started = time.monotonic()
+            held = None
+            for i in range(dribble):
+                if select.select([slow], [], [], 0)[0]:
+                    held = time.monotonic() - started  # server hung up on us
+                    break
+                try:
+                    slow.sendall(token[i : i + 1])
+                except OSError:
+                    held = time.monotonic() - started
+                    break
+                time.sleep(timeout / 8)
+            if held is None:
+                slow.settimeout(timeout * 4)
+                try:
+                    slow.recv(16)
+                except OSError:
+                    pass  # reset or timed out — either way the wait is over
+                held = time.monotonic() - started
+            # Halfway between the two outcomes, ~2s of slack either way: with
+            # the deadline the drop lands near `timeout`, without it near
+            # `dribble * timeout / 8 + timeout` — about 6s for these numbers.
+            assert held < timeout * 2, (
+                f"the dribbling peer held the activation channel for {held:.1f}s; "
+                f"the whole handshake must end within {timeout:.1f}s"
+            )
+        finally:
+            slow.close()
+
+        assert not fired.is_set(), "a partial token must never count as a ping"
+        assert singleinstance.notify_running_instance(port), "the honest ping was not served"
+        assert fired.wait(5.0), "the activation callback never ran"
+    finally:
+        holder.release()
+
+
 def _icon_render():
     from listen_to_me.icons import mic_image
 
@@ -10440,6 +10511,7 @@ _LIGHT_CHECKS = [
     ("recorder counts dropped buffers", _recorder_counts_dropped_buffers),
     ("single-instance guard", _single_instance_guard),
     ("activation port is exclusive", _activation_port_is_exclusive),
+    ("activation handshake has a deadline", _activation_handshake_has_a_deadline),
     ("live typing logic", _live_typing_logic),
     ("icon render", _icon_render),
     ("key picker key mapping", _key_mapping),
