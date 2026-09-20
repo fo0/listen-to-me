@@ -27,7 +27,7 @@ Diff-based by default. Full-codebase only on explicit user request (`/security-r
 
 ```
 1. git status + git diff                              → identify changed files
-2. Read CLAUDE.md "Architecture Principles" + Secrets  → understand trust boundaries
+2. Read CLAUDE.md _Coding Conventions_ + _Environment Variables_  → understand trust boundaries
 3. Read every changed file completely
 4. Work the current OWASP Top 10 (see Coverage), then the checklist below
 5. Run security-relevant tooling (see Tooling)

@@ -73,7 +73,7 @@ Run `git status` and verify no unexpected files are staged (stray `.claude/**`, 
 wc -c CLAUDE.md MEMORY.md SCRATCHPAD.md 2>/dev/null
 ```
 
-Over 20,000 / 16,000 / 8,000 chars → offload per `agent_docs/context_budget.md` **now**, in this commit: move content to `agent_docs/` (or `docs/adr/`, `agent_docs/memory_archive/`) and leave a one-line pointer. Never delete to fit. This is the closure gate that keeps the always-loaded files from drifting — deferring it just moves the cost to every future session.
+Over 14,000 / 16,000 / 8,000 chars → offload per `agent_docs/context_budget.md` **now**, in this commit: move content to `agent_docs/` (or `docs/adr/`, `agent_docs/memory_archive/`) and leave a one-line pointer. Never delete to fit. This is the closure gate that keeps the always-loaded files from drifting — deferring it just moves the cost to every future session.
 
 ### 6. Commit uncommitted changes (if any)
 
