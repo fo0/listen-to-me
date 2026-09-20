@@ -34,7 +34,7 @@ them; ONLY the safe subset when running autonomously.
 ## 3 · Check the current stack
 
 - Run `compat_check` with `project:"fo0/listen-to-me"` and the current stack. **There is no
-  lock file here** (CLAUDE.md → Dependency Management): take the installed versions from
+  lock file here** (CLAUDE.md → Git Conventions): take the installed versions from
   `pip list --format=freeze` when a venv is available, otherwise the declared bounds in
   `requirements.txt` + `pyproject.toml`.
 - Read: `summary`, flagged pairs in `results`, `derived` peer/advisory findings, and
