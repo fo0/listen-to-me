@@ -932,8 +932,8 @@ The result is `dist/ListenToMe.exe`.
 That build ships the **faster-whisper backend only**. The released exe also
 contains the optional OpenVINO and Parakeet backends — selecting one of them in
 a build without them fails with a "needs the optional package" message instead.
-To match the release, install their packages and collect them too (this is
-exactly what [`release.yml`](.github/workflows/release.yml) does):
+To get those backends too, install their packages (the same versions
+[`release.yml`](.github/workflows/release.yml) installs):
 
 ```bash
 pip install "openvino-genai>=2025.2" "huggingface_hub>=0.23" "onnx-asr[cpu,hub]>=0.12"
@@ -945,6 +945,15 @@ and add these four flags to the `pyinstaller` call above:
 --collect-all openvino --collect-all openvino_genai \
 --collect-all openvino_tokenizers --collect-all onnx_asr
 ```
+
+**One difference stays either way.** `release.yml` also builds PortAudio from a
+commit-pinned checkout and bundles the result with
+`--add-binary "<built portaudio.dll>;."`, which is what gives the released exe a
+`… [Loopback]` input for every output device
+([ADR-0010](docs/adr/0010-the-windows-release-ships-its-own-portaudio.md)). A
+locally built exe carries no such DLL, so recording system audio there still
+needs "Stereo Mix" or a virtual cable — exactly as
+[running from source](#run-from-source) does.
 
 ## Releases (CI)
 
