@@ -6480,7 +6480,7 @@ def _the_take_starts_the_preview_its_anchor_needs():
 _STALE_PLACEMENT_PHRASES = ("next to the icon", "beside the icon")
 
 
-def _config_source_block(key: str) -> str:
+def _config_source_block(key: str) -> str | None:
     """The source text of one top-level `config.DEFAULTS` block, comments and all.
 
     `DEFAULTS` is a plain dict literal, so its comments are gone by the time
@@ -6494,10 +6494,22 @@ def _config_source_block(key: str) -> str:
     moved or re-indented block has to fail loudly here, never quietly match
     nothing and hand the caller an empty string that passes every phrase test
     it is put to.
+
+    Returns `None` when there is no `config.py` on disk to read. The one-file
+    build ships compiled bytecode and no sources, so `--selftest` on the
+    frozen exe — the release job's gate — has nothing to open. That is a
+    missing *input*, deliberately kept apart from the loud failure above: a
+    guard that cannot run says so and the caller reports the skip, while a
+    block that moved still has to fail. Conflating the two would let a
+    renamed block pass as "not checkable here".
     """
     from listen_to_me import config
 
-    source = Path(config.__file__).read_text(encoding="utf-8")
+    path = Path(getattr(config, "__file__", "") or "")
+    if not path.is_file():
+        return None
+
+    source = path.read_text(encoding="utf-8")
     opening = f'\n    "{key}": {{\n'
     start = source.find(opening)
     assert start >= 0, f"no top-level {key!r} block in config.py — renamed or re-indented?"
@@ -6531,6 +6543,7 @@ def _overlay_preview_anchor_round_trips():
     app = _ensure_qapp()
     apply_theme(app)
 
+    source_note = ""
     with tempfile.TemporaryDirectory() as tmp:
         stub = _StubApp(Path(tmp))
         window = SettingsWindow(stub)
@@ -6572,8 +6585,18 @@ def _overlay_preview_anchor_round_trips():
             # settings tables and in the Settings hint, and a guard that grows
             # until it greps the repo is a different, worse check.
             overlay_block = _config_source_block("overlay")
-            for phrase in _STALE_PLACEMENT_PHRASES:
-                assert phrase not in overlay_block, (phrase, overlay_block)
+            if overlay_block is None:
+                # The frozen exe carries bytecode, not sources, so this half
+                # has nothing to read — and the release job runs exactly that
+                # exe. Reported as a note rather than failed: the comments it
+                # guards cannot drift between the checkout that CI reads and
+                # the build made from it, so the guard is covered where it can
+                # actually run, and a release must not be held by a check whose
+                # input the build format removed.
+                source_note = "config.py comments unchecked — a frozen build ships no sources"
+            else:
+                for phrase in _STALE_PLACEMENT_PHRASES:
+                    assert phrase not in overlay_block, (phrase, overlay_block)
 
             combo.setCurrentIndex(combo.findData(ANCHOR_CURSOR))
             values = window._collect()
@@ -6605,6 +6628,10 @@ def _overlay_preview_anchor_round_trips():
         finally:
             window.deleteLater()
             app.processEvents()
+
+    # Empty from a source checkout, so the report reads as a plain OK there
+    # and names the skipped half only where it was actually skipped.
+    return source_note
 
 
 def _overlay_counts_the_recording_time():
