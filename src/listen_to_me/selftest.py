@@ -388,6 +388,73 @@ def _history_latest_transcript():
         assert store.latest() == ""
 
 
+def _history_refuses_to_overwrite_an_unreadable_file():
+    """A history file that cannot be read is its own answer — and is kept.
+
+    Two failures in one, both silent until now. A file that could not be read
+    came back as an empty list, so every surface told the user "no transcripts
+    yet" about dictations that are still in the file. And the very next
+    dictation appended to that empty list and *saved* it, so a history that
+    was still rescuable by hand became a file holding one transcript — a
+    transient read failure (a backup or virus scanner holding the file open on
+    Windows is enough) was all it took.
+
+    `entries`, `add` and `remove` therefore raise `HistoryUnavailable` and
+    write nothing; `clear` keeps writing without reading, because it is the
+    way back from exactly this state. `latest()` keeps its own contract — it
+    feeds a menu click, not a view — and is asserted here so the two answers
+    can never be quietly swapped.
+
+    A readable list holding unusable *entries* must NOT raise: that is the
+    normalization the renderers depend on, not an unreadable file.
+    """
+    import json
+
+    from listen_to_me.history import HistoryUnavailable, TranscriptHistory
+
+    def _raises(call) -> bool:
+        try:
+            call()
+        except HistoryUnavailable:
+            return True
+        return False
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "history.json"
+        store = TranscriptHistory(path)
+        # No file at all is an empty history, not a broken one.
+        assert store.entries() == [] and store.latest() == ""
+        store.add("first")
+        store.add("second")
+        assert [e["text"] for e in store.entries()] == ["second", "first"]
+
+        for broken in ("{ truncated", '{"text": "not a list"}', ""):
+            path.write_text(broken, encoding="utf-8")
+            assert _raises(store.entries), broken
+            assert _raises(lambda: store.add("a dictation made while it was broken")), broken
+            assert _raises(lambda: store.remove("second")), broken
+            # …and every one of those refusals left the file exactly as it was,
+            # which is what makes rescuing it by hand still possible.
+            assert path.read_text(encoding="utf-8") == broken, broken
+            # The menu click keeps answering "" rather than raising into a
+            # handler — App already reports an empty answer for it.
+            assert store.latest() == "", broken
+
+        # The escape hatch: clearing writes without reading, so it repairs the
+        # file instead of being blocked by it.
+        store.clear()
+        assert store.entries() == []
+        store.add("after the repair")
+        assert [e["text"] for e in store.entries()] == ["after the repair"]
+
+        # A readable list is readable however odd its entries are.
+        path.write_text(
+            json.dumps([{"time": 1.0, "text": "kept"}, {"time": 2.0, "text": 42}, "junk"]),
+            encoding="utf-8",
+        )
+        assert [e["text"] for e in store.entries()] == ["kept"]
+
+
 def _history_export_format():
     """What Settings → History → "Export…" writes: one block per transcript,
     the local timestamp above the text, blocks separated by a blank line. A
@@ -7460,6 +7527,110 @@ def _help_page_find():
             window.deleteLater()
 
 
+def _surfaces_name_an_unreadable_history():
+    """Every surface that lists transcripts says "could not be read" for a
+    history file that could not be read — including the History page, which
+    was the one that did not.
+
+    Three of the four already had the wording and could never reach it: the
+    store answered an unreadable file with an empty list, so the tray menu,
+    the floating icon's menu and the Home page's recent panel all fell into
+    their "nothing stored yet" branch instead. Asserted here together rather
+    than one check per surface, because the bug was never in any of them — it
+    was the one answer they all share, and a fix that only reached the page
+    the user opens last would leave three menus still saying the dictations
+    are gone.
+
+    The History page additionally has to keep "Clear history…" usable: it is
+    the only way back to a working history, and the rule it breaks to do so
+    (a destructive button is offered only when there is something to destroy)
+    is worth breaking exactly here. Export and "Copy all" stay off — an
+    export of a history that could not be read would be an empty file
+    presented as its contents.
+    """
+    from listen_to_me import tray as tray_module
+    from listen_to_me.overlay import Overlay
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    from PySide6.QtWidgets import QLabel
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+        try:
+            window._show_page("History")
+            window._refresh_history()
+
+            def _page_text() -> str:
+                return " ".join(
+                    label.text() for label in window._history_inner.findChildren(QLabel)
+                )
+
+            assert "A stored transcript" in _page_text()  # the readable baseline
+
+            # Whatever made it unreadable, the page has to stop claiming the
+            # history is empty — and has to name the file, which is where the
+            # transcripts still are. (The path survives `elastic_label`: that
+            # helper only changes how wide the label asks to be.)
+            stub.history.path.write_text("{ truncated", encoding="utf-8")
+            window._refresh_history()
+            shown = _page_text()
+            assert "could not be read" in shown, shown
+            assert "No transcripts yet" not in shown, shown
+            assert str(stub.history.path) in shown, shown
+            assert window.history_count_label.text() == ""
+            assert window.history_clear_button.isEnabled(), "no way back from a broken file"
+            assert "new, empty history" in window.history_clear_button.toolTip()
+            assert not window.history_export_button.isEnabled()
+            assert not window.history_copy_all_button.isEnabled()
+            assert window._history_export_entries == []
+
+            # The Home page's recent panel, one page over — its wording existed
+            # all along and was unreachable.
+            window.home._refresh_recent()
+            home_text = " ".join(
+                label.text() for label in window.home._recent_frame.findChildren(QLabel)
+            )
+            assert "Could not read the transcript history." in home_text, home_text
+
+            # Both menus, which are what someone with the settings window
+            # closed actually looks at.
+            tray = tray_module.Tray(stub)
+            tray.start()
+            try:
+                tray._fill_recent_menu()
+                labels = [action.text() for action in tray._recent_menu.actions()]
+                assert labels == ["Could not read the history"], labels
+                assert not tray._recent_menu.actions()[0].isEnabled()
+            finally:
+                tray.stop()
+
+            overlay = Overlay(stub)
+            try:
+                overlay._fill_recent_menu()
+                labels = [action.text() for action in overlay._recent_menu.actions()]
+                assert labels == ["Could not read the history"], labels
+                assert not overlay._recent_menu.actions()[0].isEnabled()
+            finally:
+                overlay.destroy()
+
+            # Clearing repairs the file, and the page goes back to its ordinary
+            # empty state — the one that does promise the list will fill up.
+            stub.history.clear()
+            window._refresh_history()
+            shown = _page_text()
+            assert "could not be read" not in shown, shown
+            assert "No transcripts yet" in shown, shown
+            assert not window.history_clear_button.isEnabled()
+        finally:
+            window.force_close()
+            window.deleteLater()
+
+
 def _settings_window_edits_the_new_options():
     """The Settings surfaces of #190/#191: the filler phrase list on the Engine
     page, the "System audio" card on the Audio page, and the second assistant
@@ -10522,6 +10693,8 @@ _LIGHT_CHECKS = [
     ("history search matches the date", _history_search_matches_the_date),
     ("history preview cuts long transcripts", _history_preview_cuts_long_transcripts),
     ("history deletes one entry", _history_delete_one_entry),
+    ("history refuses to overwrite an unreadable file",
+     _history_refuses_to_overwrite_an_unreadable_file),
     ("history export format", _history_export_format),
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
@@ -10622,6 +10795,7 @@ _LIGHT_CHECKS = [
     ("tray switches the dictation language", _tray_switches_the_dictation_language),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("source-aware controls stop their take", _source_aware_controls_stop_their_take),
+    ("surfaces name an unreadable history", _surfaces_name_an_unreadable_history),
     ("settings window edits the new options", _settings_window_edits_the_new_options),
     ("system audio picker reads as an output picker",
      _system_audio_picker_reads_as_an_output_picker),

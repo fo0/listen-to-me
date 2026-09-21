@@ -161,6 +161,11 @@ standalone system-tray app that works in _every_ application.
   on the clipboard — and a **Recent transcripts** submenu in both of those
   menus lists the last five, so the one before last is a click away too,
   whichever of the two icons you work from.
+  If the history file itself ever **cannot be read** — a hand-edit gone wrong,
+  a backup tool holding it open — you are told exactly that instead of being
+  shown an empty history, and nothing is written over it: your transcripts stay
+  in the file, so they can still be rescued with a text editor. **Clear
+  history…** starts a fresh one when you no longer need them.
 - **Switch the dictation language from the tray** — **Dictation language** in
   the tray menu lists the same languages as Settings → Engine and ticks the one
   in use, so the next recording is transcribed in another language without
