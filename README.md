@@ -97,7 +97,10 @@ standalone system-tray app that works in _every_ application.
   useful form: no icon anywhere, the text where you are looking. Either way the
   bubble never takes the click, so you can keep clicking and typing underneath
   it, and it obeys the **always-on-top** switch like the icon does — with that
-  off, other windows may cover the bubble too. It remembers the
+  off, other windows may cover the bubble too. A **long transcript is shortened
+  to its opening** in the bubble, so a recorded fifteen-minute meeting no longer
+  covers the whole screen with a column of text for the preview time — the full
+  text is what was inserted at the cursor and what **History** keeps. It remembers the
   **monitor** you drag it to, not just a screen coordinate, so it comes back
   there after a restart, after a reboot that brings the second screen up late,
   and after a monitor is unplugged and reconnected. A built-in watchdog checks
@@ -158,6 +161,11 @@ standalone system-tray app that works in _every_ application.
   on the clipboard — and a **Recent transcripts** submenu in both of those
   menus lists the last five, so the one before last is a click away too,
   whichever of the two icons you work from.
+  If the history file itself ever **cannot be read** — a hand-edit gone wrong,
+  a backup tool holding it open — you are told exactly that instead of being
+  shown an empty history, and nothing is written over it: your transcripts stay
+  in the file, so they can still be rescued with a text editor. **Clear
+  history…** starts a fresh one when you no longer need them.
 - **Switch the dictation language from the tray** — **Dictation language** in
   the tray menu lists the same languages as Settings → Engine and ticks the one
   in use, so the next recording is transcribed in another language without

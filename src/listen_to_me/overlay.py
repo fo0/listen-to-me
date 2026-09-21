@@ -35,7 +35,7 @@ from PySide6.QtWidgets import QLabel, QMenu, QVBoxLayout, QWidget
 
 from .audio import SAMPLE_RATE, band_levels
 from .choices import SOURCE_MIC, SOURCE_SYSTEM, source_label
-from .history import entry_timestamp
+from .history import entry_timestamp, preview_text
 from .keymap import hotkey_label
 
 # From the tray on purpose, private constants included: the take clock, the
@@ -60,6 +60,17 @@ _TOGGLE_DEBOUNCE_S = 0.4  # ignore a second click this soon after one (see mouse
 _BUBBLE_BG = "#202124"
 _BUBBLE_FG = "#f1f3f4"
 _LIVE_TAIL_CHARS = 240  # live preview shows only the most recent text
+# …and the finished transcript shows only its opening. The bubble is a
+# frameless always-on-top window that grows with its label, so an uncapped
+# transcript decides its own height: fifteen minutes of recorded system audio
+# (system_audio.max_seconds) is one column of text taller than any screen,
+# parked over every other window for overlay.preview_seconds and taking the
+# whole desktop with it. The preview says "this is what was understood"; the
+# full text is what went to the cursor and what Settings → History keeps.
+# Same limits in spirit as the collapsed History row (history.PREVIEW_*),
+# scaled to the bubble's own _BUBBLE_MAX_W column rather than to a page.
+_FLASH_MAX_CHARS = 480
+_FLASH_MAX_LINES = 12
 _BUBBLE_MAX_W = 320
 _LEVEL_POLL_MS = 50  # feed mic band levels to the widget ~20x/s while recording
 _LEVEL_WINDOW_FRAMES = SAMPLE_RATE // 10  # analyze the most recent 100 ms
@@ -1227,9 +1238,25 @@ class Overlay:
         self._show_bubble(text)
 
     def flash(self, text: str) -> None:
-        """Show the final transcript briefly, then hide the bubble."""
+        """Show the opening of the final transcript briefly, then hide the bubble.
+
+        Bounded like the live preview above, and for the same reason it is:
+        this window has no scrollbar and no maximum height, so whatever it is
+        handed becomes its size. The live preview keeps the *tail* — it is a
+        rolling caption of what is being said right now — while a finished
+        transcript is read from the top, so this one keeps the opening and the
+        "…" says the rest was cut. Nothing is lost by the cut: the whole text
+        went to the cursor, the clipboard rule decides whether it is also
+        there, and Settings → History keeps it.
+
+        Cut by the History page's own rule (`history.preview_text`) rather
+        than a second one written here: both are "the opening of a transcript,
+        ending on a whole word", and two spellings of that would show the user
+        two different previews of the same dictation.
+        """
         self._flash_timer.stop()
-        self._show_bubble(text)
+        shown, _truncated = preview_text(text, _FLASH_MAX_CHARS, _FLASH_MAX_LINES)
+        self._show_bubble(shown)
         try:
             seconds = int(self.app.cfg["overlay"].get("preview_seconds", 6))
         except (TypeError, ValueError):

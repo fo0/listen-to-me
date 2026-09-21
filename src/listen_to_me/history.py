@@ -4,6 +4,9 @@ Keeps the most recent transcripts in a small JSON file next to the config so a
 transcript can be recovered from Settings → History if a paste is lost. Only the
 text is stored — never the audio. Thread-safe: the recording worker appends
 while the settings window reads/clears on the main thread.
+
+A file that exists but cannot be read is its own answer (`HistoryUnavailable`),
+never an empty list: see that class for what the difference costs.
 """
 
 from __future__ import annotations
@@ -19,6 +22,26 @@ from .config import atomic_write_json
 log = logging.getLogger(__name__)
 
 DEFAULT_MAX_ENTRIES = 200
+
+
+class HistoryUnavailable(RuntimeError):
+    """The history file is there but could not be read.
+
+    Raised instead of reporting an empty history, because the two are the
+    opposite news: "no transcripts yet" promises the list will fill up, while
+    this one means transcripts exist that nobody can see. Every surface that
+    lists transcripts already tells the two apart (the tray and floating-icon
+    menus, the Home page's recent rows, the History page) — until this
+    existed, a file that could not be read reached all four as an empty list
+    and they all said the dictations were gone.
+
+    It also stops `add` from writing: a read that failed leaves the stored
+    entries unknown, and appending one transcript on top of that assumption
+    turns a file that could still be rescued by hand into a file with exactly
+    one dictation in it. Same contract as `Config.save()`, which refuses to
+    overwrite a config file it could not read. "Clear history…" is the way
+    back — it writes without reading, so it repairs a broken file on purpose.
+    """
 
 
 # The characters a search term may consist of to be matched against an entry's
@@ -200,7 +223,13 @@ class TranscriptHistory:
 
     def add(self, text: str, timestamp: float | None = None) -> None:
         """Append a transcript. Blank text and exact consecutive duplicates
-        (e.g. the same take retried) are ignored."""
+        (e.g. the same take retried) are ignored.
+
+        Raises `HistoryUnavailable` — and writes nothing — when the stored
+        file could not be read: see there. The caller in `app._process`
+        already logs it, and the transcript itself is unaffected, so a broken
+        history file costs the record of the dictation, never the dictation.
+        """
         text = (text or "").strip()
         if not text:
             return
@@ -215,7 +244,12 @@ class TranscriptHistory:
             self._save(entries)
 
     def entries(self) -> list[dict]:
-        """All stored transcripts, newest first."""
+        """All stored transcripts, newest first.
+
+        Raises `HistoryUnavailable` when the file cannot be read, so a list
+        that could not be produced is never rendered as an empty one. Every
+        caller that lists transcripts is a view and already handles it.
+        """
         with self._lock:
             return list(reversed(self._load()))
 
@@ -224,9 +258,20 @@ class TranscriptHistory:
 
         Read from the file rather than a cached value: the recording worker
         appends here while the main thread (tray → "Copy last transcript")
-        reads, and the file is the single source both already agree on."""
+        reads, and the file is the single source both already agree on.
+
+        The one reader that swallows `HistoryUnavailable` instead of passing
+        it on: this answers a menu click that puts text on the clipboard, not
+        a view, so there is nothing here to render the difference into — and
+        an exception out of a menu handler is the failure mode this has always
+        promised not to have. The user learns which of the two it was from the
+        surfaces that do list transcripts.
+        """
         with self._lock:
-            entries = self._load()
+            try:
+                entries = self._load()
+            except HistoryUnavailable:
+                return ""
         return entries[-1]["text"] if entries else ""
 
     def remove(self, text: str, timestamp: float | None = None) -> bool:
@@ -243,6 +288,11 @@ class TranscriptHistory:
         The newest match wins when the same text was dictated twice at the
         same second: it is the row nearest the top of the list the user just
         clicked in.
+
+        Raises `HistoryUnavailable` — and deletes nothing — when the file
+        cannot be read: a delete that cannot see the other entries would write
+        them away with the one it was asked to remove. The History page says
+        so instead of reporting the transcript as already gone.
         """
         text = str(text or "")
         with self._lock:
@@ -259,6 +309,13 @@ class TranscriptHistory:
         return False
 
     def clear(self) -> None:
+        """Drop every stored transcript.
+
+        Writes without reading, deliberately: this is also the way back from a
+        file that `_load` refuses (see `HistoryUnavailable`), and a clear that
+        first had to read the entries it is about to delete would be the one
+        action that cannot repair the file it exists to replace.
+        """
         with self._lock:
             self._save([])
 
@@ -270,20 +327,33 @@ class TranscriptHistory:
         straight to QLabel by the History/Home renderers — a non-string "text"
         (e.g. a number) would raise there. Keeping only entries with a
         non-empty string keeps every consumer, including add()'s duplicate
-        check, on a known type."""
+        check, on a known type.
+
+        No file at all is an empty history and returns ``[]``. A file that is
+        there but cannot be turned into a list of entries raises
+        `HistoryUnavailable` instead — see there for why the two must not
+        arrive as the same answer. Unusable *entries inside* a readable list
+        are still dropped rather than raised over: that is one transcript
+        nobody can render, not a file nobody can read.
+        """
         try:
-            if self.path.exists():
-                with open(self.path, encoding="utf-8") as fh:
-                    data = json.load(fh)
-                if isinstance(data, list):
-                    return [
-                        e
-                        for e in data
-                        if isinstance(e, dict) and isinstance(e.get("text"), str) and e["text"]
-                    ]
-        except Exception:
+            if not self.path.exists():
+                return []
+            with open(self.path, encoding="utf-8") as fh:
+                data = json.load(fh)
+        except Exception as exc:
             log.exception("could not read transcript history %s", self.path)
-        return []
+            raise HistoryUnavailable(f"{self.path}: {exc}") from exc
+        if not isinstance(data, list):
+            log.error(
+                "transcript history %s holds %s, not a list of entries",
+                self.path,
+                type(data).__name__,
+            )
+            raise HistoryUnavailable(f"{self.path}: the file holds no list of transcripts")
+        return [
+            e for e in data if isinstance(e, dict) and isinstance(e.get("text"), str) and e["text"]
+        ]
 
     def _save(self, entries: list[dict]) -> None:
         try:

@@ -4887,12 +4887,16 @@ class SettingsWindow(QDialog):
         self._history_filter_timer.start()
 
     def _refresh_history(self) -> None:
-        from .history import filter_entries
+        from .history import HistoryUnavailable, filter_entries
 
         self._history_rendered = True
         self._history_filter_timer.stop()  # a pending re-render is this one
         self._clear_history_rows()
-        stored = self.app.history.entries()
+        try:
+            stored = self.app.history.entries()
+        except HistoryUnavailable as exc:
+            self._render_unreadable_history(exc)
+            return
         # Deleting nothing is not a destructive action worth offering.
         self.history_clear_button.setEnabled(bool(stored))
         self.history_clear_button.setToolTip(
@@ -4946,6 +4950,51 @@ class SettingsWindow(QDialog):
         for entry in shown:
             self._history_layout.insertWidget(insert_at, self._history_row(entry))
             insert_at += 1
+
+    def _render_unreadable_history(self, problem: Exception) -> None:
+        """The History page for a history file that could not be read.
+
+        The page used to show "No transcripts yet — the text of your next
+        dictation shows up here." for this, which is the opposite of what
+        happened: the transcripts are still in the file, and the sentence sent
+        the user off to dictate a new one. So this names the file, says the
+        stored text is untouched, and points at the one action that helps.
+
+        "Clear history…" stays *enabled* here, against the rule right above it
+        that a destructive button is only offered when there is something to
+        destroy: it is the only way back to a working history (it writes
+        without reading — see `TranscriptHistory.clear`), and the file it
+        replaces is one nothing in this app can read anyway. Its tooltip says
+        exactly that, so the click is not a surprise.
+
+        Export and "Copy all" are emptied like every other path that has no
+        entries — handing out an empty export of a history that exists would
+        be the same false answer in a file.
+
+        Logs nothing of its own on purpose: `TranscriptHistory._load` already
+        writes the failure with its traceback, and this runs again for every
+        keystroke in the search field above — a second line here would double
+        a log that is already one entry per re-render.
+        """
+        self._set_history_export([], self.history_filter_edit.text().strip())
+        self.history_count_label.setText("")
+        self.history_clear_button.setEnabled(True)
+        self.history_clear_button.setToolTip(
+            "Start a new, empty history. The unreadable file is replaced — copy "
+            "anything you still want out of it first."
+        )
+        # Elastic and selectable: the sentence carries a file path, which is an
+        # unbreakable word that would otherwise widen the page — and a path the
+        # user cannot select is a path they cannot paste into the file manager.
+        self._history_layout.insertWidget(0, self._hint(
+            f"The transcript history could not be read ({problem}). Nothing is "
+            "listed and nothing is stored until it can be read again — your "
+            "transcripts are still in that file, untouched, so open it in a text "
+            "editor if you need them. “Clear history…” below starts a new, empty "
+            "one. The log file has the details.",
+            elastic=True,
+            selectable=True,
+        ))
 
     def _history_row(self, entry: dict) -> QWidget:
         # str(): the store normalizes this, but the value is untrusted input and
@@ -5196,6 +5245,8 @@ class SettingsWindow(QDialog):
         recording made while this page sat open) must not look like it worked:
         the list is re-rendered either way and says so.
         """
+        from .history import HistoryUnavailable
+
         text = str(entry.get("text", ""))
         preview = text.replace("\n", " ")
         if len(preview) > 80:
@@ -5208,19 +5259,42 @@ class SettingsWindow(QDialog):
         if confirm != QMessageBox.StandardButton.Yes:
             return
         removed = False
+        unreadable = False
         try:
             removed = self.app.history.remove(text, entry.get("time"))
+        except HistoryUnavailable:
+            # Nothing was deleted, and saying "no longer in the history" here
+            # would report the transcript as gone when the whole file is what
+            # could not be read. _refresh_history below puts the page into the
+            # state that explains it; this message only has to not lie.
+            log.exception("could not delete the transcript")
+            unreadable = True
         except Exception:
             log.exception("could not delete the transcript")
         self._refresh_history()
-        if not removed:
+        if unreadable:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "The transcript history could not be read, so nothing was deleted — "
+                "your transcripts are still in the file. See the note on this page.",
+            )
+        elif not removed:
             QMessageBox.warning(
                 self, APP_NAME,
                 "That transcript is no longer in the history — the list has been refreshed.",
             )
 
     def _clear_history(self) -> None:
-        if not self.app.history.entries():
+        from .history import HistoryUnavailable
+
+        try:
+            has_entries = bool(self.app.history.entries())
+        except HistoryUnavailable:
+            # The stored entries cannot be counted, so "there is nothing to
+            # delete" is not an answer this may give — and clearing is exactly
+            # what repairs such a file (see _render_unreadable_history).
+            has_entries = True
+        if not has_entries:
             return
         confirm = QMessageBox.question(
             self, APP_NAME, "Delete the entire transcript history?",
