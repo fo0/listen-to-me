@@ -115,7 +115,7 @@ The app reads **none of its own** — settings live in `config.json` (`config.py
 
 ## Deployment
 
-**Trigger:** manual `workflow_dispatch` on `release.yml` → Windows one-file exe + GitHub Release, guarded to `main`. **Agent scope:** branches and PRs; a merge needs an explicit user command or an owner-authorized routine (`.claude/skills/pr/SKILL.md → /pr merge`, ADR-0005), a release dispatch never unattended. Rollback: `rollback` skill; detail: `agent_docs/deployment.md`.
+**Trigger:** manual `workflow_dispatch` on `release.yml` → Windows one-file exe + GitHub Release, guarded to `main`. **Agent scope:** branches and PRs; a merge **and a release dispatch** each need an explicit user command or an owner-authorized routine — non-destructive change set, verification green; destructive change sets stay gated (`.claude/skills/pr/SKILL.md → /pr merge`, ADR-0005). Rollback: `rollback` skill; detail: `agent_docs/deployment.md`.
 
 ## API / Interfaces
 
