@@ -5982,6 +5982,69 @@ def _overlay_preview_follows_the_pointer():
             overlay.destroy()
 
 
+def _overlay_bubble_caps_a_long_transcript():
+    """The finished-transcript bubble is bounded, like the live one.
+
+    The bubble is frameless, has no scrollbar and no maximum height, so the
+    text it is handed decides its size. `show_live` has always kept only the
+    last `_LIVE_TAIL_CHARS`; `flash` kept nothing back, so a recorded
+    fifteen-minute meeting (system_audio.max_seconds) put a column of text
+    taller than the screen over every window for the whole preview time.
+
+    What is asserted here is the *shape* of the fix, not a character count:
+    the label is shorter than the transcript, it is the transcript's opening
+    (never its tail, which is the live preview's job), it ends on the "…" that
+    says so, and the bubble is no taller than the screen it is drawn on —
+    which is the failure anybody actually saw. A transcript that already fits
+    has to come through untouched, or every normal dictation would grow an
+    ellipsis it did not earn.
+    """
+    _ensure_qapp()
+    from listen_to_me.overlay import Overlay
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        overlay = Overlay(stub)
+        try:
+            overlay.set_visible(True)
+            geo = overlay._screen_geometry()
+
+            short = "A dictated sentence that fits in the bubble."
+            overlay.flash(short)
+            assert overlay.bubble._label.text() == short, overlay.bubble._label.text()
+
+            # A recorded meeting: one long paragraph, no line breaks to stop at.
+            long_paragraph = "spoken words that nobody will read in a bubble " * 400
+            overlay.flash(long_paragraph)
+            shown = overlay.bubble._label.text()
+            assert len(shown) < len(long_paragraph), len(shown)
+            assert shown.endswith("…"), shown[-40:]
+            assert long_paragraph.startswith(shown[:40]), shown[:40]
+            assert overlay.bubble.height() <= geo.height(), (
+                overlay.bubble.height(), geo.height()
+            )
+
+            # …and a dictated note: many short lines, few characters, a lot of
+            # height. The line limit is what bites here, so a character-only
+            # cut would leave this case exactly as tall as it was.
+            many_lines = "\n".join(f"line {i}" for i in range(400))
+            overlay.flash(many_lines)
+            shown = overlay.bubble._label.text()
+            assert shown.count("\n") < many_lines.count("\n"), shown.count("\n")
+            assert shown.startswith("line 0\nline 1\n"), shown[:20]
+            assert overlay.bubble.height() <= geo.height(), (
+                overlay.bubble.height(), geo.height()
+            )
+
+            # The live preview keeps its own rule: the *end* of what was said
+            # so far, which is the opposite cut and must not have moved.
+            overlay.show_live(long_paragraph)
+            live = overlay.bubble._label.text()
+            assert live.startswith("…") and long_paragraph.endswith(live[1:]), live[:40]
+        finally:
+            overlay.destroy()
+
+
 def _the_poll_ticks_the_cursor_preview():
     """`App._poll` is what drives #196's cursor tracking — the one line no
     overlay check can see.
@@ -10543,6 +10606,7 @@ _LIGHT_CHECKS = [
     ("overlay position is anchored to its monitor", _overlay_position_is_anchored_to_its_monitor),
     ("overlay preview anchor places the bubble", _overlay_preview_anchor_places_the_bubble),
     ("overlay preview follows the pointer", _overlay_preview_follows_the_pointer),
+    ("overlay bubble caps a long transcript", _overlay_bubble_caps_a_long_transcript),
     ("the poll ticks the cursor preview", _the_poll_ticks_the_cursor_preview),
     ("the take starts the preview its anchor needs", _the_take_starts_the_preview_its_anchor_needs),
     ("overlay preview anchor round-trips", _overlay_preview_anchor_round_trips),

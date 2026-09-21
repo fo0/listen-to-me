@@ -97,7 +97,10 @@ standalone system-tray app that works in _every_ application.
   useful form: no icon anywhere, the text where you are looking. Either way the
   bubble never takes the click, so you can keep clicking and typing underneath
   it, and it obeys the **always-on-top** switch like the icon does — with that
-  off, other windows may cover the bubble too. It remembers the
+  off, other windows may cover the bubble too. A **long transcript is shortened
+  to its opening** in the bubble, so a recorded fifteen-minute meeting no longer
+  covers the whole screen with a column of text for the preview time — the full
+  text is what was inserted at the cursor and what **History** keeps. It remembers the
   **monitor** you drag it to, not just a screen coordinate, so it comes back
   there after a restart, after a reboot that brings the second screen up late,
   and after a monitor is unplugged and reconnected. A built-in watchdog checks
