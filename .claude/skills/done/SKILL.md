@@ -15,7 +15,7 @@ metadata:
 ## Scope Boundaries
 
 **Owns:** closing a piece of work out — format, the automated-check chain, scope check, commit, push, issue close.
-**Does not own:** the review itself (`review`), the PR object (`pr`), remote build state (`ci`). It _suggests_ those and never runs them — that fence is what keeps `/done` predictable enough to type without reading it first.
+**Does not own:** the review itself (`basic-review`), the PR object (`pr`), remote build state (`ci`). It _suggests_ those and never runs them — that fence is what keeps `/done` predictable enough to type without reading it first.
 
 ## Workflow
 
@@ -116,5 +116,5 @@ Strict format, strict limits:
 - **Never push to `main` with failing checks.** Hard stop.
 - **Never force-push** without explicit user request.
 - **Ambiguous state on main** (large uncommitted diff, unclear scope) → ask first; unattended → uncommitted plus a report line (step 6).
-- **The report is the two lines above and nothing else.** No preamble, no postamble, nothing the commit message already says; the `Next:` line only when something is open.
+- **The report is the two lines above and nothing else.** No preamble, no postamble, nothing the commit message already says; the `Next:` line only when something is open — and when it names a step, the one handoff line from `CLAUDE.md → Handoff Prompt` closes the report.
 - If nothing to commit AND nothing to push AND no open issue → single-line confirmation: `✅ <branch>: already clean, nothing to do.`

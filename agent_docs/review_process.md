@@ -1,6 +1,6 @@
 # Review Process
 
-This file defines the review process the `review` skill executes. It runs **on demand** — `/review` or an explicit user request — never automatically; the done-skill does not trigger it (CLAUDE.md → Workflow Triggers).
+This file defines the review process the `basic-review` skill executes. It runs **on demand** — `/basic-review` or an explicit user request — never automatically; the done-skill does not trigger it (CLAUDE.md → Workflow Triggers).
 
 ## Core Rules
 
@@ -191,15 +191,15 @@ Rules:
 
 **The role carries the lens.** The roster and the seat criterion per role are canonical in `CLAUDE.md → Subagents` (the wave report names the role, so the vocabulary is closed there); this table says what each lens looks at. A role is _how the assignment is framed_, not a separate mechanism: it goes to a `general-purpose` subagent whose brief names the lens, the standard it answers to, and what its return must contain:
 
-| Role          | Lens it applies                                                                        |
-| ------------- | -------------------------------------------------------------------------------------- |
-| `architect`   | Structural fit, boundaries, what this makes hard later                                 |
-| `implementer` | The change itself, in this repo's idiom                                                |
-| `reviewer`    | Correctness of the diff, against a fresh reading — a different agent than the author   |
-| `domain`      | Whether this matches how the subject actually works                                    |
-| `product`     | Is this what was asked, is the scope right, what is "done"                             |
-| `docs`        | What a reader needs that the diff does not say                                         |
-| `security`    | Trust boundaries, untrusted input, secrets → `.claude/skills/security-review/SKILL.md` |
+| Role          | Lens it applies                                                                         |
+| ------------- | --------------------------------------------------------------------------------------- |
+| `architect`   | Structural fit, boundaries, what this makes hard later                                  |
+| `implementer` | The change itself, in this repo's idiom                                                 |
+| `reviewer`    | Correctness of the diff, against a fresh reading — a different agent than the author    |
+| `domain`      | Whether this matches how the subject actually works                                     |
+| `product`     | Is this what was asked, is the scope right, what is "done"                              |
+| `docs`        | What a reader needs that the diff does not say                                          |
+| `security`    | Trust boundaries, untrusted input, secrets → `.claude/skills/basic-sec-review/SKILL.md` |
 
 Roles are lenses, not a standing panel: a typo fix needs `implementer` and `reviewer`, a new integration may need five. Repo-local roles go in `.claude/agents/*.md` only for a role _this_ repo seats often enough to be worth a file; role-framed assignments cover the rest and cannot drift out of date.
 
@@ -218,11 +218,11 @@ Roles are lenses, not a standing panel: a typo fix needs `implementer` and `revi
 ## Subagent Selection Rules
 
 - **Use `Explore` for read-only search.** Specify breadth: `quick`, `medium`, `very thorough`. Do NOT use for code review — it reads excerpts, will miss content past its window.
-- **Use `Plan` before non-trivial implementation.** Then act on the plan in main thread, or hand it to `general-purpose`.
+- **Use `Plan` before non-trivial implementation.** Then hand the plan to `general-purpose` for execution — acting on it in the main thread is plain behavior, for `/orca off` only.
 - **Use `general-purpose` for write+execute** tasks. Default for "do this work" delegations.
 - **Use `claude-code-guide` for tooling questions** about Claude Code itself.
 - **Parallelize independent work** — multiple Agent calls in one message when no dependencies exist.
-- **Orchestrator mode changes what "known target" means** — reading a file for its content is task work and goes to a subagent; the orchestrator's own reads are the _verification_ kind (`git status`, `git diff`, reading a returned change). `/orca off` restores direct-tool-first behavior (`Read` for known path, `grep` for known symbol).
+- **In orchestrator mode, reading for content is task work.** It goes to a subagent like anything else; the orchestrator's own reads are the _verification_ kind — `git status`, `git diff`, reading a returned change. `/orca off` restores plain behavior; it is not a judgment per call.
 - **Pass full context** — subagents have no conversation history.
 - **Trust but verify** — inspect diffs after write-capable subagents finish.
 
@@ -240,4 +240,4 @@ Only commit when:
 - [ ] Commit message follows project's Git Conventions (imperative subject)
 - [ ] UI review done (if UI changed)
 
-<!-- Generated by claude-code-optimizer v1.48.0 -->
+<!-- Generated by claude-code-optimizer v1.49.0 -->

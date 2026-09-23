@@ -19,7 +19,7 @@ metadata:
 ## Scope Boundaries
 
 **Owns:** breaking a fix-retry loop — snapshot, attempt log, diagnosis of the loop type, escalation.
-**Does not own:** undoing the damage (`rollback`), the review that would have caught the defect (`review`), the decision to abandon the approach — that one is escalated, never taken here.
+**Does not own:** undoing the damage (`rollback`), the review that would have caught the defect (`basic-review`), the decision to abandon the approach — that one is escalated, never taken here.
 
 ## Workflow
 
@@ -97,13 +97,13 @@ line, one command, no second block beside it — that you would pick, ready to s
 "What would you like?" is a run that ended on nothing (CLAUDE.md → _Autonomy_). Same 3-attempt cap, same snapshot,
 different landing:
 
-1. Write the snapshot and the options as one `BACKLOG.md` entry (`agent_docs/backlog_process.md` format), status **Open**.
+1. Write the snapshot and the options as one `BACKLOG.md` entry under `## Open` (`agent_docs/backlog_process.md` format), status **Deferred** — the reason is the 3-attempt cap.
 2. Leave the loop work uncommitted, or `/rollback` it if it made the tree worse. Never commit a defect to get past it.
 3. Continue with the parts of the task that do **not** depend on the stuck defect — being blocked on one thing is not
    being blocked on everything.
 4. End with the run's normal report, naming the defect, the backlog entry and what was finished around it.
 
-Option D of the interactive format is the unattended default; A–C need a human and are recorded, not chosen.
+Option D of the interactive format is the unattended default; A and B need a human and are recorded, not chosen, and C runs only as step 2 allows.
 
 ## Hard Rules
 

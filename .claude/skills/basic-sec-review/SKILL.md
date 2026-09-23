@@ -1,6 +1,6 @@
 ---
-name: security-review
-description: "Use when the user wants a focused security audit of the current diff or recent changes. Triggered by /security-review, 'security review', 'audit this for security', 'check for vulnerabilities', 'OWASP review'. Runs deeper checks than the generic review — OWASP / secrets / injection / auth / crypto. Independent of the generic review skill."
+name: basic-sec-review
+description: "Use when the user wants a focused security audit of the current diff or recent changes. Triggered by /basic-sec-review, 'security review', 'audit this for security', 'check for vulnerabilities', 'OWASP review'. Runs deeper checks than the generic review — OWASP Top 10, secrets scanning, injection vectors, auth/authz boundaries, crypto usage. Independent of the generic review skill."
 disallowed-tools: AskUserQuestion
 metadata:
   origin: claude-code-optimizer
@@ -10,24 +10,24 @@ metadata:
 
 ## When to Use
 
-- User says "/security-review", "security review", "audit for security", "check for vulnerabilities", "OWASP review"
+- User says "/basic-sec-review", "security review", "audit for security", "check for vulnerabilities", "OWASP review"
 - After implementing anything touching: the injector, the assistant HTTP client, the updater download/self-swap, config/secret handling, or subprocess/`os.startfile` calls
 - Before merging high-risk PRs
 
 ## Scope Boundaries
 
 **Owns:** the focused vulnerability audit of the current diff — the deeper pass the generic review's P0 Security category does not go into.
-**Does not own:** general code quality (`review`), dependency-bot PR handling (`pr`), and **not** live incident response or secret rotation — a leaked live credential is surfaced to the user immediately and is not this skill's to rotate.
+**Does not own:** general code quality (`basic-review`), dependency-bot PR handling (`pr`), and **not** live incident response or secret rotation — a leaked live credential is surfaced to the user immediately and is not this skill's to rotate.
 
 ## Scope
 
-Diff-based by default. Full-codebase only on explicit user request (`/security-review --full`).
+Diff-based by default. Full-codebase only on explicit user request (`/basic-sec-review --full` or "audit the whole codebase").
 
 ## Workflow
 
 ```
 1. git status + git diff                              → identify changed files
-2. Read CLAUDE.md _Coding Conventions_ + _Environment Variables_  → understand trust boundaries
+2. Read CLAUDE.md _Coding Conventions_ + _Environment Variables_ (full list: `agent_docs/env-vars.md`) → understand trust boundaries
 3. Read every changed file completely
 4. Work the current OWASP Top 10 (see Coverage), then the checklist below
 5. Run security-relevant tooling (see Tooling)
@@ -83,8 +83,8 @@ outdated one. Two obligations make the coverage checkable:
 
 Three classes, each run once with whatever the current standard tool for it is on this stack — **secret scanning**,
 **dependency audit**, **static analysis** (generic pattern-based plus Python's own SAST). Prefer a tool this repo
-already configures over introducing one; installing a tool is a dependency decision (`CLAUDE.md` → _Dependency
-Management_), so an audit never adds one on its own.
+already configures over introducing one; installing a tool is a dependency decision (`CLAUDE.md` → _Git
+Conventions_, dependencies line), so an audit never adds one on its own.
 
 A class with no available tool is named `not run` in the report and the review carries on. **Never block or gate the
 review on tool availability** — the manual pass above is the audit; tools only widen it.
@@ -113,7 +113,7 @@ Summary: X findings | Y fixed | Z deferred (with explicit user override) → Bac
 Footer:
 
 ```
-🔐 security-review skill — independent of generic /review
+🔐 basic-sec-review skill — independent of generic /basic-review
 ```
 
 ## Rules
