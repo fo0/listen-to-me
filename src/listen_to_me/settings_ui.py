@@ -2721,7 +2721,11 @@ class SettingsWindow(QDialog):
         bottom = QHBoxLayout()
         refresh = QPushButton("Refresh")
         refresh.setToolTip("Reload the list — useful if you recorded something while this window was open.")
-        refresh.clicked.connect(self._refresh_history)
+        # Not _refresh_history directly: a reload that finds nothing new
+        # re-renders the very same rows, so the button looked dead in exactly
+        # the normal case — the trap both Audio-page Refresh buttons avoid.
+        self._history_refresh_button = refresh
+        refresh.clicked.connect(self._reload_history)
         bottom.addWidget(refresh)
         # Exports exactly what the list shows, so the search field doubles as
         # the filter for the export.
@@ -2763,6 +2767,16 @@ class SettingsWindow(QDialog):
         find_shortcut.activated.connect(self._focus_history_filter)
 
         return page
+
+    def _reload_history(self) -> None:
+        """Re-render the History list from the file and confirm it on the
+        Refresh button (see `_rescan_devices` for why the button says so). No
+        tick over a file that could not be read — the page names the failure,
+        and "Read failed" follows the Copy buttons' "Copy failed"."""
+        readable = self._refresh_history()
+        self._flash_button(
+            self._history_refresh_button, "Reloaded ✓" if readable else "Read failed", "Refresh"
+        )
 
     def _focus_history_filter(self) -> None:
         """Put the caret in the search field and select what is in it, so
@@ -4886,7 +4900,9 @@ class SettingsWindow(QDialog):
         (*_args: textChanged passes the new text, which is read from the field.)"""
         self._history_filter_timer.start()
 
-    def _refresh_history(self) -> None:
+    def _refresh_history(self) -> bool:
+        """Re-render the list; False when the history file could not be
+        read (the page then says so), True otherwise."""
         from .history import HistoryUnavailable, filter_entries
 
         self._history_rendered = True
@@ -4896,7 +4912,7 @@ class SettingsWindow(QDialog):
             stored = self.app.history.entries()
         except HistoryUnavailable as exc:
             self._render_unreadable_history(exc)
-            return
+            return False
         # Deleting nothing is not a destructive action worth offering.
         self.history_clear_button.setEnabled(bool(stored))
         self.history_clear_button.setToolTip(
@@ -4917,7 +4933,7 @@ class SettingsWindow(QDialog):
                 else "History is off — new transcripts are not stored. Turn on "
                 "“Keep a history of transcribed text” above to collect them."
             ))
-            return
+            return True
         entries = filter_entries(stored, query)
         # Every match, not just the rendered ones: the render limit is a
         # scrolling concern, an export that silently stopped at 300 of 5000
@@ -4936,7 +4952,7 @@ class SettingsWindow(QDialog):
                 f"No transcript matches “{query}”. Clear the search field above "
                 "to see all of them again."
             ))
-            return
+            return True
         shown = entries[:_HISTORY_RENDER_LIMIT]
         insert_at = 0
         if len(entries) > len(shown):
@@ -4950,6 +4966,7 @@ class SettingsWindow(QDialog):
         for entry in shown:
             self._history_layout.insertWidget(insert_at, self._history_row(entry))
             insert_at += 1
+        return True
 
     def _render_unreadable_history(self, problem: Exception) -> None:
         """The History page for a history file that could not be read.
