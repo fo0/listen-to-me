@@ -305,11 +305,11 @@ worth knowing:
 - **Pick a modifier chord** (e.g. `Ctrl+Alt+Space`). The key picker enforces at
   least one modifier for printable keys (bare function keys like `F9` are also
   allowed). It also accepts **modifier-only chords** (e.g. `Ctrl+Alt`) — hold the
-  modifiers and click **OK** to confirm, since there is no final key to auto-apply
-  them. While the combo is held it is _not_ suppressed from the focused
-  application on Linux/macOS, so a plain printable key would type into your
-  document — a modifier chord avoids that. (Toggle mode only taps the combo, so
-  this doesn't apply there.)
+  modifiers and click **OK** (or release them and press **Enter**) to confirm,
+  since there is no final key to auto-apply them. While the combo is held it is
+  _not_ suppressed from the focused application on Linux/macOS, so a plain
+  printable key would type into your document — a modifier chord avoids that.
+  (Toggle mode only taps the combo, so this doesn't apply there.)
 - **If a key release is missed** (some window managers/IMEs grab combos such as
   `Cmd+Space`, or focus changes mid-hold), the recording can't see that you let
   go. It still stops when you click the floating icon or the tray _Stop

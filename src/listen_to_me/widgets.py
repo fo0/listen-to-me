@@ -21,7 +21,8 @@ log = logging.getLogger(__name__)
 class HotkeyCaptureDialog(QDialog):
     """Modal dialog: press the desired combination. A combo ending in a normal
     key is captured on that key press; a modifier-only combo (e.g. Ctrl+Alt) is
-    confirmed with the OK button. Returns a pynput combo string or None."""
+    confirmed with the OK button, or with Enter once the modifiers are released.
+    Returns a pynput combo string or None."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -52,7 +53,8 @@ class HotkeyCaptureDialog(QDialog):
         hint = QLabel(
             "Hold the modifiers (Ctrl / Alt / Shift / Win), then press the final key —\n"
             "the combination is applied immediately. For a modifier-only combo\n"
-            "(e.g. Ctrl + Alt) press the modifiers and click OK.  Esc cancels."
+            "(e.g. Ctrl + Alt) press the modifiers, release them and press Enter\n"
+            "or click OK.  Esc cancels."
         )
         hint.setProperty("role", "hint")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -111,6 +113,17 @@ class HotkeyCaptureDialog(QDialog):
             self._captured = list(self._held)
             self._update_display()
             return
+        if (
+            key in (int(Qt.Key.Key_Return), int(Qt.Key.Key_Enter))
+            and not self._held
+            and len(self._captured) >= 2
+        ):
+            # The keyboard's way to OK: both buttons are NoFocus (every key is
+            # captured), so a modifier-only combo was mouse-only. Enter with a
+            # modifier still held stays a capture ("Ctrl+Alt+Enter"), and a bare
+            # Enter was always refused, so no combination is lost to this.
+            self._confirm()
+            return
         token = key_token(key, e.text())
         if token is None:
             self._display.setText("(unsupported key — try another)")
@@ -136,7 +149,8 @@ class HotkeyCaptureDialog(QDialog):
             self._update_display()
 
     def _confirm(self) -> None:
-        """Apply a modifier-only combo (e.g. Ctrl+Alt) selected via the OK button."""
+        """Apply a modifier-only combo (e.g. Ctrl+Alt) selected via the OK button
+        or Enter."""
         mods = [m for m in MOD_ORDER if m in self._captured]
         if len(mods) < 2:
             # A single modifier alone would fire on every ordinary keypress.
