@@ -19,7 +19,7 @@ Analyze the repository and produce a single, valid Mermaid.js architecture diagr
 
 Gather context:
 
-1. Read the file tree. Exclude: `.git`, `__pycache__`, `.venv`, `venv`, `build`, `dist`, `*.egg-info`, `.eggs`, `portaudio` (the release job's PortAudio build tree), `.idea`, `.vscode` — the build output, dependency and cache directories `.gitignore` names.
+1. Read the file tree. Exclude `.git` and every directory `.gitignore` names: `__pycache__`, `.venv`, `venv`, `build`, `dist`, `*.egg-info`, `.eggs`, `portaudio` (the release job's PortAudio build tree), `.idea`, `.vscode`.
 2. Read README and `pyproject.toml`/`requirements.txt` to identify the tech stack.
 
 Determine:
