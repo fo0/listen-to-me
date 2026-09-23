@@ -21,7 +21,8 @@ log = logging.getLogger(__name__)
 class HotkeyCaptureDialog(QDialog):
     """Modal dialog: press the desired combination. A combo ending in a normal
     key is captured on that key press; a modifier-only combo (e.g. Ctrl+Alt) is
-    confirmed with the OK button. Returns a pynput combo string or None."""
+    confirmed with the OK button, or with Enter once the modifiers are released.
+    Returns a pynput combo string or None."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -52,7 +53,8 @@ class HotkeyCaptureDialog(QDialog):
         hint = QLabel(
             "Hold the modifiers (Ctrl / Alt / Shift / Win), then press the final key —\n"
             "the combination is applied immediately. For a modifier-only combo\n"
-            "(e.g. Ctrl + Alt) press the modifiers and click OK.  Esc cancels."
+            "(e.g. Ctrl + Alt) press the modifiers, release them and press Enter\n"
+            "or click OK.  Esc cancels."
         )
         hint.setProperty("role", "hint")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -111,18 +113,33 @@ class HotkeyCaptureDialog(QDialog):
             self._captured = list(self._held)
             self._update_display()
             return
+        if (
+            key in (int(Qt.Key.Key_Return), int(Qt.Key.Key_Enter))
+            and not self._held
+            and len(self._captured) >= 2
+        ):
+            # The keyboard's way to OK: both buttons are NoFocus (every key is
+            # captured), so a modifier-only combo was mouse-only. Enter with a
+            # modifier still held stays a capture ("Ctrl+Alt+Enter"), and a bare
+            # Enter was always refused, so no combination is lost to this.
+            self._confirm()
+            return
         token = key_token(key, e.text())
         if token is None:
-            self._display.setText("(unsupported key — try another)")
+            self._set_display("(unsupported key — try another)", refusal=True)
             return
         mods = [m for m in MOD_ORDER if m in self._held]
         if not mods and not allowed_standalone(token):
             # A modifier-less printable/editing key would fire on ordinary typing.
-            self._display.setText("(add a modifier — Ctrl / Alt / Shift / Win — or use an F-key)")
+            self._set_display(
+                "(add a modifier — Ctrl / Alt / Shift / Win — or use an F-key)", refusal=True
+            )
             return
         combo = "+".join(mods + [token])
         if not Hotkeys.validate(combo):
-            self._display.setText(f"({combo} is not a valid combination)")
+            # Key caps, like the line it replaces — not the pynput token.
+            caps = " + ".join(pretty_keys(combo))
+            self._set_display(f"({caps} is not a valid combination)", refusal=True)
             return
         self.result_combo = combo
         self.accept()
@@ -136,18 +153,35 @@ class HotkeyCaptureDialog(QDialog):
             self._update_display()
 
     def _confirm(self) -> None:
-        """Apply a modifier-only combo (e.g. Ctrl+Alt) selected via the OK button."""
+        """Apply a modifier-only combo (e.g. Ctrl+Alt) selected via the OK button
+        or Enter."""
         mods = [m for m in MOD_ORDER if m in self._captured]
         if len(mods) < 2:
             # A single modifier alone would fire on every ordinary keypress.
-            self._display.setText("(hold at least two modifiers — e.g. Ctrl + Alt)")
+            self._set_display("(hold at least two modifiers — e.g. Ctrl + Alt)", refusal=True)
             return
         combo = "+".join(mods)
         if not Hotkeys.validate(combo):
-            self._display.setText(f"({combo} is not a valid combination)")
+            # Key caps, like the line it replaces — not the pynput token.
+            caps = " + ".join(pretty_keys(combo))
+            self._set_display(f"({caps} is not a valid combination)", refusal=True)
             return
         self.result_combo = combo
         self.accept()
+
+    def _set_display(self, text: str, *, refusal: bool = False) -> None:
+        """Show `text` in the big display line, styled as an error when it is a
+        refusal. A refusal replaces the combination in the same 20 px line, and
+        "(unsupported key — try another)" set like a captured "Ctrl + Alt + …"
+        reads as a result; `QLabel[role="error"]` (theme.py) exists precisely
+        so an inline failure cannot be mistaken for the text beside it."""
+        self._display.setText(text)
+        role = "error" if refusal else ""
+        if self._display.property("role") != role:
+            self._display.setProperty("role", role)
+            # A dynamic property only restyles once the style re-polishes.
+            self._display.style().unpolish(self._display)
+            self._display.style().polish(self._display)
 
     def _update_display(self) -> None:
         mods = [m for m in MOD_ORDER if m in self._captured]
@@ -156,6 +190,6 @@ class HotkeyCaptureDialog(QDialog):
         # made this the only surface showing the Windows key as "Cmd" while
         # every other one says "Win".
         pretty = " + ".join(pretty_keys("+".join(mods)))
-        self._display.setText((pretty + " + …") if pretty else "…")
+        self._set_display((pretty + " + …") if pretty else "…")
         # Enable OK once a modifier-only combo (>= 2 modifiers) is selected.
         self._ok_button.setEnabled(len(mods) >= 2)

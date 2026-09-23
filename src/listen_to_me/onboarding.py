@@ -44,7 +44,7 @@ from .choices import (
     openvino_supports_model,
 )
 from .hotkeys import Hotkeys
-from .qtutil import elastic_combo, flash_button, guard_wheel
+from .qtutil import busy_cursor, elastic_combo, flash_button, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -430,7 +430,10 @@ class OnboardingWizard(QWizard):
         "System default" and, when enumeration failed, an inline error entry,
         and neither is a microphone that was found.
         """
-        self._load_devices()
+        # PortAudio enumerates on the Qt main thread and can stall for hundreds
+        # of ms — the same wait cursor as the settings window's Refresh.
+        with busy_cursor():
+            self._load_devices()
         found = sum(
             1
             for row in range(self.input_combo.count())
