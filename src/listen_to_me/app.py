@@ -218,6 +218,22 @@ def _notify_source_busy(app, source: str) -> None:
     app.notify(f"A {running} recording is already running — stop that one first.")
 
 
+def _hotkey_phrase(combo) -> str:
+    """' “Ctrl+Alt+M”' for a notification sentence, or "" when the combination
+    cannot be rendered — then the sentence reads without it. Never the raw
+    pynput token ('<ctrl>+<alt>+m'): the tray, the Home page and the floating
+    icon all show key caps, and keymap.hotkey_label exists for this. Imported
+    here because keymap imports QtCore (lazy-import rule)."""
+    try:
+        from .keymap import hotkey_label
+
+        label = hotkey_label(str(combo or ""))
+    except Exception:
+        log.debug("could not render the hotkey %r for a notification", combo, exc_info=True)
+        return ""
+    return f" “{label}”" if label else ""
+
+
 def _stop_hotkeys(app) -> None:
     """Stop both global listeners. Every path that suspends the hotkey has to
     take the second source with it — a pause that left the system-audio
@@ -269,7 +285,7 @@ def _register_system_hotkey(app, mic_combo: str) -> None:
             # Forced: the second source is silently dead until this is changed,
             # which is exactly what the user would blame the feature for.
             app.notify(
-                f"The system-audio hotkey {combo!r} is the same as the dictation "
+                f"The system-audio hotkey{_hotkey_phrase(combo)} is the same as the dictation "
                 "hotkey — it stays off until you give it its own combination.",
                 force=True,
             )
@@ -280,7 +296,8 @@ def _register_system_hotkey(app, mic_combo: str) -> None:
     except Exception:
         log.exception("failed to register the system-audio hotkey %r", combo)
         app.notify(
-            f"Could not register the system-audio hotkey {combo!r} — change it in Settings.",
+            f"Could not register the system-audio hotkey{_hotkey_phrase(combo)} — "
+            "change it in Settings.",
             force=True,
         )
 
@@ -1729,7 +1746,10 @@ class App:
             self.hotkeys.register(combo, mode=self.cfg["hotkey_mode"])
         except Exception:
             log.exception("failed to register hotkey %r", combo)
-            self.notify(f"Could not register hotkey {combo!r} — change it in Settings.", force=True)
+            self.notify(
+                f"Could not register the hotkey{_hotkey_phrase(combo)} — change it in Settings.",
+                force=True,
+            )
         # Last and in its own function: whatever the second source does here —
         # unconfigured, unparseable, clashing — must never be what keeps the
         # dictation hotkey above from being registered.

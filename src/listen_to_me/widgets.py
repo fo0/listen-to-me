@@ -137,7 +137,9 @@ class HotkeyCaptureDialog(QDialog):
             return
         combo = "+".join(mods + [token])
         if not Hotkeys.validate(combo):
-            self._set_display(f"({combo} is not a valid combination)", refusal=True)
+            # Key caps, like the line it replaces — not the pynput token.
+            caps = " + ".join(pretty_keys(combo))
+            self._set_display(f"({caps} is not a valid combination)", refusal=True)
             return
         self.result_combo = combo
         self.accept()
@@ -160,7 +162,9 @@ class HotkeyCaptureDialog(QDialog):
             return
         combo = "+".join(mods)
         if not Hotkeys.validate(combo):
-            self._set_display(f"({combo} is not a valid combination)", refusal=True)
+            # Key caps, like the line it replaces — not the pynput token.
+            caps = " + ".join(pretty_keys(combo))
+            self._set_display(f"({caps} is not a valid combination)", refusal=True)
             return
         self.result_combo = combo
         self.accept()
