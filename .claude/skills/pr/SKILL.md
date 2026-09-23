@@ -19,7 +19,7 @@ metadata:
 ## Scope Boundaries
 
 **Owns:** the pull request as an object — create, update, status, comments, and the explicit merge gate.
-**Does not own:** whether the code is good (`review`), whether the build is green (`ci`), undoing a merge that already landed (`rollback`). A PR that should not exist yet is a review finding, not a PR-skill decision.
+**Does not own:** whether the code is good (`basic-review`), whether the build is green (`ci`), undoing a merge that already landed (`rollback`). A PR that should not exist yet is a review finding, not a PR-skill decision.
 
 ## Prerequisites
 
@@ -115,7 +115,7 @@ gh api "repos/{owner}/{repo}/pulls/{n}/comments" --jq '.[] | {user: .user.login,
 gh api "repos/{owner}/{repo}/issues/{n}/comments"  --jq '.[] | {user: .user.login, body}'
 ```
 
-Group by reviewer + file. Show unresolved comments first. Do NOT auto-fix — surface findings, let user decide.
+Group by reviewer + file. Show unresolved comments first. Do NOT auto-fix when the user asked to read them — surface findings, let the user decide. A caller that ordered them addressed (`.claude/loop.md`, a routine) fixes the concrete requests, pushes without force and reports the judgment calls.
 
 ## `/pr merge` — merge (explicit only, never auto-routed)
 
@@ -154,7 +154,7 @@ Report: `Merged PR #N (merge commit). Branch deleted.`
 | Failure                                       | Action                                                                                                                                                                                           |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `gh` not installed, or `gh auth status` fails | Fall back to the `mcp__github__*` equivalents (_Prerequisites_); stop only when neither exists — never print install instructions as the first answer, a web/cloud session has no CLI to install |
-| `git push` rejected (non-fast-forward)        | Stop, ask user before force operations                                                                                                                                                           |
+| `git push` rejected (non-fast-forward)        | Stop, ask user before force operations. Unattended (`$CLAUDE_CODE_REMOTE=true`): never force — report the rejection and the diverged commits                                                     |
 | `gh pr create` fails due to existing PR       | Re-run auto-route (will land in Phase B)                                                                                                                                                         |
-| Merge conflict on `gh pr merge`               | Stop, instruct user to rebase/merge locally                                                                                                                                                      |
+| Merge conflict on `gh pr merge`               | Stop, instruct user to rebase/merge locally. Unattended: merge nothing, report the conflicting files                                                                                             |
 | Required status check not yet started         | Print pending state, do not retry-loop                                                                                                                                                           |

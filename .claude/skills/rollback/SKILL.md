@@ -82,7 +82,7 @@ git push                                  # no force
 
 ## Phase D — Revert on main
 
-Always use `git revert` on the default branch. Never `git reset --hard` there without explicit user override. "Main" is whatever this repo's default branch is called — resolve the name, never assume it:
+Always use `git revert` on the default branch. Never `git reset --hard` there (_Hard Rules_). "Main" is whatever this repo's default branch is called — resolve the name, never assume it:
 
 ```bash
 BASE=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)   # MCP: the repo's default_branch
@@ -92,11 +92,11 @@ git push origin "$BASE"
 
 If revert produces a conflict → stop, ask user to resolve manually.
 
-**Unattended (`$CLAUDE_CODE_REMOTE=true`): never push to `$BASE`.** Run the revert as Phase E with `$PR` replaced by the bad SHA — branch `revert-pr-<sha>`, `git revert <bad-sha>` without `-m 1` for a non-merge commit — push that branch, open the revert PR, merge it only through `.claude/skills/pr/SKILL.md → /pr merge`. The direct push above is the interactive shortcut for a repo whose owner is at the keyboard; unattended, a direct push to the default branch is outside the branch rule in `agent_docs/autonomy.md → Branch rule`.
+**Unattended (`$CLAUDE_CODE_REMOTE=true`): never push to `$BASE`.** Run the revert as Phase E with `$PR` replaced by the bad SHA — branch `claude/revert-<sha>` (unattended work starts on `claude/`), `git revert <bad-sha>` without `-m 1` for a non-merge commit — push that branch, open the revert PR, merge it only through `.claude/skills/pr/SKILL.md → /pr merge`. The direct push above is the interactive shortcut for a repo whose owner is at the keyboard; unattended, a direct push to the default branch is outside the branch rule in `agent_docs/autonomy.md → Branch rule`.
 
 ## Phase E — Revert merged PR
 
-`gh` has no `pr revert` subcommand — build the revert PR manually. A revert **PR** is preferred over a direct push to the default branch: it survives branch protection and keeps the change reviewable.
+`gh` has no `pr revert` subcommand — build the revert PR manually. A revert **PR** is preferred over a direct push to the default branch: it survives branch protection and keeps the change reviewable. Unattended, the branch is `claude/revert-pr-$PR` instead (`agent_docs/autonomy.md → Branch rule`).
 
 ```bash
 PR=<number>
@@ -124,7 +124,7 @@ git push -u origin <name>                # if remote was also gone
 - **Never `git push --force` on main.** Default is revert + new commit.
 - **Never delete a branch** as part of rollback — only restore / revert.
 - **Always print a dry-run diff** of what the rollback will change before executing.
-- **Always confirm with the user before destructive ops** (`reset --hard`, `force-push`, branch delete). Unattended, the confirmation cannot happen, so the op is skipped and reported (_Unattended_ under Auto-Detect Target) — never assumed.
+- **Always confirm with the user before destructive ops** (`reset --hard`, `force-push`, branch delete). Unattended, the confirmation cannot happen: the op runs only when the invoking instruction ordered exactly that, otherwise it is skipped and reported (_Unattended_ under Auto-Detect Target) — never assumed.
 - **Checks must pass after rollback.** If the rollback itself breaks the build, stop and surface.
 
 ## After Rollback
