@@ -1,6 +1,6 @@
 """Small Qt helpers: bridge the Pillow-drawn icons (icons.py) into Qt
 pixmaps/icons, the wheel guard for value widgets on scrollable pages, the
-Return guard for search fields inside a dialog, the width cap for combo
+Return and Escape guards for search fields inside a dialog, the width cap for combo
 boxes with unbounded item texts, the font-derived height for boxes that
 should show a fixed number of lines, the wait cursor for a blocking
 main-thread call, and the one clipboard
@@ -96,6 +96,43 @@ def keep_return_in_field(edit, on_return: Callable[[], None] | None = None) -> N
     without it it simply stays in the field.
     """
     _ReturnGuard(edit, on_return)
+
+
+class _EscapeGuard(QObject):
+    """Clears the field on Escape while it holds text, and stops the key there.
+
+    The Return guard's twin: a QLineEdit ignores Escape too, so inside a
+    QDialog the key travels on to `reject()` — which closes the settings
+    window, the app's main window, along with the page and the search the
+    user was in the middle of. An empty field lets the key through untouched,
+    so a second Escape still closes the window exactly as it always did.
+    """
+
+    def __init__(self, edit):
+        super().__init__(edit)
+        edit.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt naming)
+        if (
+            event.type() == QEvent.Type.KeyPress
+            and event.key() == Qt.Key.Key_Escape
+            and obj.text()
+        ):
+            # clear(), not setText(""): it goes through the edit's undo stack,
+            # so Ctrl+Z brings back a term cleared by mistake.
+            obj.clear()
+            return True
+        return super().eventFilter(obj, event)
+
+
+def clear_on_escape(edit) -> None:
+    """Let Escape in a search or find field clear the term first.
+
+    What the key does in every browser's find bar and every search box: the
+    first press empties the field, and only a press on an empty field is left
+    to the dialog (Cancel — close the window).
+    """
+    _EscapeGuard(edit)
 
 
 def elastic_combo(*combos, min_chars: int = 24) -> None:

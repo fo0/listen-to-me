@@ -106,6 +106,7 @@ from .keymap import hotkey_label
 from .overlay import ANCHOR_ICON, PREVIEW_ANCHORS, preview_anchor
 from .qtutil import (
     busy_cursor,
+    clear_on_escape,
     copy_with_feedback,
     elastic_combo,
     elastic_label,
@@ -2694,13 +2695,19 @@ class SettingsWindow(QDialog):
             "upper/lower case ignored). A term made of digits, “-” and “:” "
             "also matches the date and time shown on each row, so “2026-09-05” "
             "finds that day's dictations. Ctrl+F puts the caret here from "
-            "anywhere on this page. Clear the field to see all of them again."
+            "anywhere on this page. Esc (or the clear button) empties the field "
+            "to show all of them again."
         )
         self.history_filter_edit.textChanged.connect(self._on_history_filter_changed)
         # The list filters as you type, so Enter has nothing left to do here —
         # except reach the dialog's default button, which is Save: pressing it
         # after a search term saved every setting and closed the main window.
         keep_return_in_field(self.history_filter_edit)
+        # Escape had the same problem one key over: the search-box gesture for
+        # "clear the term" reached the dialog's reject() and closed the main
+        # window, page and search with it. Now the first press clears, and
+        # only a press on an empty field still closes.
+        clear_on_escape(self.history_filter_edit)
         fh.addWidget(self.history_filter_edit, 1)
         self.history_count_label = self._hint("")
         fh.addWidget(self.history_count_label)
@@ -2805,7 +2812,7 @@ class SettingsWindow(QDialog):
         self.help_find_edit.setToolTip(
             "Jump to the next place these words appear. Enter finds the next "
             "match, the arrows step through them, and the search wraps around "
-            "at the end of the page."
+            "at the end of the page. Esc clears the field."
         )
         # Typing restarts from the top, so the first match is reached while
         # still typing; Enter and the arrows step on from wherever that landed.
@@ -2814,6 +2821,9 @@ class SettingsWindow(QDialog):
         # Enter stepped to the next match *and* fell through to Save, closing
         # the window the tooltip had just promised a search in.
         keep_return_in_field(self.help_find_edit, self._find_in_help)
+        # …and Esc clears the term (dropping its highlight) instead of closing
+        # the window — see the History search, which has the same guard.
+        clear_on_escape(self.help_find_edit)
         fh.addWidget(self.help_find_edit, 1)
         # Tooltips are not set here: _set_help_find_enabled owns them, because
         # what these buttons say depends on whether there is a term to step

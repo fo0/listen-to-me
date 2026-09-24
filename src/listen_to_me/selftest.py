@@ -7506,6 +7506,45 @@ def _source_aware_controls_stop_their_take():
         qapp.processEvents()
 
 
+def _press_escape(widget) -> bool:
+    """Deliver one Escape key press to `widget` through `sendEvent` — so it
+    passes the widget's event filters the way a real keystroke does — and
+    return whether something accepted it. An ignored key would travel on to
+    the parent, which in the settings window is the dialog's reject()."""
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+
+    event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(widget, event)
+    return event.isAccepted()
+
+
+def _escape_clears_a_search_field():
+    """`qtutil.clear_on_escape`: the first Escape in a search field clears the
+    term and stops there; on an empty field the key is left alone, so it still
+    reaches the dialog and closes the window exactly as it always did. The
+    clear goes through the undo stack, so Ctrl+Z brings a term back."""
+    _ensure_qapp()
+    from PySide6.QtWidgets import QLineEdit
+
+    from listen_to_me.qtutil import clear_on_escape
+
+    field = QLineEdit()
+    try:
+        clear_on_escape(field)
+        field.setText("meeting notes")
+        assert _press_escape(field), "a term was there to clear — the key must stop here"
+        assert field.text() == "", field.text()
+        field.undo()
+        assert field.text() == "meeting notes", field.text()
+        field.clear()
+        assert not _press_escape(field), "an empty field must leave Escape to the dialog"
+        assert field.text() == ""
+    finally:
+        field.deleteLater()
+
+
 def _help_page_find():
     """The Help page can be searched, and the search wraps around.
 
@@ -7623,6 +7662,24 @@ def _help_page_find():
                 assert focused == [True]
             finally:
                 window._focus_help_find = real_focus
+
+            # Esc clears the term — and with it the highlight and the step
+            # buttons — instead of reaching reject() and closing the window.
+            # _force_close: a missing guard must fail this check through the
+            # rejected signal, never hang it in the unsaved-changes prompt.
+            rejected: list[bool] = []
+            window.rejected.connect(lambda: rejected.append(True))
+            window._force_close = True
+            try:
+                window.help_find_edit.setText("proxy")
+                assert window._help_browser.textCursor().hasSelection()
+                assert _press_escape(window.help_find_edit)
+                assert window.help_find_edit.text() == ""
+                assert not window._help_browser.textCursor().hasSelection()
+                assert not window.help_find_next.isEnabled()
+                assert not rejected, "Esc with a term in the find field closed the window"
+            finally:
+                window._force_close = False
         finally:
             window.force_close()
             window.deleteLater()
@@ -9047,7 +9104,19 @@ def _gui_construction():
         window.history_filter_edit.setText("corrupt")
         window._focus_history_filter()
         assert window.history_filter_edit.selectedText() == "corrupt"
-        window.history_filter_edit.clear()
+        # Esc clears the search instead of reaching reject() and closing the
+        # main window with the page and the term in it. _force_close: a missing
+        # guard must fail here through the rejected signal, never hang in the
+        # unsaved-changes prompt.
+        history_rejected: list[bool] = []
+        window.rejected.connect(lambda: history_rejected.append(True))
+        window._force_close = True
+        try:
+            assert _press_escape(window.history_filter_edit)
+            assert window.history_filter_edit.text() == ""
+            assert not history_rejected, "Esc with a search term closed the window"
+        finally:
+            window._force_close = False
         window._refresh_history()
 
         # "Clear history" on an empty history did nothing at all when clicked —
@@ -10887,6 +10956,7 @@ _LIGHT_CHECKS = [
     ("hardware/status probes", _hardware_probes),
     ("help content renders", _help_content_renders),
     ("help page find", _help_page_find),
+    ("escape clears a search field", _escape_clears_a_search_field),
     ("Qt icon conversion", _qt_icons),
     ("clipboard copy falls back to Qt", _clipboard_copy_falls_back_to_qt),
     ("glyph icons render", _glyph_icons),

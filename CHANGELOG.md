@@ -281,6 +281,15 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **`Esc` in the History search or the Help find field now clears the term
+  instead of closing the window.** It is what the key does in every browser's
+  find bar and every search box, but here a text field ignores it, so it
+  travelled on to the settings window — the app's main window — which took it
+  as Cancel and closed, taking the page and the search you were in the middle
+  of with it. The first press now empties the field (the list shows every
+  transcript again, the Help page drops its highlight), `Ctrl+Z` brings the
+  term back, and only a press on an empty field still closes the window, as it
+  always did.
 - **A paused hotkey is now named on the floating icon and the Home page, not
   only in the tray.** **Pause hotkey** has always switched the tray's status
   line to "Hotkey paused", but the floating icon's tooltip went on saying
