@@ -72,6 +72,15 @@ _START_TOOLTIP = (
     "The text is inserted at the cursor of the focused field."
 )
 
+# The idle hint while the global hotkey is suspended. "Press the hotkey in any
+# app" would be the lie the tray status line refuses to tell — the keys do
+# nothing until the pause is lifted. The button right beside this line still
+# records, so the sentence names it, and where the switch back is.
+_PAUSED_HINT = (
+    "The hotkey is paused — Start recording here still works. Switch the "
+    "hotkey back on with “Pause hotkey” in the tray or floating-icon menu."
+)
+
 
 class _StatCard(QFrame):
     """A clickable at-a-glance card that navigates to a settings page.
@@ -760,7 +769,10 @@ class HomePage(QWidget):
             self.cancel_button.setVisible(False)
         else:
             self.state_label.setText("Ready to dictate")
-            self.hint_label.setText(self._idle_hint(mode_hint))
+            # getattr for the reason _source gives: the self-test's App stub
+            # predates the pause flag.
+            paused = bool(getattr(self._app, "hotkey_paused", False))
+            self.hint_label.setText(_PAUSED_HINT if paused else self._idle_hint(mode_hint))
             self.record_button.setText("Start recording")
             self.record_button.setToolTip(_START_TOOLTIP)
             self.record_button.setEnabled(True)

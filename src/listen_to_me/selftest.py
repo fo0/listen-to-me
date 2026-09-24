@@ -6806,6 +6806,44 @@ def _overlay_menu_follows_the_state():
             stub.posts.clear()
             overlay._act_pause.trigger()
             assert stub.posts == [("toggle_hotkey_pause",)], stub.posts
+
+            # The icon's own tooltip says so too, re-rendered by the
+            # refresh_status App calls after the toggle — a pause is no state
+            # transition, and "press Ctrl+Alt+Space" named a key that does
+            # nothing for as long as it lasted. The accessible description is
+            # the same string, so a screen reader hears it as well.
+            from listen_to_me.overlay import _PAUSED_LABEL
+
+            stub.hotkey_paused = False
+            overlay.set_state("idle")
+            assert overlay.win.toolTip().startswith("Idle — click or press"), (
+                overlay.win.toolTip()
+            )
+            stub.hotkey_paused = True
+            overlay.refresh_status()
+            assert overlay.win.toolTip().startswith(_PAUSED_LABEL), overlay.win.toolTip()
+            assert overlay.win.accessibleDescription() == overlay.win.toolTip()
+            assert overlay._act_pause.isChecked()
+            # A running download keeps the tooltip it owns, pause or not, and
+            # hands it back to the paused wording when it ends.
+            overlay.set_progress(0.5, "Downloading small 50%")
+            overlay.refresh_status()
+            assert overlay.win.toolTip().startswith("Downloading small"), overlay.win.toolTip()
+            overlay.set_progress(None, None)
+            assert overlay.win.toolTip().startswith(_PAUSED_LABEL), overlay.win.toolTip()
+            # Recording while paused (the click still posts the toggle) names
+            # the take, not the pause — only the idle wording is replaced.
+            stub.state = "recording"
+            overlay.set_state("recording")
+            assert overlay.win.toolTip().startswith("Recording"), overlay.win.toolTip()
+            stub.state = "idle"
+            overlay.set_state("idle")
+            stub.hotkey_paused = False
+            overlay.refresh_status()
+            assert overlay.win.toolTip().startswith("Idle — click or press"), (
+                overlay.win.toolTip()
+            )
+            assert not overlay._act_pause.isChecked()
         finally:
             overlay.destroy()
 
@@ -6917,6 +6955,20 @@ def _hotkey_pause_is_visible_and_temporary():
         )
         assert state_label("processing", stub.cfg, paused=True) == _STATE_LABELS["processing"]
 
+        class _Surface:
+            """Records the re-renders a pause toggle hands the floating icon
+            (`refresh_status`) and the Home hero (`home.set_state`)."""
+
+            def __init__(self):
+                self.calls: list = []
+                self.home = self
+
+            def refresh_status(self):
+                self.calls.append("refresh_status")
+
+            def set_state(self, state):
+                self.calls.append(("home", state))
+
         class _PauseApp:
             """Just the parts App._toggle_hotkey_pause touches."""
 
@@ -6927,6 +6979,8 @@ def _hotkey_pause_is_visible_and_temporary():
                 self.hotkeys = _StubHotkeys()
                 self.messages: list = []
                 self.tray = self
+                self.overlay = _Surface()
+                self._settings_window = _Surface()
 
             def notify(self, message, force=False):
                 self.messages.append(message)
@@ -6941,6 +6995,26 @@ def _hotkey_pause_is_visible_and_temporary():
         app._toggle_hotkey_pause()
         assert app.hotkey_paused and not app.hotkeys.running
         assert app.messages and "paused" in app.messages[-1].lower()
+        # The tray is not the only surface naming the hotkey: the floating
+        # icon's tooltip and the Home hero are re-rendered too, or both went on
+        # promising a key that does nothing for as long as the pause lasted.
+        assert app.overlay.calls == ["refresh_status"], app.overlay.calls
+        assert app._settings_window.calls == [("home", STATE_IDLE)], app._settings_window.calls
+        # A window Qt has already deleted raises RuntimeError on attribute
+        # access — that drops the reference and never fails the pause.
+
+        class _DeletedWindow:
+            @property
+            def home(self):
+                raise RuntimeError("Internal C++ object already deleted.")
+
+        app._settings_window = _DeletedWindow()
+        app._toggle_hotkey_pause()
+        assert not app.hotkey_paused and app._settings_window is None
+        app._toggle_hotkey_pause()
+        assert app.hotkey_paused
+        app.overlay = None  # the floating icon switched off entirely
+        app._settings_window = _Surface()
         # Saving a setting, finishing the hotkey test or closing the key picker
         # all re-register — none of them may quietly undo the pause.
         app.hotkeys.running = True
@@ -8509,6 +8583,22 @@ def _gui_construction():
         window.set_app_state("recording")
         assert window.home.state_label.text() == "Recording — speak now"
         window.set_app_state("idle")
+
+        # A paused hotkey is named on the hero as well: "Press the hotkey in
+        # any app" is the lie the tray status line refuses to tell. The button
+        # beside it still records, so it stays enabled, and lifting the pause
+        # brings the old line back word for word.
+        from listen_to_me import home_page as home_page_module
+
+        idle_hint = window.home.hint_label.text()
+        stub.hotkey_paused = True
+        window.home.set_state("idle")
+        assert window.home.hint_label.text() == home_page_module._PAUSED_HINT
+        assert window.home.state_label.text() == "Ready to dictate"
+        assert window.home.record_button.isEnabled()
+        stub.hotkey_paused = False
+        window.home.set_state("idle")
+        assert window.home.hint_label.text() == idle_hint, window.home.hint_label.text()
 
         # Record-button debounce: a double-click emits two clicked signals
         # before the event poll runs — only ONE toggle may be posted, or the

@@ -1795,6 +1795,23 @@ class App:
             self.notify("Hotkey active again.", force=True)
         log.info("global hotkey %s by the user", "paused" if self.hotkey_paused else "resumed")
         self.tray.set_state(self.state)
+        # The tray is not the only surface that tells the user to press the
+        # hotkey: the floating icon's tooltip and the Home hero do too. A pause
+        # is no state transition, so nothing else would re-render them, and
+        # both kept naming a key that does nothing. Guarded like _set_state:
+        # neither may be what makes the pause itself fail.
+        if self.overlay is not None:
+            try:
+                self.overlay.refresh_status()
+            except Exception:
+                log.debug("could not show the hotkey pause on the overlay", exc_info=True)
+        if self._settings_window is not None:
+            try:
+                self._settings_window.home.set_state(self.state)
+            except RuntimeError:
+                self._settings_window = None
+            except Exception:
+                log.debug("could not show the hotkey pause on the Home page", exc_info=True)
 
     def apply_settings(self) -> None:
         """Called by the settings window after the config was saved.

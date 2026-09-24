@@ -281,6 +281,16 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **A paused hotkey is now named on the floating icon and the Home page, not
+  only in the tray.** **Pause hotkey** has always switched the tray's status
+  line to "Hotkey paused", but the floating icon's tooltip went on saying
+  "Idle — click or press Ctrl+Alt+Space to record" and the Home page went on
+  saying "Press the hotkey in any app" for as long as the pause lasted — both
+  naming a key that does nothing, on the two surfaces someone with the tray
+  icon switched off actually looks at. Both now say the hotkey is paused, that
+  a click (or the Home page's **Start recording**) still records, and where
+  the switch back is; they follow the pause the moment it is toggled, from
+  either menu, and lifting it brings the old wording back unchanged.
 - **A mute keybind that does not parse now says so while you are typing it.**
   Settings → Integrations stacks one row per app to mute, and its keybind was
   the third hotkey field in the window — the only one still reporting itself

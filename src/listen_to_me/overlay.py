@@ -126,6 +126,13 @@ _STATE_LABELS = {
     "processing": "Transcribing…",
 }
 
+# The idle wording while the global hotkey is suspended — the tray status line
+# has said so from the start, and the floating icon is the surface for the one
+# user who may have the tray switched off. "Press Ctrl+Alt+Space" would name a
+# key that does nothing. The click still records (it posts the toggle itself),
+# so the sentence says that too, and where the switch back is.
+_PAUSED_LABEL = "Hotkey paused — click to record, or right-click to switch it back on"
+
 
 def _recording_label(elapsed=None, source: str = SOURCE_MIC) -> str:
     """The recording tooltip, counting the running take up once a second.
@@ -151,10 +158,12 @@ def _recording_label(elapsed=None, source: str = SOURCE_MIC) -> str:
     return f"{what}{clock}… {_STOP_HINT}"
 
 
-def _idle_label(cfg) -> str:
+def _idle_label(cfg, paused: bool = False) -> str:
     """The idle tooltip, naming the configured combination when it renders —
     the floating icon is as likely a place to look up a forgotten hotkey as
-    the tray is."""
+    the tray is. `paused` replaces it while the global hotkey is suspended."""
+    if paused:
+        return _PAUSED_LABEL
     try:
         combo = hotkey_label(cfg["hotkey"])
     except Exception:
@@ -450,7 +459,7 @@ class Overlay:
         # tech reads. A stable name plus a state description gives it the same
         # identity the tray icon gets for free from its own tooltip.
         self.win.setAccessibleName("Listen To Me — floating recording control")
-        self._apply_status(_idle_label(app.cfg))
+        self._apply_status(_idle_label(app.cfg, paused=self._paused()))
 
         self.bubble = _Bubble()
         # The pointer position the bubble was last placed at, so the cursor
@@ -1068,10 +1077,28 @@ class Overlay:
     def _state_tooltip(self) -> str:
         state = self.state
         if state == "idle":
-            return _idle_label(self.app.cfg)
+            return _idle_label(self.app.cfg, paused=self._paused())
         if state == "recording":
             return _recording_label(self._elapsed, self._source())
         return _STATE_LABELS.get(state, state)
+
+    def _paused(self) -> bool:
+        """Whether the app currently has its global hotkey suspended. getattr
+        for the reason `Tray._paused` gives: the self-test's App stub predates
+        the flag, and a tooltip must never be what breaks against it."""
+        return bool(getattr(self.app, "hotkey_paused", False))
+
+    def refresh_status(self) -> None:
+        """Re-render the tooltip and the menu entries outside a state change.
+
+        For the hotkey pause, which changes what both say without being a
+        state of its own — `set_state` is only fed on transitions, so without
+        this the icon went on promising "press Ctrl+Alt+Space" for as long as
+        the pause lasted. A running download keeps the tooltip it owns, the
+        same rule `set_state` follows.
+        """
+        self._apply_status(self._progress_text or self._state_tooltip())
+        self._sync_menu_state()
 
     def _source(self) -> str:
         """Which source the app's running (or most recent) take records from.
@@ -1161,8 +1188,8 @@ class Overlay:
             # Re-read rather than left to the click that toggled it: App
             # refuses to pause during a recording, and the tick has to go back
             # where it was. getattr keeps the self-test's App stub (state-only,
-            # like the tray's) working — same guard as Tray._paused().
-            self._act_pause.setChecked(bool(getattr(self.app, "hotkey_paused", False)))
+            # like the tray's) working — see _paused().
+            self._act_pause.setChecked(self._paused())
         except Exception:
             log.debug("could not update the floating icon menu entries", exc_info=True)
 
