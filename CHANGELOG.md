@@ -281,6 +281,34 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **The tray's Dictation language entry now names the language in use.** The
+  submenu has always ticked the live language, but checking it before a
+  dictation meant opening the submenu and finding that tick among thirty-five
+  entries — and a dictation in the wrong language comes back as garbage. The
+  entry now reads "Dictation language: English [en]", in the same spelling as
+  the list and as the notification sent when it is switched, re-read every
+  time the tray menu opens so a change on the Engine page shows up there too.
+  With the Parakeet backend it reads "Auto-detect", the way the Home page does,
+  because that engine ignores the setting.
+- **`Esc` in the History search or the Help find field now clears the term
+  instead of closing the window.** It is what the key does in every browser's
+  find bar and every search box, but here a text field ignores it, so it
+  travelled on to the settings window — the app's main window — which took it
+  as Cancel and closed, taking the page and the search you were in the middle
+  of with it (or, with unsaved edits, asked whether to discard them). The
+  first press now empties the field (the list shows every transcript again,
+  the Help page drops its highlight), `Ctrl+Z` brings the term back, and only
+  a press on an empty field still acts as Cancel, as it always did.
+- **A paused hotkey is now named on the floating icon and the Home page, not
+  only in the tray.** **Pause hotkey** has always switched the tray's status
+  line to "Hotkey paused", but the floating icon's tooltip went on saying
+  "Idle — click or press Ctrl+Alt+Space to record" and the Home page went on
+  saying "Press the hotkey in any app" for as long as the pause lasted — both
+  naming a key that does nothing, on the two surfaces someone with the tray
+  icon switched off actually looks at. Both now say the hotkey is paused, that
+  a click (or the Home page's **Start recording**) still records, and where
+  the switch back is; they follow the pause the moment it is toggled, from
+  either menu, and lifting it brings the old wording back unchanged.
 - **A mute keybind that does not parse now says so while you are typing it.**
   Settings → Integrations stacks one row per app to mute, and its keybind was
   the third hotkey field in the window — the only one still reporting itself

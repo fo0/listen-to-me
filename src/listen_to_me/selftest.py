@@ -6806,6 +6806,44 @@ def _overlay_menu_follows_the_state():
             stub.posts.clear()
             overlay._act_pause.trigger()
             assert stub.posts == [("toggle_hotkey_pause",)], stub.posts
+
+            # The icon's own tooltip says so too, re-rendered by the
+            # refresh_status App calls after the toggle — a pause is no state
+            # transition, and "press Ctrl+Alt+Space" named a key that does
+            # nothing for as long as it lasted. The accessible description is
+            # the same string, so a screen reader hears it as well.
+            from listen_to_me.overlay import _PAUSED_LABEL
+
+            stub.hotkey_paused = False
+            overlay.set_state("idle")
+            assert overlay.win.toolTip().startswith("Idle — click or press"), (
+                overlay.win.toolTip()
+            )
+            stub.hotkey_paused = True
+            overlay.refresh_status()
+            assert overlay.win.toolTip().startswith(_PAUSED_LABEL), overlay.win.toolTip()
+            assert overlay.win.accessibleDescription() == overlay.win.toolTip()
+            assert overlay._act_pause.isChecked()
+            # A running download keeps the tooltip it owns, pause or not, and
+            # hands it back to the paused wording when it ends.
+            overlay.set_progress(0.5, "Downloading small 50%")
+            overlay.refresh_status()
+            assert overlay.win.toolTip().startswith("Downloading small"), overlay.win.toolTip()
+            overlay.set_progress(None, None)
+            assert overlay.win.toolTip().startswith(_PAUSED_LABEL), overlay.win.toolTip()
+            # Recording while paused (the click still posts the toggle) names
+            # the take, not the pause — only the idle wording is replaced.
+            stub.state = "recording"
+            overlay.set_state("recording")
+            assert overlay.win.toolTip().startswith("Recording"), overlay.win.toolTip()
+            stub.state = "idle"
+            overlay.set_state("idle")
+            stub.hotkey_paused = False
+            overlay.refresh_status()
+            assert overlay.win.toolTip().startswith("Idle — click or press"), (
+                overlay.win.toolTip()
+            )
+            assert not overlay._act_pause.isChecked()
         finally:
             overlay.destroy()
 
@@ -6917,6 +6955,20 @@ def _hotkey_pause_is_visible_and_temporary():
         )
         assert state_label("processing", stub.cfg, paused=True) == _STATE_LABELS["processing"]
 
+        class _Surface:
+            """Records the re-renders a pause toggle hands the floating icon
+            (`refresh_status`) and the Home hero (`home.set_state`)."""
+
+            def __init__(self):
+                self.calls: list = []
+                self.home = self
+
+            def refresh_status(self):
+                self.calls.append("refresh_status")
+
+            def set_state(self, state):
+                self.calls.append(("home", state))
+
         class _PauseApp:
             """Just the parts App._toggle_hotkey_pause touches."""
 
@@ -6927,6 +6979,8 @@ def _hotkey_pause_is_visible_and_temporary():
                 self.hotkeys = _StubHotkeys()
                 self.messages: list = []
                 self.tray = self
+                self.overlay = _Surface()
+                self._settings_window = _Surface()
 
             def notify(self, message, force=False):
                 self.messages.append(message)
@@ -6941,6 +6995,26 @@ def _hotkey_pause_is_visible_and_temporary():
         app._toggle_hotkey_pause()
         assert app.hotkey_paused and not app.hotkeys.running
         assert app.messages and "paused" in app.messages[-1].lower()
+        # The tray is not the only surface naming the hotkey: the floating
+        # icon's tooltip and the Home hero are re-rendered too, or both went on
+        # promising a key that does nothing for as long as the pause lasted.
+        assert app.overlay.calls == ["refresh_status"], app.overlay.calls
+        assert app._settings_window.calls == [("home", STATE_IDLE)], app._settings_window.calls
+        # A window Qt has already deleted raises RuntimeError on attribute
+        # access — that drops the reference and never fails the pause.
+
+        class _DeletedWindow:
+            @property
+            def home(self):
+                raise RuntimeError("Internal C++ object already deleted.")
+
+        app._settings_window = _DeletedWindow()
+        app._toggle_hotkey_pause()
+        assert not app.hotkey_paused and app._settings_window is None
+        app._toggle_hotkey_pause()
+        assert app.hotkey_paused
+        app.overlay = None  # the floating icon switched off entirely
+        app._settings_window = _Surface()
         # Saving a setting, finishing the hotkey test or closing the key picker
         # all re-register — none of them may quietly undo the pause.
         app.hotkeys.running = True
@@ -7167,6 +7241,40 @@ def _tray_switches_the_dictation_language():
             assert len(actions) == 1, [a.text() for a in actions]
             assert actions[0].text() == tray_module._LANGUAGE_PARAKEET_NOTE
             assert not actions[0].isEnabled()
+
+            # The entry names the language in use on its own line, re-read
+            # every time the tray menu opens — checking it before a dictation
+            # used to mean opening the submenu and finding the tick among
+            # thirty-five entries. Same spelling as the entries and as App's
+            # "Dictation language: …" notification.
+            def _title_after_opening() -> str:
+                tray._menu.aboutToShow.emit()
+                title = tray._language_menu.title()
+                assert tray._language_menu.menuAction().text() == title
+                return title
+
+            stub.cfg["backend"] = "faster-whisper"
+            stub.cfg["language"] = "de"
+            assert _title_after_opening() == f"Dictation language: {language_label('de')}"
+            stub.cfg["language"] = "auto"
+            assert _title_after_opening() == "Dictation language: Auto-detect"
+            # Parakeet ignores the setting: "Auto-detect", like the Home card,
+            # never a configured language that does not apply.
+            stub.cfg["backend"] = "parakeet"
+            stub.cfg["language"] = "de"
+            assert _title_after_opening() == "Dictation language: Auto-detect"
+            # A hand-edited, unlisted value is shown as it is, its "&" doubled
+            # so Qt does not swallow it as a mnemonic marker.
+            stub.cfg["backend"] = "faster-whisper"
+            stub.cfg["language"] = "x&y"
+            assert _title_after_opening() == "Dictation language: x&&y"
+            # A config that cannot be read names no language at all.
+            real_cfg = stub.cfg
+            stub.cfg = {}
+            try:
+                assert _title_after_opening() == "Dictation language"
+            finally:
+                stub.cfg = real_cfg
         finally:
             tray.stop()
 
@@ -7432,6 +7540,45 @@ def _source_aware_controls_stop_their_take():
         qapp.processEvents()
 
 
+def _press_escape(widget) -> bool:
+    """Deliver one Escape key press to `widget` through `sendEvent` — so it
+    passes the widget's event filters the way a real keystroke does — and
+    return whether something accepted it. An ignored key would travel on to
+    the parent, which in the settings window is the dialog's reject()."""
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+
+    event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(widget, event)
+    return event.isAccepted()
+
+
+def _escape_clears_a_search_field():
+    """`qtutil.clear_on_escape`: the first Escape in a search field clears the
+    term and stops there; on an empty field the key is left alone, so it still
+    reaches the dialog and closes the window exactly as it always did. The
+    clear goes through the undo stack, so Ctrl+Z brings a term back."""
+    _ensure_qapp()
+    from PySide6.QtWidgets import QLineEdit
+
+    from listen_to_me.qtutil import clear_on_escape
+
+    field = QLineEdit()
+    try:
+        clear_on_escape(field)
+        field.setText("meeting notes")
+        assert _press_escape(field), "a term was there to clear — the key must stop here"
+        assert field.text() == "", field.text()
+        field.undo()
+        assert field.text() == "meeting notes", field.text()
+        field.clear()
+        assert not _press_escape(field), "an empty field must leave Escape to the dialog"
+        assert field.text() == ""
+    finally:
+        field.deleteLater()
+
+
 def _help_page_find():
     """The Help page can be searched, and the search wraps around.
 
@@ -7549,6 +7696,24 @@ def _help_page_find():
                 assert focused == [True]
             finally:
                 window._focus_help_find = real_focus
+
+            # Esc clears the term — and with it the highlight and the step
+            # buttons — instead of reaching reject() and closing the window.
+            # _force_close: a missing guard must fail this check through the
+            # rejected signal, never hang it in the unsaved-changes prompt.
+            rejected: list[bool] = []
+            window.rejected.connect(lambda: rejected.append(True))
+            window._force_close = True
+            try:
+                window.help_find_edit.setText("proxy")
+                assert window._help_browser.textCursor().hasSelection()
+                assert _press_escape(window.help_find_edit)
+                assert window.help_find_edit.text() == ""
+                assert not window._help_browser.textCursor().hasSelection()
+                assert not window.help_find_next.isEnabled()
+                assert not rejected, "Esc with a term in the find field closed the window"
+            finally:
+                window._force_close = False
         finally:
             window.force_close()
             window.deleteLater()
@@ -8510,6 +8675,22 @@ def _gui_construction():
         assert window.home.state_label.text() == "Recording — speak now"
         window.set_app_state("idle")
 
+        # A paused hotkey is named on the hero as well: "Press the hotkey in
+        # any app" is the lie the tray status line refuses to tell. The button
+        # beside it still records, so it stays enabled, and lifting the pause
+        # brings the old line back word for word.
+        from listen_to_me import home_page as home_page_module
+
+        idle_hint = window.home.hint_label.text()
+        stub.hotkey_paused = True
+        window.home.set_state("idle")
+        assert window.home.hint_label.text() == home_page_module._PAUSED_HINT
+        assert window.home.state_label.text() == "Ready to dictate"
+        assert window.home.record_button.isEnabled()
+        stub.hotkey_paused = False
+        window.home.set_state("idle")
+        assert window.home.hint_label.text() == idle_hint, window.home.hint_label.text()
+
         # Record-button debounce: a double-click emits two clicked signals
         # before the event poll runs — only ONE toggle may be posted, or the
         # recording would start and instantly stop ("too short").
@@ -8957,7 +9138,19 @@ def _gui_construction():
         window.history_filter_edit.setText("corrupt")
         window._focus_history_filter()
         assert window.history_filter_edit.selectedText() == "corrupt"
-        window.history_filter_edit.clear()
+        # Esc clears the search instead of reaching reject() and closing the
+        # main window with the page and the term in it. _force_close: a missing
+        # guard must fail here through the rejected signal, never hang in the
+        # unsaved-changes prompt.
+        history_rejected: list[bool] = []
+        window.rejected.connect(lambda: history_rejected.append(True))
+        window._force_close = True
+        try:
+            assert _press_escape(window.history_filter_edit)
+            assert window.history_filter_edit.text() == ""
+            assert not history_rejected, "Esc with a search term closed the window"
+        finally:
+            window._force_close = False
         window._refresh_history()
 
         # "Clear history" on an empty history did nothing at all when clicked —
@@ -10797,6 +10990,7 @@ _LIGHT_CHECKS = [
     ("hardware/status probes", _hardware_probes),
     ("help content renders", _help_content_renders),
     ("help page find", _help_page_find),
+    ("escape clears a search field", _escape_clears_a_search_field),
     ("Qt icon conversion", _qt_icons),
     ("clipboard copy falls back to Qt", _clipboard_copy_falls_back_to_qt),
     ("glyph icons render", _glyph_icons),

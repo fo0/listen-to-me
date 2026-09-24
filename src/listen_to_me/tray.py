@@ -44,6 +44,10 @@ _PAUSED_LABEL = "Hotkey paused — switch it back on in this menu"
 _SYSTEM_START_LABEL = "Record system audio"
 _SYSTEM_STOP_LABEL = "Stop recording system audio (insert text)"
 
+# The "Dictation language" submenu's own line, which also names the language in
+# use ("Dictation language: German — Deutsch [de]") — see _sync_language_title.
+_LANGUAGE_TITLE = "Dictation language"
+
 # Shown instead of the language list while the Parakeet backend is selected:
 # it detects the language itself and ignores the setting, exactly as the Home
 # page and the Engine page already say. Thirty-five entries that change
@@ -248,7 +252,7 @@ class Tray:
         # several times a day. Tray-only, like "Check for updates" and "Open
         # config folder" — the floating icon's menu is deliberately the short
         # one and carries what a running take needs, not what configures it.
-        self._language_menu = QMenu("Dictation language", menu)
+        self._language_menu = QMenu(_LANGUAGE_TITLE, menu)
         self._language_menu.setToolTipsVisible(True)
         # One long-lived group rather than one per fill: menu.clear() deletes
         # the actions it owns and a destroyed QAction leaves its group by
@@ -266,6 +270,13 @@ class Tray:
             "the language instead of leaving it on “Auto-detect” makes the "
             "recognition more accurate."
         )
+        # The entry names the language in use on its own line, so checking it
+        # before a dictation costs a glance instead of opening the submenu and
+        # hunting a tick among thirty-five entries. Re-read every time the
+        # tray menu opens, for the reason the submenu itself is: the Engine
+        # page writes the same key.
+        menu.aboutToShow.connect(self._sync_language_title)
+        self._sync_language_title()
 
         self._act_pause = QAction("Pause hotkey", menu)
         self._act_pause.setCheckable(True)
@@ -433,6 +444,34 @@ class Tray:
             action.triggered.connect(
                 lambda _checked=False, chosen=code: self.app.post("set_language", chosen)
             )
+
+    def _sync_language_title(self) -> None:
+        """Name the language in use on the "Dictation language" entry itself.
+
+        Runs every time the tray menu opens. Dictating in the wrong language
+        returns garbage, and until now the only way to check which one was
+        live was to open the submenu and find the tick among thirty-five
+        entries. `language_label` for the spelling the submenu and the Engine
+        page use; for Parakeet, which ignores the setting, the Home page's
+        "Auto-detect" rather than a language that does not apply. A config
+        that cannot be read leaves the bare title — naming a language the app
+        may not be using would be worse than naming none.
+        """
+        menu = self._language_menu
+        if menu is None:
+            return
+        try:
+            if self.app.cfg["backend"] == "parakeet":
+                current = language_label("auto")
+            else:
+                current = language_label(str(self.app.cfg["language"]))
+        except Exception:
+            log.debug("could not read the dictation language for the tray menu", exc_info=True)
+            menu.setTitle(_LANGUAGE_TITLE)
+            return
+        # A hand-edited, unlisted code comes back verbatim from language_label,
+        # and a single "&" in a menu title is swallowed as a mnemonic marker.
+        menu.setTitle(f"{_LANGUAGE_TITLE}: {current}".replace("&", "&&"))
 
     def _open_project_page(self) -> None:
         # The settings footer reports a failed browser launch — the tray entry
