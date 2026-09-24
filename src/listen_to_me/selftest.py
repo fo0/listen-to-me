@@ -7241,6 +7241,40 @@ def _tray_switches_the_dictation_language():
             assert len(actions) == 1, [a.text() for a in actions]
             assert actions[0].text() == tray_module._LANGUAGE_PARAKEET_NOTE
             assert not actions[0].isEnabled()
+
+            # The entry names the language in use on its own line, re-read
+            # every time the tray menu opens — checking it before a dictation
+            # used to mean opening the submenu and finding the tick among
+            # thirty-five entries. Same spelling as the entries and as App's
+            # "Dictation language: …" notification.
+            def _title_after_opening() -> str:
+                tray._menu.aboutToShow.emit()
+                title = tray._language_menu.title()
+                assert tray._language_menu.menuAction().text() == title
+                return title
+
+            stub.cfg["backend"] = "faster-whisper"
+            stub.cfg["language"] = "de"
+            assert _title_after_opening() == f"Dictation language: {language_label('de')}"
+            stub.cfg["language"] = "auto"
+            assert _title_after_opening() == "Dictation language: Auto-detect"
+            # Parakeet ignores the setting: "Auto-detect", like the Home card,
+            # never a configured language that does not apply.
+            stub.cfg["backend"] = "parakeet"
+            stub.cfg["language"] = "de"
+            assert _title_after_opening() == "Dictation language: Auto-detect"
+            # A hand-edited, unlisted value is shown as it is, its "&" doubled
+            # so Qt does not swallow it as a mnemonic marker.
+            stub.cfg["backend"] = "faster-whisper"
+            stub.cfg["language"] = "x&y"
+            assert _title_after_opening() == "Dictation language: x&&y"
+            # A config that cannot be read names no language at all.
+            real_cfg = stub.cfg
+            stub.cfg = {}
+            try:
+                assert _title_after_opening() == "Dictation language"
+            finally:
+                stub.cfg = real_cfg
         finally:
             tray.stop()
 

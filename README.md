@@ -170,7 +170,10 @@ standalone system-tray app that works in _every_ application.
 - **Switch the dictation language from the tray** — **Dictation language** in
   the tray menu lists the same languages as Settings → Engine and ticks the one
   in use, so the next recording is transcribed in another language without
-  opening the settings window at all. Naming the language instead of leaving it
+  opening the settings window at all. The entry itself names the language that
+  is live ("Dictation language: English [en]"), so checking it before a
+  dictation takes a glance at the menu, not a search for the tick among
+  thirty-five entries. Naming the language instead of leaving it
   on _Auto-detect_ is what makes the recognition more accurate, and it is the
   one engine setting that changes between two dictations — anyone who works in
   two languages was paying for that accuracy with a walk through the sidebar

@@ -281,6 +281,15 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **The tray's Dictation language entry now names the language in use.** The
+  submenu has always ticked the live language, but checking it before a
+  dictation meant opening the submenu and finding that tick among thirty-five
+  entries — and a dictation in the wrong language comes back as garbage. The
+  entry now reads "Dictation language: English [en]", in the same spelling as
+  the list and as the notification sent when it is switched, re-read every
+  time the tray menu opens so a change on the Engine page shows up there too.
+  With the Parakeet backend it reads "Auto-detect", the way the Home page does,
+  because that engine ignores the setting.
 - **`Esc` in the History search or the Help find field now clears the term
   instead of closing the window.** It is what the key does in every browser's
   find bar and every search box, but here a text field ignores it, so it
