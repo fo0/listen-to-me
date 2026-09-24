@@ -2705,8 +2705,9 @@ class SettingsWindow(QDialog):
         keep_return_in_field(self.history_filter_edit)
         # Escape had the same problem one key over: the search-box gesture for
         # "clear the term" reached the dialog's reject() and closed the main
-        # window, page and search with it. Now the first press clears, and
-        # only a press on an empty field still closes.
+        # window, page and search with it (or raised the unsaved-changes
+        # prompt). Now the first press clears, and only a press on an empty
+        # field still reaches reject().
         clear_on_escape(self.history_filter_edit)
         fh.addWidget(self.history_filter_edit, 1)
         self.history_count_label = self._hint("")

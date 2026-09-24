@@ -724,7 +724,9 @@ class HomePage(QWidget):
 
     def set_state(self, state: str) -> None:
         """Mirror the app state into the hero card. Called via
-        SettingsWindow.set_app_state on every state transition."""
+        SettingsWindow.set_app_state on every state transition, and by
+        App._toggle_hotkey_pause with the unchanged state — the idle line
+        names the pause, which is no transition of its own."""
         previous, self._state = self._state, state
         # A new state owns a fresh clock: leaving "recording" drops the
         # counter, entering it starts from the wording without one until the

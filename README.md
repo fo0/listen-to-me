@@ -136,7 +136,9 @@ standalone system-tray app that works in _every_ application.
   the floating icon's right-click menu, so it stays in reach with the tray icon
   switched off — suspends the global combination for a game or another app that
   wants the same keys; your hotkey is kept, and the pause is forgotten on the
-  next start.
+  next start. While it lasts the tray status, the floating icon's tooltip and
+  the Home page all say the hotkey is paused — a click on the icon or the Home
+  page's **Start recording** still records.
   Only one instance runs at a time:
   starting the app again simply brings the running instance's settings
   window to the front.

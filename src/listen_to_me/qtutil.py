@@ -1,7 +1,7 @@
 """Small Qt helpers: bridge the Pillow-drawn icons (icons.py) into Qt
 pixmaps/icons, the wheel guard for value widgets on scrollable pages, the
-Return and Escape guards for search fields inside a dialog, the width cap for combo
-boxes with unbounded item texts, the font-derived height for boxes that
+Return and Escape guards for search fields inside a dialog, the width cap
+for combo boxes with unbounded item texts, the font-derived height for boxes that
 should show a fixed number of lines, the wait cursor for a blocking
 main-thread call, and the one clipboard
 path every "Copy" in the app uses — plus the button feedback that reports how
@@ -104,8 +104,9 @@ class _EscapeGuard(QObject):
     The Return guard's twin: a QLineEdit ignores Escape too, so inside a
     QDialog the key travels on to `reject()` — which closes the settings
     window, the app's main window, along with the page and the search the
-    user was in the middle of. An empty field lets the key through untouched,
-    so a second Escape still closes the window exactly as it always did.
+    user was in the middle of (or, with unsaved edits, stops to ask whether
+    to discard them). An empty field lets the key through untouched, so a
+    second Escape still reaches `reject()` exactly as it always did.
     """
 
     def __init__(self, edit):
