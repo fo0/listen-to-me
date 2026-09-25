@@ -356,6 +356,15 @@ The numeric keys additionally carry the range the settings window accepts, noted
 below: a hand-edited value outside it keeps working, but opening that settings
 page and saving snaps it into range.
 
+Five of them are also held to that range when they take effect — the recording
+cap, the history trim and the assistant request: `max_seconds`,
+`system_audio.max_seconds`, `history_max`, `assistant.temperature` and
+`assistant.timeout`. For those an out-of-range value works only as the nearest
+bound, with one line in the log naming the key. The other two have looser
+guards of their own:
+`overlay.preview_seconds` is kept between `2` and `600` seconds, `beam_size` at
+`1` or more.
+
 | Key                                             | Default                       | What it does                                                                                                                                                                                                                                                                                                                                                                                                                |
 | ----------------------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `hotkey`                                        | `"<ctrl>+<alt>+<space>"`      | Global recording hotkey, pynput syntax                                                                                                                                                                                                                                                                                                                                                                                      |
