@@ -8,8 +8,8 @@ the version reasoning.
 | Language          | Python                                                                                     | >=3.10 (CI + dev on 3.11/3.12)         |
 | GUI Framework     | PySide6 (Qt 6)                                                                             | >=6.11.2                               |
 | Speech-to-text    | faster-whisper (CTranslate2); optional `[openvino]` / `[parakeet]` extras, both in the exe | >=1.2.1                                |
-| Audio · hotkeys   | sounddevice (PortAudio) · pynput                                                           | >=0.5.6 / >=1.7.7                      |
-| Build · packaging | setuptools (`pyproject.toml`) · PyInstaller one-file (CI)                                  | >=68                                   |
+| Audio · hotkeys   | sounddevice (PortAudio) · pynput                                                           | >=0.5.6 / >=1.8.2                      |
+| Build · packaging | setuptools (`pyproject.toml`) · PyInstaller one-file (CI)                                  | >=84.0.0                               |
 | Package Manager   | pip (`requirements.txt` + `pyproject.toml`)                                                | —                                      |
 | Test Framework    | none configured                                                                            | CI: `compileall` + Qt offscreen smoke  |
 | Linter/Formatter  | none for Python; Prettier (via npx) for Markdown only                                      | de-facto black-style, line length ~100 |
