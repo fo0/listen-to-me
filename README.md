@@ -340,6 +340,7 @@ place to look when reporting a bug or cleaning up:
 | `history.json`                    | The transcript **text** of recent recordings (never audio). Switch it off or clear it in Settings → History                                                                                          |
 | `listen-to-me.log` (+ `.1`, `.2`) | Rotating log, 512 KB per file — the first thing to attach to a bug report                                                                                                                            |
 | `instance.lock` _(Linux/macOS)_   | The single-instance lock; on Windows a named mutex does the same job without a file                                                                                                                  |
+| `cache/openvino-cache/`           | OpenVINO on a GPU or NPU only: the compiled model, so a restart on the same model, device and driver skips a recompile of up to minutes. A custom `model_dir` holds it instead. Safe to delete       |
 
 Nothing is written anywhere else — downloaded models live in the Hugging Face
 cache (see [Choosing a Whisper model](#choosing-a-whisper-model)), not here.
