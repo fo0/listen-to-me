@@ -319,8 +319,9 @@ class TranscriptHistory:
         it on: this answers a menu click that puts text on the clipboard, not
         a view, so there is nothing here to render the difference into — and
         an exception out of a menu handler is the failure mode this has always
-        promised not to have. The user learns which of the two it was from the
-        surfaces that do list transcripts.
+        promised not to have. The menu click still tells the two apart: only
+        when this returns "" does `app.nothing_to_copy_message` read the store
+        a second time to say why.
         """
         with self._lock:
             try:

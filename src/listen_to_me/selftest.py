@@ -388,6 +388,71 @@ def _history_latest_transcript():
         assert store.latest() == ""
 
 
+def _copy_last_transcript_says_why_there_is_nothing():
+    """The tray/overlay "Copy last transcript" with nothing to copy names which
+    of the three empty stores it met: an empty history, one switched off, or a file
+    that could not be read. Only the first may promise that a transcript is
+    coming ("yet") — the other two used to get the same sentence."""
+    import json
+
+    from listen_to_me.app import App, nothing_to_copy_message
+    from listen_to_me.history import TranscriptHistory
+
+    class _App:
+        # Borrowed unbound, like the clipboard-announcement check: the real App
+        # needs a tray, a recorder and a transcriber.
+        _copy_last_transcript = App._copy_last_transcript
+
+        def __init__(self, history, enabled):
+            self.history = history
+            self.cfg = {"history_enabled": enabled}
+            self.messages: list[tuple[str, bool]] = []
+            self.copied: list[str] = []
+
+        def notify(self, message, force=False):
+            self.messages.append((message, force))
+
+        def _copy_transcript(self, text):
+            self.copied.append(text)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "history.json"
+        store = TranscriptHistory(path)
+        # Empty and on: the list will fill up, so "yet" is the truth.
+        app = _App(store, True)
+        app._copy_last_transcript()
+        assert app.messages == [("No transcript in the history yet.", True)]
+        assert app.copied == []
+        # Empty and off: nothing will ever arrive — say so, and where to change it.
+        app = _App(store, False)
+        app._copy_last_transcript()
+        ((message, force),) = app.messages
+        assert force and "history is off" in message and "Settings → History" in message
+        assert "yet" not in message
+        # Unreadable: the transcripts are still in that file, whatever the switch.
+        path.write_text("{ truncated", encoding="utf-8")
+        for enabled in (True, False):
+            app = _App(store, enabled)
+            app._copy_last_transcript()
+            ((message, force),) = app.messages
+            assert force and message.startswith("Could not read the transcript history"), message
+            assert "yet" not in message and app.copied == []
+        assert path.read_text(encoding="utf-8") == "{ truncated"  # asking wrote nothing
+        # "Off" stops new transcripts only: a stored one is still copied.
+        path.write_text(json.dumps([{"time": 1.0, "text": "kept"}]), encoding="utf-8")
+        app = _App(store, False)
+        app._copy_last_transcript()
+        assert app.copied == ["kept"] and app.messages == []
+
+    # Any other failure of the second read is still an answer, never a raise
+    # into the menu handler.
+    class _Broken:
+        def entries(self):
+            raise OSError("disk gone")
+
+    assert nothing_to_copy_message(_Broken(), True) == "Could not read the transcript history."
+
+
 def _history_refuses_to_overwrite_an_unreadable_file():
     """A history file that cannot be read is its own answer — and is kept.
 
@@ -11007,6 +11072,8 @@ _LIGHT_CHECKS = [
     ("config factory reset", _config_factory_reset),
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
+    ("copy last transcript says why there is nothing",
+     _copy_last_transcript_says_why_there_is_nothing),
     ("history search matching", _history_search_matching),
     ("history search matches the date", _history_search_matches_the_date),
     ("history search takes phrases and exclusions", _history_search_takes_phrases_and_exclusions),

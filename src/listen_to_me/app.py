@@ -496,6 +496,44 @@ def preview_replacements(sample: str, spec: str) -> str:
     return f"Result: {result}"
 
 
+def nothing_to_copy_message(history, history_enabled) -> str:
+    """Why "Copy last transcript" has nothing to put on the clipboard.
+
+    `TranscriptHistory.latest()` answers "" for three different stores, and
+    the menu entry used to say "No transcript in the history yet." for all of
+    them. Two of those are the wrong news. A history file that cannot be read
+    still holds every transcript — "yet" sends the user off to dictate again
+    while the one they are after is in the file — and a history that is
+    switched off will never fill up, so the same sentence came back on every
+    click with nothing pointing at the setting that decides it. The tray and
+    floating-icon "Recent transcripts" submenus, the Home page and the History
+    page already tell the three apart; this is the one surface that did not.
+
+    `latest()` keeps its contract (never an exception into a menu handler):
+    this is a second read, only on the path where there was nothing to copy,
+    and it swallows everything as well. An unreadable file outranks the
+    switch — it holds transcripts whether or not new ones are being stored.
+    """
+    from .history import HistoryUnavailable
+
+    try:
+        history.entries()
+    except HistoryUnavailable:
+        return (
+            "Could not read the transcript history, so there is nothing to copy. "
+            "Settings → History names the file."
+        )
+    except Exception:
+        log.exception("could not read the transcript history")
+        return "Could not read the transcript history."
+    if not history_enabled:
+        return (
+            "Nothing to copy — the history is off, so transcripts are not stored. "
+            "Turn on “Keep a history of transcribed text” in Settings → History."
+        )
+    return "No transcript in the history yet."
+
+
 def assistant_failure_message(exc: BaseException) -> str:
     """What to show when the assistant could not clean up a finished dictation.
 
@@ -1552,9 +1590,12 @@ class App:
             self.notify("Could not read the transcript history.", force=True)
             return
         if not text:
-            # Also the state right after "Keep a local history" was switched
-            # off — say what is missing instead of a silent no-op.
-            self.notify("No transcript in the history yet.", force=True)
+            # Never a silent no-op — and never "yet" for a history that is off
+            # or a file that could not be read (see nothing_to_copy_message).
+            self.notify(
+                nothing_to_copy_message(self.history, bool(self.cfg["history_enabled"])),
+                force=True,
+            )
             return
         self._copy_transcript(text)
 
