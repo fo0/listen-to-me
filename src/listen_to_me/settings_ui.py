@@ -1721,7 +1721,7 @@ class SettingsWindow(QDialog):
         self.replacements_try_edit.setPlaceholderText("Try the rules on a sentence…")
         self.replacements_try_edit.setAccessibleName("Try the text replacements")
         self.replacements_try_edit.setToolTip(
-            "Type a sentence the way Whisper writes it to see what the rules "
+            "Type a sentence the way a transcript comes out to see what the rules "
             "above make of it — as they stand in the field, before you save "
             "them. Only the rules run here, not the assistant."
         )

@@ -474,21 +474,23 @@ def preview_replacements(sample: str, spec: str) -> str:
     longer word alone ("scala => Scala" and "scalable"), or needs the words of
     a two-word term in exactly the order Whisper writes them was only found
     out by dictating and reading what arrived at the cursor. This runs the
-    same `apply_replacements` a finished transcript goes through, so the
-    answer is the one a dictation would get — for the rules alone: the
-    assistant runs before them and is not part of the preview.
+    same rule application a finished transcript goes through (`_apply_rules`,
+    behind `apply_replacements`), so the answer is the one a dictation would
+    get — for the rules alone: the assistant runs before them and is not part
+    of the preview.
 
     Empty for an empty sample (nothing typed yet needs its placeholder, not a
     verdict). "Unchanged" rather than "no rule matched": a rule that finds the
     word already spelled its way matches and changes nothing, and that is the
-    fact the user can act on. Never raises — `apply_replacements` does not.
+    fact the user can act on. Never raises — `_apply_rules` does not.
     """
     sample = str(sample or "")
     if not sample.strip():
         return ""
-    if not parse_replacements(spec):
+    rules = parse_replacements(spec)
+    if not rules:
         return "No rule is active yet — write one in the field above to try it here."
-    result = apply_replacements(sample, spec)
+    result = _apply_rules(sample, rules)
     if result == sample:
         return "Unchanged — no rule changes this sentence."
     if not result.strip():
@@ -584,7 +586,19 @@ def apply_replacements(text: str, spec: str) -> str:
     """
     if not text:
         return text
-    rules = parse_replacements(spec)
+    return _apply_rules(text, parse_replacements(spec))
+
+
+def _apply_rules(text: str, rules: list[tuple[str, str]]) -> str:
+    """`apply_replacements` for rules that are already parsed.
+
+    Split out for `preview_replacements`, which parses the rules itself to
+    tell "no rule is active" from "no rule changes this" and must not parse
+    them a second time: the parser logs a warning for every malformed line,
+    and the preview re-runs on every keystroke in either field. The regex
+    construction stays in this one place, so the preview can never apply a
+    rule differently from a dictation.
+    """
     if not rules:
         return text
     import re

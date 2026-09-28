@@ -693,7 +693,9 @@ def _history_search_matches_the_date():
     Every row shows a ``YYYY-MM-DD HH:MM`` stamp, so a date-shaped term is
     matched against that stamp as well as against the text. The guards matter
     as much as the feature: an ordinary word must never be matched against the
-    stamp, and no query that found an entry before may stop finding it."""
+    stamp, and no query that found an entry before may stop finding it (a term
+    with a leading "-" aside, which excludes — see the phrases and exclusions
+    check below)."""
     import time as _time
 
     from listen_to_me.history import _is_stamp_term, entry_timestamp, filter_entries
@@ -998,6 +1000,25 @@ def _replacement_rules_can_be_tried():
         assert preview_replacements("posgres", no_rules).startswith("No rule is active yet")
     # A sentence the rules delete entirely is named, not shown as a bare prefix.
     assert preview_replacements("um", rules) == "Result: nothing — the rules delete every word of it."
+    # One parse per preview, which re-runs on every keystroke: a malformed
+    # line is warned about once, not once for the rule check and again for
+    # the application.
+    import logging
+
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    collector = _Collect(level=logging.WARNING)
+    app_log = logging.getLogger("listen_to_me.app")
+    app_log.addHandler(collector)
+    try:
+        preview_replacements("posgres", "posgres => PostgreSQL\nbroken line")
+    finally:
+        app_log.removeHandler(collector)
+    assert len(records) == 1, [record.getMessage() for record in records]
 
 
 def _filler_filter_drops_a_silent_take():
