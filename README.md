@@ -489,6 +489,13 @@ tee ess => TypeScript
 line ignored: line 4 has no “=>”.`). An arrow typed as `->`, or a rule with
   nothing on its left-hand side, is otherwise indistinguishable from one that
   works until a dictation comes out uncorrected.
+- **Try the rules before you rely on them** — type a sentence into the field
+  under the rules and the line below it shows what they make of it
+  (`Result: we moved the cluster to Kubernetes`), updated as you type in
+  either field and before you save. It runs exactly what a finished dictation
+  goes through, minus the assistant, so whether a rule also catches the word
+  at the start of a sentence, or leaves a longer word alone, is visible
+  without dictating.
 - Not applied while `live_typing` is on: that text is already at the cursor and
   append-only typing cannot take it back.
 

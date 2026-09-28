@@ -908,6 +908,33 @@ def _replacement_rules_report_what_was_skipped():
     assert len(issues) == 1
 
 
+def _replacement_rules_can_be_tried():
+    """The line under the Text replacements "Try" field: the rules as typed,
+    run over a sample sentence through the very function a dictation uses —
+    so what it shows is what a transcript would get, including the cases the
+    rule syntax makes non-obvious (whole words only, any case)."""
+    from listen_to_me.app import apply_replacements, preview_replacements
+
+    rules = "posgres => PostgreSQL\nscala => Scala\num =>"
+    # Nothing typed: no verdict, the placeholder speaks.
+    for empty in ("", "   ", None):
+        assert preview_replacements(empty, rules) == ""
+    # The result is apply_replacements' own, word for word.
+    sample = "Posgres and scala, not scalable"
+    assert apply_replacements(sample, rules) == "PostgreSQL and Scala, not scalable"
+    assert preview_replacements(sample, rules) == "Result: PostgreSQL and Scala, not scalable"
+    # A rule that finds its word already spelled its way changes nothing, and
+    # that is what the line says — not that nothing matched.
+    assert preview_replacements("We use PostgreSQL", rules) == (
+        "Unchanged — no rule changes this sentence."
+    )
+    # No rule in force: say so instead of reporting every sentence unchanged.
+    for no_rules in ("", "# only a comment", "posgres -> PostgreSQL"):
+        assert preview_replacements("posgres", no_rules).startswith("No rule is active yet")
+    # A sentence the rules delete entirely is named, not shown as a bare prefix.
+    assert preview_replacements("um", rules) == "Result: nothing — the rules delete every word of it."
+
+
 def _filler_filter_drops_a_silent_take():
     """The rule behind #190: a take with no speech comes back as a phrase the
     model invented for silence, and that phrase must not reach the cursor.
@@ -9282,6 +9309,25 @@ def _gui_construction():
         assert window.replacements_edit.accessibleDescription() == status
         window.replacements_edit.setPlainText("")
 
+        # The Try field runs those rules — as typed, before Save — over a
+        # sentence, and follows both fields: a changed rule changes the answer
+        # as much as a changed sentence does. Empty says nothing.
+        assert window.replacements_try_result.isHidden()
+        window.replacements_edit.setPlainText("posgres => PostgreSQL")
+        window.replacements_try_edit.setText("we use posgres at work")
+        assert not window.replacements_try_result.isHidden()
+        assert window.replacements_try_result.text() == "Result: we use PostgreSQL at work"
+        assert (
+            window.replacements_try_edit.accessibleDescription()
+            == window.replacements_try_result.text()
+        )
+        # The user's own sentence is shown as text, never rendered as markup.
+        assert window.replacements_try_result.textFormat() == Qt.TextFormat.PlainText
+        window.replacements_edit.setPlainText("")
+        assert window.replacements_try_result.text().startswith("No rule is active yet")
+        window.replacements_try_edit.setText("")
+        assert window.replacements_try_result.isHidden()
+
         # Live typing + hold mode + a modifier chord (or a bare character key):
         # App skips live typing for such a take with nothing but a log line.
         # The General page says so under the box while the combination is
@@ -10974,6 +11020,7 @@ _LIGHT_CHECKS = [
     ("take is warned about its own cap", _take_is_warned_about_its_own_cap),
     ("text replacements", _text_replacements),
     ("replacement rules report what was skipped", _replacement_rules_report_what_was_skipped),
+    ("replacement rules can be tried", _replacement_rules_can_be_tried),
     ("filler filter drops a silent take", _filler_filter_drops_a_silent_take),
     ("filler phrases report what was skipped", _filler_phrases_report_what_was_skipped),
     ("filler take inserts nothing", _filler_take_inserts_nothing),

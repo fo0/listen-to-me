@@ -465,6 +465,37 @@ def describe_replacements(spec: str) -> str:
     return status
 
 
+def preview_replacements(sample: str, spec: str) -> str:
+    """The line under the Text replacements "Try" field: what the rules in
+    `spec` make of the sentence `sample`.
+
+    `describe_replacements` says which lines were accepted, not what they do.
+    Whether a rule catches the word at the start of a sentence, leaves a
+    longer word alone ("scala => Scala" and "scalable"), or needs the words of
+    a two-word term in exactly the order Whisper writes them was only found
+    out by dictating and reading what arrived at the cursor. This runs the
+    same `apply_replacements` a finished transcript goes through, so the
+    answer is the one a dictation would get — for the rules alone: the
+    assistant runs before them and is not part of the preview.
+
+    Empty for an empty sample (nothing typed yet needs its placeholder, not a
+    verdict). "Unchanged" rather than "no rule matched": a rule that finds the
+    word already spelled its way matches and changes nothing, and that is the
+    fact the user can act on. Never raises — `apply_replacements` does not.
+    """
+    sample = str(sample or "")
+    if not sample.strip():
+        return ""
+    if not parse_replacements(spec):
+        return "No rule is active yet — write one in the field above to try it here."
+    result = apply_replacements(sample, spec)
+    if result == sample:
+        return "Unchanged — no rule changes this sentence."
+    if not result.strip():
+        return "Result: nothing — the rules delete every word of it."
+    return f"Result: {result}"
+
+
 def assistant_failure_message(exc: BaseException) -> str:
     """What to show when the assistant could not clean up a finished dictation.
 
