@@ -665,6 +665,58 @@ def _history_search_matches_the_date():
     assert filter_entries([{"time": "junk", "text": "kept"}], "kept")[0]["text"] == "kept"
 
 
+def _history_search_takes_phrases_and_exclusions():
+    """The History search's two operators: a "quoted phrase" matches those
+    words in that order, and a leading "-" leaves out what contains the term.
+
+    The guards matter as much as the operators: a plain query has to keep
+    finding exactly what it found before, a phrase that is still being typed
+    (no closing quote yet) must already narrow the list instead of emptying
+    it, and a dash that is not followed by a letter or digit is text."""
+    import time as _time
+
+    from listen_to_me.history import _query_terms, entry_timestamp, filter_entries
+
+    when = _time.mktime((2026, 9, 5, 14, 30, 0, 0, 0, -1))
+    older = _time.mktime((2025, 3, 17, 9, 5, 0, 0, 0, -1))
+    entries = [
+        {"time": when, "text": "Draft the release notes for Friday"},
+        {"time": when, "text": "Meeting: notes on the release\nplan -> next sprint"},
+        {"time": older, "text": "Release   notes, second draft"},
+    ]
+
+    def texts(query):
+        return [e["text"] for e in filter_entries(entries, query)]
+
+    # Plain words: AND in any order, as before — all three mention both.
+    assert len(texts("release notes")) == 3 and len(texts("notes release")) == 3
+    # A phrase is those words in that order; whitespace inside the text or the
+    # quotes does not matter, and neither does case.
+    assert texts('"release notes"') == [entries[0]["text"], entries[2]["text"]]
+    assert texts('"RELEASE  NOTES"') == texts('"release notes"')
+    assert texts('"the release plan"') == [entries[1]["text"]]  # across the line break
+    assert texts('"notes release"') == []
+    # Still typing the phrase: the unclosed quote runs to the end of the query.
+    assert texts('"release notes') == texts('"release notes"')
+    # Exclusion, for a word and for a phrase, combined with a positive term.
+    assert texts("release -meeting") == [entries[0]["text"], entries[2]["text"]]
+    assert texts('notes -"release notes"') == [entries[1]["text"]]
+    assert texts("-draft") == [entries[1]["text"]]  # exclusions alone are a query
+    # An excluded date-like term is looked for in the stamp too: -2025 drops
+    # the dictation from 2025 although its text never names the year.
+    assert entry_timestamp(entries[2]).startswith("2025")
+    assert texts("release -2025") == [entries[0]["text"], entries[1]["text"]]
+    # A dash with no letter or digit after it is text, not an operator.
+    assert texts("->") == [entries[1]["text"]]
+    assert _query_terms("- -- ->") == [("-", False), ("--", False), ("->", False)]
+    # Empty quotes say nothing and are dropped; a lone quote is no query.
+    assert _query_terms('"" ""') == [] and len(texts('"')) == 3
+    assert _query_terms('-"Two  Words" x') == [("two words", True), ("x", False)]
+    # A quoted dash-word is the way to search for the dash itself.
+    assert filter_entries([{"text": "It was -5 degrees"}], '"-5"')[0]["text"] == "It was -5 degrees"
+    assert filter_entries([{"text": "It was -5 degrees"}], "-5") == []
+
+
 def _recording_length_warning():
     """The heads-up before the maximum recording length: exactly once, only in
     the closing seconds, never for a cap that is short on purpose, and never an
@@ -10911,6 +10963,7 @@ _LIGHT_CHECKS = [
     ("history latest transcript", _history_latest_transcript),
     ("history search matching", _history_search_matching),
     ("history search matches the date", _history_search_matches_the_date),
+    ("history search takes phrases and exclusions", _history_search_takes_phrases_and_exclusions),
     ("history preview cuts long transcripts", _history_preview_cuts_long_transcripts),
     ("history deletes one entry", _history_delete_one_entry),
     ("history refuses to overwrite an unreadable file",

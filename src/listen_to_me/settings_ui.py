@@ -2694,7 +2694,9 @@ class SettingsWindow(QDialog):
             "Show only transcripts containing these words (in any order, "
             "upper/lower case ignored). A term made of digits, “-” and “:” "
             "also matches the date and time shown on each row, so “2026-09-05” "
-            "finds that day's dictations. Ctrl+F puts the caret here from "
+            "finds that day's dictations. Words in \"quotes\" are found as one "
+            "phrase, and a “-” in front of a word or phrase leaves out the "
+            "transcripts that contain it. Ctrl+F puts the caret here from "
             "anywhere on this page. Esc (or the clear button) empties the field "
             "to show all of them again."
         )
