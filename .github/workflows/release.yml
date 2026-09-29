@@ -75,6 +75,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          # This is the one job whose token can push tags and publish releases,
+          # and the steps after the checkout run third-party code with it on
+          # disk: pip builds whatever sdists it resolves, CMake compiles
+          # PortAudio, PyInstaller runs its hooks. None of them needs it. The
+          # git that runs later is local only (`git describe` / `git log`
+          # against the history this checkout already fetched) or an anonymous
+          # fetch into PortAudio's own repository, and the release step
+          # receives the token as an action input, not through .git/config.
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
