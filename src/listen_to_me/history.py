@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -69,42 +70,96 @@ def _is_stamp_term(term: str) -> bool:
     )
 
 
+# One search term: a quoted phrase or a whitespace-free word, either of them
+# with an optional leading "-". An unclosed quote runs to the end of the query,
+# because the History page filters while the user types — a phrase whose
+# closing quote is not typed yet must already narrow the list, not empty it.
+_QUERY_TOKEN = re.compile(r'(-?)"([^"]*)(?:"|$)|(\S+)')
+
+
+def _query_terms(query: str) -> list[tuple[str, bool]]:
+    """`query` as (term, excluded) pairs, casefolded, in the order written.
+
+    A word stays one term, as it always has. Two additions, both spelled the
+    way every search engine spells them:
+
+    - ``"exact phrase"`` is one term, matched as those words in that order.
+      AND over single words cannot tell "the release notes" from a dictation
+      that merely mentions a release and some notes, and a remembered phrase
+      is often exactly what someone looking for an old dictation has.
+    - ``-word`` (or ``-"a phrase"``) leaves out every transcript containing
+      it — the way to keep fifteen-minute meeting recordings, which mention
+      everything, out of a search for a short note.
+
+    A leading "-" only excludes when a letter or digit follows it, so a
+    search for "->" or a lone "-" still finds that text; a quoted ``"-5"``
+    is the way to search for a word that itself starts with a dash. Empty
+    phrases are dropped rather than matched: ``""`` is contained in every
+    transcript and would say nothing.
+    """
+    terms: list[tuple[str, bool]] = []
+    for dash, phrase, word in _QUERY_TOKEN.findall(str(query or "")):
+        if word:
+            excluded = word.startswith("-") and any(char.isalnum() for char in word[1:])
+            term = word[1:] if excluded else word
+        else:
+            excluded = bool(dash)
+            # Collapsed like the text it is matched against (see
+            # filter_entries), so two spaces typed inside the quotes still
+            # find the phrase.
+            term = " ".join(phrase.split())
+        if term:
+            terms.append((term.casefold(), excluded))
+    return terms
+
+
 def filter_entries(entries: list[dict], query: str) -> list[dict]:
-    """The entries matching every whitespace-separated term of `query`,
-    case-insensitively; an empty query returns `entries` unchanged.
+    """The entries matching every term of `query`, case-insensitively; an
+    empty query returns `entries` unchanged. A term is a word, a quoted
+    phrase, or either one with a leading "-" to exclude it (see
+    `_query_terms`).
 
     A term matches when the transcript text contains it — or, for a term that
     reads like a date or clock fragment (see `_is_stamp_term`), when the
     entry's rendered ``YYYY-MM-DD HH:MM`` stamp does. Every row on the History
     page shows that stamp, so "what did I dictate on 2026-09-05" was the one
     obvious question the search field could not answer; the transcript itself
-    never repeats its own date. Purely additive: a query that matched an entry
-    before still matches it.
+    never repeats its own date. An excluded term is looked for in the same
+    places, so ``-2025`` leaves out last year's dictations as well as the
+    ones that mention the year. Additive for every query without a quote or a
+    leading "-": such a query matches exactly what it matched before.
 
     Kept here (Qt-free) rather than in the History page so the matching rule is
     testable headlessly. AND over terms, order-independent: a user looking for
     a past dictation remembers a few words from it, not the phrase verbatim.
     casefold(), not lower(), so a German "ß"/"SS" or "Ä"/"ä" still matches."""
-    terms = [term.casefold() for term in str(query or "").split()]
+    terms = _query_terms(query)
     if not terms:
         return list(entries)
+    # Only a phrase can span a line break or a double space in the text, so the
+    # whitespace is collapsed only for a query that has one: for single words
+    # the result is identical, and a long history is not copied a second time
+    # on every keystroke for nothing.
+    collapse = any(" " in term for term, _excluded in terms)
     matched = []
     for entry in entries:
-        text = str(entry.get("text", "")).casefold()
+        text = str(entry.get("text", ""))
+        if collapse:
+            text = " ".join(text.split())
+        text = text.casefold()
         # Rendered on demand: only a date-like term ever needs the stamp, and
         # entry_timestamp() formats one per call.
         stamp: str | None = None
         hit = True
-        for term in terms:
-            if term in text:
-                continue
-            if _is_stamp_term(term):
+        for term, excluded in terms:
+            found = term in text
+            if not found and _is_stamp_term(term):
                 if stamp is None:
                     stamp = entry_timestamp(entry)
-                if term in stamp:
-                    continue
-            hit = False
-            break
+                found = term in stamp
+            if found == excluded:
+                hit = False
+                break
         if hit:
             matched.append(entry)
     return matched
@@ -264,8 +319,9 @@ class TranscriptHistory:
         it on: this answers a menu click that puts text on the clipboard, not
         a view, so there is nothing here to render the difference into — and
         an exception out of a menu handler is the failure mode this has always
-        promised not to have. The user learns which of the two it was from the
-        surfaces that do list transcripts.
+        promised not to have. The menu click still tells the two apart: only
+        when this returns "" does `app.nothing_to_copy_message` read the store
+        a second time to say why.
         """
         with self._lock:
             try:

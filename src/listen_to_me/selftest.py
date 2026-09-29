@@ -388,6 +388,71 @@ def _history_latest_transcript():
         assert store.latest() == ""
 
 
+def _copy_last_transcript_says_why_there_is_nothing():
+    """The tray/overlay "Copy last transcript" with nothing to copy names which
+    of the three empty stores it met: an empty history, one switched off, or a file
+    that could not be read. Only the first may promise that a transcript is
+    coming ("yet") — the other two used to get the same sentence."""
+    import json
+
+    from listen_to_me.app import App, nothing_to_copy_message
+    from listen_to_me.history import TranscriptHistory
+
+    class _App:
+        # Borrowed unbound, like the clipboard-announcement check: the real App
+        # needs a tray, a recorder and a transcriber.
+        _copy_last_transcript = App._copy_last_transcript
+
+        def __init__(self, history, enabled):
+            self.history = history
+            self.cfg = {"history_enabled": enabled}
+            self.messages: list[tuple[str, bool]] = []
+            self.copied: list[str] = []
+
+        def notify(self, message, force=False):
+            self.messages.append((message, force))
+
+        def _copy_transcript(self, text):
+            self.copied.append(text)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "history.json"
+        store = TranscriptHistory(path)
+        # Empty and on: the list will fill up, so "yet" is the truth.
+        app = _App(store, True)
+        app._copy_last_transcript()
+        assert app.messages == [("No transcript in the history yet.", True)]
+        assert app.copied == []
+        # Empty and off: nothing will ever arrive — say so, and where to change it.
+        app = _App(store, False)
+        app._copy_last_transcript()
+        ((message, force),) = app.messages
+        assert force and "history is off" in message and "Settings → History" in message
+        assert "yet" not in message
+        # Unreadable: the transcripts are still in that file, whatever the switch.
+        path.write_text("{ truncated", encoding="utf-8")
+        for enabled in (True, False):
+            app = _App(store, enabled)
+            app._copy_last_transcript()
+            ((message, force),) = app.messages
+            assert force and message.startswith("Could not read the transcript history"), message
+            assert "yet" not in message and app.copied == []
+        assert path.read_text(encoding="utf-8") == "{ truncated"  # asking wrote nothing
+        # "Off" stops new transcripts only: a stored one is still copied.
+        path.write_text(json.dumps([{"time": 1.0, "text": "kept"}]), encoding="utf-8")
+        app = _App(store, False)
+        app._copy_last_transcript()
+        assert app.copied == ["kept"] and app.messages == []
+
+    # Any other failure of the second read is still an answer, never a raise
+    # into the menu handler.
+    class _Broken:
+        def entries(self):
+            raise OSError("disk gone")
+
+    assert nothing_to_copy_message(_Broken(), True) == "Could not read the transcript history."
+
+
 def _history_refuses_to_overwrite_an_unreadable_file():
     """A history file that cannot be read is its own answer — and is kept.
 
@@ -628,7 +693,9 @@ def _history_search_matches_the_date():
     Every row shows a ``YYYY-MM-DD HH:MM`` stamp, so a date-shaped term is
     matched against that stamp as well as against the text. The guards matter
     as much as the feature: an ordinary word must never be matched against the
-    stamp, and no query that found an entry before may stop finding it."""
+    stamp, and no query that found an entry before may stop finding it (a term
+    with a leading "-" aside, which excludes — see the phrases and exclusions
+    check below)."""
     import time as _time
 
     from listen_to_me.history import _is_stamp_term, entry_timestamp, filter_entries
@@ -663,6 +730,58 @@ def _history_search_matches_the_date():
     # no stamp to match, and must not raise out of the search.
     assert filter_entries([{"time": "junk", "text": "kept"}], day) == []
     assert filter_entries([{"time": "junk", "text": "kept"}], "kept")[0]["text"] == "kept"
+
+
+def _history_search_takes_phrases_and_exclusions():
+    """The History search's two operators: a "quoted phrase" matches those
+    words in that order, and a leading "-" leaves out what contains the term.
+
+    The guards matter as much as the operators: a plain query has to keep
+    finding exactly what it found before, a phrase that is still being typed
+    (no closing quote yet) must already narrow the list instead of emptying
+    it, and a dash that is not followed by a letter or digit is text."""
+    import time as _time
+
+    from listen_to_me.history import _query_terms, entry_timestamp, filter_entries
+
+    when = _time.mktime((2026, 9, 5, 14, 30, 0, 0, 0, -1))
+    older = _time.mktime((2025, 3, 17, 9, 5, 0, 0, 0, -1))
+    entries = [
+        {"time": when, "text": "Draft the release notes for Friday"},
+        {"time": when, "text": "Meeting: notes on the release\nplan -> next sprint"},
+        {"time": older, "text": "Release   notes, second draft"},
+    ]
+
+    def texts(query):
+        return [e["text"] for e in filter_entries(entries, query)]
+
+    # Plain words: AND in any order, as before — all three mention both.
+    assert len(texts("release notes")) == 3 and len(texts("notes release")) == 3
+    # A phrase is those words in that order; whitespace inside the text or the
+    # quotes does not matter, and neither does case.
+    assert texts('"release notes"') == [entries[0]["text"], entries[2]["text"]]
+    assert texts('"RELEASE  NOTES"') == texts('"release notes"')
+    assert texts('"the release plan"') == [entries[1]["text"]]  # across the line break
+    assert texts('"notes release"') == []
+    # Still typing the phrase: the unclosed quote runs to the end of the query.
+    assert texts('"release notes') == texts('"release notes"')
+    # Exclusion, for a word and for a phrase, combined with a positive term.
+    assert texts("release -meeting") == [entries[0]["text"], entries[2]["text"]]
+    assert texts('notes -"release notes"') == [entries[1]["text"]]
+    assert texts("-draft") == [entries[1]["text"]]  # exclusions alone are a query
+    # An excluded date-like term is looked for in the stamp too: -2025 drops
+    # the dictation from 2025 although its text never names the year.
+    assert entry_timestamp(entries[2]).startswith("2025")
+    assert texts("release -2025") == [entries[0]["text"], entries[1]["text"]]
+    # A dash with no letter or digit after it is text, not an operator.
+    assert texts("->") == [entries[1]["text"]]
+    assert _query_terms("- -- ->") == [("-", False), ("--", False), ("->", False)]
+    # Empty quotes say nothing and are dropped; a lone quote is no query.
+    assert _query_terms('"" ""') == [] and len(texts('"')) == 3
+    assert _query_terms('-"Two  Words" x') == [("two words", True), ("x", False)]
+    # A quoted dash-word is the way to search for the dash itself.
+    assert filter_entries([{"text": "It was -5 degrees"}], '"-5"')[0]["text"] == "It was -5 degrees"
+    assert filter_entries([{"text": "It was -5 degrees"}], "-5") == []
 
 
 def _recording_length_warning():
@@ -854,6 +973,52 @@ def _replacement_rules_report_what_was_skipped():
     issues: list[str] = []
     assert parse_replacements(spec, issues) == parse_replacements(spec)
     assert len(issues) == 1
+
+
+def _replacement_rules_can_be_tried():
+    """The line under the Text replacements "Try" field: the rules as typed,
+    run over a sample sentence through the very function a dictation uses —
+    so what it shows is what a transcript would get, including the cases the
+    rule syntax makes non-obvious (whole words only, any case)."""
+    from listen_to_me.app import apply_replacements, preview_replacements
+
+    rules = "posgres => PostgreSQL\nscala => Scala\num =>"
+    # Nothing typed: no verdict, the placeholder speaks.
+    for empty in ("", "   ", None):
+        assert preview_replacements(empty, rules) == ""
+    # The result is apply_replacements' own, word for word.
+    sample = "Posgres and scala, not scalable"
+    assert apply_replacements(sample, rules) == "PostgreSQL and Scala, not scalable"
+    assert preview_replacements(sample, rules) == "Result: PostgreSQL and Scala, not scalable"
+    # A rule that finds its word already spelled its way changes nothing, and
+    # that is what the line says — not that nothing matched.
+    assert preview_replacements("We use PostgreSQL", rules) == (
+        "Unchanged — no rule changes this sentence."
+    )
+    # No rule in force: say so instead of reporting every sentence unchanged.
+    for no_rules in ("", "# only a comment", "posgres -> PostgreSQL"):
+        assert preview_replacements("posgres", no_rules).startswith("No rule is active yet")
+    # A sentence the rules delete entirely is named, not shown as a bare prefix.
+    assert preview_replacements("um", rules) == "Result: nothing — the rules delete every word of it."
+    # One parse per preview, which re-runs on every keystroke: a malformed
+    # line is warned about once, not once for the rule check and again for
+    # the application.
+    import logging
+
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    collector = _Collect(level=logging.WARNING)
+    app_log = logging.getLogger("listen_to_me.app")
+    app_log.addHandler(collector)
+    try:
+        preview_replacements("posgres", "posgres => PostgreSQL\nbroken line")
+    finally:
+        app_log.removeHandler(collector)
+    assert len(records) == 1, [record.getMessage() for record in records]
 
 
 def _filler_filter_drops_a_silent_take():
@@ -9230,6 +9395,25 @@ def _gui_construction():
         assert window.replacements_edit.accessibleDescription() == status
         window.replacements_edit.setPlainText("")
 
+        # The Try field runs those rules — as typed, before Save — over a
+        # sentence, and follows both fields: a changed rule changes the answer
+        # as much as a changed sentence does. Empty says nothing.
+        assert window.replacements_try_result.isHidden()
+        window.replacements_edit.setPlainText("posgres => PostgreSQL")
+        window.replacements_try_edit.setText("we use posgres at work")
+        assert not window.replacements_try_result.isHidden()
+        assert window.replacements_try_result.text() == "Result: we use PostgreSQL at work"
+        assert (
+            window.replacements_try_edit.accessibleDescription()
+            == window.replacements_try_result.text()
+        )
+        # The user's own sentence is shown as text, never rendered as markup.
+        assert window.replacements_try_result.textFormat() == Qt.TextFormat.PlainText
+        window.replacements_edit.setPlainText("")
+        assert window.replacements_try_result.text().startswith("No rule is active yet")
+        window.replacements_try_edit.setText("")
+        assert window.replacements_try_result.isHidden()
+
         # Live typing + hold mode + a modifier chord (or a bare character key):
         # App skips live typing for such a take with nothing but a log line.
         # The General page says so under the box while the combination is
@@ -10909,8 +11093,11 @@ _LIGHT_CHECKS = [
     ("config factory reset", _config_factory_reset),
     ("history normalizes entries", _history_normalizes_entries),
     ("history latest transcript", _history_latest_transcript),
+    ("copy last transcript says why there is nothing",
+     _copy_last_transcript_says_why_there_is_nothing),
     ("history search matching", _history_search_matching),
     ("history search matches the date", _history_search_matches_the_date),
+    ("history search takes phrases and exclusions", _history_search_takes_phrases_and_exclusions),
     ("history preview cuts long transcripts", _history_preview_cuts_long_transcripts),
     ("history deletes one entry", _history_delete_one_entry),
     ("history refuses to overwrite an unreadable file",
@@ -10921,6 +11108,7 @@ _LIGHT_CHECKS = [
     ("take is warned about its own cap", _take_is_warned_about_its_own_cap),
     ("text replacements", _text_replacements),
     ("replacement rules report what was skipped", _replacement_rules_report_what_was_skipped),
+    ("replacement rules can be tried", _replacement_rules_can_be_tried),
     ("filler filter drops a silent take", _filler_filter_drops_a_silent_take),
     ("filler phrases report what was skipped", _filler_phrases_report_what_was_skipped),
     ("filler take inserts nothing", _filler_take_inserts_nothing),

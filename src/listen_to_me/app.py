@@ -465,6 +465,77 @@ def describe_replacements(spec: str) -> str:
     return status
 
 
+def preview_replacements(sample: str, spec: str) -> str:
+    """The line under the Text replacements "Try" field: what the rules in
+    `spec` make of the sentence `sample`.
+
+    `describe_replacements` says which lines were accepted, not what they do.
+    Whether a rule catches the word at the start of a sentence, leaves a
+    longer word alone ("scala => Scala" and "scalable"), or needs the words of
+    a two-word term in exactly the order Whisper writes them was only found
+    out by dictating and reading what arrived at the cursor. This runs the
+    same rule application a finished transcript goes through (`_apply_rules`,
+    behind `apply_replacements`), so the answer is the one a dictation would
+    get — for the rules alone: the assistant runs before them and is not part
+    of the preview.
+
+    Empty for an empty sample (nothing typed yet needs its placeholder, not a
+    verdict). "Unchanged" rather than "no rule matched": a rule that finds the
+    word already spelled its way matches and changes nothing, and that is the
+    fact the user can act on. Never raises — `_apply_rules` does not.
+    """
+    sample = str(sample or "")
+    if not sample.strip():
+        return ""
+    rules = parse_replacements(spec)
+    if not rules:
+        return "No rule is active yet — write one in the field above to try it here."
+    result = _apply_rules(sample, rules)
+    if result == sample:
+        return "Unchanged — no rule changes this sentence."
+    if not result.strip():
+        return "Result: nothing — the rules delete every word of it."
+    return f"Result: {result}"
+
+
+def nothing_to_copy_message(history, history_enabled) -> str:
+    """Why "Copy last transcript" has nothing to put on the clipboard.
+
+    `TranscriptHistory.latest()` answers "" for three different stores, and
+    the menu entry used to say "No transcript in the history yet." for all of
+    them. Two of those are the wrong news. A history file that cannot be read
+    still holds every transcript — "yet" sends the user off to dictate again
+    while the one they are after is in the file — and a history that is
+    switched off will never fill up, so the same sentence came back on every
+    click with nothing pointing at the setting that decides it. The tray and
+    floating-icon "Recent transcripts" submenus, the Home page and the History
+    page already tell the three apart; this is the one surface that did not.
+
+    `latest()` keeps its contract (never an exception into a menu handler):
+    this is a second read, only on the path where there was nothing to copy,
+    and it swallows everything as well. An unreadable file outranks the
+    switch — it holds transcripts whether or not new ones are being stored.
+    """
+    from .history import HistoryUnavailable
+
+    try:
+        history.entries()
+    except HistoryUnavailable:
+        return (
+            "Could not read the transcript history, so there is nothing to copy. "
+            "Settings → History names the file."
+        )
+    except Exception:
+        log.exception("could not read the transcript history")
+        return "Could not read the transcript history."
+    if not history_enabled:
+        return (
+            "Nothing to copy — the history is off, so transcripts are not stored. "
+            "Turn on “Keep a history of transcribed text” in Settings → History."
+        )
+    return "No transcript in the history yet."
+
+
 def assistant_failure_message(exc: BaseException) -> str:
     """What to show when the assistant could not clean up a finished dictation.
 
@@ -515,7 +586,19 @@ def apply_replacements(text: str, spec: str) -> str:
     """
     if not text:
         return text
-    rules = parse_replacements(spec)
+    return _apply_rules(text, parse_replacements(spec))
+
+
+def _apply_rules(text: str, rules: list[tuple[str, str]]) -> str:
+    """`apply_replacements` for rules that are already parsed.
+
+    Split out for `preview_replacements`, which parses the rules itself to
+    tell "no rule is active" from "no rule changes this" and must not parse
+    them a second time: the parser logs a warning for every malformed line,
+    and the preview re-runs on every keystroke in either field. The regex
+    construction stays in this one place, so the preview can never apply a
+    rule differently from a dictation.
+    """
     if not rules:
         return text
     import re
@@ -1521,9 +1604,12 @@ class App:
             self.notify("Could not read the transcript history.", force=True)
             return
         if not text:
-            # Also the state right after "Keep a local history" was switched
-            # off — say what is missing instead of a silent no-op.
-            self.notify("No transcript in the history yet.", force=True)
+            # Never a silent no-op — and never "yet" for a history that is off
+            # or a file that could not be read (see nothing_to_copy_message).
+            self.notify(
+                nothing_to_copy_message(self.history, bool(self.cfg["history_enabled"])),
+                force=True,
+            )
             return
         self._copy_transcript(text)
 

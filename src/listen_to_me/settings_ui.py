@@ -1712,6 +1712,34 @@ class SettingsWindow(QDialog):
         rv.addWidget(self.replacements_status)
         self.replacements_edit.textChanged.connect(self._refresh_replacements_status)
         self._refresh_replacements_status()
+        # The status says which rules were accepted, not what they do: whether
+        # a rule also rewrites a longer word, or catches the word at the start
+        # of a sentence, was only found out by dictating. This field runs the
+        # rules as they stand in the field above — unsaved ones included,
+        # which is the point of trying them — over a sentence typed here.
+        self.replacements_try_edit = QLineEdit()
+        self.replacements_try_edit.setPlaceholderText("Try the rules on a sentence…")
+        self.replacements_try_edit.setAccessibleName("Try the text replacements")
+        self.replacements_try_edit.setToolTip(
+            "Type a sentence the way a transcript comes out to see what the rules "
+            "above make of it — as they stand in the field, before you save "
+            "them. Only the rules run here, not the assistant."
+        )
+        self.replacements_try_edit.setClearButtonEnabled(True)
+        # A scratch field like the History search: Enter must not reach Save,
+        # and Esc empties it before it may close the window.
+        keep_return_in_field(self.replacements_try_edit)
+        clear_on_escape(self.replacements_try_edit)
+        rv.addWidget(self.replacements_try_edit)
+        # Selectable so the corrected sentence can be copied out; plain text
+        # because it is the user's own sentence, which Qt's AutoText guess
+        # would otherwise render as markup the moment it looks like a tag.
+        self.replacements_try_result = self._hint("", elastic=True, selectable=True)
+        self.replacements_try_result.setTextFormat(Qt.TextFormat.PlainText)
+        rv.addWidget(self.replacements_try_result)
+        self.replacements_edit.textChanged.connect(self._refresh_replacements_try)
+        self.replacements_try_edit.textChanged.connect(self._refresh_replacements_try)
+        self._refresh_replacements_try()
         rv.addWidget(self._hint(
             "Applied to every finished transcript, in order, after the assistant — "
             "so a word this speaker always gets wrong is corrected before the text "
@@ -1832,6 +1860,24 @@ class SettingsWindow(QDialog):
         # line's worth of space for a field nobody has written in yet.
         self.replacements_status.setVisible(bool(status))
         self.replacements_edit.setAccessibleDescription(status)
+
+    def _refresh_replacements_try(self) -> None:
+        """Re-render the result under the Text replacements "Try" field.
+
+        Wired to both fields — a changed rule changes the answer as much as a
+        changed sentence — and run on every keystroke for the reasons
+        `_refresh_replacements_status` gives: the rules are capped, the sample
+        is one line. Same visibility and accessibility contract as that status
+        line, so an empty field leaves no blank line behind.
+        """
+        from .app import preview_replacements
+
+        result = preview_replacements(
+            self.replacements_try_edit.text(), self.replacements_edit.toPlainText()
+        )
+        self.replacements_try_result.setText(result)
+        self.replacements_try_result.setVisible(bool(result))
+        self.replacements_try_edit.setAccessibleDescription(result)
 
     def _refresh_filler_status(self) -> None:
         """Re-render the line under the silence phrase field.
@@ -2694,7 +2740,9 @@ class SettingsWindow(QDialog):
             "Show only transcripts containing these words (in any order, "
             "upper/lower case ignored). A term made of digits, “-” and “:” "
             "also matches the date and time shown on each row, so “2026-09-05” "
-            "finds that day's dictations. Ctrl+F puts the caret here from "
+            "finds that day's dictations. Words in \"quotes\" are found as one "
+            "phrase, and a “-” in front of a word or phrase leaves out the "
+            "transcripts that contain it. Ctrl+F puts the caret here from "
             "anywhere on this page. Esc (or the clear button) empties the field "
             "to show all of them again."
         )
