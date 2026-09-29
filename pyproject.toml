@@ -7,7 +7,7 @@ name = "listen-to-me"
 description = "Push-to-talk voice typing for the desktop: record with a hotkey, transcribe locally with Whisper, insert the text at the cursor."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
 dynamic = ["version"]
 dependencies = [
     "faster-whisper>=1.2.1",
