@@ -52,7 +52,7 @@ updates:
     # range and the default strategy would find nothing to change. `increase`
     # raises the floor instead, which is what turns an upstream release into a
     # visible pull request here. Constraints other than the floor are preserved,
-    # so the `numpy>=1.24,<3` ceiling stays and numpy 3.x is never proposed.
+    # so numpy's `<3` ceiling stays and numpy 3.x is never proposed.
     versioning-strategy: "increase"
     # Minor and patch bumps ride together: they are floor moves, and reviewing
     # eight separate one-line pull requests a week buys nothing. Majors fall
