@@ -7293,6 +7293,8 @@ def _the_log_file_can_be_reached():
     failure modes must be reported to the user instead of logged into the very
     file they cannot reach.
     """
+    import types
+
     from listen_to_me import app as app_module
     from listen_to_me import tray as tray_module
     from listen_to_me.config import LOG_FILE_NAME, config_dir, log_path
@@ -7358,6 +7360,17 @@ def _the_log_file_can_be_reached():
             # Named path plus the fallback that always works.
             assert any(str(missing) in note for note in fake.notes), fake.notes
             assert any("Open config folder" in note for note in fake.notes), fake.notes
+
+            # That fallback fails the same way on a platform without a file
+            # manager, and used to only log it: the menu entry read as dead.
+            fake.cfg = types.SimpleNamespace(path=Path(tmp) / "config.json")
+            fake.notes.clear()
+            app_module.App._open_config_folder(fake)
+            assert any(tmp in note for note in fake.notes), fake.notes
+            config_module.open_path = lambda _path: True
+            fake.notes.clear()
+            app_module.App._open_config_folder(fake)
+            assert not fake.notes, fake.notes  # a successful open says nothing
         finally:
             config_module.log_path, config_module.open_path = real_path, real_open
 

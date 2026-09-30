@@ -3346,7 +3346,10 @@ class SettingsWindow(QDialog):
             log.exception("could not create the model folder %s", path)
             self.app.notify(f"Could not open the model folder: {exc}", force=True)
             return
-        open_path(path)
+        # open_path only logs a failed launch (no file manager / xdg-open);
+        # the button would otherwise look alive and do nothing.
+        if not open_path(path):
+            self.app.notify(f"Could not open the model folder — it is {path}.", force=True)
 
     def _load_devices(self) -> None:
         # Refresh keeps an unsaved on-screen choice: repopulating from the
