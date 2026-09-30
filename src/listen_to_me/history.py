@@ -348,7 +348,9 @@ class TranscriptHistory:
         Raises `HistoryUnavailable` — and deletes nothing — when the file
         cannot be read: a delete that cannot see the other entries would write
         them away with the one it was asked to remove. The History page says
-        so instead of reporting the transcript as already gone.
+        so instead of reporting the transcript as already gone. A file that
+        cannot be *written* re-raises the write error (logged by `_save`):
+        the transcript is still on disk, and True would say otherwise.
         """
         text = str(text or "")
         with self._lock:
@@ -360,7 +362,7 @@ class TranscriptHistory:
                 if timestamp is not None and not _same_time(entry.get("time"), timestamp):
                     continue
                 del entries[index]
-                self._save(entries)
+                self._save(entries, strict=True)
                 return True
         return False
 
@@ -371,9 +373,12 @@ class TranscriptHistory:
         file that `_load` refuses (see `HistoryUnavailable`), and a clear that
         first had to read the entries it is about to delete would be the one
         action that cannot repair the file it exists to replace.
+
+        Re-raises a failed write (see `remove`): the user asked for the
+        transcripts to be gone, and they are not.
         """
         with self._lock:
-            self._save([])
+            self._save([], strict=True)
 
     # -------------------------------------------- internal (lock held by caller)
 
@@ -411,8 +416,15 @@ class TranscriptHistory:
             e for e in data if isinstance(e, dict) and isinstance(e.get("text"), str) and e["text"]
         ]
 
-    def _save(self, entries: list[dict]) -> None:
+    def _save(self, entries: list[dict], *, strict: bool = False) -> None:
+        """Write `entries`; a failure is logged, and re-raised with `strict`.
+
+        `add` runs on the recording worker and must never cost the dictation,
+        so it stays lenient. The two deletes are user actions whose whole
+        point is the write, so they report it."""
         try:
             atomic_write_json(self.path, entries)
         except Exception:
             log.exception("could not write transcript history %s", self.path)
+            if strict:
+                raise

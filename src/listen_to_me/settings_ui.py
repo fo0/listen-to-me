@@ -113,6 +113,7 @@ from .qtutil import (
     flash_button,
     guard_wheel,
     keep_return_in_field,
+    tab_after,
     text_rows_height,
 )
 # Qt-free and PortAudio-free at import time (`audio` is imported inside their
@@ -3345,7 +3346,10 @@ class SettingsWindow(QDialog):
             log.exception("could not create the model folder %s", path)
             self.app.notify(f"Could not open the model folder: {exc}", force=True)
             return
-        open_path(path)
+        # open_path only logs a failed launch (no file manager / xdg-open);
+        # the button would otherwise look alive and do nothing.
+        if not open_path(path):
+            self.app.notify(f"Could not open the model folder — it is {path}.", force=True)
 
     def _load_devices(self) -> None:
         # Refresh keeps an unsaved on-screen choice: repopulating from the
@@ -5025,6 +5029,8 @@ class SettingsWindow(QDialog):
         for entry in shown:
             self._history_layout.insertWidget(insert_at, self._history_row(entry))
             insert_at += 1
+        # Rebuilt rows join the end of the window's Tab chain, behind Save.
+        tab_after(self._history_scroll, self._history_inner)
         return True
 
     def _render_unreadable_history(self, problem: Exception) -> None:
@@ -5328,7 +5334,9 @@ class SettingsWindow(QDialog):
         if len(preview) > 80:
             preview = preview[:80].rstrip() + "…"
         confirm = QMessageBox.question(
-            self, APP_NAME, f"Delete this transcript?\n\n{preview}",
+            self, APP_NAME,
+            f"Delete this transcript?\n\n{preview}\n\n"
+            "The history keeps no other copy, so this cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -5336,6 +5344,7 @@ class SettingsWindow(QDialog):
             return
         removed = False
         unreadable = False
+        failed = False
         try:
             removed = self.app.history.remove(text, entry.get("time"))
         except HistoryUnavailable:
@@ -5346,13 +5355,22 @@ class SettingsWindow(QDialog):
             log.exception("could not delete the transcript")
             unreadable = True
         except Exception:
+            # The file could not be rewritten: the row comes straight back on
+            # the refresh below, and "no longer in the history" would be false.
             log.exception("could not delete the transcript")
+            failed = True
         self._refresh_history()
         if unreadable:
             QMessageBox.warning(
                 self, APP_NAME,
                 "The transcript history could not be read, so nothing was deleted — "
                 "your transcripts are still in the file. See the note on this page.",
+            )
+        elif failed:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "The transcript could not be deleted — the history file could not be "
+                "written. See the log file.",
             )
         elif not removed:
             QMessageBox.warning(
@@ -5373,13 +5391,28 @@ class SettingsWindow(QDialog):
         if not has_entries:
             return
         confirm = QMessageBox.question(
-            self, APP_NAME, "Delete the entire transcript history?",
+            self, APP_NAME,
+            "Delete the entire transcript history?\n\n"
+            "Every stored transcript is removed and this cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
-        if confirm == QMessageBox.StandardButton.Yes:
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        cleared = True
+        try:
             self.app.history.clear()
-            self._refresh_history()
+        except Exception:
+            # Logged by the store. The list keeps every transcript, which
+            # without a word reads as a click that never registered.
+            cleared = False
+        self._refresh_history()
+        if not cleared:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "The history could not be cleared — its file could not be written. "
+                "See the log file.",
+            )
 
     # --------------------------------------------------- selection readers
 

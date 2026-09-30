@@ -2,7 +2,8 @@
 pixmaps/icons, the wheel guard for value widgets on scrollable pages, the
 Return and Escape guards for search fields inside a dialog, the width cap
 for combo boxes with unbounded item texts, the font-derived height for boxes that
-should show a fixed number of lines, the wait cursor for a blocking
+should show a fixed number of lines, the Tab order of lists rebuilt at runtime,
+the wait cursor for a blocking
 main-thread call, and the one clipboard
 path every "Copy" in the app uses — plus the button feedback that reports how
 that copy went, and the generic on-the-button confirmation every one-shot
@@ -207,6 +208,30 @@ def text_rows_height(widget, rows: int, *, extra: int = 12) -> int:
     last line is not.
     """
     return widget.fontMetrics().lineSpacing() * max(1, rows) + extra
+
+
+def tab_after(anchor, container) -> None:
+    """Put the Tab stops inside `container` directly after `anchor`.
+
+    Qt appends a widget created after its window to the *end* of that
+    window's focus chain. A list rebuilt at runtime — the History rows, the
+    Home page's recent transcripts — therefore lands behind the footer's
+    Save, and Tab walks the page, the footer and only then back up into the
+    rows that sit between them on screen (WCAG 2.4.3). Call this after
+    every rebuild. Children come in creation order, i.e. top to bottom; the
+    inner parts of a compound control (a spin box's line edit) stay with it.
+    """
+    from PySide6.QtWidgets import QWidget
+
+    tab = Qt.FocusPolicy.TabFocus
+    previous = anchor
+    for widget in container.findChildren(QWidget):
+        parent = widget.parentWidget()
+        compound = parent is not container and parent.focusPolicy() & tab
+        if compound or not widget.focusPolicy() & tab:
+            continue
+        QWidget.setTabOrder(previous, widget)
+        previous = widget
 
 
 @contextmanager

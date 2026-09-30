@@ -336,19 +336,27 @@ def _qss(t: dict) -> str:
         min-width: 172px;
         max-width: 210px;
     }}
+    /* `outline: 0` above drops the native focus rect, and the selected row
+       looks the same with or without focus — so tabbing into the sidebar
+       changed not a pixel. The row that holds focus is ringed in its own
+       text colour, like the hero buttons; the transparent border reserves
+       the ring's width (padding is 1px smaller to match), so rows never
+       move when focus arrives. */
     QListWidget#nav::item {{
-        padding: 9px 12px;
+        padding: 8px 11px;
+        border: 1px solid transparent;
         border-radius: 8px;
         margin: 2px 2px;
         color: {t["muted"]};
     }}
     QListWidget#nav::item:selected {{ background: {t["accent_soft"]}; color: {t["accent_text"]}; }}
+    QListWidget#nav::item:focus {{ border-color: {t["accent_text"]}; }}
     QListWidget#nav::item:hover:!selected:!disabled {{ background: {t["hover"]}; color: {t["text"]}; }}
     /* Section headers are non-selectable (disabled) rows: muted, extra space above. */
     QListWidget#nav::item:disabled {{
         background: transparent;
         color: {t["muted"]};
-        padding: 12px 12px 2px 12px;
+        padding: 11px 11px 1px 11px;
     }}
 
     QStackedWidget > QWidget {{ background: {t["window"]}; }}

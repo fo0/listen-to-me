@@ -2093,7 +2093,10 @@ class App:
         folder.mkdir(parents=True, exist_ok=True)
         from .config import open_path
 
-        open_path(folder)
+        # A failed launch only logs inside open_path; without a word here the
+        # menu entry reads as dead. The path is the useful half of the reply.
+        if not open_path(folder):
+            self.notify(f"Could not open the config folder — it is {folder}.", force=True)
 
     def _open_log_file(self) -> None:
         """Tray → "Open log file": show the file a dozen notifications name.
