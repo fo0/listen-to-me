@@ -113,6 +113,7 @@ from .qtutil import (
     flash_button,
     guard_wheel,
     keep_return_in_field,
+    tab_after,
     text_rows_height,
 )
 # Qt-free and PortAudio-free at import time (`audio` is imported inside their
@@ -5025,6 +5026,8 @@ class SettingsWindow(QDialog):
         for entry in shown:
             self._history_layout.insertWidget(insert_at, self._history_row(entry))
             insert_at += 1
+        # Rebuilt rows join the end of the window's Tab chain, behind Save.
+        tab_after(self._history_scroll, self._history_inner)
         return True
 
     def _render_unreadable_history(self, problem: Exception) -> None:

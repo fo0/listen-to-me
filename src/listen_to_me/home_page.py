@@ -41,7 +41,7 @@ from .choices import (
 )
 from .glyphs import glyph_icon
 from .keymap import pretty_keys
-from .qtutil import copy_with_feedback, elastic_label
+from .qtutil import copy_with_feedback, elastic_label, tab_after
 
 # From the tray, like the floating icon does: the take clock is rendered on
 # three surfaces now and they must never disagree about the same second.
@@ -329,6 +329,7 @@ class HomePage(QWidget):
         open_history.setCursor(Qt.CursorShape.PointingHandCursor)
         open_history.setIcon(glyph_icon("clock", colors["muted"], ACCENT))
         open_history.clicked.connect(lambda: self._go("History"))
+        self._open_history_button = open_history  # the rows' Tab anchor
         self._glyph_buttons.append((open_history, "clock"))
         recent_head.addWidget(open_history)
         layout.addLayout(recent_head)
@@ -605,6 +606,8 @@ class HomePage(QWidget):
                 divider.setFixedHeight(1)
                 self._recent_layout.addWidget(divider)
             self._recent_layout.addWidget(self._recent_row(entry))
+        # Rebuilt rows join the end of the window's Tab chain, behind Save.
+        tab_after(self._open_history_button, self._recent_frame)
 
     def _recent_row(self, entry: dict) -> QWidget:
         row = QWidget()
