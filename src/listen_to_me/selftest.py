@@ -5320,6 +5320,7 @@ def _theme_focus_visible():
     from PySide6.QtWidgets import (
         QCheckBox,
         QLineEdit,
+        QListWidget,
         QRadioButton,
         QVBoxLayout,
         QWidget,
@@ -5361,6 +5362,14 @@ def _theme_focus_visible():
     _focus_changes(QCheckBox("Beep on start/stop"), "QCheckBox")
     _focus_changes(QRadioButton("Toggle"), "QRadioButton")
     _focus_changes(QLineEdit("text"), "QLineEdit")
+    # The settings sidebar sets `outline: 0`, which drops the native focus
+    # rect, and styles its selected row the same with or without focus — so
+    # Tab into it changed not a pixel until the focused row got a ring.
+    nav = QListWidget()
+    nav.setObjectName("nav")
+    nav.addItems(["Home", "General"])
+    nav.setCurrentRow(0)
+    _focus_changes(nav, "settings sidebar (QListWidget#nav)")
 
 
 def _theme_disabled_visible():
