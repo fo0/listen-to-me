@@ -5342,6 +5342,7 @@ class SettingsWindow(QDialog):
             return
         removed = False
         unreadable = False
+        failed = False
         try:
             removed = self.app.history.remove(text, entry.get("time"))
         except HistoryUnavailable:
@@ -5352,13 +5353,22 @@ class SettingsWindow(QDialog):
             log.exception("could not delete the transcript")
             unreadable = True
         except Exception:
+            # The file could not be rewritten: the row comes straight back on
+            # the refresh below, and "no longer in the history" would be false.
             log.exception("could not delete the transcript")
+            failed = True
         self._refresh_history()
         if unreadable:
             QMessageBox.warning(
                 self, APP_NAME,
                 "The transcript history could not be read, so nothing was deleted — "
                 "your transcripts are still in the file. See the note on this page.",
+            )
+        elif failed:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "The transcript could not be deleted — the history file could not be "
+                "written. See the log file.",
             )
         elif not removed:
             QMessageBox.warning(
@@ -5383,9 +5393,22 @@ class SettingsWindow(QDialog):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
-        if confirm == QMessageBox.StandardButton.Yes:
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        cleared = True
+        try:
             self.app.history.clear()
-            self._refresh_history()
+        except Exception:
+            # Logged by the store. The list keeps every transcript, which
+            # without a word reads as a click that never registered.
+            cleared = False
+        self._refresh_history()
+        if not cleared:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "The history could not be cleared — its file could not be written. "
+                "See the log file.",
+            )
 
     # --------------------------------------------------- selection readers
 
