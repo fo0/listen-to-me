@@ -5334,7 +5334,9 @@ class SettingsWindow(QDialog):
         if len(preview) > 80:
             preview = preview[:80].rstrip() + "…"
         confirm = QMessageBox.question(
-            self, APP_NAME, f"Delete this transcript?\n\n{preview}",
+            self, APP_NAME,
+            f"Delete this transcript?\n\n{preview}\n\n"
+            "The history keeps no other copy, so this cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -5389,7 +5391,9 @@ class SettingsWindow(QDialog):
         if not has_entries:
             return
         confirm = QMessageBox.question(
-            self, APP_NAME, "Delete the entire transcript history?",
+            self, APP_NAME,
+            "Delete the entire transcript history?\n\n"
+            "Every stored transcript is removed and this cannot be undone.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
