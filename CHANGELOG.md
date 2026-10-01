@@ -281,6 +281,15 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **"Clear history…" now says how many transcripts it is about to delete.**
+  The confirmation asked "Delete the entire transcript history?" whether that
+  meant three test dictations or months of notes. It now reads, for example,
+  "Delete all 37 stored transcripts?" (or "the one stored transcript"), counted
+  from the history file rather than from the rows on screen. With a search term
+  in the field it adds that the search only narrows the list — **Export…** and
+  **Copy all** next to it take the narrowed set, but Clear deletes everything.
+  A history file that cannot be read keeps the old wording, since there is no
+  count to give, and clearing is still how such a file is repaired.
 - **The tray's Dictation language entry now names the language in use.** The
   submenu has always ticked the live language, but checking it before a
   dictation meant opening the submenu and finding that tick among thirty-five

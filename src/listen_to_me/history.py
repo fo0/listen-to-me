@@ -257,6 +257,42 @@ def format_entries(entries: list[dict]) -> str:
     return "\n\n".join(blocks) + "\n" if blocks else ""
 
 
+def clear_prompt(count: int | None, filtered: bool = False) -> str:
+    """The question Settings → History → "Clear history…" asks before it
+    deletes anything.
+
+    It used to read "Delete the entire transcript history?" whatever was
+    stored — a destructive prompt that never said how much it destroys. The
+    number is what tells a history of three test dictations apart from
+    months of notes, so it is named whenever it is known.
+
+    `count` is None when the file could not be read (`HistoryUnavailable`):
+    clearing is exactly what repairs such a file, so the question is still
+    asked, in the wording it always had rather than with a number that would
+    be a guess. `filtered` says a search term narrows the list on screen. The
+    page's Export… and Copy all take that narrowed set; Clear does not, and a
+    prompt that names the total right under a "3 of 120 match" list should say
+    so instead of leaving the user to infer it.
+
+    Qt-free, so the wording is checkable on a headless runner.
+    """
+    if count is None:
+        head = "Delete the entire transcript history?"
+        body = "Every stored transcript is removed and this cannot be undone."
+    elif count == 1:
+        head = "Delete the one stored transcript?"
+        body = "It is removed from the history and this cannot be undone."
+    else:
+        head = f"Delete all {count} stored transcripts?"
+        body = "Every one of them is removed from the history and this cannot be undone."
+    if filtered:
+        body += (
+            "\n\nThe search field only narrows the list on this page — this "
+            "deletes every stored transcript, not just the ones listed."
+        )
+    return f"{head}\n\n{body}"
+
+
 def _same_time(stored, wanted) -> bool:
     """Whether two history timestamps denote the same entry.
 

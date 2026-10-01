@@ -153,8 +153,9 @@ standalone system-tray app that works in _every_ application.
   you do not want (`budget -meeting`, `-2025`) — which keeps long meeting
   recordings, which mention everything, out of a search for a short note.
   Bounded in size, and easy to switch off or
-  clear — and a single transcript you would rather not keep can be deleted on
-  its own, without losing the rest. **Export…** saves the listed transcripts
+  clear (the confirmation names how many transcripts that deletes) — and a
+  single transcript you would rather not keep can be deleted on its own,
+  without losing the rest. **Export…** saves the listed transcripts
   (the search filter applies) to a text file, and **Copy all** puts that same
   set on the clipboard as one block — so a searched-down handful of dictations
   goes straight into a mail or a note without a detour through a file.

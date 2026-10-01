@@ -5379,21 +5379,24 @@ class SettingsWindow(QDialog):
             )
 
     def _clear_history(self) -> None:
-        from .history import HistoryUnavailable
+        from .history import HistoryUnavailable, clear_prompt
 
+        count: int | None
         try:
-            has_entries = bool(self.app.history.entries())
+            count = len(self.app.history.entries())
         except HistoryUnavailable:
             # The stored entries cannot be counted, so "there is nothing to
             # delete" is not an answer this may give — and clearing is exactly
             # what repairs such a file (see _render_unreadable_history).
-            has_entries = True
-        if not has_entries:
+            count = None
+        if count == 0:
             return
+        # The count is the whole history, read from the file — not the rows on
+        # screen, which a search term may have narrowed (clear_prompt says so).
+        filtered = bool(self.history_filter_edit.text().strip())
         confirm = QMessageBox.question(
             self, APP_NAME,
-            "Delete the entire transcript history?\n\n"
-            "Every stored transcript is removed and this cannot be undone.",
+            clear_prompt(count, filtered),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

@@ -547,6 +547,33 @@ def _history_export_format():
     assert format_entries([]) == ""  # nothing listed → empty file, not a stray newline
 
 
+def _history_clear_prompt():
+    """What Settings → History → "Clear history…" asks before deleting.
+
+    The question used to be the same "Delete the entire transcript history?"
+    for three test dictations and for months of notes. It names the number
+    now, in the singular for one, and says the search field does not narrow
+    the deletion while a term is in it — Export… and Copy all next to it do
+    take the narrowed set. An unreadable file has no count to give and keeps
+    the old wording rather than a guessed number."""
+    from listen_to_me.history import clear_prompt
+
+    many = clear_prompt(37)
+    assert many.startswith("Delete all 37 stored transcripts?"), many
+    assert "cannot be undone" in many
+    assert "search" not in many, "an unfiltered list got the search note"
+    one = clear_prompt(1)
+    assert one.startswith("Delete the one stored transcript?"), one
+    assert "1 stored transcripts" not in one
+    unknown = clear_prompt(None)
+    assert unknown.startswith("Delete the entire transcript history?"), unknown
+    assert "None" not in unknown
+    for count in (None, 1, 37):
+        filtered = clear_prompt(count, filtered=True)
+        assert "not just the ones listed" in filtered, filtered
+        assert filtered.startswith(clear_prompt(count).split("\n", 1)[0])
+
+
 def _history_preview_cuts_long_transcripts():
     """The collapsed History row's text rule.
 
@@ -9237,6 +9264,36 @@ def _gui_construction():
         # well as its text, so the empty state must not promise otherwise.
         assert "No transcript matches" in _history_text()
         assert window.history_clear_button.isEnabled()  # entries exist, only hidden
+        # "Clear history…" names how many transcripts it deletes — all of
+        # them, read from the store, not the zero rows this search leaves on
+        # screen — and says the search does not narrow it. Declined here, so
+        # the two entries the rest of this check reads stay where they are.
+        from listen_to_me import settings_ui as _clear_module
+        from PySide6.QtWidgets import QMessageBox as _RealClearBox
+
+        class _FakeClearBox:
+            StandardButton = _RealClearBox.StandardButton
+            asked: list[str] = []
+
+            @classmethod
+            def question(cls, _parent, _title, text, *_args, **_kwargs):
+                cls.asked.append(text)
+                return _RealClearBox.StandardButton.No
+
+            @staticmethod
+            def warning(*_args, **_kwargs):
+                raise AssertionError("a declined clear reported a failure")
+
+        real_clear_box = _clear_module.QMessageBox
+        _clear_module.QMessageBox = _FakeClearBox
+        try:
+            window._clear_history()
+        finally:
+            _clear_module.QMessageBox = real_clear_box
+        assert len(_FakeClearBox.asked) == 1, _FakeClearBox.asked
+        assert "all 2 stored transcripts" in _FakeClearBox.asked[0], _FakeClearBox.asked[0]
+        assert "not just the ones listed" in _FakeClearBox.asked[0], _FakeClearBox.asked[0]
+        assert len(window.app.history.entries()) == 2, "a declined clear deleted something"
         # "Export…" writes what is listed and "Copy all" copies it, so a
         # filtered-to-empty list has nothing to hand out — an enabled Export
         # would produce an empty file, an enabled Copy all a silent no-op.
@@ -11125,6 +11182,7 @@ _LIGHT_CHECKS = [
     ("history refuses to overwrite an unreadable file",
      _history_refuses_to_overwrite_an_unreadable_file),
     ("history export format", _history_export_format),
+    ("history clear names what it deletes", _history_clear_prompt),
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
     ("take is warned about its own cap", _take_is_warned_about_its_own_cap),
