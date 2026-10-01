@@ -547,6 +547,62 @@ def _history_export_format():
     assert format_entries([]) == ""  # nothing listed → empty file, not a stray newline
 
 
+def _history_export_start_path():
+    """Where Settings → History → "Export…" opens its save dialog.
+
+    The dialog used to get a bare file name, which Qt resolves against the
+    process's working directory — the Windows system folder for an app the
+    autostart entry launched. Now: the previous export's folder, then
+    Documents, then home; a candidate that is not a directory any more is
+    skipped, and only with nothing usable does the bare name come back."""
+    from listen_to_me.history import export_start_path
+
+    name = "listen-to-me-transcripts-2026-10-01.txt"
+    with tempfile.TemporaryDirectory() as tmp:
+        last, documents = Path(tmp) / "last", Path(tmp) / "Documents"
+        last.mkdir()
+        documents.mkdir()
+        assert export_start_path(name, str(last), str(documents)) == str(last / name)
+        assert export_start_path(name, None, str(documents)) == str(documents / name)
+        # The previous folder is gone (an unplugged stick): Documents, not a
+        # dialog pointed at a path that no longer exists.
+        gone = Path(tmp) / "gone"
+        assert export_start_path(name, str(gone), str(documents)) == str(documents / name)
+        # QStandardPaths answers "" when it knows no Documents folder.
+        fallback = Path(export_start_path(name, None, ""))
+        assert fallback.name == name and fallback.is_absolute(), fallback
+        assert fallback.parent == Path.home(), fallback
+
+
+def _history_clear_prompt():
+    """What Settings → History → "Clear history…" asks before deleting.
+
+    The question used to be the same "Delete the entire transcript history?"
+    for three test dictations and for months of notes. It names the number
+    now, in the singular for one, and says the search field does not narrow
+    the deletion while a term is in it — Export… and Copy all next to it do
+    take the narrowed set. An unreadable file has no count to give and keeps
+    the old wording rather than a guessed number."""
+    from listen_to_me.history import clear_prompt
+
+    many = clear_prompt(37)
+    assert many.startswith("Delete all 37 stored transcripts?"), many
+    assert "cannot be undone" in many
+    assert "search" not in many, "an unfiltered list got the search note"
+    one = clear_prompt(1)
+    assert one.startswith("Delete the one stored transcript?"), one
+    assert "1 stored transcripts" not in one
+    unknown = clear_prompt(None)
+    assert unknown.startswith("Delete the entire transcript history?"), unknown
+    assert "None" not in unknown
+    for count in (1, 37):
+        filtered = clear_prompt(count, filtered=True)
+        assert "not just the ones listed" in filtered, filtered
+        assert filtered.startswith(clear_prompt(count))
+    # An unreadable file lists no rows, so "the ones listed" would mean nothing.
+    assert clear_prompt(None, filtered=True) == unknown
+
+
 def _history_preview_cuts_long_transcripts():
     """The collapsed History row's text rule.
 
@@ -2511,6 +2567,25 @@ def _cli_flags():
         code, _out, err = run(bad)
         assert code == 2, f"{bad} exited {code} instead of refusing"
         assert bad[0] in err and "--help" in err
+
+    # The refusal names the flag that was most likely meant, so a typo needs
+    # retyping rather than a hunt through --help — and stays quiet when
+    # nothing is close, because a wrong guess is worse than none.
+    for typo, meant in (
+        ("--verison", "--version"),
+        ("--selftest-", "--selftest"),
+        ("--HELP", "--help"),
+        ("--hlep", "--help"),
+        ("-V", "--version"),
+        ("/?", "--help"),
+    ):
+        code, _out, err = run([typo])
+        assert code == 2, f"{typo} exited {code} instead of refusing"
+        assert f"Did you mean {meant}?" in err, f"{typo}: {err!r}"
+    for unrelated in ("-x", "C:\\Users\\me\\notes.wav", ""):
+        code, _out, err = run([unrelated])
+        assert code == 2, f"{unrelated!r} exited {code} instead of refusing"
+        assert "Did you mean" not in err, f"{unrelated!r}: {err!r}"
 
 
 def _copy_button_reports_failure():
@@ -9237,6 +9312,36 @@ def _gui_construction():
         # well as its text, so the empty state must not promise otherwise.
         assert "No transcript matches" in _history_text()
         assert window.history_clear_button.isEnabled()  # entries exist, only hidden
+        # "Clear history…" names how many transcripts it deletes — all of
+        # them, read from the store, not the zero rows this search leaves on
+        # screen — and says the search does not narrow it. Declined here, so
+        # the two entries the rest of this check reads stay where they are.
+        from listen_to_me import settings_ui as _clear_module
+        from PySide6.QtWidgets import QMessageBox as _RealClearBox
+
+        class _FakeClearBox:
+            StandardButton = _RealClearBox.StandardButton
+            asked: list[str] = []
+
+            @classmethod
+            def question(cls, _parent, _title, text, *_args, **_kwargs):
+                cls.asked.append(text)
+                return _RealClearBox.StandardButton.No
+
+            @staticmethod
+            def warning(*_args, **_kwargs):
+                raise AssertionError("a declined clear reported a failure")
+
+        real_clear_box = _clear_module.QMessageBox
+        _clear_module.QMessageBox = _FakeClearBox
+        try:
+            window._clear_history()
+        finally:
+            _clear_module.QMessageBox = real_clear_box
+        assert len(_FakeClearBox.asked) == 1, _FakeClearBox.asked
+        assert "all 2 stored transcripts" in _FakeClearBox.asked[0], _FakeClearBox.asked[0]
+        assert "not just the ones listed" in _FakeClearBox.asked[0], _FakeClearBox.asked[0]
+        assert len(window.app.history.entries()) == 2, "a declined clear deleted something"
         # "Export…" writes what is listed and "Copy all" copies it, so a
         # filtered-to-empty list has nothing to hand out — an enabled Export
         # would produce an empty file, an enabled Copy all a silent no-op.
@@ -9249,6 +9354,42 @@ def _gui_construction():
         assert window.history_export_button.isEnabled()
         assert window.history_copy_all_button.isEnabled()
         assert len(window._history_export_entries) == 2
+
+        # "Export…" opens its save dialog in a real folder — Documents (or
+        # home), then wherever the previous export of this run went — never at
+        # a bare file name, which Qt resolves against the working directory
+        # (the Windows system folder for an app started by its autostart entry).
+        from listen_to_me import settings_ui as _export_module
+
+        class _FakeSaveDialog:
+            starts: list[str] = []
+            answer = ("", "")
+
+            @classmethod
+            def getSaveFileName(cls, _parent, _caption, start, *_args, **_kwargs):
+                cls.starts.append(start)
+                return cls.answer
+
+        real_dialog = _export_module.QFileDialog
+        real_last_dir = _export_module._last_export_dir
+        _export_module.QFileDialog = _FakeSaveDialog
+        _export_module._last_export_dir = None
+        try:
+            window._export_history()  # cancelled: nothing written, nothing remembered
+            first = Path(_FakeSaveDialog.starts[-1])
+            assert first.is_absolute(), f"the dialog got a bare file name: {first}"
+            assert first.name.startswith("listen-to-me-transcripts-"), first
+            assert _export_module._last_export_dir is None, "a cancelled export moved the folder"
+            export_dir = Path(tmp) / "exports"
+            export_dir.mkdir()
+            _FakeSaveDialog.answer = (str(export_dir / "notes.txt"), "")
+            window._export_history()
+            assert "A stored transcript" in (export_dir / "notes.txt").read_text(encoding="utf-8")
+            window._export_history()  # the next one starts where that one went
+            assert Path(_FakeSaveDialog.starts[-1]).parent == export_dir, _FakeSaveDialog.starts
+        finally:
+            _export_module.QFileDialog = real_dialog
+            _export_module._last_export_dir = real_last_dir
 
         # A long transcript is collapsed to a preview with a "Show more"
         # toggle, and everything that hands the transcript out keeps handing
@@ -11125,6 +11266,8 @@ _LIGHT_CHECKS = [
     ("history refuses to overwrite an unreadable file",
      _history_refuses_to_overwrite_an_unreadable_file),
     ("history export format", _history_export_format),
+    ("history export opens in a real folder", _history_export_start_path),
+    ("history clear names what it deletes", _history_clear_prompt),
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
     ("take is warned about its own cap", _take_is_warned_about_its_own_cap),

@@ -257,6 +257,80 @@ def format_entries(entries: list[dict]) -> str:
     return "\n\n".join(blocks) + "\n" if blocks else ""
 
 
+def export_start_path(
+    filename: str, last_dir: str | None, documents_dir: str | None
+) -> str:
+    """Where Settings → History → "Export…" opens its save dialog, with
+    `filename` already filled in.
+
+    The dialog used to get the bare file name, and Qt resolves a relative name
+    against the process's working directory — whatever launched the app left
+    there. For the autostart entry that is typically the Windows system
+    folder, for a double-clicked exe its download folder: neither is where
+    anyone keeps notes, and the first is not even writable. And the folder
+    the user did walk to was forgotten by the next export.
+
+    So: the folder the previous export of this run went to, else the user's
+    Documents folder (`documents_dir`, from QStandardPaths — passed in to keep
+    this Qt-free), else the home directory. A candidate that is no longer a
+    directory (an unplugged stick, a deleted folder) is skipped rather than
+    handed to the dialog. With none of them usable the bare name comes back,
+    which is exactly the old behaviour.
+    """
+    candidates: list[str | None] = [last_dir, documents_dir]
+    try:
+        candidates.append(str(Path.home()))
+    except Exception:  # RuntimeError when no home directory can be resolved
+        pass
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            folder = Path(candidate)
+            if folder.is_dir():
+                return str(folder / filename)
+        except (OSError, ValueError):
+            continue  # an unreadable or malformed path is just not a candidate
+    return filename
+
+
+def clear_prompt(count: int | None, filtered: bool = False) -> str:
+    """The question Settings → History → "Clear history…" asks before it
+    deletes anything.
+
+    It used to read "Delete the entire transcript history?" whatever was
+    stored — a destructive prompt that never said how much it destroys. The
+    number is what tells a history of three test dictations apart from
+    months of notes, so it is named whenever it is known.
+
+    `count` is None when the file could not be read (`HistoryUnavailable`):
+    clearing is exactly what repairs such a file, so the question is still
+    asked, in the wording it always had rather than with a number that would
+    be a guess. `filtered` says a search term narrows the list on screen. The
+    page's Export… and Copy all take that narrowed set; Clear does not, and a
+    prompt that names the total right under a "3 of 120 match" list should say
+    so instead of leaving the user to infer it. An unreadable file lists no
+    rows at all, so there the note would explain nothing and is left out.
+
+    Qt-free, so the wording is checkable on a headless runner.
+    """
+    if count is None:
+        head = "Delete the entire transcript history?"
+        body = "Every stored transcript is removed and this cannot be undone."
+    elif count == 1:
+        head = "Delete the one stored transcript?"
+        body = "It is removed from the history and this cannot be undone."
+    else:
+        head = f"Delete all {count} stored transcripts?"
+        body = "Every one of them is removed from the history and this cannot be undone."
+    if filtered and count is not None:
+        body += (
+            "\n\nThe search field only narrows the list on this page — this "
+            "deletes every stored transcript, not just the ones listed."
+        )
+    return f"{head}\n\n{body}"
+
+
 def _same_time(stored, wanted) -> bool:
     """Whether two history timestamps denote the same entry.
 
