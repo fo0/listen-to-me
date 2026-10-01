@@ -309,7 +309,8 @@ def clear_prompt(count: int | None, filtered: bool = False) -> str:
     be a guess. `filtered` says a search term narrows the list on screen. The
     page's Export… and Copy all take that narrowed set; Clear does not, and a
     prompt that names the total right under a "3 of 120 match" list should say
-    so instead of leaving the user to infer it.
+    so instead of leaving the user to infer it. An unreadable file lists no
+    rows at all, so there the note would explain nothing and is left out.
 
     Qt-free, so the wording is checkable on a headless runner.
     """
@@ -322,7 +323,7 @@ def clear_prompt(count: int | None, filtered: bool = False) -> str:
     else:
         head = f"Delete all {count} stored transcripts?"
         body = "Every one of them is removed from the history and this cannot be undone."
-    if filtered:
+    if filtered and count is not None:
         body += (
             "\n\nThe search field only narrows the list on this page — this "
             "deletes every stored transcript, not just the ones listed."

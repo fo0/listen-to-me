@@ -595,10 +595,12 @@ def _history_clear_prompt():
     unknown = clear_prompt(None)
     assert unknown.startswith("Delete the entire transcript history?"), unknown
     assert "None" not in unknown
-    for count in (None, 1, 37):
+    for count in (1, 37):
         filtered = clear_prompt(count, filtered=True)
         assert "not just the ones listed" in filtered, filtered
-        assert filtered.startswith(clear_prompt(count).split("\n", 1)[0])
+        assert filtered.startswith(clear_prompt(count))
+    # An unreadable file lists no rows, so "the ones listed" would mean nothing.
+    assert clear_prompt(None, filtered=True) == unknown
 
 
 def _history_preview_cuts_long_transcripts():

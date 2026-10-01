@@ -9,7 +9,7 @@ import threading
 import time
 import webbrowser
 
-from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QObject, QSize, QStandardPaths, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QGuiApplication,
     QKeySequence,
@@ -5304,8 +5304,6 @@ class SettingsWindow(QDialog):
         if not entries:
             return
         from pathlib import Path
-
-        from PySide6.QtCore import QStandardPaths
 
         from .history import export_start_path, format_entries
 
