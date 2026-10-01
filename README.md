@@ -156,9 +156,11 @@ standalone system-tray app that works in _every_ application.
   clear (the confirmation names how many transcripts that deletes) — and a
   single transcript you would rather not keep can be deleted on its own,
   without losing the rest. **Export…** saves the listed transcripts
-  (the search filter applies) to a text file, and **Copy all** puts that same
-  set on the clipboard as one block — so a searched-down handful of dictations
-  goes straight into a mail or a note without a detour through a file.
+  (the search filter applies) to a text file, starting in your Documents
+  folder and after that wherever the previous export went, and **Copy all**
+  puts that same set on the clipboard as one block — so a searched-down
+  handful of dictations goes straight into a mail or a note without a detour
+  through a file.
   A **long transcript is collapsed** to its opening lines with a **Show more**
   toggle under it, so one recorded fifteen-minute meeting no longer buries
   every dictation below it under screens of scrolling — the collapse is what

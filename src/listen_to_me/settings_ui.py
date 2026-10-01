@@ -214,6 +214,14 @@ _CHECKING_LABEL = "Checking…"
 # reads as broken — the same reason the export and test buttons carry one.
 _INSTALL_DISABLED_TIP = "Pick a release from the list above first — run “Check now” if it is empty."
 
+# History page: the folder the last successful "Export…" wrote to, for the rest
+# of this run — the next export's save dialog opens there (history.
+# export_start_path). Module level, not on the window: the settings window is
+# rebuilt on every open (App._open_settings), and the folder walked to on one
+# visit should still be where the next one starts. Not persisted: a new config
+# key for a dialog's starting folder is more than this is worth.
+_last_export_dir: str | None = None
+
 # Assistant page: the connection-test button's idle and running labels. Pinned
 # to the wider of the two for the same reason as the update check button.
 _A_TEST_LABEL = "Test connection"
@@ -5286,15 +5294,28 @@ class SettingsWindow(QDialog):
         button. Failures are reported: an unwritable path (a full disk, a
         read-only stick, a folder that vanished) must not look like a
         successful save of everything the user has ever dictated.
+
+        The dialog opens in the previous export's folder, else in Documents —
+        never in the process's working directory, which is where a bare file
+        name used to put it (see history.export_start_path).
         """
+        global _last_export_dir
         entries = list(self._history_export_entries)
         if not entries:
             return
-        from .history import format_entries
+        from pathlib import Path
+
+        from PySide6.QtCore import QStandardPaths
+
+        from .history import export_start_path, format_entries
 
         suggested = time.strftime("listen-to-me-transcripts-%Y-%m-%d.txt")
+        documents = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.DocumentsLocation
+        )
+        start = export_start_path(suggested, _last_export_dir, documents)
         path, _filter = QFileDialog.getSaveFileName(
-            self, "Export transcripts", suggested, "Text files (*.txt);;All files (*)"
+            self, "Export transcripts", start, "Text files (*.txt);;All files (*)"
         )
         if not path:
             return
@@ -5308,6 +5329,9 @@ class SettingsWindow(QDialog):
             )
             return
         log.info("exported %d transcripts to %s", len(entries), path)
+        # Only a write that worked moves the starting folder: a folder the file
+        # could not be written to is the last place the next export should open.
+        _last_export_dir = str(Path(path).parent)
         self._flash_button(self.history_export_button, "Exported ✓", "Export…")
 
     @staticmethod

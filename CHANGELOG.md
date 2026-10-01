@@ -281,6 +281,13 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **History → Export… now opens its save dialog in your Documents folder.**
+  It used to open wherever the app happened to be started from — for the
+  autostart entry that is typically the Windows system folder, which is not
+  even writable, and for a downloaded exe the download folder. After the first
+  export it opens where the previous one went, for as long as the app runs, so
+  exporting a second search result to the same place no longer means walking
+  there again. A folder that has since disappeared is skipped.
 - **"Clear history…" now says how many transcripts it is about to delete.**
   The confirmation asked "Delete the entire transcript history?" whether that
   meant three test dictations or months of notes. It now reads, for example,

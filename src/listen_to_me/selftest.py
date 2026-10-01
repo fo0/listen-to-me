@@ -547,6 +547,33 @@ def _history_export_format():
     assert format_entries([]) == ""  # nothing listed → empty file, not a stray newline
 
 
+def _history_export_start_path():
+    """Where Settings → History → "Export…" opens its save dialog.
+
+    The dialog used to get a bare file name, which Qt resolves against the
+    process's working directory — the Windows system folder for an app the
+    autostart entry launched. Now: the previous export's folder, then
+    Documents, then home; a candidate that is not a directory any more is
+    skipped, and only with nothing usable does the bare name come back."""
+    from listen_to_me.history import export_start_path
+
+    name = "listen-to-me-transcripts-2026-10-01.txt"
+    with tempfile.TemporaryDirectory() as tmp:
+        last, documents = Path(tmp) / "last", Path(tmp) / "Documents"
+        last.mkdir()
+        documents.mkdir()
+        assert export_start_path(name, str(last), str(documents)) == str(last / name)
+        assert export_start_path(name, None, str(documents)) == str(documents / name)
+        # The previous folder is gone (an unplugged stick): Documents, not a
+        # dialog pointed at a path that no longer exists.
+        gone = Path(tmp) / "gone"
+        assert export_start_path(name, str(gone), str(documents)) == str(documents / name)
+        # QStandardPaths answers "" when it knows no Documents folder.
+        fallback = Path(export_start_path(name, None, ""))
+        assert fallback.name == name and fallback.is_absolute(), fallback
+        assert fallback.parent == Path.home(), fallback
+
+
 def _history_clear_prompt():
     """What Settings → History → "Clear history…" asks before deleting.
 
@@ -9307,6 +9334,42 @@ def _gui_construction():
         assert window.history_copy_all_button.isEnabled()
         assert len(window._history_export_entries) == 2
 
+        # "Export…" opens its save dialog in a real folder — Documents (or
+        # home), then wherever the previous export of this run went — never at
+        # a bare file name, which Qt resolves against the working directory
+        # (the Windows system folder for an app started by its autostart entry).
+        from listen_to_me import settings_ui as _export_module
+
+        class _FakeSaveDialog:
+            starts: list[str] = []
+            answer = ("", "")
+
+            @classmethod
+            def getSaveFileName(cls, _parent, _caption, start, *_args, **_kwargs):
+                cls.starts.append(start)
+                return cls.answer
+
+        real_dialog = _export_module.QFileDialog
+        real_last_dir = _export_module._last_export_dir
+        _export_module.QFileDialog = _FakeSaveDialog
+        _export_module._last_export_dir = None
+        try:
+            window._export_history()  # cancelled: nothing written, nothing remembered
+            first = Path(_FakeSaveDialog.starts[-1])
+            assert first.is_absolute(), f"the dialog got a bare file name: {first}"
+            assert first.name.startswith("listen-to-me-transcripts-"), first
+            assert _export_module._last_export_dir is None, "a cancelled export moved the folder"
+            export_dir = Path(tmp) / "exports"
+            export_dir.mkdir()
+            _FakeSaveDialog.answer = (str(export_dir / "notes.txt"), "")
+            window._export_history()
+            assert "A stored transcript" in (export_dir / "notes.txt").read_text(encoding="utf-8")
+            window._export_history()  # the next one starts where that one went
+            assert Path(_FakeSaveDialog.starts[-1]).parent == export_dir, _FakeSaveDialog.starts
+        finally:
+            _export_module.QFileDialog = real_dialog
+            _export_module._last_export_dir = real_last_dir
+
         # A long transcript is collapsed to a preview with a "Show more"
         # toggle, and everything that hands the transcript out keeps handing
         # out all of it. One fifteen-minute meeting rendered in full is many
@@ -11182,6 +11245,7 @@ _LIGHT_CHECKS = [
     ("history refuses to overwrite an unreadable file",
      _history_refuses_to_overwrite_an_unreadable_file),
     ("history export format", _history_export_format),
+    ("history export opens in a real folder", _history_export_start_path),
     ("history clear names what it deletes", _history_clear_prompt),
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),

@@ -257,6 +257,43 @@ def format_entries(entries: list[dict]) -> str:
     return "\n\n".join(blocks) + "\n" if blocks else ""
 
 
+def export_start_path(
+    filename: str, last_dir: str | None, documents_dir: str | None
+) -> str:
+    """Where Settings → History → "Export…" opens its save dialog, with
+    `filename` already filled in.
+
+    The dialog used to get the bare file name, and Qt resolves a relative name
+    against the process's working directory — whatever launched the app left
+    there. For the autostart entry that is typically the Windows system
+    folder, for a double-clicked exe its download folder: neither is where
+    anyone keeps notes, and the first is not even writable. And the folder
+    the user did walk to was forgotten by the next export.
+
+    So: the folder the previous export of this run went to, else the user's
+    Documents folder (`documents_dir`, from QStandardPaths — passed in to keep
+    this Qt-free), else the home directory. A candidate that is no longer a
+    directory (an unplugged stick, a deleted folder) is skipped rather than
+    handed to the dialog. With none of them usable the bare name comes back,
+    which is exactly the old behaviour.
+    """
+    candidates: list[str | None] = [last_dir, documents_dir]
+    try:
+        candidates.append(str(Path.home()))
+    except Exception:  # RuntimeError when no home directory can be resolved
+        pass
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            folder = Path(candidate)
+            if folder.is_dir():
+                return str(folder / filename)
+        except (OSError, ValueError):
+            continue  # an unreadable or malformed path is just not a candidate
+    return filename
+
+
 def clear_prompt(count: int | None, filtered: bool = False) -> str:
     """The question Settings → History → "Clear history…" asks before it
     deletes anything.
