@@ -2267,6 +2267,33 @@ The tray menu's "Open config folder" points at it. Full docs: {REPO_URL}"""
 
 _FLAGS = ("--version", "--selftest", "--help", "-h")
 
+# Spellings other tools use for the same two questions, too short or too far
+# from ours for a similarity match to find them. Keys are lowercase, like the
+# argument they are compared with.
+_FLAG_ALIASES = {"-v": "--version", "-?": "--help", "/?": "--help"}
+
+
+def _closest_flag(arg: str) -> str | None:
+    """The flag an unrecognized `arg` was most likely meant to be, or None.
+
+    The refusal used to name the argument and point at `--help`, which leaves
+    the user to spot the typo themselves in a list of three. Naming the likely
+    flag turns `--verison` into an answer that only needs retyping. Case is
+    ignored (`--VERSION`), a few other tools' spellings are mapped by hand
+    (`-v`, `/?`), and anything that is not close to a real flag — `-x`, a
+    file path — gets no suggestion: a wrong guess would be worse than none.
+    Pure and Qt-free, like the rest of the flag handling.
+    """
+    import difflib
+
+    lowered = arg.lower()
+    if lowered in _FLAGS:
+        return lowered
+    if lowered in _FLAG_ALIASES:
+        return _FLAG_ALIASES[lowered]
+    matches = difflib.get_close_matches(lowered, _FLAGS, n=1, cutoff=0.6)
+    return matches[0] if matches else None
+
 
 def main(argv=None) -> int:
     # First statement of the process, deliberately ahead of the flag handling:
@@ -2293,6 +2320,9 @@ def main(argv=None) -> int:
         # answering with the version would hide the typo it was asked about.
         stream = sys.stderr or sys.stdout
         print(f"{APP_NAME}: unknown option: {unknown[0]}", file=stream)
+        suggestion = _closest_flag(unknown[0])
+        if suggestion:
+            print(f"Did you mean {suggestion}?", file=stream)
         print("Try --help for the three flags this app has.", file=stream)
         return 2
     if "--help" in args or "-h" in args:

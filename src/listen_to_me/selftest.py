@@ -2566,6 +2566,25 @@ def _cli_flags():
         assert code == 2, f"{bad} exited {code} instead of refusing"
         assert bad[0] in err and "--help" in err
 
+    # The refusal names the flag that was most likely meant, so a typo needs
+    # retyping rather than a hunt through --help — and stays quiet when
+    # nothing is close, because a wrong guess is worse than none.
+    for typo, meant in (
+        ("--verison", "--version"),
+        ("--selftest-", "--selftest"),
+        ("--HELP", "--help"),
+        ("--hlep", "--help"),
+        ("-V", "--version"),
+        ("/?", "--help"),
+    ):
+        code, _out, err = run([typo])
+        assert code == 2, f"{typo} exited {code} instead of refusing"
+        assert f"Did you mean {meant}?" in err, f"{typo}: {err!r}"
+    for unrelated in ("-x", "C:\\Users\\me\\notes.wav", ""):
+        code, _out, err = run([unrelated])
+        assert code == 2, f"{unrelated!r} exited {code} instead of refusing"
+        assert "Did you mean" not in err, f"{unrelated!r}: {err!r}"
+
 
 def _copy_button_reports_failure():
     """An in-window "Copy" that could not reach the clipboard says so.

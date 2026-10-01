@@ -281,6 +281,12 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **A mistyped command-line flag is now answered with the one it was meant to
+  be.** `listen-to-me --verison` was refused with "unknown option" and a pointer
+  to `--help`, leaving the typo to be found by eye; it now adds "Did you mean
+  --version?". Case is ignored (`--VERSION`), `-v` and `/?` map to `--version`
+  and `--help`, and an argument that is close to no flag gets no guess. The exit
+  code stays `2`.
 - **History → Export… now opens its save dialog in your Documents folder.**
   It used to open wherever the app happened to be started from — for the
   autostart entry that is typically the Windows system folder, which is not
