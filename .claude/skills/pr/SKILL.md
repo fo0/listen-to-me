@@ -67,12 +67,13 @@ Always print the detected phase before acting.
    git log "origin/$BASE..HEAD" --oneline
    ```
 
-   Format:
+   Format — the `Closes` line carries the work's issue (_Rules → Issue linking_):
 
    ```markdown
    ## Summary
 
    - <1-3 bullet points from commit subjects, deduplicated>
+   - Closes #<n>
 
    ## Test plan
 
@@ -88,7 +89,7 @@ Always print the detected phase before acting.
 
 1. `gh pr view --json number,url,body,state,baseRefName` — load existing PR.
 2. **Push first** if local is ahead: `git push` (no force unless user explicitly requested).
-3. Re-derive Summary from commits since base.
+3. Re-derive Summary from commits since base — the `Closes #n` / `Refs #n` lines stay (_Rules → Issue linking_).
 4. **Preserve user-edited sections** outside `## Summary` and `## Test plan`.
 5. `gh pr edit <number> --body "$(cat <<'EOF' ... EOF)"`
 6. Report: `Updated PR #N: <url>`
@@ -136,6 +137,8 @@ Pre-flight:
 gh pr merge <number> --merge --delete-branch  # this project uses merge commits, not squash
 ```
 
+5. **Base is not the default branch** (`gh pr view --json baseRefName` against `gh repo view --json defaultBranchRef`): GitHub ignores `Closes #n` there, so comment on the work's issue in **English** (what was merged into which base) and close it (`agent_docs/autonomy.md → Issue-based work`).
+
 Report: `Merged PR #N (merge commit). Branch deleted.`
 
 ## Rules
@@ -145,7 +148,7 @@ Report: `Merged PR #N (merge commit). Branch deleted.`
 - **Print detected phase before acting** so user can interrupt if wrong.
 - **Never force-push** to update PR — `gh pr edit` for body, `git push` (no force) for code.
 - **Never merge automatically.** Default `/pr` never reaches the merge phase. Merging needs an explicit `/pr merge` — or an owner-authorized routine that meets the non-destructive + green-verification conditions above.
-- **Issue linking:** if commit messages contain `#<n>` → include `Closes #<n>` in PR body Summary.
+- **Issue linking:** the work's issue (`CLAUDE.md → Git Conventions → Issues`) → `Closes #<n>` in the PR body Summary section; any other `#<n>` the commit messages reference → `Refs #<n>`. No issue yet → create it before `gh pr create`; none possible → its would-be title there instead (`agent_docs/autonomy.md → Issue-based work`).
 - **Draft PRs:** if user says "draft PR" → `gh pr create --draft`.
 - **Branch-name → title heuristics:** this project's branches are `claude/<slug>` with no type prefix — derive the title from the latest commit subject (imperative), not from the branch slug.
 

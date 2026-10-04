@@ -1,6 +1,6 @@
 ---
 name: orca
-description: "Orchestrator mode — the default working mode of this project, not a toggle to find. The main agent does no task work itself: every unit goes to a role-framed subagent that inherits its model and effort, at most 5 in parallel unless overridden. Takes an objective: '/orca <objective>' or '/orca <N> <objective>' runs it as a delegated objective run — steps, a review per step, one overall review over the combined diff. Load it for that, for the contract (roles, width, write scopes, verification), when the user says '/orca', 'orca mode', 'orchestrator mode', 'orca an/aus', 'delegate everything', or asks what the width is set to. '/orca off' drops to plain behavior for this session only."
+description: "Orchestrator mode, this project's default working mode. Short units the main agent does itself; long, context-heavy or parallel work goes to role-framed subagents, at most 5 in parallel. '/orca <objective>' or '/orca <N> <objective>' runs a delegated objective: steps, a review each, one overall review. Load it for that, for the contract, on '/orca', 'orca mode', 'orchestrator mode', 'orca an/aus', or a question about the width. '/orca off': plain behavior for this session."
 argument-hint: "[on|off|status|N] [objective]"
 metadata:
   origin: claude-code-optimizer
@@ -12,7 +12,7 @@ metadata:
 
 - `/orca` (reports state and width) · `/orca on|off|status` · `/orca 10` — the user asks what the mode is set to, or changes it
 - `/orca <objective>` · `/orca <N> <objective>` — an objective to carry through a delegated run, optionally at a stated width
-- "orca mode", "orchestrator mode", "orca an/aus", "ab jetzt alles delegieren", "delegate everything"
+- "orca mode", "orchestrator mode", "orca an/aus", "ab jetzt delegieren", "delegate more"
 - Session start, when `SCRATCHPAD.md` still carries an Orca line from an earlier session or from before a compaction
 
 Not this skill: choosing a `subagent_type` for one assignment while already orchestrating. That is the `subagent_type`
@@ -65,26 +65,35 @@ thing it exists to protect: a same-day compaction and a same-day earlier session
 
 ## The contract
 
-1. **Every unit of task work is delegated. No exception.** Reading a file for its content, searching, planning,
-   editing, writing tests, running checks, reviewing — all of it happens in a subagent, including the units that
-   would plainly be faster done directly. "Too small to delegate" is not a judgment this mode makes; `/orca off` is.
+1. **Delegate what is long, context-heavy or parallel; do short units yourself.** A unit is short when it takes about
+   five tool calls, writes at most one file and reads nothing the main context does not need afterwards — a lookup in
+   a known file, a one-file edit, a status read, one command. Everything else goes to a subagent: broad reads (a
+   search across the tree, long logs, many files), long stretches of work, and every set of two or more independent
+   units, which go out as one wave. Each subagent pays the always-loaded set again, so a unit smaller than that costs
+   more delegated than done. **A change you wrote yourself still gets its `reviewer`** (item 2).
 2. **Each assignment names a role, from the roster in CLAUDE.md → _Subagents_.** The role is the lens the brief
    frames — `architect`, `implementer`, `reviewer`, `domain`, `product`, `docs`, `security` — and the wave report
    names it. Seat the roles the change actually calls for, never a standing panel and never two agents with the same
    lens: agreement between identical lenses is not evidence. **A code change always seats `reviewer`, and never the
-   agent that wrote it** — a fresh reading beats an author verifying the intent it already holds.
-3. **The orchestrator keeps four things,** and all four are decisions rather than work: decomposition and assignment ·
+   agent that wrote it** — a fresh reading beats an author verifying the intent it already holds. A mechanical unit
+   (item 4) applies no lens and names none.
+3. **The orchestrator keeps five things:** decomposition and assignment · the short units of item 1 ·
    read-only verification of what comes back (`git status`, `git diff`, reading the changed files) · integration and
    its gates (commit, push, `/pr`, `/ci`, `/rollback`, merge, release dispatch) · the report to the user. A gate
    handed to a subagent is a gate that answers itself — the subagent holds the tool and has nobody to ask.
-4. **Subagents inherit the orchestrator's quality — by omission, not by setting.** Leave the model parameter off and
-   the subagent runs the session's model; leave the effort / reasoning parameter off, where the surface has one, and
-   it runs the session's effort. Never pass a smaller model, never pass a lower effort, never route work to a cheaper
-   agent to save tokens. Two places where inheritance does not happen on its own: a repo-local `.claude/agents/*.md`
-   whose frontmatter pins a `model:` overrides it — pass the session's model explicitly for that agent type or do not
-   use it; and `subagent_type: fork` always inherits the parent model whatever else is passed.
-5. **Width: 5 in parallel unless overridden.** Independent assignments go out in a single message, up to N; the rest
-   waits for a free slot. Dependent work is sequenced — never parallelized in the hope that the order works out.
+4. **Judgment inherits; mechanics lower the effort, not the model.** A unit that writes, reviews or judges code — every role of the
+   roster, and conflict resolution — inherits the session's quality by omission: leave the model parameter off and it
+   runs the session's model, leave the effort / reasoning parameter off, where the surface has one, and it runs the
+   session's effort. Never a smaller model or a lower effort for such a unit. A **mechanical** unit — search, git
+   status, CI watching, log reading: it returns facts and judges no code — keeps the session's model at a lower
+   effort, `low` or `medium`; where the spawn call has no effort parameter, an agent definition's `effort:`
+   frontmatter sets it. `sonnet`, passed as the model parameter, only for a trivial lookup with a fixed answer shape,
+   at effort `low` or `medium`, `high` at most; never `haiku`. Its brief names a terse return format: fields, a
+   length cap. Two places where inheritance does not happen on its own: a repo-local
+   `.claude/agents/*.md` whose frontmatter pins a `model:` overrides it — for a judging agent pass the session's model
+   explicitly or do not use it; and `subagent_type: fork` always inherits the parent model whatever else is passed.
+5. **Width: 5 in parallel unless overridden.** Independent assignments go out in a single message, up to N; the rest waits
+   for a free slot. Dependent work is sequenced — never parallelized in the hope that the order works out.
 6. **Disjoint write scopes.** Two subagents in the same wave never hold write access to the same file. Split by file,
    or sequence, or give each one its own git worktree (`isolation: "worktree"`) where the surface offers it. In this
    repo `settings_ui.py` and `app.py` are the files two assignments most easily collide on.
@@ -133,7 +142,8 @@ skill can set one: a built-in slash command is not model-invocable, and a Stop h
 does not reach the session that wrote it. The two never both get sent — and there is no exception, not even width:
 a `/goal` turn orchestrates anyway, because that is this project's default, and a non-default width is a sentence
 _inside_ that one line (`work at width 3`), never an `/orca <N>` sent ahead of it. A handoff is one paste.
-**Never generate a skill named `goal` to close this gap** — it would shadow the built-in.
+**Never generate a skill named `goal` to close this gap** — it would shadow the built-in, which is the defect
+v1.30.0 removed.
 
 ## Rules
 
