@@ -1,6 +1,6 @@
 ---
 name: done
-description: "Use when the user signals work completion with 'done', 'fertig', 'finished', 'abschluss', '/done'. Detects current branch (main vs feature), runs closure checks defined in CLAUDE.md, handles commit and push based on branch context, closes related GitHub issues, and reports a strict short summary."
+description: "Use when the user signals work completion with 'done', 'fertig', 'finished', 'abschluss', '/done'. Detects current branch (main vs feature), runs closure checks defined in CLAUDE.md, handles commit and push based on branch context, closes the issue of work that landed without a PR, and reports a strict short summary."
 metadata:
   origin: claude-code-optimizer
 ---
@@ -14,7 +14,7 @@ metadata:
 
 ## Scope Boundaries
 
-**Owns:** closing a piece of work out — format, the automated-check chain, scope check, commit, push, issue close.
+**Owns:** closing a piece of work out — format, the automated-check chain, scope check, commit, push, closing the issue of work that landed without a PR.
 **Does not own:** the review itself (`basic-review`), the PR object (`pr`), remote build state (`ci`). It _suggests_ those and never runs them — that fence is what keeps `/done` predictable enough to type without reading it first.
 
 ## Workflow
@@ -78,7 +78,7 @@ Over 14,000 / 16,000 / 8,000 chars → offload per `agent_docs/context_budget.md
 ### 6. Commit uncommitted changes (if any)
 
 - Follow the project's commit convention: imperative capitalized subject, optional `area:` prefix, **not** Conventional Commits.
-- Reference the GitHub issue number if applicable (e.g. `Fix crash on empty audio #42`).
+- Reference the work's issue if it has one (`CLAUDE.md → Git Conventions → Issues`), e.g. `Fix crash on empty audio #42`.
 - **Main branch:** if the uncommitted diff is large/unfocused → ask user before committing. Unattended (`$CLAUDE_CODE_REMOTE=true`) nobody answers: leave it uncommitted, report the `git diff --stat` as the open point, and finish the steps that do not depend on it (CLAUDE.md → _Autonomy_).
 
 ### 7. Push
@@ -97,8 +97,8 @@ After push on a feature branch, suggest follow-ups — do NOT run them automatic
 
 ### 9. Close related GitHub issue (if applicable)
 
-- Comment on the issue in **English** with a short summary of what was delivered
-- Close the issue
+- **Any branch but the default** (`gh repo view --json defaultBranchRef`, no `gh`: the `mcp__github__*` equivalent — `agent_docs/mcp_catalog.md` → the `github` row; `develop` included) — leave the issue open: a PR into the default branch closes it on merge through `Closes #n`, into another base `/pr merge` closes it (`agent_docs/autonomy.md → Issue-based work`).
+- **Default branch, step 7 pushed** — the work landed without a PR: comment on the issue in **English** with a short summary of what was delivered, then close it. Left uncommitted (step 6) → the issue stays open and goes into `Next:`.
 
 ### 10. Report
 
@@ -117,4 +117,4 @@ Strict format, strict limits:
 - **Never force-push** without explicit user request.
 - **Ambiguous state on main** (large uncommitted diff, unclear scope) → ask first; unattended → uncommitted plus a report line (step 6).
 - **The report is the two lines above and nothing else.** No preamble, no postamble, nothing the commit message already says; the `Next:` line only when something is open — and when it names a step, the one handoff line from `CLAUDE.md → Handoff Prompt` closes the report.
-- If nothing to commit AND nothing to push AND no open issue → single-line confirmation: `✅ <branch>: already clean, nothing to do.`
+- If nothing to commit AND nothing to push AND no issue for step 9 to close → single-line confirmation: `✅ <branch>: already clean, nothing to do.`

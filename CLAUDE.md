@@ -6,19 +6,23 @@
 
 ## Workflow Triggers
 
-Skills: `.claude/skills/<name>/SKILL.md`, trigger in each frontmatter `description` — `done` · `pr` · `basic-review` · `basic-sec-review` · `rollback` · `ci` · `stuck` · `beacon` · `scheduler` (Routines · `/loop` + `Cron*` · Desktop tasks; bare `/loop`: `.claude/loop.md`) · `orca` (`/orca <objective>`). Diagram → `agent_docs/diagram_prompt.md`. Review on demand only, never from `done`. Findings → `BACKLOG.md`, knowledge → `MEMORY.md` / `SCRATCHPAD.md` (`backlog_process.md`, `memory_process.md` under `agent_docs/`).
+Skills (`.claude/skills/<name>/SKILL.md`): `done` · `pr` · `basic-review` · `basic-sec-review` · `rollback` · `ci` · `stuck` · `beacon` · `scheduler` (bare `/loop`: `.claude/loop.md`) · `orca` (`/orca <objective>`). Diagram → `agent_docs/diagram_prompt.md`. Review on demand only, never from `done`. Findings → `BACKLOG.md`, knowledge → `MEMORY.md` / `SCRATCHPAD.md` (`backlog_process.md`, `memory_process.md` under `agent_docs/`).
 
 ## Output Languages
 
-Chat to the user: their language (default German) — skill report shapes fix the structure, not the language — technical terms English and never translated („2 Bugs gefixt"), paths / commands / errors verbatim. **Everything else English** — code, comments, log output, UI strings (inline literals, no i18n), commits (imperative, **not** Conventional Commits — see _Git Conventions_), PRs, issues, every generated file. Terms: `agent_docs/coding_conventions.md → Never-translate term list`.
+Chat to the user: their language (default German) — skill report shapes fix the structure, not the language — technical terms English and never translated („2 Bugs gefixt"). **Everything else English** — code, comments, log output, UI strings (inline literals, no i18n), commits (imperative, **not** Conventional Commits — see _Git Conventions_), PRs, issues, every generated file. Terms: `agent_docs/coding_conventions.md → Never-translate term list`.
 
 ## Performance / Modes
 
-Model: the session's, never pinned here or in `.claude/settings.json`. Plan mode for non-trivial strategy only — a plan put up for approval ends the turn on the user and carries the _Handoff Prompt_. Reference: `agent_docs/autonomy.md → Mode reference`.
+Model: the session's, never pinned. Plan mode for non-trivial strategy only. Reference: `agent_docs/autonomy.md → Mode reference`.
 
 ## Caveman Mode — chat compression (default `full`)
 
 Chat, status and confirmations only — **never** files, code, commits, PR bodies, issue comments. At `full`: drop filler, pleasantries, hedging and articles; fragments are fine for status lines. Shorten by selection, not compression: cut what would not change the reader's next move; no abbreviations, arrow chains or invented shorthand in any mode; code and error strings verbatim. Never compressed: the closing summary, security warnings, irreversible-action confirmations, the _Handoff Prompt_. `caveman lite|full|ultra` switches (`lite` keeps full sentences, `ultra` goes telegraphic), `stop caveman` turns it off for the session. Full wording: `agent_docs/autonomy.md → Caveman Mode`.
+
+## Chat Layout — lists to scan, links to click
+
+Status and summaries: one fact per line, `**Label:** value` (state, branch, target, PR, run, next step); a table once several items share those fields; prose only for reasoning — the closing summary still opens with its outcome sentence. Anything with a URL is a link named by what it is — `[#42 Fix login](url)`, the run, the deploy — never a bare URL or bare `#42`, never a URL no tool returned. Before a multi-step stretch, list the steps ahead; promise to report back only with a wake armed (background task, PR subscription). Full wording: `agent_docs/autonomy.md → Chat Layout`.
 
 ## Autonomy
 
@@ -49,7 +53,7 @@ A turn that hands a decision back or names a next step / recommendation ends wit
 
 ## Subagents — orchestrator mode is the default
 
-**Every session starts in orchestrator mode, width 5:** the main agent decomposes, verifies returned diffs, runs the gates and reports; subagents do the task work. `/orca <N>` sets the width, `/orca off` drops to plain behavior for this session; `/orca <objective>` / `/orca <N> <objective>` runs an objective — steps with an observable result each, a `reviewer` per step, one overall review by an agent that wrote none of it, `/done` to close. Seat only what the change calls for:
+**Every session starts in orchestrator mode, width 5:** the main agent decomposes, does units of about five tool calls and one file, verifies returned diffs, runs the gates and reports; long, context-heavy or parallel work goes to subagents. Code-judging seats inherit the session's model and effort; search, git status, CI, log reads keep the model at lower effort — `sonnet` only for a trivial lookup, effort `low`/`medium`, `high` at most. `/orca <N>` sets the width, `/orca off` drops to plain behavior for this session; `/orca <objective>` / `/orca <N> <objective>` runs an objective. Seat only what the change calls for:
 
 | Role          | Earns a seat when                          |
 | ------------- | ------------------------------------------ |
@@ -103,8 +107,9 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src \
 ## Git Conventions
 
 - **Branches:** `claude/<slug>`, never straight to `main` · **Commits:** imperative, capitalized subject (`Add in-app Help page`), optional lowercase `area:` prefix (`ci: run the check job`) — **not** Conventional Commits, never force `feat:` / `fix:`; issues as `#N` · **Merge:** GitHub **merge commits**, not squash.
-- **CI:** `ci.yml` + `docs-format.yml` gate PRs, `release.yml` → _Deployment_. **Actions are pinned by commit SHA, never by tag** (#22; bump: `agent_docs/deployment.md`). No formatting guard installed; never `--no-verify`.
+- **Formatting guard:** none installed; never `--no-verify`. **Actions are pinned by commit SHA, never by tag** (#22; bump: `agent_docs/deployment.md`).
 - **Cloud / routine runs** start on `claude/<slug>` unless the task names a branch (`agent_docs/autonomy.md → Branch rule`).
+- **Issues:** work off the default branch starts from an issue — an open one with the same goal, else a new one; routine runs and a task naming its issue keep their own. Commits, PR (`Closes #n`), a branch you name and chat reference it (`agent_docs/autonomy.md → Issue-based work`).
 - **Dependencies:** new runtime ones only after user approval with reasoning — they bloat the one-file Windows build; dev / tooling ones without. No lock file, lower-bound pins, `requirements.txt` and `pyproject.toml` in sync.
 
 ## Environment Variables
@@ -131,14 +136,14 @@ Availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch
 
 ## Architecture Decisions
 
-ADRs in `docs/adr/` (format: `agent_docs/adr_template.md`). Grep it before contradicting one; reverse with a new ADR that supersedes it — the old one changes only its status (`Superseded by ADR-NNNN`), never its body.
+ADRs in `docs/adr/`: grep them before contradicting one; reverse one only by superseding it (`agent_docs/adr_template.md → Lifecycle`).
 
 ## Documentation Rules
 
-After a code change, update only what it changed: `README.md` (features, settings) · `BACKLOG.md` (findings, refactoring candidates) · `MEMORY.md` / `SCRATCHPAD.md` (stable knowledge / working context) · `docs/ARCHITECTURE.mmd` · `docs/adr/` · `config.py DEFAULTS` (also Settings UI + README). **`CLAUDE.md` gets a line only when how-to-work changes** — a command, a top-level directory, a repo-wide convention; the rest lives in `agent_docs/`.
+After a code change, update only what it changed: `README.md` · `BACKLOG.md` · `MEMORY.md` / `SCRATCHPAD.md` · `docs/ARCHITECTURE.mmd` · `docs/adr/` · `config.py DEFAULTS` (also Settings UI + README). **`CLAUDE.md` gets a line only when how-to-work changes** — a command, a top-level directory, a repo-wide convention; the rest lives in `agent_docs/`.
 
 ### Context budget
 
-`CLAUDE.md` loads every turn: **12k** target, offload at **14k**, hard 16k. `MEMORY.md` / `SCRATCHPAD.md` load at session start: 8k / 4k target, offload at 16k / 8k. On-demand files (`agent_docs/`, skills, ADRs) are unbudgeted. Over → **move** content out and leave a one-line pointer, never delete to fit — ladder: `agent_docs/context_budget.md`. The Tier-1 guard flags it after any Edit/Write; act in the same session.
+`CLAUDE.md` loads every turn: **12k** target, offload at **14k**, hard 16k. `MEMORY.md` / `SCRATCHPAD.md` load at session start: 8k / 4k target, offload at 16k / 8k. Over → **move** content out and leave a one-line pointer, never delete to fit — ladder: `agent_docs/context_budget.md`. The Tier-1 guard flags it after any Edit/Write; act in the same session.
 
-<!-- Generated by claude-code-optimizer v1.51.1 -->
+<!-- Generated by claude-code-optimizer v1.56.0 -->
