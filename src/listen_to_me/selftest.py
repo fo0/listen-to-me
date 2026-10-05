@@ -2403,6 +2403,8 @@ def _hotkeys_route_to_their_own_source():
     `_recorder_events_carry_their_take` does it: a real App needs a tray, a
     recorder and a transcriber, while the routing is decided from four
     attributes."""
+    import time
+
     from listen_to_me.app import (
         STATE_IDLE,
         STATE_PROCESSING,
@@ -2435,9 +2437,11 @@ def _hotkeys_route_to_their_own_source():
     class _App:
         # Borrowed unbound: a real App needs a tray, a recorder, a transcriber.
         _handle, _owns_take = App._handle, App._owns_take
+        _processing_elapsed = App._processing_elapsed
 
         def __init__(self, state=STATE_IDLE, source=SOURCE_MIC):
             self.state, self._recording_id, self._source = state, 2, source
+            self._processing_started = time.monotonic()
             self.cfg = {
                 "hotkey_mode": "toggle",
                 "system_audio": {"hotkey_mode": "toggle"},
@@ -2520,6 +2524,11 @@ def _hotkeys_route_to_their_own_source():
         app._handle("toggle", payload)
         assert app.started == [] and app.finished == 0
         assert app.messages and "transcribing" in app.messages[0], app.messages
+        # A long transcription names how long it has taken so far — the press
+        # is asking whether the app is still working at all.
+        app._processing_started = time.monotonic() - 72
+        app._handle("toggle", payload)
+        assert "(1:12 so far)" in app.messages[-1], app.messages
     # Cancel is not routed by source: it belongs to whatever is running, and
     # both menus offer exactly one "Cancel recording" entry for both sources.
     app = _App(state=STATE_RECORDING, source=SOURCE_SYSTEM)
@@ -6934,6 +6943,128 @@ def _overlay_counts_the_recording_time():
             overlay.destroy()
 
 
+def _transcription_is_counted():
+    """A long transcription is counted on every surface, a short one is not.
+
+    A fifteen-minute system-audio take can transcribe for minutes on the CPU,
+    and a "Transcribing…" that does not move for that long cannot be told from
+    a hung app. App feeds the clock only after `_PROCESSING_CLOCK_AFTER_S`, so a
+    dictation keeps the plain word; the tray, the floating icon (tooltip and a
+    bubble that is up) and the hotkey's "still transcribing" answer all name
+    the same second. A transcript already flashing in the bubble is never
+    replaced by the clock: `flash_text` is drained before the "done" that ends
+    the state, and a tick may land in between.
+
+    `_tick_recording_clock` is borrowed unbound onto a stub for the reason
+    `_take_is_warned_about_its_own_cap` gives: it runs inside the 100 ms
+    poll of a real App."""
+    import time
+
+    from listen_to_me.app import (
+        _PROCESSING_CLOCK_AFTER_S,
+        STATE_IDLE,
+        STATE_PROCESSING,
+        STATE_RECORDING,
+        App,
+        still_transcribing_message,
+    )
+    from listen_to_me.tray import transcribing_label
+
+    assert transcribing_label() == "Transcribing…"
+    assert transcribing_label(72) == "Transcribing for 1:12…"
+    # Rendered inside the poll timer: garbage reads 0:00, never raises.
+    assert transcribing_label(float("nan")) == "Transcribing for 0:00…"
+
+    plain = "Still transcribing the previous recording…"
+    assert still_transcribing_message(0) == plain
+    assert still_transcribing_message(_PROCESSING_CLOCK_AFTER_S - 0.5) == plain
+    assert still_transcribing_message(72) == (
+        "Still transcribing the previous recording (1:12 so far)…"
+    )
+    for bad in (None, "nonsense", float("nan"), float("inf")):
+        assert still_transcribing_message(bad) == plain, repr(bad)
+
+    class _Surface:
+        def __init__(self):
+            self.ticks: list = []
+
+        def set_elapsed(self, seconds):
+            self.ticks.append(seconds)
+
+    class _App:
+        _tick_recording_clock = App._tick_recording_clock
+        _processing_elapsed = App._processing_elapsed
+
+        def __init__(self, state, started_ago):
+            self.state = state
+            now = time.monotonic()
+            self._recording_started = now - 30
+            self._processing_started = now - started_ago
+            self._clock_seconds = -1
+            self.tray = _Surface()
+            self.overlay = _Surface()
+            self._settings_window = None
+
+    short = _App(STATE_PROCESSING, 2)
+    short._tick_recording_clock()
+    assert short.tray.ticks == [] and short.overlay.ticks == [], "a dictation was counted"
+    assert short._processing_elapsed() >= 2
+
+    long_take = _App(STATE_PROCESSING, 72)
+    long_take._tick_recording_clock()
+    # The transcription's own clock, never the 30 s the take recorded for.
+    assert long_take.tray.ticks == [72], long_take.tray.ticks
+    assert long_take.overlay.ticks == [72], long_take.overlay.ticks
+    long_take._tick_recording_clock()  # the same whole second: nothing re-rendered
+    assert long_take.tray.ticks == [72]
+
+    recording = _App(STATE_RECORDING, 72)
+    recording._tick_recording_clock()
+    assert recording.tray.ticks == [30], recording.tray.ticks
+    idle = _App(STATE_IDLE, 72)
+    idle._tick_recording_clock()
+    assert idle.tray.ticks == [] and idle._processing_elapsed() == 0.0
+
+    # The floating icon: tooltip, accessible description and a bubble that is up.
+    _ensure_qapp()
+    from listen_to_me.overlay import Overlay
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        overlay = Overlay(stub)
+        try:
+            overlay.set_state("recording")
+            overlay.set_elapsed(30)
+            overlay.set_state("processing")
+            # The take's clock does not carry over into the transcription.
+            assert "Transcribing…" in overlay.win.toolTip(), overlay.win.toolTip()
+            overlay.set_elapsed(72)
+            assert "Transcribing for 1:12…" in overlay.win.toolTip(), overlay.win.toolTip()
+            assert overlay.win.toolTip() == overlay.win.accessibleDescription()
+
+            shown: list[str] = []
+            overlay.show_live = shown.append
+            overlay._bubble_visible = lambda: True
+            overlay.set_elapsed(73)
+            assert shown == ["Transcribing for 1:13…"], shown
+            # The finished transcript is flashing: the clock leaves it alone.
+            shown.clear()
+            overlay._flash_timer.start(60_000)
+            overlay.set_elapsed(74)
+            assert shown == [], shown
+            overlay._flash_timer.stop()
+            # No bubble up: only the tooltip counts.
+            overlay._bubble_visible = lambda: False
+            overlay.set_elapsed(75)
+            assert shown == [] and "1:15" in overlay.win.toolTip()
+
+            overlay.set_state("idle")
+            overlay.set_elapsed(76)
+            assert "Transcribing" not in overlay.win.toolTip(), overlay.win.toolTip()
+        finally:
+            overlay.destroy()
+
+
 def _overlay_lists_recent_transcripts():
     """The floating icon's menu offers the last few transcripts, like the tray.
 
@@ -7132,9 +7263,11 @@ def _tray_counts_the_recording_time():
         )
         stub.cfg["hotkey"] = ""  # no combo to name: generic wording, still counting
         assert state_label("recording", stub.cfg, elapsed=72) == "Recording 1:12…"
-        # Only a running take has a clock — and no clock means the old wording.
+        # Only a running take — and its transcription — has a clock, and no
+        # clock means the old wording.
         assert state_label("recording", stub.cfg) == _STATE_LABELS["recording"]
-        assert state_label("processing", stub.cfg, elapsed=72) == _STATE_LABELS["processing"]
+        assert state_label("processing", stub.cfg) == _STATE_LABELS["processing"]
+        assert state_label("processing", stub.cfg, elapsed=72) == "Transcribing for 1:12…"
         assert state_label("idle", stub.cfg, elapsed=72) == _STATE_LABELS["idle"]
 
 
@@ -8923,9 +9056,14 @@ def _gui_construction():
 
         window.set_app_state("processing")
         assert not window.home.record_button.isEnabled()
-        # A tick that lands just after the take ended must not re-label the
-        # hero with a stopped counter.
+        # The transcription starts from the plain word — the take's clock does
+        # not carry over — and is counted once App feeds it (only after a few
+        # seconds, see app._PROCESSING_CLOCK_AFTER_S): a long take can
+        # transcribe for minutes, and a frozen headline reads as a hang.
+        assert window.home.state_label.text() == "Transcribing…"
         window.set_app_elapsed(99)
+        assert window.home.state_label.text() == "Transcribing for 1:39…"
+        window.set_app_elapsed(None)
         assert window.home.state_label.text() == "Transcribing…"
         window.set_app_state("idle")
         assert window.home.record_button.isEnabled()
@@ -11362,6 +11500,7 @@ _LIGHT_CHECKS = [
     ("overlay menu follows the state", _overlay_menu_follows_the_state),
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray counts the recording time", _tray_counts_the_recording_time),
+    ("transcription is counted", _transcription_is_counted),
     ("tray lists recent transcripts", _tray_lists_recent_transcripts),
     ("hotkey pause is visible and temporary", _hotkey_pause_is_visible_and_temporary),
     ("tray click opens the window", _tray_click_opens_the_window),

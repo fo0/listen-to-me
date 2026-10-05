@@ -14,6 +14,14 @@ changes at a glance.
 
 ### Added
 
+- **A long transcription is counted, not just announced.** A fifteen-minute
+  system-audio take can transcribe for minutes on the CPU, and the tray, the
+  floating icon and the Home page said "Transcribing…" the whole time — a status
+  that never moves cannot be told from an app that hung. Once a transcription
+  has run for five seconds they now count it up ("Transcribing for 1:12…"),
+  including a preview bubble that is up, and pressing the hotkey meanwhile
+  answers "Still transcribing the previous recording (1:12 so far)…". A
+  dictation is done before that and keeps the plain word.
 - **`F3` and `Shift+F3` step through the matches in the Help page's search.**
   The find field has had `Ctrl+F` and a pair of **Previous** / **Next**
   buttons, and Enter stepped on — but only while the caret was still in the

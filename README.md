@@ -127,7 +127,12 @@ standalone system-tray app that works in _every_ application.
   ("Idle — press Ctrl+Alt+Space to record"), so a forgotten combination is a
   hover away. While you dictate it **counts the take up** ("Recording 1:12… press
   Ctrl+Alt+Space to stop"), so you can see how long you have been speaking
-  against the maximum recording length. **Record system audio** sits next to
+  against the maximum recording length. A transcription that runs longer than
+  a few seconds — a long system-audio take on the CPU can need minutes — is
+  counted the same way ("Transcribing for 1:12…") here, on the floating icon
+  and on the Home page, so a slow one is never mistaken for a hung app; a
+  dictation is done before that and keeps the plain "Transcribing…".
+  **Record system audio** sits next to
   **Start recording**, so the second source is one click away with or without
   a hotkey of its own, and it names the source it stops
   ("Stop recording system audio (insert text)") — with two start entries in
