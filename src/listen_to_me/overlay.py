@@ -49,6 +49,7 @@ from .tray import (
     _SYSTEM_STOP_LABEL,
     format_duration,
     recent_entry_label,
+    transcribing_label,
 )
 from .voice_mic_widget import VoiceMicWidget
 
@@ -118,12 +119,12 @@ _ANCHOR_WARNED: set[str] = set()
 # recording tooltip keeps it while everything in front of it varies — the take
 # clock, and the name of the source the take records from (_recording_label).
 _STOP_HINT = "click again to stop"
-# No "recording" entry: _state_tooltip answers that state from
-# _recording_label before it ever reaches this map, so an entry here would be a
-# second, unreachable wording — one waiting to be found and used by mistake.
+# No "recording" or "processing" entry: _state_tooltip answers those states
+# from _recording_label and tray.transcribing_label before they ever reach this
+# map, so an entry here would be a second, unreachable wording — one waiting to
+# be found and used by mistake.
 _STATE_LABELS = {
     "idle": "Idle — click or press the hotkey to record",
-    "processing": "Transcribing…",
 }
 
 # The idle wording while the global hotkey is suspended — the tray status line
@@ -1080,6 +1081,8 @@ class Overlay:
             return _idle_label(self.app.cfg, paused=self._paused())
         if state == "recording":
             return _recording_label(self._elapsed, self._source())
+        if state == "processing":
+            return transcribing_label(self._elapsed)
         return _STATE_LABELS.get(state, state)
 
     def _paused(self) -> bool:
@@ -1141,17 +1144,30 @@ class Overlay:
 
     def set_elapsed(self, seconds) -> None:
         """Put the running take's clock on the icon (tooltip + accessible
-        description), the tray's counterpart for the floating icon.
+        description), the tray's counterpart for the floating icon — and,
+        while the take is transcribed, how long that has taken so far.
 
-        Ignored unless a take is actually running: the clock arrives from
-        App's 100 ms poll and a tick that lands just after a recording ended
-        must not re-label an idle icon with a frozen counter. A running
+        Ignored unless a take is running or being transcribed: the clock
+        arrives from App's 100 ms poll and a tick that lands just after a take
+        ended must not re-label an idle icon with a frozen counter. A running
         download keeps the icon it owns — same rule as `set_state`.
+
+        While transcribing, a bubble that is up says "Transcribing…" (see
+        `set_state`) and is what the user is looking at, so it counts too —
+        unless the finished transcript is already flashing in it: `flash_text`
+        is drained before the "done" that ends this state, and a tick in
+        between must not replace the transcript with a clock.
         """
-        if self.state != "recording":
+        if self.state not in ("recording", "processing"):
             return
         self._elapsed = seconds
         self._apply_status(self._progress_text or self._state_tooltip())
+        if (
+            self.state == "processing"
+            and self._bubble_visible()
+            and not self._flash_timer.isActive()
+        ):
+            self.show_live(transcribing_label(seconds))
 
     def _sync_menu_state(self, state: str | None = None) -> None:
         """Name the toggle entry after what a click on it will do, offer

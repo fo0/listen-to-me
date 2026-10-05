@@ -14,6 +14,26 @@ changes at a glance.
 
 ### Added
 
+- **A tap in hold mode says why nothing was recorded.** Pressing and releasing
+  the hotkey the way toggle mode works ends a push-to-talk take after a
+  fraction of a second, and "Recording too short — nothing inserted." left
+  someone new to hold mode guessing. In hold mode the message now names the
+  combination and adds that it has to stay down while speaking — for the
+  system-audio hotkey with its own combination and mode.
+- **`Ctrl+S` applies the settings.** Saving a value changed deep in a page meant
+  reaching for the footer, while the key every editor binds to "save" did
+  nothing. It now applies every change from whichever field has the focus and
+  keeps the window open — Apply, not Save, because a save keystroke that makes
+  the window vanish is not what that key does anywhere else. The Apply
+  button's tooltip names the shortcut.
+- **A long transcription is counted, not just announced.** A fifteen-minute
+  system-audio take can transcribe for minutes on the CPU, and the tray, the
+  floating icon and the Home page said "Transcribing…" the whole time — a status
+  that never moves cannot be told from an app that hung. Once a transcription
+  has run for five seconds they now count it up ("Transcribing for 1:12…"),
+  including a preview bubble that is up, and pressing the hotkey meanwhile
+  answers "Still transcribing the previous recording (1:12 so far)…". A
+  dictation is done before that and keeps the plain word.
 - **`F3` and `Shift+F3` step through the matches in the Help page's search.**
   The find field has had `Ctrl+F` and a pair of **Previous** / **Next**
   buttons, and Enter stepped on — but only while the caret was still in the

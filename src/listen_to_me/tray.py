@@ -76,6 +76,24 @@ def format_duration(seconds) -> str:
     return f"{minutes}:{secs:02d}"
 
 
+def transcribing_label(elapsed=None) -> str:
+    """The status of a take that is being transcribed, with how long that has
+    taken so far once App starts counting it.
+
+    A dictation transcribes in a second or two, but a fifteen-minute
+    system-audio take on the CPU can take minutes — and a "Transcribing…" that
+    does not change for minutes cannot be told from an app that hung. App only
+    hands a clock over once the transcription has run for a few seconds
+    (`app._PROCESSING_CLOCK_AFTER_S`), so a normal dictation keeps the plain
+    word. "for": the clock counts the work, and "Transcribing 1:12…" would read
+    as the length of the recording. One function for the tray, the floating
+    icon and the Home hero, so the three cannot word the same second three ways.
+    """
+    if elapsed is None:
+        return _STATE_LABELS["processing"]
+    return f"Transcribing for {format_duration(elapsed)}…"
+
+
 def recent_entry_label(entry: dict, max_chars: int = _RECENT_CHARS) -> str:
     """One menu line for a stored transcript: its text on a single line, elided.
 
@@ -105,8 +123,9 @@ def state_label(
     lookup per state change and saves opening the settings window.
 
     `elapsed` (seconds) puts the running take's clock into the recording
-    status, `paused` replaces the idle status while the global hotkey is
-    suspended. Both are opt-in per call rather than read from the app, so every
+    status — and, while a take is transcribed, how long that has taken
+    (`transcribing_label`) — `paused` replaces the idle status while the global
+    hotkey is suspended. Both are opt-in per call rather than read from the app, so every
     caller that only knows the state keeps the wording it always had — and so
     the label stays a pure function of its arguments.
 
@@ -139,6 +158,9 @@ def state_label(
         clock = "" if elapsed is None else f" {format_duration(elapsed)}"
         what = f"Recording {source_label(SOURCE_SYSTEM)}" if system else "Recording"
         generic = f"{what}{clock}…"
+    if state == "processing":
+        # No hotkey to name: a press now only says "still transcribing".
+        return transcribing_label(elapsed)
     if state not in ("idle", "recording"):
         return generic
     try:
@@ -595,7 +617,8 @@ class Tray:
         return getattr(self.app, "recording_source", SOURCE_MIC)
 
     def set_elapsed(self, seconds) -> None:
-        """Put the running take's clock into the status line and the tooltip.
+        """Put the running take's clock — or, while it is transcribed, how long
+        that has taken — into the status line and the tooltip.
 
         Separate from `set_state` because this runs once a second: set_state
         also rebuilds the tray icon and every menu label, none of which the

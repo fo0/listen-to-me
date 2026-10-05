@@ -56,6 +56,36 @@ _LIVE_PREVIEW_INTERVAL = 2.5  # seconds between partial transcriptions
 # How long before the maximum recording length the heads-up goes out.
 _LENGTH_WARNING_SECONDS = 30
 
+# How long a transcription runs before the tray, the floating icon and the Home
+# hero start counting it ("Transcribing for 0:05…"). A dictation is done well
+# before this and keeps the plain "Transcribing…"; a long system-audio take on
+# the CPU can take minutes, and a status that never moves reads as a hang.
+_PROCESSING_CLOCK_AFTER_S = 5
+
+
+def still_transcribing_message(elapsed) -> str:
+    """The answer to a hotkey press while the previous take is transcribed.
+
+    Names how long that has taken once it is long enough to be counted on
+    screen (`_PROCESSING_CLOCK_AFTER_S`): someone pressing the hotkey a second
+    time minutes after a long take ended is asking whether the app is still
+    working at all, and "still transcribing" alone cannot say. Never raises —
+    a value that is not a clock drops the clause, never the message.
+    """
+    import math
+
+    from .tray import format_duration
+
+    try:
+        seconds = float(elapsed)
+    except (TypeError, ValueError, OverflowError):
+        seconds = 0.0
+    if not (math.isfinite(seconds) and seconds >= _PROCESSING_CLOCK_AFTER_S):
+        return "Still transcribing the previous recording…"
+    return (
+        f"Still transcribing the previous recording ({format_duration(seconds)} so far)…"
+    )
+
 
 def length_warning_message(
     elapsed: float, max_seconds, warn_seconds: float = _LENGTH_WARNING_SECONDS
@@ -146,6 +176,35 @@ def hotkey_mode(cfg, source: str) -> str:
     section = _HOTKEY_SECTIONS.get(resolved)
     keys = cfg if section is None else cfg[section]
     return keys["hotkey_mode"]
+
+
+def too_short_message(cfg, source: str) -> str:
+    """What a take shorter than the 0.3 s floor is answered with.
+
+    In hold mode such a take is almost always a tap: the hotkey was pressed and
+    let go the way toggle mode is used, and "too short" alone does not say the
+    one thing someone new to push-to-talk is missing — the key has to stay down
+    while speaking. So hold mode names the combination and says so. The source
+    is the take's own, because the two hotkeys have their own modes. An empty
+    combination (the second source switched off, its take started from a menu)
+    means no hotkey started this take, and the hint is left out.
+
+    Never raises: it answers a finished take on the Qt main thread, and a
+    config that cannot be read costs the hint, never the message.
+    """
+    base = "Recording too short — nothing inserted."
+    try:
+        if hotkey_mode(cfg, source) != "hold":
+            return base
+        section = _HOTKEY_SECTIONS.get(known_source(source) or SOURCE_MIC)
+        keys = cfg if section is None else cfg[section]
+        phrase = _hotkey_phrase(keys["hotkey"])
+    except Exception:
+        log.debug("could not read the hotkey for the too-short message", exc_info=True)
+        return base
+    if not phrase:
+        return base
+    return f"{base} In hold mode, keep{phrase} held down while you speak."
 
 
 # --- the four helpers below take the app rather than being App methods ---
@@ -665,6 +724,7 @@ class App:
         self._poll_timer = None
         self._recording_id = 0  # invalidates live-preview workers of old takes
         self._recording_started = 0.0  # monotonic start of the running take
+        self._processing_started = 0.0  # monotonic start of its transcription
         self._length_warned = False  # one max-length heads-up per take
         # Which source the running take records from, and the length cap that
         # belongs to it: the two sources have separate caps (max_seconds vs.
@@ -831,9 +891,16 @@ class App:
         self._length_warned = True
         self.notify(message)
 
+    def _processing_elapsed(self) -> float:
+        """Seconds the running transcription has taken, 0 outside one."""
+        if self.state != STATE_PROCESSING:
+            return 0.0
+        return max(0.0, time.monotonic() - self._processing_started)
+
     def _tick_recording_clock(self) -> None:
         """Count the running take up in the tray status and on the floating
-        icon, once per second.
+        icon, once per second — and, once it has run for
+        `_PROCESSING_CLOCK_AFTER_S`, the transcription that follows it.
 
         Rides the 100 ms timer that already drains the event queue (same
         reasoning as the length warning) and only touches the two surfaces when
@@ -848,10 +915,17 @@ class App:
         looked for — and a failure on one of them must not cost the others
         their update.
         """
-        if self.state != STATE_RECORDING:
+        if self.state == STATE_RECORDING:
+            seconds = int(time.monotonic() - self._recording_started)
+        elif self.state == STATE_PROCESSING:
+            seconds = int(self._processing_elapsed())
+            if seconds < _PROCESSING_CLOCK_AFTER_S:
+                # A dictation is transcribed before this; its surfaces keep the
+                # plain "Transcribing…" instead of flashing a 0:01.
+                return
+        else:
             self._clock_seconds = -1
             return
-        seconds = int(time.monotonic() - self._recording_started)
         if seconds == self._clock_seconds:
             return
         self._clock_seconds = seconds
@@ -886,7 +960,7 @@ class App:
                 else:
                     self._finish_recording()
             else:
-                self.notify("Still transcribing the previous recording…")
+                self.notify(still_transcribing_message(self._processing_elapsed()))
         elif kind == "hotkey_press":
             source = event_source(payload)
             # That source's own mode: the two hotkeys are configured
@@ -901,7 +975,7 @@ class App:
                 elif self.state == STATE_PROCESSING:
                     # Same feedback as the toggle branch: the user is already
                     # speaking into a dead mic — silence here loses dictation.
-                    self.notify("Still transcribing the previous recording…")
+                    self.notify(still_transcribing_message(self._processing_elapsed()))
             else:
                 self._handle("toggle", source)
         elif kind == "hotkey_release":
@@ -1205,7 +1279,7 @@ class App:
             if live is not None:
                 live.hand_over()  # discarded: the worker must not type into idle
             self._set_state(STATE_IDLE)
-            self.notify("Recording too short — nothing inserted.")
+            self.notify(too_short_message(self.cfg, _take_source(self)))
             return
         self._set_state(STATE_PROCESSING)
         # The source travels with the take, not read from self in the worker:
@@ -1748,6 +1822,11 @@ class App:
         previous = self.state
         self.state = state
         self._clear_progress()
+        # Every state starts its own clock: the next tick must render even when
+        # its whole second happens to equal the one the last state showed.
+        self._clock_seconds = -1
+        if state == STATE_PROCESSING and previous != STATE_PROCESSING:
+            self._processing_started = time.monotonic()
         # Mute configured apps (Discord, …) for exactly the duration of the
         # recording. Deactivation on any exit from RECORDING (finish, cancel,
         # too-short, auto-stop) happens here — always before _process pastes,

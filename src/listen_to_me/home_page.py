@@ -46,7 +46,7 @@ from .qtutil import copy_with_feedback, elastic_label, tab_after
 # From the tray, like the floating icon does: the take clock is rendered on
 # three surfaces now and they must never disagree about the same second.
 # (tray.py imports nothing from this module — no cycle.)
-from .tray import format_duration
+from .tray import format_duration, transcribing_label
 
 log = logging.getLogger(__name__)
 
@@ -695,9 +695,19 @@ class HomePage(QWidget):
         for the whole take. Fed by App's 100 ms poll through
         SettingsWindow.set_app_elapsed.
 
-        Ignored unless a take is actually running: a tick that lands just after
-        one ended must not re-label an idle hero with a stopped counter.
+        While the take is transcribed, App feeds how long that has taken
+        instead (after a few seconds — a dictation keeps the plain word), the
+        same `transcribing_label` the tray and the floating icon show: a long
+        system-audio take can transcribe for minutes on the CPU, and a headline
+        that does not move for that long reads as a hung app.
+
+        Ignored unless a take is running or being transcribed: a tick that
+        lands just after one ended must not re-label an idle hero with a
+        stopped counter.
         """
+        if self._state == "processing":
+            self.state_label.setText(transcribing_label(seconds))
+            return
         if self._state != "recording":
             return
         self._elapsed = seconds
@@ -766,7 +776,7 @@ class HomePage(QWidget):
             self.record_button.setEnabled(True)
             self.cancel_button.setVisible(True)
         elif state == "processing":
-            self.state_label.setText("Transcribing…")
+            self.state_label.setText(transcribing_label())
             self.hint_label.setText("The text is inserted at the cursor in a moment.")
             self.record_button.setText("Transcribing…")
             self.record_button.setToolTip(_START_TOOLTIP)

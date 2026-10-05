@@ -127,7 +127,12 @@ standalone system-tray app that works in _every_ application.
   ("Idle — press Ctrl+Alt+Space to record"), so a forgotten combination is a
   hover away. While you dictate it **counts the take up** ("Recording 1:12… press
   Ctrl+Alt+Space to stop"), so you can see how long you have been speaking
-  against the maximum recording length. **Record system audio** sits next to
+  against the maximum recording length. A transcription that runs longer than
+  a few seconds — a long system-audio take on the CPU can need minutes — is
+  counted the same way ("Transcribing for 1:12…") here, on the floating icon
+  and on the Home page, so a slow one is never mistaken for a hung app; a
+  dictation is done before that and keeps the plain "Transcribing…".
+  **Record system audio** sits next to
   **Start recording**, so the second source is one click away with or without
   a hotkey of its own, and it names the source it stops
   ("Stop recording system audio (insert text)") — with two start entries in
@@ -289,7 +294,9 @@ Click the tray icon, or right-click it → **Settings…**
 
 The window footer shows the installed version next to a **GitHub** and a
 **Releases** link — the latter goes straight to the download page, which is
-what you need when a build can't update itself.
+what you need when a build can't update itself. **Apply** saves and applies
+every change and keeps the window open — `Ctrl+S` does the same from any field
+on any page — while **Save** also closes it.
 
 | Tab              | Options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -314,8 +321,8 @@ minimized and maximized like any main window.
 
 ### Push-to-talk (hold) mode notes
 
-In **hold** mode recording runs only while the hotkey is held. Two things are
-worth knowing:
+In **hold** mode recording runs only while the hotkey is held. A few things
+are worth knowing:
 
 - **Pick a modifier chord** (e.g. `Ctrl+Alt+Space`). The key picker enforces at
   least one modifier for printable keys (bare function keys like `F9` are also
@@ -333,6 +340,10 @@ worth knowing:
   many seconds are left, so a long dictation can be wrapped up instead of being
   cut off mid-sentence. (Only when the configured cap is comfortably longer
   than that warning — a deliberately short cap is not a surprise.)
+- **A quick tap records nothing.** A take shorter than 0.3 s is dropped, and in
+  hold mode the notification says why: "Recording too short — nothing
+  inserted. In hold mode, keep “Ctrl+Alt+Space” held down while you speak." —
+  pressing and releasing the key the way toggle mode works is the usual cause.
 
 Configuration is a plain JSON file (tray → _Open config folder_):
 `%APPDATA%\ListenToMe\config.json` on Windows,
