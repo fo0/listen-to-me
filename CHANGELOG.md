@@ -14,6 +14,12 @@ changes at a glance.
 
 ### Added
 
+- **A tap in hold mode says why nothing was recorded.** Pressing and releasing
+  the hotkey the way toggle mode works ends a push-to-talk take after a
+  fraction of a second, and "Recording too short — nothing inserted." left
+  someone new to hold mode guessing. In hold mode the message now names the
+  combination and adds that it has to stay down while speaking — for the
+  system-audio hotkey with its own combination and mode.
 - **`Ctrl+S` applies the settings.** Saving a value changed deep in a page meant
   reaching for the footer, while the key every editor binds to "save" did
   nothing. It now applies every change from whichever field has the focus and

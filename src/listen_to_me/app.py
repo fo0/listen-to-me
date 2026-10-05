@@ -178,6 +178,35 @@ def hotkey_mode(cfg, source: str) -> str:
     return keys["hotkey_mode"]
 
 
+def too_short_message(cfg, source: str) -> str:
+    """What a take shorter than the 0.3 s floor is answered with.
+
+    In hold mode such a take is almost always a tap: the hotkey was pressed and
+    let go the way toggle mode is used, and "too short" alone does not say the
+    one thing someone new to push-to-talk is missing — the key has to stay down
+    while speaking. So hold mode names the combination and says so. The source
+    is the take's own, because the two hotkeys have their own modes. An empty
+    combination (the second source switched off, its take started from a menu)
+    means no hotkey started this take, and the hint is left out.
+
+    Never raises: it answers a finished take on the Qt main thread, and a
+    config that cannot be read costs the hint, never the message.
+    """
+    base = "Recording too short — nothing inserted."
+    try:
+        if hotkey_mode(cfg, source) != "hold":
+            return base
+        section = _HOTKEY_SECTIONS.get(known_source(source) or SOURCE_MIC)
+        keys = cfg if section is None else cfg[section]
+        phrase = _hotkey_phrase(keys["hotkey"])
+    except Exception:
+        log.debug("could not read the hotkey for the too-short message", exc_info=True)
+        return base
+    if not phrase:
+        return base
+    return f"{base} In hold mode, keep{phrase} held down while you speak."
+
+
 # --- the four helpers below take the app rather than being App methods ---
 # `App._handle`, `App._register_hotkey` and `App._toggle_hotkey_pause` are
 # borrowed *unbound* by the headless self-test, onto stubs that define a
@@ -1250,7 +1279,7 @@ class App:
             if live is not None:
                 live.hand_over()  # discarded: the worker must not type into idle
             self._set_state(STATE_IDLE)
-            self.notify("Recording too short — nothing inserted.")
+            self.notify(too_short_message(self.cfg, _take_source(self)))
             return
         self._set_state(STATE_PROCESSING)
         # The source travels with the take, not read from self in the worker:

@@ -6943,6 +6943,41 @@ def _overlay_counts_the_recording_time():
             overlay.destroy()
 
 
+def _too_short_take_explains_hold_mode():
+    """A take under the 0.3 s floor says why in hold mode.
+
+    There it is almost always a tap — the hotkey pressed and let go the way
+    toggle mode is used — so the message names the combination and says it has
+    to stay down. Each source reads its own mode and its own hotkey; toggle
+    mode, an empty combination (no hotkey started that take) and a config that
+    cannot be read keep the plain sentence."""
+    from listen_to_me.app import too_short_message
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+
+    plain = "Recording too short — nothing inserted."
+    cfg = {
+        "hotkey": "<ctrl>+<alt>+<space>",
+        "hotkey_mode": "toggle",
+        "system_audio": {"hotkey": "<ctrl>+<alt>+m", "hotkey_mode": "hold"},
+    }
+    assert too_short_message(cfg, SOURCE_MIC) == plain
+    assert too_short_message(cfg, SOURCE_SYSTEM) == (
+        f"{plain} In hold mode, keep “Ctrl+Alt+M” held down while you speak."
+    ), too_short_message(cfg, SOURCE_SYSTEM)
+    cfg["hotkey_mode"] = "hold"
+    assert too_short_message(cfg, SOURCE_MIC) == (
+        f"{plain} In hold mode, keep “Ctrl+Alt+Space” held down while you speak."
+    ), too_short_message(cfg, SOURCE_MIC)
+    # Never the raw pynput token in the sentence.
+    assert "<ctrl>" not in too_short_message(cfg, SOURCE_MIC)
+    cfg["system_audio"]["hotkey"] = ""  # the second source is off
+    assert too_short_message(cfg, SOURCE_SYSTEM) == plain
+    # A config that cannot be read costs the hint, never the message.
+    assert too_short_message({}, SOURCE_MIC) == plain
+    assert too_short_message({"hotkey_mode": "hold"}, SOURCE_MIC) == plain
+    assert too_short_message(None, SOURCE_MIC) == plain
+
+
 def _transcription_is_counted():
     """A long transcription is counted on every surface, a short one is not.
 
@@ -11529,6 +11564,7 @@ _LIGHT_CHECKS = [
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("transcription is counted", _transcription_is_counted),
+    ("too short take explains hold mode", _too_short_take_explains_hold_mode),
     ("tray lists recent transcripts", _tray_lists_recent_transcripts),
     ("hotkey pause is visible and temporary", _hotkey_pause_is_visible_and_temporary),
     ("tray click opens the window", _tray_click_opens_the_window),

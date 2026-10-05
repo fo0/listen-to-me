@@ -321,8 +321,8 @@ minimized and maximized like any main window.
 
 ### Push-to-talk (hold) mode notes
 
-In **hold** mode recording runs only while the hotkey is held. Two things are
-worth knowing:
+In **hold** mode recording runs only while the hotkey is held. A few things
+are worth knowing:
 
 - **Pick a modifier chord** (e.g. `Ctrl+Alt+Space`). The key picker enforces at
   least one modifier for printable keys (bare function keys like `F9` are also
@@ -340,6 +340,10 @@ worth knowing:
   many seconds are left, so a long dictation can be wrapped up instead of being
   cut off mid-sentence. (Only when the configured cap is comfortably longer
   than that warning — a deliberately short cap is not a surprise.)
+- **A quick tap records nothing.** A take shorter than 0.3 s is dropped, and in
+  hold mode the notification says why: "Recording too short — nothing
+  inserted. In hold mode, keep “Ctrl+Alt+Space” held down while you speak." —
+  pressing and releasing the key the way toggle mode works is the usual cause.
 
 Configuration is a plain JSON file (tray → _Open config folder_):
 `%APPDATA%\ListenToMe\config.json` on Windows,
