@@ -925,11 +925,25 @@ class SettingsWindow(QDialog):
         close.setAutoDefault(False)
         close.clicked.connect(self.reject)
         footer.addWidget(close)
+        # Ctrl+S (Cmd+S on macOS) is the key every editor binds to "save", and
+        # until now it did nothing here — after changing one value deep in a
+        # page, saving meant reaching for the footer. It applies rather than
+        # saves: Save also closes the window, and a save keystroke that makes
+        # the window vanish is not what that key does anywhere else. Window-
+        # wide, so it works from whichever field has the focus; a modal box on
+        # top (the unsaved-changes prompt) blocks it like any other input.
+        self.apply_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Save), self)
+        self.apply_shortcut.activated.connect(self._apply)
+        apply_keys = self.apply_shortcut.key().toString(QKeySequence.SequenceFormat.NativeText)
         apply_btn = QPushButton("&Apply")
-        apply_btn.setToolTip("Save and apply all settings now — the window stays open.")
+        apply_btn.setToolTip(
+            "Save and apply all settings now — the window stays open."
+            + (f" Shortcut: {apply_keys}." if apply_keys else "")
+        )
         apply_btn.setAutoDefault(False)
         apply_btn.clicked.connect(self._apply)
         footer.addWidget(apply_btn)
+        self.apply_button = apply_btn
         save = QPushButton("&Save")
         save.setProperty("accent", True)
         save.setToolTip("Save all settings, apply them immediately and close — no restart needed.")

@@ -14,6 +14,12 @@ changes at a glance.
 
 ### Added
 
+- **`Ctrl+S` applies the settings.** Saving a value changed deep in a page meant
+  reaching for the footer, while the key every editor binds to "save" did
+  nothing. It now applies every change from whichever field has the focus and
+  keeps the window open — Apply, not Save, because a save keystroke that makes
+  the window vanish is not what that key does anywhere else. The Apply
+  button's tooltip names the shortcut.
 - **A long transcription is counted, not just announced.** A fifteen-minute
   system-audio take can transcribe for minutes on the CPU, and the tray, the
   floating icon and the Home page said "Transcribing…" the whole time — a status

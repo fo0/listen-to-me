@@ -9147,6 +9147,34 @@ def _gui_construction():
             window._footer_status_timer.stop()
             window.footer_status.setText("")
 
+        # Ctrl+S applies — it never closes the window the way Save does — and
+        # the Apply button names the key, so the shortcut can be found at all.
+        from PySide6.QtGui import QKeySequence
+
+        assert window.apply_shortcut.key() == QKeySequence(QKeySequence.StandardKey.Save)
+        apply_keys = window.apply_shortcut.key().toString(
+            QKeySequence.SequenceFormat.NativeText
+        )
+        assert apply_keys and apply_keys in window.apply_button.toolTip(), (
+            window.apply_button.toolTip()
+        )
+        # The write itself is Apply's and needs pynput to validate the hotkey,
+        # which the light checks run without — so it is stood in for, and
+        # what is asserted is that the key reaches Apply and not Save.
+        applied: list[bool] = []
+        window._apply_values = lambda: applied.append(True) or True
+        window.apply_shortcut.activated.emit()
+        try:
+            assert applied == [True], "Ctrl+S did not apply the settings"
+            assert window.footer_status.text() == "Settings applied ✓", (
+                window.footer_status.text()
+            )
+            assert window.result() == 0, "Ctrl+S closed the window like Save"
+        finally:
+            del window._apply_values
+            window._footer_status_timer.stop()
+            window.footer_status.setText("")
+
         # The at-a-glance cards are controls, not decoration: they must take
         # keyboard focus and open their settings page on Space/Enter. Enter
         # especially — an unaccepted Return would fall through to the dialog's
