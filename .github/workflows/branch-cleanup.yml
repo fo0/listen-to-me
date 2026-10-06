@@ -1,0 +1,84 @@
+# Deletes merged branches on request. Dispatched by the repo-housekeeping
+# routine (fo0/coding-mds), which cannot delete branches itself: the cloud
+# session's GitHub proxy rejects every branch delete. Identical in every repo.
+name: Branch cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      branches:
+        description: "Branches to delete, separated by spaces or newlines. Empty: every merged branch that passes the rules."
+        required: false
+        default: ""
+      dry_run:
+        description: "Report only, delete nothing"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: branch-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      BRANCHES: ${{ inputs.branches }}
+      # The rules live here, not in the inputs: a caller can narrow the list, never loosen them.
+      MIN_AGE_DAYS: "7"
+      NEVER_DELETE: "main master develop release/* hotfix/* gh-pages"
+    steps:
+      - name: Delete merged branches
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -f
+          export LC_ALL=C
+          default=$(gh api "repos/$REPO" --jq .default_branch)
+          now=$(date -u +%s)
+          gh api --paginate "repos/$REPO/branches?per_page=100" --jq '.[] | "\(.name) \(.commit.sha) \(.protected)"' > branches.txt
+          gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].head.ref' | sort -u > open.txt
+          gh api --paginate "repos/$REPO/pulls?state=closed&per_page=100" \
+            --jq '.[] | select(.merged_at != null and .head.repo.full_name == $ENV.REPO) | "\(.head.ref) \(.head.sha) \(.merged_at)"' > merged.txt
+          if [ -n "$(printf '%s' "$BRANCHES" | tr -d '[:space:]')" ]; then
+            printf '%s\n' $BRANCHES | sort -u > candidates.txt
+          else
+            cut -d' ' -f1 merged.txt | sort -u | comm -12 - <(cut -d' ' -f1 branches.txt | sort -u) > candidates.txt
+          fi
+          hits=0; skipped=0
+          skip() { echo "skipped: $1 ($2)"; skipped=$((skipped + 1)); }
+          while read -r b; do
+            [ -z "$b" ] && continue
+            if [ "$b" = "$default" ]; then skip "$b" "default branch"; continue; fi
+            never=""
+            for p in $NEVER_DELETE; do case "$b" in $p) never=1 ;; esac; done
+            if [ -n "$never" ]; then skip "$b" "never-delete list"; continue; fi
+            if grep -qxF "$b" open.txt; then skip "$b" "open PR"; continue; fi
+            info=$(awk -v b="$b" '$1 == b { print $2, $3; exit }' branches.txt)
+            if [ -z "$info" ]; then skip "$b" "not found"; continue; fi
+            tip=${info% *}; protected=${info#* }
+            if [ "$protected" = "true" ]; then skip "$b" "protected"; continue; fi
+            merged_at=$(awk -v b="$b" -v t="$tip" '$1 == b && $2 == t { print $3; exit }' merged.txt)
+            if [ -z "$merged_at" ]; then skip "$b" "tip is not the head of a merged PR"; continue; fi
+            age=$(( (now - $(date -u -d "$merged_at" +%s)) / 86400 ))
+            if [ "$age" -lt "$MIN_AGE_DAYS" ]; then skip "$b" "merged ${age}d ago"; continue; fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "would delete: $b"; hits=$((hits + 1)); continue
+            fi
+            if gh api -X DELETE "repos/$REPO/git/refs/heads/$b" > /dev/null; then
+              echo "deleted: $b"; hits=$((hits + 1))
+            else
+              skip "$b" "delete refused"
+            fi
+          done < candidates.txt
+          label=deleted; [ "$DRY_RUN" = "true" ] && label=would_delete
+          echo "summary: dry_run=$DRY_RUN $label=$hits skipped=$skipped"
+          echo "summary: dry_run=$DRY_RUN $label=$hits skipped=$skipped" >> "$GITHUB_STEP_SUMMARY"
