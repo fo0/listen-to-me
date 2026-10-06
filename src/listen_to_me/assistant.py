@@ -239,11 +239,15 @@ def refine(text: str, acfg: dict) -> str:
         # Before the import, so the reason survives a stripped-down install.
         raise AssistantError(f"{problem[1]} (Settings → Assistant)")
 
-    _warn_if_key_travels_in_clear(acfg["base_url"], str(acfg.get("api_key") or ""))
+    # Stripped exactly as config_problem() stripped it to accept it: a
+    # hand-edited " https://host/v1 " passes that check, and the raw value
+    # would then put the whitespace into the request URL.
+    base_url = str(acfg["base_url"]).strip()
+    _warn_if_key_travels_in_clear(base_url, str(acfg.get("api_key") or ""))
 
     import requests
 
-    url = acfg["base_url"].rstrip("/") + "/chat/completions"
+    url = base_url.rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json"}
     if acfg.get("api_key"):
         headers["Authorization"] = f"Bearer {acfg['api_key']}"

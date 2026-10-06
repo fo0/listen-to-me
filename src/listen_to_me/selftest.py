@@ -4588,7 +4588,7 @@ def _config_clamps_out_of_range_values():
                 pass
 
         def _post(url, json=None, headers=None, timeout=None, verify=None, stream=None):
-            sent.append({"payload": json, "timeout": timeout, "stream": stream})
+            sent.append({"url": url, "payload": json, "timeout": timeout, "stream": stream})
             return _Response()
 
         fake = types.ModuleType("requests")
@@ -4610,6 +4610,12 @@ def _config_clamps_out_of_range_values():
             # Streamed, or neither the size cap nor the wall clock below can
             # apply — requests would have buffered the whole body already.
             assert sent[0]["stream"] is True, sent
+            # The URL is built from the value config_problem() accepted, i.e.
+            # stripped: surrounding whitespace in a hand-edited config must not
+            # end up inside the request URL.
+            assert sent[0]["url"] == "http://localhost:11434/v1/chat/completions", sent
+            assistant.refine("hello", {**acfg, "base_url": "  http://localhost:11434/v1/ \n"})
+            assert sent[-1]["url"] == "http://localhost:11434/v1/chat/completions", sent
             # A body that never stops is refused instead of parking the
             # `process` worker (and with it App.state) forever.
             body = b"x" * (assistant._MAX_RESPONSE_BYTES + 1)
