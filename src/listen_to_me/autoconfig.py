@@ -16,8 +16,9 @@ Quality first, in this order:
    the language is auto-detected) → on the CPU, int8, the German fine-tune
    for German: about as accurate as the turbo and several times faster on a
    processor.
-3. Otherwise an Intel Arc GPU that OpenVINO drives → OpenVINO with the large
-   turbo on it, int8. The German fine-tune has no OpenVINO conversion.
+3. Otherwise an Intel Arc GPU that OpenVINO drives as its "GPU" (GPU.0) →
+   OpenVINO with the large turbo on it, int8. The German fine-tune has no
+   OpenVINO conversion.
 4. Otherwise faster-whisper on the CPU: the large turbo (German: its German
    fine-tune) with 8 or more physical cores and AVX2 not known to be missing,
    else small — a large model on a weaker processor takes longer to
@@ -81,7 +82,7 @@ class Hardware:
 
     cuda: bool = False  # an NVIDIA GPU CTranslate2 can use
     openvino: bool = False  # the OpenVINO backend is installed
-    arc_gpu: bool = False  # OpenVINO sees an Intel Arc GPU
+    arc_gpu: bool = False  # OpenVINO's "GPU" (GPU.0) is an Intel Arc
     gpu_name: str = ""  # that GPU, shortened ("Intel Arc A770 Graphics")
     parakeet: bool = False  # the Parakeet backend (onnx-asr + ONNX Runtime) is installed
     physical_cores: int = 0  # 0 = unknown
@@ -134,20 +135,26 @@ def short_name(name) -> str:
 
 
 def _arc_gpu_name(devices) -> str | None:
-    """The shortened name of the first Intel Arc GPU among OpenVINO's devices
-    ("GPU", "GPU.0", "GPU.1" …), None when there is none."""
+    """The shortened name of the GPU ``openvino_device = "gpu"`` runs on, when
+    that GPU is an Intel Arc; None otherwise.
+
+    "gpu" becomes OpenVINO's "GPU", an alias for GPU.0 — listed as "GPU"
+    when it is the only one, else "GPU.0", and always the integrated GPU
+    when there is one. An Arc card enumerated behind a UHD/Iris iGPU (GPU.1)
+    is out of the config's reach, and recommending "gpu" for it would run
+    the iGPU while the reason names the card.
+    """
     if not isinstance(devices, list):
         return None
     for device in devices:
         if not isinstance(device, dict):
             continue
+        if str(device.get("device") or "").upper() not in ("GPU", "GPU.0"):
+            continue
         name = device.get("name")
-        if (
-            str(device.get("device") or "").upper().startswith("GPU")
-            and isinstance(name, str)
-            and _ARC.search(name)
-        ):
+        if isinstance(name, str) and _ARC.search(name):
             return short_name(name) or "Intel Arc graphics"
+        return None
     return None
 
 

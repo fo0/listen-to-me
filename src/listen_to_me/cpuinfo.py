@@ -290,6 +290,14 @@ def performance_cores() -> int:
     return topology[1] if topology else logical_cpus()
 
 
+def topology_known() -> bool:
+    """Whether physical_cores() and performance_cores() are the platform's
+    answer rather than the logical-processor fallback — a fine thread count,
+    but one that counts hyper-threads, so it doubles a 4-core/8-thread CPU's
+    cores in anything that judges the processor by them."""
+    return _topology() is not None
+
+
 def resolve_cpu_threads(value) -> int:
     """The thread count to run a CPU decode with, for ``cfg["cpu_threads"]``.
 

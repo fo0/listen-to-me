@@ -5481,10 +5481,12 @@ def _diagnostics_engine():
 def _hardware_probes():
     """The status-card probes never raise and degrade to honest "not found"
     answers on a machine without ctranslate2/openvino/onnx-asr (like the light
-    CI runner); the CPU probe answers with real counts; the model cache probe
+    CI runner); the CPU probe answers with real core counts or 0 (unknown),
+    never the hyper-thread count in their place; the model cache probe
     recognises a local directory as downloaded and reports the presets
     without an OpenVINO conversion as an error. The whole status dict reads
     into the recommender's Hardware on this machine."""
+    from listen_to_me import cpuinfo
     from listen_to_me.autoconfig import Hardware, hardware_from_status, recommend
     from listen_to_me.diagnostics import (
         hardware_status,
@@ -5510,11 +5512,25 @@ def _hardware_probes():
     assert set(cpu) == {
         "physical_cores", "performance_cores", "logical", "avx2", "x86", "name", "error"
     }, cpu
-    for key in ("physical_cores", "performance_cores", "logical"):
-        assert isinstance(cpu[key], int) and cpu[key] >= 1, (key, cpu)
+    assert isinstance(cpu["logical"], int) and cpu["logical"] >= 1, cpu
+    # The core counts are the platform's answer or 0 ("unknown") — never the
+    # logical-count fallback, which counts hyper-threads as cores.
+    for key in ("physical_cores", "performance_cores"):
+        assert isinstance(cpu[key], int) and cpu[key] >= 0, (key, cpu)
+    assert (cpu["physical_cores"] > 0) is cpuinfo.topology_known(), cpu
+    assert (cpu["performance_cores"] > 0) is (cpu["physical_cores"] > 0), cpu
     assert cpu["performance_cores"] <= cpu["physical_cores"] <= cpu["logical"], cpu
     assert cpu["avx2"] in (True, False, None) and cpu["x86"] in (True, False, None), cpu
     assert cpu["name"] is None or (isinstance(cpu["name"], str) and cpu["name"]), cpu
+    real_known = cpuinfo.topology_known
+    cpuinfo.topology_known = lambda: False
+    try:
+        unknown = probe_cpu()
+    finally:
+        cpuinfo.topology_known = real_known
+    assert unknown["physical_cores"] == unknown["performance_cores"] == 0, unknown
+    assert unknown["logical"] == cpuinfo.logical_cpus(), unknown
+    assert recommend(hardware_from_status({"cpu": unknown}), "ja").values["model"] == "small"
 
     with tempfile.TemporaryDirectory() as tmp:
         snap = {
@@ -5698,8 +5714,9 @@ def _engine_recommendation_matrix():
 
 def _engine_recommendation_reads_the_probe():
     """`hardware_from_status` turns a `hardware_status()` dict into the
-    recommender's Hardware: CUDA, OpenVINO and an Arc GPU among its GPU
-    devices only (not an NPU, not a UHD iGPU, not without OpenVINO itself),
+    recommender's Hardware: CUDA, OpenVINO and an Arc GPU only where
+    openvino_device "gpu" reaches it — OpenVINO's "GPU" / "GPU.0", never an
+    Arc card behind a UHD iGPU, an NPU, an Iris Xe, or without OpenVINO —
     Parakeet, the cores, AVX2 and the shortened names. A missing, malformed
     or failed probe falls back to the conservative answer — never raises,
     never invents hardware — and the CPU probes themselves answer with a
@@ -5714,7 +5731,7 @@ def _engine_recommendation_reads_the_probe():
             "devices": [
                 {"device": "CPU", "name": "Intel(R) Core(TM) Ultra 7 155H"},
                 {"device": "NPU", "name": "Intel(R) AI Boost"},
-                {"device": "GPU.0", "name": "Intel(R) UHD Graphics (iGPU)"},
+                {"device": "GPU.0", "name": "Intel(R) Arc(TM) Graphics (iGPU)"},
                 {"device": "GPU.1", "name": "Intel(R) Arc(TM) A770 Graphics (dGPU)"},
             ],
             "error": None,
@@ -5735,7 +5752,7 @@ def _engine_recommendation_reads_the_probe():
         cuda=False,
         openvino=True,
         arc_gpu=True,
-        gpu_name="Intel Arc A770 Graphics",
+        gpu_name="Intel Arc Graphics",  # GPU.0, what "gpu" runs on
         parakeet=True,
         physical_cores=16,
         performance_cores=6,
@@ -5746,8 +5763,29 @@ def _engine_recommendation_reads_the_probe():
     with_cuda = dict(status, cuda={"available": True, "count": 1, "error": None})
     assert hardware_from_status(with_cuda).cuda is True
 
-    without_arc = status["openvino"]["devices"][:3]
-    no_arc = dict(status, openvino=dict(status["openvino"], devices=without_arc))
+    def gpus(*devices):
+        return dict(status, openvino=dict(status["openvino"], devices=list(devices)))
+
+    cpu_npu = status["openvino"]["devices"][:2]
+    # "gpu" is OpenVINO's alias for GPU.0, the iGPU when there is one: an Arc
+    # card enumerated behind a UHD iGPU is out of reach, not recommended.
+    behind_igpu = gpus(
+        *cpu_npu,
+        {"device": "GPU.0", "name": "Intel(R) UHD Graphics 770 (iGPU)"},
+        {"device": "GPU.1", "name": "Intel(R) Arc(TM) A770 Graphics (dGPU)"},
+    )
+    assert hardware_from_status(behind_igpu).arc_gpu is False
+    assert hardware_from_status(behind_igpu).gpu_name == ""
+    for name, expected in (
+        ("Intel(R) Arc(TM) A770 Graphics (dGPU)", "Intel Arc A770 Graphics"),
+        ("Intel(R) Arc(TM) 140V GPU (16GB) (iGPU)", "Intel Arc 140V GPU (16GB)"),
+        ("Intel(R) Arc(TM) Graphics (iGPU)", "Intel Arc Graphics"),
+        ("Intel(R) Iris(R) Xe Graphics (iGPU)", ""),
+        ("Intel(R) UHD Graphics", ""),
+    ):
+        only = hardware_from_status(gpus(*cpu_npu, {"device": "GPU", "name": name}))
+        assert (only.arc_gpu, only.gpu_name) == (bool(expected), expected), (name, only)
+    no_arc = gpus(*cpu_npu)
     assert hardware_from_status(no_arc).arc_gpu is False
     assert hardware_from_status(no_arc).gpu_name == ""
     arc_named_cpu = dict(
@@ -5778,10 +5816,10 @@ def _engine_recommendation_reads_the_probe():
     assert hardware_from_status(mangled) == Hardware(openvino=True), hardware_from_status(mangled)
     lopsided = {"cpu": {"physical_cores": 4, "performance_cores": 12}}
     assert hardware_from_status(lopsided).performance_cores == 4
-    failed = {
+    failed = {  # probe_cpu's answer when a probe raised
         "cpu": {
-            "physical_cores": 1,
-            "performance_cores": 1,
+            "physical_cores": 0,
+            "performance_cores": 0,
             "logical": 1,
             "avx2": None,
             "x86": None,

@@ -112,15 +112,17 @@ def probe_cpu() -> dict:
     Returns ``{"physical_cores": int, "performance_cores": int, "logical":
     int, "avx2": bool | None, "x86": bool | None, "name": str | None,
     "error": str | None}`` — the cpuinfo probes, which answer in-process and
-    degrade on their own. Never raises: should one fail anyway, the counts
-    stay at 1 and avx2/name at None ("unknown"), the answers that recommend
-    the lightest engine.
+    degrade on their own. The core counts are 0 ("unknown") when the
+    platform could not be asked: cpuinfo's logical-processor fallback counts
+    hyper-threads and would overstate the processor. Never raises: should a
+    probe fail anyway, the core counts stay at 0 and avx2/name at None, the
+    answers that recommend the lightest engine.
     """
     from . import cpuinfo
 
     result = {
-        "physical_cores": 1,
-        "performance_cores": 1,
+        "physical_cores": 0,
+        "performance_cores": 0,
         "logical": 1,
         "avx2": None,
         "x86": None,
@@ -129,8 +131,9 @@ def probe_cpu() -> dict:
     }
     try:
         result["logical"] = cpuinfo.logical_cpus()
-        result["physical_cores"] = cpuinfo.physical_cores()
-        result["performance_cores"] = cpuinfo.performance_cores()
+        if cpuinfo.topology_known():
+            result["physical_cores"] = cpuinfo.physical_cores()
+            result["performance_cores"] = cpuinfo.performance_cores()
         result["avx2"] = cpuinfo.has_avx2()
         result["x86"] = cpuinfo.is_x86()
         result["name"] = cpuinfo.cpu_name()
