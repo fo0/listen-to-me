@@ -85,6 +85,61 @@ def probe_openvino() -> dict:
     return {"installed": True, "devices": devices, "error": error}
 
 
+def probe_parakeet() -> dict:
+    """Whether the optional Parakeet backend is installed: onnx-asr plus the
+    ONNX Runtime it runs on (an extra of onnx-asr, so either can be missing).
+
+    Returns ``{"installed": bool, "error": str | None}``. Asks the import
+    system whether the modules are there (``find_spec``) instead of importing
+    them — onnxruntime takes seconds to load, and loading it is the backend's
+    job at the first recording. Never raises.
+    """
+    import importlib.util
+
+    try:
+        missing = [
+            name for name in ("onnx_asr", "onnxruntime") if importlib.util.find_spec(name) is None
+        ]
+    except Exception as exc:  # a broken half-install can raise from find_spec
+        log.debug("Parakeet probe failed", exc_info=True)
+        return {"installed": False, "error": str(exc)}
+    return {"installed": not missing, "error": None}
+
+
+def probe_cpu() -> dict:
+    """What the processor offers, for the engine recommendation.
+
+    Returns ``{"physical_cores": int, "performance_cores": int, "logical":
+    int, "avx2": bool | None, "x86": bool | None, "name": str | None,
+    "error": str | None}`` — the cpuinfo probes, which answer in-process and
+    degrade on their own. Never raises: should one fail anyway, the counts
+    stay at 1 and avx2/name at None ("unknown"), the answers that recommend
+    the lightest engine.
+    """
+    from . import cpuinfo
+
+    result = {
+        "physical_cores": 1,
+        "performance_cores": 1,
+        "logical": 1,
+        "avx2": None,
+        "x86": None,
+        "name": None,
+        "error": None,
+    }
+    try:
+        result["logical"] = cpuinfo.logical_cpus()
+        result["physical_cores"] = cpuinfo.physical_cores()
+        result["performance_cores"] = cpuinfo.performance_cores()
+        result["avx2"] = cpuinfo.has_avx2()
+        result["x86"] = cpuinfo.is_x86()
+        result["name"] = cpuinfo.cpu_name()
+    except Exception as exc:
+        log.debug("CPU probe failed", exc_info=True)
+        result["error"] = str(exc)
+    return result
+
+
 def model_cache_status(snapshot: dict) -> dict:
     """Whether the model the snapshot describes is already on disk (so loading
     it won't download). Disk-only, never touches the network, never raises.
@@ -123,10 +178,14 @@ def model_cache_status(snapshot: dict) -> dict:
 
 def hardware_status(snapshot: dict) -> dict:
     """Everything the Settings status card shows, in one worker-thread call:
-    CUDA availability, OpenVINO install/devices and the model cache state."""
+    CUDA availability, OpenVINO install/devices and the model cache state —
+    plus the CPU and whether the Parakeet backend is installed, which with
+    the first two is what ``autoconfig.hardware_from_status`` reads."""
     return {
         "cuda": probe_cuda(),
         "openvino": probe_openvino(),
+        "parakeet": probe_parakeet(),
+        "cpu": probe_cpu(),
         "model": model_cache_status(snapshot),
     }
 

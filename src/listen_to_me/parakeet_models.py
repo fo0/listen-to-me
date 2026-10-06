@@ -51,6 +51,18 @@ class ParakeetModel:
 
 DEFAULT_MODEL = "parakeet-tdt-0.6b-v3"
 
+# The 25 European languages Parakeet TDT 0.6b v3 transcribes, as Whisper
+# language codes — the list on NVIDIA's model card
+# (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3). Any other language it
+# does not understand at all: the recommendation (autoconfig) offers Parakeet
+# only for these, or for auto-detection.
+V3_LANGUAGES = frozenset(
+    {
+        "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it",
+        "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv", "ru", "uk",
+    }
+)
+
 # Keyed by config value; the dropdown's notes live in choices.PARAKEET_MODELS.
 MODELS = {
     model.id: model
