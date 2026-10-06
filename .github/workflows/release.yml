@@ -98,7 +98,7 @@ jobs:
           NOW="$(date -u +'%Y-%m-%d %H:%M')"
           DATE="${NOW% *}"
           TIME="${NOW#* }"
-          TAG="v${DATE//-/.}.${{ github.run_number }}"
+          TAG="v${DATE//-/.}.$GITHUB_RUN_NUMBER"
           echo "date=$DATE" >> "$GITHUB_OUTPUT"
           echo "datetime=$NOW UTC" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -374,7 +374,11 @@ jobs:
 
       - name: Rename release asset
         shell: bash
-        run: cp "dist/ListenToMe.exe" "dist/${{ steps.meta.outputs.asset }}"
+        # Through env, like TAG above: an expression expanded into the script
+        # text becomes shell code, an environment variable stays data.
+        run: cp "dist/ListenToMe.exe" "dist/$ASSET"
+        env:
+          ASSET: ${{ steps.meta.outputs.asset }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -401,7 +405,7 @@ jobs:
           DELIM="CHANGELOG_EOF_${RANDOM}${RANDOM}${RANDOM}_$(date +%s)"
           {
             echo "body<<$DELIM"
-            echo "Portable single-file Windows build — download \`${{ steps.meta.outputs.asset }}\` below and run it."
+            echo "Portable single-file Windows build — download \`$ASSET\` below and run it."
             echo "The app lives in the system tray; no installation required."
             echo ""
             echo "> Windows SmartScreen may warn because the binary is not code-signed:"
@@ -412,6 +416,8 @@ jobs:
             echo ""
             echo "$DELIM"
           } >> "$GITHUB_OUTPUT"
+        env:
+          ASSET: ${{ steps.meta.outputs.asset }}
 
       - name: Create release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
