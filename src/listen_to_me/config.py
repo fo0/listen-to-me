@@ -249,10 +249,9 @@ DEFAULTS: dict = {
     # (default), 1 = greedy — roughly 1.5-2x faster at slightly lower accuracy.
     "beam_size": 5,
     # CPU threads faster-whisper decodes with when it runs on the CPU (ignored
-    # on CUDA). 0 = automatic: the performance cores, at most 8 — CTranslate2's
-    # own default counts every logical processor, hyper-threads and slow
-    # efficiency cores included. Held to 1-64 and to the logical processor
-    # count at the point of use (cpuinfo.resolve_cpu_threads).
+    # on CUDA). 0 = automatic: the performance cores, at least 4 (CTranslate2's
+    # fixed default, which ignores the core count) and at most 8. Held to 1-64 and to the logical
+    # processor count at the point of use (cpuinfo.resolve_cpu_threads).
     "cpu_threads": 0,
     # Keep a local history of transcribed text (never the audio) so a lost
     # transcript can be recovered from Settings → History. Stored in

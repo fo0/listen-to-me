@@ -1530,9 +1530,9 @@ class SettingsWindow(QDialog):
         )
         self.cpu_threads_spin.setToolTip(
             "How many CPU threads faster-whisper transcribes with when it runs "
-            "on the CPU. 0 = automatic: uses the performance cores (at most 8) — "
-            "hyper-threads and the slower efficiency cores of a hybrid CPU only "
-            "hold a transcription up. Ignored on an NVIDIA GPU."
+            "on the CPU. 0 = automatic: uses the performance cores, at least 4 "
+            "and at most 8 — hyper-threads and the slower efficiency cores of a "
+            "hybrid CPU add little. Ignored on an NVIDIA GPU."
         )
         form.addRow("CPU threads:", self.cpu_threads_spin)
 
@@ -5541,10 +5541,11 @@ class SettingsWindow(QDialog):
         form.setRowVisible(self.ov_precision_combo, openvino)
         form.setRowVisible(self.pk_model_combo, parakeet)
         form.setRowVisible(self.pk_quant_combo, parakeet)
-        # Parakeet is a single fixed model that always auto-detects the language
-        # and takes no prompt — none of these are sent to it. Grey them out
-        # instead of leaving fields that silently do nothing (the Home page
-        # already reports "Auto-detect" for this backend). Values are kept.
+        # Parakeet runs its own models (the "Parakeet model" row), which either
+        # auto-detect the language or know only one, and takes no prompt —
+        # none of these are sent to it. Grey them out instead of leaving
+        # fields that silently do nothing (the Home page names the language
+        # the Parakeet model uses instead). Values are kept.
         self.model_combo.setEnabled(not parakeet)
         self.language_combo.setEnabled(not parakeet)
         self.initial_prompt_edit.setEnabled(not parakeet)

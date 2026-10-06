@@ -5414,7 +5414,8 @@ def _cpu_threads_resolution():
 
     auto = resolve_cpu_threads(0)
     assert 1 <= auto <= 8 and auto <= logical_cpus(), auto
-    assert auto == min(performance, 8, logical_cpus())
+    # Never below CTranslate2's old default of 4 (or the physical cores).
+    assert auto == min(max(performance, min(4, physical)), 8, logical_cpus())
     assert resolve_cpu_threads(3) == min(3, logical_cpus())
     assert resolve_cpu_threads("2") == min(2, logical_cpus())  # a quoted hand-edit
     assert resolve_cpu_threads(10**9) == min(logical_cpus(), cpuinfo.MAX_CPU_THREADS)

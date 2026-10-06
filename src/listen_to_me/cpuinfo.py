@@ -2,13 +2,15 @@
 
 The app's one place for questions about the processor itself — today the
 thread count faster-whisper decodes with (``cfg["cpu_threads"]``), later the
-hardware probe that recommends an engine. CTranslate2's own default is one
-thread per *logical* processor the OS reports, which is the wrong number for a
-dictation app twice over: hyper-threads share one core's execution units, so
-counting them adds threads that only contend with each other, and on a hybrid
-CPU (Intel 12th gen and later, Apple Silicon) the efficiency cores are several
-times slower than the performance cores — a decode split evenly across both
-waits for its slowest share. The performance cores are the useful number.
+hardware probe that recommends an engine. faster-whisper's ``cpu_threads=0``
+leaves CTranslate2 at its fixed default of 4 threads, whatever the machine:
+too few for a desktop CPU with more cores than that, and blind to what the
+cores are. The logical processor count would be no better: hyper-threads
+share one core's execution units, so counting them adds threads that only
+contend with each other, and on a hybrid CPU (Intel 12th gen and later, Apple
+Silicon) the efficiency cores are several times slower than the performance
+cores — a decode split evenly across both waits for its slowest share. The
+performance cores are the useful number.
 
 Everything is answered in-process — ``GetLogicalProcessorInformationEx`` via
 ctypes on Windows, sysfs on Linux, ``sysctlbyname`` via ctypes on macOS —
@@ -41,6 +43,8 @@ MAX_CPU_THREADS = 64
 # before this (memory bandwidth, not arithmetic, is the limit beyond it), and
 # the rest of the machine — the app being dictated into — keeps some cores.
 _AUTO_MAX_THREADS = 8
+# CTranslate2's own default (intra_threads=0 → min(4, logical processors)).
+_AUTO_MIN_THREADS = 4
 
 # LOGICAL_PROCESSOR_RELATIONSHIP.RelationProcessorCore: one record per core.
 _RELATION_PROCESSOR_CORE = 0
@@ -255,8 +259,12 @@ def resolve_cpu_threads(value) -> int:
 
     0 — and anything that is not a positive whole number (a negative value, a
     string that is not one, a bool) — means automatic: the performance cores,
-    held to 1–8. A positive number is used as configured, held to the logical
-    processors there are and to MAX_CPU_THREADS. Never raises.
+    held to 1–8, but never fewer than the 4 CTranslate2 used before (or the
+    physical cores, when there are fewer). The floor is for the common
+    business laptop with 2 P-cores next to 8 E-cores (the U-series): P-cores
+    alone would halve the threads it ran with, unmeasured. A positive number
+    is used as configured, held to the logical processors there are and to
+    MAX_CPU_THREADS. Never raises.
     """
     count = 0
     if not isinstance(value, bool):
@@ -265,5 +273,6 @@ def resolve_cpu_threads(value) -> int:
         except (TypeError, ValueError, OverflowError):
             count = 0
     if count <= 0:
-        count = min(performance_cores(), _AUTO_MAX_THREADS)
+        floor = min(_AUTO_MIN_THREADS, physical_cores())
+        count = min(max(performance_cores(), floor), _AUTO_MAX_THREADS)
     return max(1, min(count, logical_cpus(), MAX_CPU_THREADS))
