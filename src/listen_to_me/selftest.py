@@ -8909,6 +8909,209 @@ def _settings_engine_offers_the_parakeet_model_and_cpu_threads():
         clamped.force_close()
 
 
+def _settings_engine_auto_configures_for_this_pc():
+    """Settings → Engine → "Auto-configure for this PC" (#286 step 3). The
+    button sits in the status card and says in its tooltip that it saves
+    nothing. It recommends for the language selected in the window, not the
+    saved one, and compares with the values entered there; the question lists
+    every changed field by its dropdown wording, and a yes fills the fields
+    in as a pick by hand would — the backend first, so the Parakeet rows show
+    and the model list is re-listed — while `cfg` stays untouched and the
+    language stays as it was. A setup that already matches asks nothing and
+    says so; a value no dropdown lists is reported, never added. Pressed
+    without a probe result, the probe runs on its worker thread (never here)
+    and the flow continues when it lands; pressed again, that result is
+    reused instead of probing twice."""
+    import threading
+    import time
+
+    from listen_to_me import diagnostics
+    from listen_to_me.autoconfig import (
+        Recommendation,
+        changes,
+        describe_changes,
+        hardware_from_status,
+        model_downloaded,
+        recommend,
+    )
+    from listen_to_me.choices import (
+        PARAKEET_MODELS,
+        PARAKEET_QUANTIZATIONS,
+        choice_label,
+        language_label,
+        model_label,
+    )
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    def status(*, cuda: bool) -> dict:
+        # A fresh dict per call: the probe worker adds "backend"/"snapshot".
+        return {
+            "cuda": {"available": cuda, "count": int(cuda), "error": None},
+            "openvino": {"installed": False, "devices": [], "error": None},
+            "parakeet": {"installed": True, "error": None},
+            "cpu": {
+                "physical_cores": 8,
+                "performance_cores": 8,
+                "logical": 16,
+                "avx2": True,
+                "x86": True,
+                "name": "Test CPU",
+                "error": None,
+            },
+            "model": {"target": "small", "cached": False, "error": None},
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+        try:
+            button = window.autoconfig_button
+            assert window.stack.widget(window._engine_index).isAncestorOf(button)
+            assert button.text() == "Auto-configure for this PC"
+            tip = button.toolTip()
+            assert "most accurate engine setup" in tip, tip
+            assert "nothing is saved until you press Apply or Save" in tip, tip
+
+            asked: list = []
+            answer = [False]
+
+            def confirm(text, details):
+                asked.append((text, details))
+                return answer[0]
+
+            window._confirm_autoconfig = confirm
+            # Unsaved edits are what it weighs and compares with: German
+            # picked on the page while the saved language is "auto", and fp32
+            # entered for the Parakeet precision the saved config has at int8.
+            window.language_combo.setCurrentText(language_label("de"))
+            window.pk_quant_combo.setCurrentText(choice_label(PARAKEET_QUANTIZATIONS, "fp32"))
+            keys = ("backend", "device", "model", "parakeet_model", "parakeet_quantization")
+            saved = {key: stub.cfg[key] for key in keys + ("language",)}
+
+            # Declined: the question names all four changes, nothing moves.
+            rec = window._offer_recommendation(status(cuda=False))
+            assert rec.values["backend"] == "parakeet", rec
+            assert len(asked) == 1, asked
+            headline, details = asked[0]
+            for line in (
+                "Backend: faster-whisper → Parakeet",
+                "Parakeet model: parakeet-tdt-0.6b-v3 → parakeet-primeline-de",
+                "Precision: fp32 → int8",
+                "Device: auto → cpu",
+            ):
+                assert f"• {line}" in details, (line, details)
+            assert rec.summary in headline and rec.reason in details, (headline, details)
+            assert "Downloads about 0.7 GB on first use." in details, details
+            assert window._selected_backend() == "faster-whisper"
+            assert window.autoconfig_status.text() == ""
+
+            # Accepted: filled in like a pick by hand, saved nowhere.
+            answer[0] = True
+            window._offer_recommendation(status(cuda=False))
+            german = choice_label(PARAKEET_MODELS, "parakeet-primeline-de")
+            assert window._selected_backend() == "parakeet"
+            assert window.pk_model_combo.currentText() == german
+            int8 = choice_label(PARAKEET_QUANTIZATIONS, "int8")
+            assert window.pk_quant_combo.currentText() == int8
+            assert window.device_combo.currentText() == "cpu"
+            assert window._engine_form.isRowVisible(window.pk_model_combo)
+            assert window._selected_language() == "de"
+            assert "press Apply or Save" in window.autoconfig_status.text()
+            assert {key: stub.cfg[key] for key in saved} == saved, "auto-configure saved"
+            values = window._collect()
+            assert values["backend"] == "parakeet", values
+            assert values["parakeet_model"] == "parakeet-primeline-de", values
+            assert (values["parakeet_quantization"], values["device"]) == ("int8", "cpu")
+            assert values["language"] == "de" and values != window._saved_snapshot
+
+            # NVIDIA + English: back to faster-whisper, its model re-listed.
+            asked.clear()
+            window.language_combo.setCurrentText(language_label("en"))
+            window._offer_recommendation(status(cuda=True))
+            assert asked and "• Backend: Parakeet → faster-whisper" in asked[0][1], asked
+            assert window._selected_backend() == "faster-whisper"
+            assert window.device_combo.currentText() == "cuda"
+            assert window.compute_combo.currentText() == "auto"
+            assert window.model_combo.currentText() == model_label("large-v3-turbo")
+            assert window._collect()["model"] == "large-v3-turbo"
+            assert window.model_combo.isEnabled()
+            assert window._selected_language() == "en"
+
+            # Already set up: no question, no change lines, the info line.
+            asked.clear()
+            rec = window._offer_recommendation(status(cuda=True))
+            assert not asked, asked
+            assert describe_changes(changes(rec, window._collect())) == []
+            assert window.autoconfig_status.text() == (
+                f"This PC is already set up for the recommended engine: {rec.summary}."
+            )
+
+            # A value its dropdown does not list is reported, never added.
+            bogus = Recommendation(
+                values={"backend": "faster-whisper", "device": "tpu"},
+                reason="",
+                summary="",
+                download="",
+            )
+            assert window._apply_recommendation(bogus) == ["Device “tpu”"]
+            assert window.device_combo.findText("tpu") < 0
+            assert "Could not set Device “tpu”" in window.autoconfig_status.text()
+
+            # "Already downloaded" only for the very setup the probe checked.
+            pk = recommend(hardware_from_status(status(cuda=False)), "de")
+            probed = dict(
+                status(cuda=False),
+                model={"target": "x", "cached": True, "error": None},
+                snapshot={
+                    "backend": "parakeet",
+                    "parakeet_model": "parakeet-primeline-de",
+                    "parakeet_quantization": "int8",
+                    "model_dir": None,
+                },
+            )
+            assert model_downloaded(pk, probed) is True
+            assert model_downloaded(pk, probed, "/elsewhere") is False
+            other = dict(probed, snapshot=dict(probed["snapshot"], parakeet_quantization="fp32"))
+            assert model_downloaded(pk, other) is False
+            assert model_downloaded(pk, status(cuda=False)) is False  # no snapshot
+
+            # The button: no result yet → the probe runs on its worker
+            # thread, the button waits disabled, the question follows.
+            on_worker: list = []
+            real_probe = diagnostics.hardware_status
+
+            def probe(_snapshot):
+                on_worker.append(threading.current_thread() is not threading.main_thread())
+                return status(cuda=False)
+
+            diagnostics.hardware_status = probe
+            try:
+                window._hw_last = None
+                asked.clear()
+                answer[0] = False
+                button.click()
+                assert not button.isEnabled()
+                assert window.autoconfig_status.text() == "Checking this PC…"
+                deadline = time.monotonic() + 10
+                while window._hw_busy and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(0.01)
+                assert on_worker == [True], on_worker
+                assert len(asked) == 1 and button.isEnabled(), asked
+                assert window._hw_last is not None and "snapshot" in window._hw_last
+                # Pressed again: that result is reused, nothing probes.
+                button.click()
+                assert on_worker == [True] and len(asked) == 2, (on_worker, asked)
+            finally:
+                diagnostics.hardware_status = real_probe
+        finally:
+            window.force_close()
+
+
 def _settings_window_edits_the_new_options():
     """The Settings surfaces of #190/#191: the filler phrase list on the Engine
     page, the "System audio" card on the Audio page, and the second assistant
@@ -12236,6 +12439,8 @@ _LIGHT_CHECKS = [
     ("settings window edits the new options", _settings_window_edits_the_new_options),
     ("settings engine offers the Parakeet model and CPU threads",
      _settings_engine_offers_the_parakeet_model_and_cpu_threads),
+    ("settings engine auto-configures for this PC",
+     _settings_engine_auto_configures_for_this_pc),
     ("system audio picker reads as an output picker",
      _system_audio_picker_reads_as_an_output_picker),
     ("system audio hint names the outputs it cannot record",
