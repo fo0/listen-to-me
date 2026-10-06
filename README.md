@@ -481,7 +481,8 @@ in this order:
 3. **OpenVINO installed and an Intel Arc as its default GPU** → OpenVINO
    with `large-v3-turbo` on that GPU at int8.
 4. **Otherwise** → faster-whisper on the CPU with `large-v3-turbo` (German: the
-   German fine-tune) on 8 or more physical cores with AVX2, else `small`.
+   German fine-tune) on 8 or more physical cores, unless the processor reports
+   no AVX2; else `small`.
 
 Before anything changes it shows the recommendation, why it was chosen, the
 approximate first-use download and every field it would change, and asks.
@@ -900,9 +901,14 @@ Set **Settings → Engine → Backend = Parakeet** to swap Whisper for NVIDIA's
 than even `large-v3-turbo`, with punctuation and capitalization built in. The
 long "processing" pause after a recording all but disappears, even on a CPU.
 
-- The spoken language is **detected automatically** — the Whisper model
-  preset, language choice, initial prompt, beam size and VAD options don't
-  apply to this engine (live typing needs faster-whisper and stays off too).
+| Parakeet model (`parakeet_model`)  | Languages                  | Download (int8 / fp32) | Notes                                                                                |
+| ---------------------------------- | -------------------------- | ---------------------- | ------------------------------------------------------------------------------------ |
+| `parakeet-tdt-0.6b-v3` _(default)_ | 25 European, auto-detected | ~640 MB / ~2.4 GB      | NVIDIA's original                                                                    |
+| `parakeet-primeline-de`            | **German only**            | ~640 MB / ~2.4 GB      | primeline's German fine-tune: lower German error rates at the same speed (CC-BY-4.0) |
+
+- The spoken language is **detected automatically** (the German model only
+  knows German) — the Whisper model preset, language choice, initial prompt,
+  beam size and VAD options don't apply to this engine (live typing needs faster-whisper and stays off too).
   The settings that don't apply are greyed out while this backend is selected,
   so it stays visible which ones are ignored; your values are kept.
 - **German fine-tune:** **Settings → Engine → Parakeet model =

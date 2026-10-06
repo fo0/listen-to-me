@@ -123,12 +123,12 @@ flowchart TD
     Settings -->|"loopback candidates for the device list"| SysAudio
     Settings -->|"input profiles + list_output_devices() for the two-group picker and its hint"| Recorder
     Settings -->|"phrase-list status while it is edited"| Fillers
-    Settings -->|"model download / transcription test"| Diag
+    Settings -->|"model download / transcription test / hardware_status() on a worker thread"| Diag
     MicTest -->|"mic_test() on its worker, results via its own signal bridge"| Diag
     OnboardingEngine -->|"hardware_status() once, on a worker thread"| Diag
     OnboardingEngine -->|"recommend() for the language of the page before"| AutoConfig
     OnboardingEngine -->|"download_line() / model_downloaded()"| AutoConfigText
-    Settings -->|"Auto-configure: recommend() → confirm → fill the Engine fields (unsaved)"| AutoConfig
+    Settings -->|"Auto-configure: hardware_from_status(probe) → recommend() → confirm → fill the Engine fields (unsaved)"| AutoConfig
     Settings -->|"confirm_message() / describe_changes() for the question"| AutoConfigText
     AutoConfigText -->|"Recommendation"| AutoConfig
     Diag -->|"test clip"| Recorder
@@ -143,7 +143,6 @@ flowchart TD
     TranscriberPK -->|"first-use download (ONNX, German model at a pinned revision)"| HF
     Transcriber -->|"cpu_threads on a CPU load"| CpuInfo
     Diag -->|"probe_cpu: cores, AVX2, name"| CpuInfo
-    Diag -->|"hardware_status() dict → hardware_from_status() → recommend()"| AutoConfig
     Assistant -->|"chat/completions"| LLM
     Updater -->|"check/download"| GH
     Updater -->|"verify="| Net

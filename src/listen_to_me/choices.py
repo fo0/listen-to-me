@@ -138,7 +138,8 @@ OPENVINO_DEVICES = ["auto", "cpu", "gpu", "npu"]
 
 # (config value, note in parentheses), MODEL_CHOICES' shape — these dropdowns
 # pick a download too. OpenVINO converts whichever preset is selected, so only
-# the ratio holds; Parakeet is one model, hence absolute sizes.
+# the ratio holds; the Parakeet models share one 0.6B architecture (see
+# PARAKEET_MODELS below), hence absolute sizes.
 OPENVINO_PRECISIONS = [
     ("int8", "recommended — smallest full-accuracy download, about half of fp16"),
     ("fp16", "most accurate — the largest download, about twice int8"),
