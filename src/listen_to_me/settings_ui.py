@@ -108,6 +108,7 @@ from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
 from .keymap import hotkey_label
+from .mic_test_widget import APP_BUSY_TEXT, CANCELLED, MicTestWidget, app_busy
 # The transcript-bubble anchor's vocabulary lives with the placement that
 # reads it, so the dropdown can never offer a value overlay.py cannot place
 # (#196). Importable up here for the same reason `system_audio` is: overlay.py
@@ -181,19 +182,17 @@ class _AssistantSignals(QObject):
 
 
 class _DiagSignals(QObject):
-    """Marshals diagnostics results (model download, microphone/transcription
-    test, hotkey test, hardware probe) from worker threads back to the Qt main
-    thread. The leading int is the diagnostic generation the worker was started
-    with — a handler ignores the payload when it no longer matches, so a worker
-    detached by Cancel (or superseded by a newer run) can't touch the UI."""
+    """Marshals diagnostics results (model download, transcription test,
+    hotkey test, hardware probe) from worker threads back to the Qt main
+    thread; the microphone test brings its own (mic_test_widget). The leading
+    int is the diagnostic generation the worker was started with — a handler
+    ignores the payload when it no longer matches, so a worker detached by
+    Cancel (or superseded by a newer run) can't touch the UI."""
 
     model_status = Signal(int, str)
     model_progress = Signal(int, int, int)  # generation, bytes done, bytes total
     model_done = Signal(int, str)
     model_failed = Signal(int, str)
-    mic_level = Signal(int, float)  # recent peak 0.0-1.0 while the mic test records
-    mic_done = Signal(int, object)  # diagnostics.clip_stats() dict
-    mic_failed = Signal(int, str)
     tx_status = Signal(int, str)
     tx_level = Signal(int, float)
     tx_done = Signal(int, str)  # recognized text ("" = nothing understood)
@@ -735,9 +734,6 @@ class SettingsWindow(QDialog):
         self._dsig.model_progress.connect(self._on_model_progress)
         self._dsig.model_done.connect(self._on_model_done)
         self._dsig.model_failed.connect(self._on_model_failed)
-        self._dsig.mic_level.connect(self._on_mic_level)
-        self._dsig.mic_done.connect(self._on_mic_done)
-        self._dsig.mic_failed.connect(self._on_mic_failed)
         self._dsig.tx_status.connect(self._on_diag_status)
         self._dsig.tx_level.connect(self._on_tx_level)
         self._dsig.tx_done.connect(self._on_tx_done)
@@ -2072,33 +2068,29 @@ class SettingsWindow(QDialog):
         )
         form.addRow("Max recording length (s):", self.max_seconds_spin)
 
-        mic_test = QWidget()
-        mh = QHBoxLayout(mic_test)
-        mh.setContentsMargins(0, 0, 0, 0)
-        self.mic_test_button = QPushButton("Test microphone (3 s)")
-        self.mic_test_button.setAutoDefault(False)
-        self.mic_test_button.setToolTip(
-            "Record three seconds from the selected device and check that a "
-            "signal arrives. Speak normally — the level bar should move."
+        # The same widget as the first-run wizard's Microphone page. It owns
+        # its worker, signals, generation and cancel event; this window folds
+        # it into its one-diagnostic-at-a-time rule through can_start and the
+        # started/finished signals, and runs the cool-down after a Cancel over
+        # all three start buttons itself (hence cooldown_ms=0). `_diag` is
+        # read when the worker runs, as before: a Cancel replaces the engine.
+        self.mic_test = MicTestWidget(
+            self._selected_input_device,
+            run=lambda device, on_level, is_cancelled: self._diag.mic_test(
+                device, seconds=3.0, on_level=on_level, is_cancelled=is_cancelled
+            ),
+            can_start=self._mic_test_refusal,
+            cooldown_ms=0,
         )
-        self.mic_test_button.clicked.connect(self._test_microphone)
-        mh.addWidget(self.mic_test_button)
-        self.mic_cancel_button = QPushButton("Cancel")
-        self.mic_cancel_button.setAutoDefault(False)
-        self.mic_cancel_button.setEnabled(False)
-        self.mic_cancel_button.setToolTip("Stop the running microphone test.")
-        self.mic_cancel_button.clicked.connect(self._cancel_diagnostic)
-        mh.addWidget(self.mic_cancel_button)
-        mh.addStretch(1)
-        form.addRow("", mic_test)
-        self.mic_level_bar = QProgressBar()
-        self.mic_level_bar.setRange(0, 100)
-        self.mic_level_bar.setValue(0)
-        self.mic_level_bar.setTextVisible(False)
-        self.mic_level_bar.setToolTip("Input level while the microphone test records.")
-        form.addRow("Level:", self.mic_level_bar)
-        self.mic_status = self._hint("", elastic=True, selectable=True)
-        form.addRow("", self.mic_status)
+        self.mic_test.started.connect(self._on_mic_test_started)
+        self.mic_test.finished.connect(self._on_mic_test_finished)
+        # The parts by their old names: the diagnostics rule and the
+        # self-test address them directly.
+        self.mic_test_button = self.mic_test.button
+        self.mic_cancel_button = self.mic_test.cancel_button
+        self.mic_level_bar = self.mic_test.level_bar
+        self.mic_status = self.mic_test.status
+        form.addRow("", self.mic_test)
         layout.addWidget(card)
 
         # Everything the second recording source needs, in one card: its
@@ -3928,21 +3920,8 @@ class SettingsWindow(QDialog):
     def _app_busy(self) -> bool:
         """Whether the app is recording or transcribing right now — the guard
         every test that borrows the microphone or the hotkey listener runs.
-
-        A hotkey press posted by the listener thread can sit in App's event
-        queue for up to one poll tick (100 ms), so App.state alone is stale:
-        hold the combo and start a test within that window and the guard would
-        pass, the test takes over, and the queued press then starts a recording
-        whose release is never delivered. Draining the queue first applies the
-        press before the state is read.
-        """
-        poll = getattr(self.app, "_poll", None)
-        if callable(poll):
-            try:
-                poll()
-            except Exception:
-                log.debug("could not drain the app event queue", exc_info=True)
-        return getattr(self.app, "state", "idle") != "idle"
+        Drains App's event queue first; why: `mic_test_widget.app_busy`."""
+        return app_busy(self.app)
 
     def _diag_snapshot(self) -> dict:
         """The UI values the transcribers read, as a plain dict — so the
@@ -4057,10 +4036,13 @@ class SettingsWindow(QDialog):
             self._diag_cancel_event.set()
         self._diag = DiagnosticsEngine()
         self._set_diag_busy(False)
+        if kind == "mic":
+            # After _set_diag_busy: the widget's finished signal then finds
+            # no microphone diagnostic left to settle (_on_mic_test_finished).
+            # A no-op when its own Cancel button brought us here.
+            self.mic_test.cancel()
         self._begin_diag_cooldown()
         if kind == "mic":
-            self.mic_level_bar.setValue(0)
-            self.mic_status.setText("Microphone test cancelled.")
             return
         self.diag_progress.setVisible(False)
         if kind == "model":
@@ -4263,61 +4245,28 @@ class SettingsWindow(QDialog):
         self.diag_status.setText(f"Transcription test failed: {message}")
         self._after_model_diagnostic()
 
-    def _test_microphone(self) -> None:
+    def _mic_test_refusal(self) -> str | None:
+        """The microphone test's can_start: None lets it start."""
         if self._diag_busy:
-            return
+            return ""  # another test owns the recorder; its button says so
         if self._app_busy():
-            self.mic_status.setText("Finish the current recording first, then run the test.")
-            return
-        device = self._selected_input_device()
-        gen, cancel = self._begin_diag("mic")
-        self.mic_level_bar.setValue(0)
-        self.mic_status.setText("Recording 3 s — speak now…")
+            return APP_BUSY_TEXT
+        return None
 
-        def work():
-            try:
-                result = self._diag.mic_test(
-                    device,
-                    seconds=3.0,
-                    on_level=lambda level: self._dsig.mic_level.emit(gen, float(level)),
-                    is_cancelled=cancel.is_set,
-                )
-                self._dsig.mic_done.emit(gen, result)
-            except Exception as exc:  # surfaced in the UI
-                log.exception("microphone test failed")
-                self._dsig.mic_failed.emit(gen, str(exc))
+    def _on_mic_test_started(self) -> None:
+        # The widget runs its own worker and cancel event; this is the busy
+        # state, the hotkey pause and the notes of the other diagnostics.
+        self._begin_diag("mic")
 
-        threading.Thread(target=work, name="diag-mic", daemon=True).start()
-
-    def _on_mic_level(self, gen: int, level: float) -> None:
-        if gen != self._diag_gen:
-            return
-        self.mic_level_bar.setValue(int(level * 100))
-
-    def _on_mic_done(self, gen: int, result: dict) -> None:
-        if gen != self._diag_gen:
-            return
-        self._set_diag_busy(False)
-        peak = int(result["peak"] * 100)
-        verdict = result["verdict"]
-        if verdict == "silent":
-            self.mic_status.setText(
-                "No signal — check that the right device is selected and the "
-                "OS allows microphone access."
-            )
-        elif verdict == "quiet":
-            self.mic_status.setText(
-                f"Signal is very quiet (peak {peak} %) — move closer to the "
-                "microphone or raise its input volume."
-            )
+    def _on_mic_test_finished(self, outcome: str) -> None:
+        if self._diag_kind != "mic":
+            return  # _cancel_diagnostic has settled it already
+        if outcome == CANCELLED:
+            # The widget's own Cancel button: the window's half of a cancel
+            # (generation, engine, cool-down) follows.
+            self._cancel_diagnostic()
         else:
-            self.mic_status.setText(f"Microphone works ✓ — peak level {peak} %.")
-
-    def _on_mic_failed(self, gen: int, message: str) -> None:
-        if gen != self._diag_gen:
-            return
-        self._set_diag_busy(False)
-        self.mic_status.setText(f"Microphone test failed: {message}")
+            self._set_diag_busy(False)
 
     def _test_hotkey(self) -> None:
         if self._hotkey_test is not None:

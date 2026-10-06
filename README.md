@@ -245,7 +245,8 @@ standalone system-tray app that works in _every_ application.
   keybind — no API or account needed — and ready-made presets bring each app's
   documented keybind along, so there is nothing to look up.
 - **First-run setup wizard** — the very first launch walks you through the
-  essentials (hotkey, language, model, backend + device, microphone, startup
+  essentials (hotkey, language, a speech engine **recommended for this PC** or
+  picked by hand, the microphone with a 3-second level test, startup
   behaviour); everything stays changeable in Settings later.
 - **Autostart with Windows** (configurable; Linux and macOS equivalents
   included). The entry survives updates: the in-app updater keeps the
@@ -287,10 +288,25 @@ is off until you set it up.
 
 ## Settings
 
-On the very first launch a short **setup wizard** collects the essentials —
-recording hotkey, spoken language, speech model, backend + device, microphone
-and startup behaviour. Everything it sets (and much more) can be changed later
-here:
+On the very first launch a short **setup wizard** collects the essentials, one
+page each:
+
+1. **Recording hotkey.**
+2. **Spoken language.**
+3. **Transcription engine** — **Recommended for this PC** is preselected: the
+   wizard checks the hardware in the background while you are on the first two
+   pages and shows the setup it picks for this computer and the language you
+   chose, with the reason and the approximate first-use download (the same
+   recommendation as [Auto-configure](#auto-configure-for-this-pc)). **Choose
+   manually** reveals backend, device, Intel device, Whisper model and — for
+   Parakeet — the Parakeet model, prefilled with the recommendation. If the
+   check fails, or is still running when you press Next, the page switches to
+   the manual fields and says so; nothing ever waits on it.
+4. **Microphone** — the input device, with the same **Test microphone (3 s)**
+   level check as Settings → Audio.
+5. **Startup behaviour.**
+
+Everything it sets (and much more) can be changed later here:
 
 Click the tray icon, or right-click it → **Settings…**
 
@@ -472,6 +488,10 @@ approximate first-use download and every field it would change, and asks.
 **Use these settings** only fills the fields in: nothing is saved until you
 press **Apply** or **Save**, and closing the window without saving discards it
 like any other edit. When the page already matches, it says so instead.
+
+The first-run setup wizard offers the same recommendation as its preselected
+**Recommended for this PC** engine choice, for the language picked on the page
+before it; there, Finish saves it together with the other choices.
 
 ### Choosing a Whisper model
 

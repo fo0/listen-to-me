@@ -106,6 +106,9 @@ it downloads, and every field it would change &mdash; and asks first.</li>
 <li><b>Use these settings</b> only fills in the fields: nothing is saved until
 you press <b>Apply</b> or <b>Save</b>, and the spoken language is never
 changed.</li>
+<li>The setup wizard of the first launch makes the same recommendation:
+<b>Recommended for this PC</b> is preselected on its engine page, and
+<b>Choose manually</b> shows the individual fields instead.</li>
 </ul>
 """,
     },

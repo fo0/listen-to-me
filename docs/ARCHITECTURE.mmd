@@ -24,6 +24,8 @@ flowchart TD
         Settings("SettingsWindow — main window: Home hub + settings pages"):::frontend
         Home("HomePage — live state, quick actions, recent transcripts"):::frontend
         Onboarding("OnboardingWizard — first-run setup"):::frontend
+        OnboardingEngine("EnginePage — wizard engine step: Recommended for this PC / Choose manually"):::frontend
+        MicTest("MicTestWidget — 3 s microphone level test (Settings + wizard)"):::frontend
         Help["help_content — Qt-free Help/Troubleshooting topics → help_html()"]:::frontend
         Theme["theme / icons / glyphs / qtutil / keymap / widgets / choices"]:::frontend
     end
@@ -79,6 +81,9 @@ flowchart TD
     App --> Settings
     App -->|"first run (no config yet)"| Onboarding
     Onboarding -->|"essential settings"| Config
+    Onboarding -->|"engine page: values() on Finish"| OnboardingEngine
+    Onboarding -->|"Microphone page"| MicTest
+    Settings -->|"Audio page"| MicTest
     Settings -->|"first page; set_app_state mirrors state"| Home
     Home -->|"post toggle/cancel"| Events
     Overlay -->|"set_recording/set_processing on state, set_progress(%) while a model downloads"| VoiceMic
@@ -118,7 +123,11 @@ flowchart TD
     Settings -->|"loopback candidates for the device list"| SysAudio
     Settings -->|"input profiles + list_output_devices() for the two-group picker and its hint"| Recorder
     Settings -->|"phrase-list status while it is edited"| Fillers
-    Settings -->|"model download / mic + transcription test"| Diag
+    Settings -->|"model download / transcription test"| Diag
+    MicTest -->|"mic_test() on its worker, results via its own signal bridge"| Diag
+    OnboardingEngine -->|"hardware_status() once, on a worker thread"| Diag
+    OnboardingEngine -->|"recommend() for the language of the page before"| AutoConfig
+    OnboardingEngine -->|"download_line() / model_downloaded()"| AutoConfigText
     Settings -->|"Auto-configure: recommend() → confirm → fill the Engine fields (unsaved)"| AutoConfig
     Settings -->|"confirm_message() / describe_changes() for the question"| AutoConfigText
     AutoConfigText -->|"Recommendation"| AutoConfig
@@ -154,6 +163,7 @@ flowchart TD
     Selftest -->|"help_html() renders every topic"| Help
     Selftest -->|"recommendation matrix: every value a dropdown member"| AutoConfig
     Selftest -->|"paints in recording / processing / download state"| VoiceMic
+    Selftest -->|"stand-in probe on a joined thread: recommended, manual, failed, pending"| OnboardingEngine
 
     click Main "src/listen_to_me/app.py"
     click Single "src/listen_to_me/singleinstance.py"
@@ -167,6 +177,8 @@ flowchart TD
     click Settings "src/listen_to_me/settings_ui.py"
     click Home "src/listen_to_me/home_page.py"
     click Onboarding "src/listen_to_me/onboarding.py"
+    click OnboardingEngine "src/listen_to_me/onboarding_engine.py"
+    click MicTest "src/listen_to_me/mic_test_widget.py"
     click Help "src/listen_to_me/help_content.py"
     click Recorder "src/listen_to_me/audio.py"
     click SysAudio "src/listen_to_me/system_audio.py"

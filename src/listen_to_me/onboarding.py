@@ -1,10 +1,19 @@
 """First-run onboarding wizard: the essential choices on the very first launch.
 
 Shown once when no config file exists yet (Config.first_run). It collects only
-the settings a new user must get right — recording hotkey, spoken language,
-speech model, transcription backend + device, microphone, and startup
-behaviour — and writes them into the config on Finish. Everything else keeps
-its default and stays editable in the settings window later.
+the settings a new user must get right and writes them into the config on
+Finish; everything else keeps its default and stays editable in the settings
+window later. The pages, in order:
+
+1. Recording hotkey.
+2. Spoken language.
+3. Transcription engine — "Recommended for this PC" (preselected: the setup
+   `autoconfig` picks for this machine's hardware probe and the language from
+   page 2) or "Choose manually" (backend, device, Intel device, Whisper model,
+   Parakeet model). Its own module: `onboarding_engine`.
+4. Microphone — the input device, with the same three-second level test as
+   Settings → Audio (`mic_test_widget`).
+5. Startup behaviour.
 """
 
 from __future__ import annotations
@@ -16,7 +25,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QPushButton,
     QVBoxLayout,
@@ -27,23 +35,15 @@ from PySide6.QtWidgets import (
 
 from . import APP_NAME
 from .choices import (
-    BACKENDS,
-    DEVICES,
     LANGUAGES,
-    OPENVINO_DEVICES,
-    backend_from_label,
-    backend_label,
     input_device_choices,
     input_device_from_label,
     language_from_label,
     language_label,
-    model_from_label,
-    model_label,
-    models_for_backend,
-    openvino_alternative,
-    openvino_supports_model,
 )
 from .hotkeys import Hotkeys
+from .mic_test_widget import APP_BUSY_TEXT, MicTestWidget, app_busy
+from .onboarding_engine import EnginePage, hint_label
 from .qtutil import busy_cursor, elastic_combo, flash_button, guard_wheel
 from .widgets import HotkeyCaptureDialog
 
@@ -63,39 +63,42 @@ class _Page(QWizardPage):
         return self._validate() if self._validate is not None else True
 
 
-def _hint(text: str) -> QLabel:
-    label = QLabel(text)
-    label.setProperty("role", "hint")
-    label.setWordWrap(True)
-    return label
-
-
 class OnboardingWizard(QWizard):
     """Modal first-run setup. On accept the chosen values are written into
     ``cfg.data`` — saving and applying is the caller's job (App), so the wizard
     stays constructible with a bare Config in the headless self-test.
 
     ``app`` is optional and used only to pause the live global hotkey while the
-    key picker is open (see _capture_hotkey); without it the wizard works
-    exactly as before, just unable to pause anything."""
+    key picker is open or the microphone test records (see
+    _pause_app_hotkeys), and to refuse that test while a take runs; without
+    it the wizard works exactly as before, just unable to pause anything.
 
-    def __init__(self, cfg, parent=None, app=None):
+    ``probe`` stands in for `diagnostics.hardware_status` on the engine page
+    (onboarding_engine) — the self-test passes one, so it never probes real
+    hardware on a thread it cannot join."""
+
+    def __init__(self, cfg, parent=None, app=None, probe=None):
         super().__init__(parent)
         self.cfg = cfg
         self._app = app
-        # The preset the OpenVINO model filter swapped out, so going back to
-        # another backend restores it (see _on_backend_changed).
-        self._model_swapped_from: str | None = None
+        self._hotkeys_paused_for_mic = False
         self.setWindowTitle(f"Welcome to {APP_NAME}")
         self.setWizardStyle(QWizard.WizardStyle.ClassicStyle)
         self.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
-        self.resize(600, 460)
+        self.resize(620, 520)
 
         self.addPage(self._build_hotkey_page())
         self.addPage(self._build_speech_page())
-        self.addPage(self._build_engine_page())
-        self.addPage(self._build_audio_page())
+        # Built after the language combo it reads; its probe starts here, so
+        # it has usually answered by the time the user arrives on the page.
+        self.engine_page = EnginePage(cfg, self._selected_language, probe=probe)
+        self.addPage(self.engine_page)
+        self._audio_page = self._build_audio_page()
+        self.addPage(self._audio_page)
         self.addPage(self._build_startup_page())
+        # Leaving the Microphone page (or closing the wizard, see done) stops
+        # a running level test — it holds the microphone.
+        self.currentIdChanged.connect(self._on_page_changed)
 
         # A stray wheel tick must not silently change a choice (same guard as
         # the settings window): combos react to the wheel only once focused.
@@ -126,12 +129,12 @@ class OnboardingWizard(QWizard):
         pick.clicked.connect(self._pick_hotkey)
         rh.addWidget(pick)
         layout.addWidget(row)
-        self._hotkey_error = _hint("")
+        self._hotkey_error = hint_label("")
         # Styled as an error, not as one more grey hint — it sits directly
         # above the explanatory hint below and is the reason Next refused.
         self._hotkey_error.setProperty("role", "error")
         layout.addWidget(self._hotkey_error)
-        layout.addWidget(_hint(
+        layout.addWidget(hint_label(
             "Pick a combination that no other application uses. The default "
             "toggle mode records between two presses; hold (push-to-talk) can "
             "be enabled later in Settings → General."
@@ -141,8 +144,8 @@ class OnboardingWizard(QWizard):
 
     def _build_speech_page(self) -> QWizardPage:
         page = _Page(
-            "Speech recognition",
-            "What you speak and which speech model transcribes it — locally, no cloud.",
+            "Spoken language",
+            "The language you dictate in — speech is recognized locally, no cloud.",
         )
         form = QFormLayout(page)
         self.language_combo = QComboBox()
@@ -152,74 +155,9 @@ class OnboardingWizard(QWizard):
             "The language you dictate in. Fixing it improves accuracy and speed over auto-detect."
         )
         form.addRow("Spoken language:", self.language_combo)
-
-        # Read-only presets only — free text typed here was once saved verbatim
-        # as the model id. Custom CTranslate2 ids live behind the explicit
-        # "Custom model id…" dialog in Settings, not in the first-run wizard.
-        self.model_combo = QComboBox()
-        # Listed for the backend chosen on the *next* page — which starts out
-        # as the saved/default one and re-lists this combo whenever it changes
-        # (see _on_backend_changed): not every preset has an OpenVINO version.
-        self._fill_model_combo(self.cfg["backend"], self.cfg["model"])
-        self.model_combo.setToolTip(
-            "Bigger = more accurate but slower and larger. small is a good start; "
-            "custom Hugging Face model ids can be set later in Settings."
-        )
-        # Long preset labels must not force the fixed-size wizard wider (see qtutil).
-        elastic_combo(self.model_combo)
-        form.addRow("Model:", self.model_combo)
-        form.addRow(_hint(
-            "The model is downloaded automatically on first use — nothing to install now."
+        form.addRow(hint_label(
+            "The next page picks the speech engine and model for this language."
         ))
-        return page
-
-    def _build_engine_page(self) -> QWizardPage:
-        page = _Page(
-            "Transcription engine",
-            "Which backend and hardware run the speech model.",
-        )
-        form = QFormLayout(page)
-        self.backend_combo = QComboBox()
-        self.backend_combo.addItems([label for _, label in BACKENDS])
-        self.backend_combo.setCurrentText(backend_label(self.cfg["backend"]))
-        self.backend_combo.setToolTip(
-            "faster-whisper accelerates on NVIDIA GPUs (CUDA); OpenVINO on Intel "
-            "GPUs and NPUs; Parakeet is a separate engine (NVIDIA Parakeet TDT) that "
-            "transcribes many times faster — the model chosen on the previous page "
-            "doesn't apply to it. Unsure? Keep faster-whisper — it also runs on any CPU."
-        )
-        form.addRow("Backend:", self.backend_combo)
-
-        self.device_combo = QComboBox()
-        self.device_combo.addItems(DEVICES)
-        self.device_combo.setCurrentText(self.cfg["device"])
-        self.device_combo.setToolTip(
-            "auto picks an NVIDIA GPU (CUDA) when available, otherwise the CPU."
-        )
-        form.addRow("Device:", self.device_combo)
-
-        self.ov_device_combo = QComboBox()
-        self.ov_device_combo.addItems(OPENVINO_DEVICES)
-        self.ov_device_combo.setCurrentText(self.cfg["openvino_device"])
-        self.ov_device_combo.setToolTip(
-            "Which Intel device runs the model. auto prefers the GPU, then the NPU, then the CPU."
-        )
-        form.addRow("Intel device:", self.ov_device_combo)
-
-        form.addRow(_hint(
-            "auto is the safe choice — the app falls back to the CPU whenever "
-            "the selected hardware is unavailable. Precision and other engine "
-            "details live in Settings → Engine."
-        ))
-        # Filled by _on_backend_changed for Parakeet: it ignores the model and
-        # language just picked on the previous page, and a wizard that accepts
-        # those choices and then drops them silently is simply misleading. The
-        # settings window greys the same fields out for this reason.
-        self._engine_note = _hint("")
-        form.addRow(self._engine_note)
-        self._engine_form = form
-        self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
-        self._on_backend_changed()
         return page
 
     def _build_audio_page(self) -> QWizardPage:
@@ -249,10 +187,16 @@ class OnboardingWizard(QWizard):
         refresh.clicked.connect(self._rescan_devices)
         rh.addWidget(refresh)
         form.addRow("Input device:", row)
-        form.addRow(_hint(
-            "You can verify the microphone later with the 3-second level test "
-            "in Settings → Audio."
-        ))
+        # In the field column, as the instruction for the button below it.
+        form.addRow("", hint_label("Speak for three seconds — the bar should move."))
+        # The same test as Settings → Audio, on the device selected above.
+        self.mic_test = MicTestWidget(
+            lambda: input_device_from_label(self.input_combo.currentText()),
+            can_start=self._mic_test_refusal,
+        )
+        self.mic_test.started.connect(self._on_mic_test_started)
+        self.mic_test.finished.connect(self._on_mic_test_finished)
+        form.addRow("", self.mic_test)
         self._load_devices()
         return page
 
@@ -275,7 +219,7 @@ class OnboardingWizard(QWizard):
             "When disabled the settings window opens on launch."
         )
         layout.addWidget(self.chk_start_in_tray)
-        layout.addWidget(_hint(
+        layout.addWidget(hint_label(
             f"{APP_NAME} lives in the system tray — click the tray icon to open "
             "this window again, right-click it for Settings, Help and Quit. "
             "Every choice made here (and much more) can be changed there at "
@@ -286,38 +230,48 @@ class OnboardingWizard(QWizard):
 
     # ------------------------------------------------------------ handlers
 
-    def _capture_hotkey(self) -> str | None:
-        """Open the key picker with the app's live global hotkeys paused.
+    def _selected_language(self) -> str:
+        return language_from_label(self.language_combo.currentText())
+
+    def _pause_app_hotkeys(self) -> bool:
+        """Stop the app's live global hotkeys; False without an app.
 
         App registers the hotkey before it shows this wizard, so pressing the
-        currently active combination while picking would start a real recording
-        behind the modal wizard — on the user's very first launch. Nothing is
-        applied until Finish, so the old hotkey is simply restored afterwards
-        (same pattern as settings_ui._capture_hotkey).
+        currently active combination while the key picker is open would start
+        a real recording behind the modal wizard — on the user's very first
+        launch — and pressing it during the microphone test would open a
+        second input stream on the device under test. Nothing is applied until
+        Finish, so the way back is simply `App._register_hotkey`, which
+        registers both listeners again (same pattern as settings_ui).
 
         Both listeners (#191): a first launch inherits a config with no
         system-audio hotkey, but this wizard is also the path back after a
-        deleted config file, and that combination would then be just as live as
-        the microphone's while the user is pressing candidate keys. The two
-        lines are duplicated from `SettingsWindow._stop_app_hotkeys` on purpose:
-        this is the only site in this module, and neither a second helper nor an
-        import from the settings window would carry its weight here — the way
-        back is `App._register_hotkey` for both of them either way.
+        deleted config file, and that combination would then be just as live
+        as the microphone's. The lines mirror `SettingsWindow._stop_app_hotkeys`
+        on purpose — an import from the settings window would not carry its
+        weight for them.
         """
         app = self._app
         if app is None:  # bare-Config construction (headless self-test)
-            return HotkeyCaptureDialog.ask(self)
+            return False
         try:
             app.hotkeys.stop()
             listener = getattr(app, "system_hotkeys", None)
             if listener is not None:
                 listener.stop()
         except Exception:
-            log.debug("could not pause the global hotkeys for the key picker", exc_info=True)
+            log.debug("could not pause the global hotkeys", exc_info=True)
+        return True
+
+    def _capture_hotkey(self) -> str | None:
+        """Open the key picker with the app's live global hotkeys paused (see
+        _pause_app_hotkeys)."""
+        if not self._pause_app_hotkeys():
+            return HotkeyCaptureDialog.ask(self)
         try:
             return HotkeyCaptureDialog.ask(self)
         finally:
-            app._register_hotkey()
+            self._app._register_hotkey()
 
     def _pick_hotkey(self) -> None:
         combo = self._capture_hotkey()
@@ -349,70 +303,25 @@ class OnboardingWizard(QWizard):
         self.hotkey_edit.setFocus()
         return False
 
-    def _fill_model_combo(self, backend: str, model: str) -> None:
-        """(Re)list the model dropdown for `backend` and select `model`.
+    def _mic_test_refusal(self) -> str | None:
+        """The microphone test's can_start: not while a take runs (the
+        hotkey still records behind the wizard)."""
+        return APP_BUSY_TEXT if app_busy(self._app) else None
 
-        Only presets the backend can actually run are offered — the OpenVINO
-        backend has no conversion for a few of them, and a combination that the
-        wizard accepts and the first transcription then refuses is worse than
-        no choice at all (#112)."""
-        presets = [preset for preset, _ in models_for_backend(backend)]
-        labels = [model_label(preset) for preset in presets]
-        if model not in presets:
-            labels.append(model)  # unlisted id from the config, verbatim
-        blocked = self.model_combo.blockSignals(True)
-        try:
-            self.model_combo.clear()
-            self.model_combo.addItems(labels)
-        finally:
-            self.model_combo.blockSignals(blocked)
-        row = self.model_combo.findText(model_label(model) if model in presets else model)
-        self.model_combo.setCurrentIndex(max(0, row))
+    def _on_mic_test_started(self) -> None:
+        self._hotkeys_paused_for_mic = self._pause_app_hotkeys()
 
-    def _on_backend_changed(self) -> None:
-        """Show only the device row that applies to the selected backend,
-        re-list the model page's dropdown for it, and say when the previous
-        page's choices no longer apply."""
-        backend = backend_from_label(self.backend_combo.currentText())
-        openvino = backend == "openvino"
-        self._engine_form.setRowVisible(self.device_combo, not openvino)
-        self._engine_form.setRowVisible(self.ov_device_combo, openvino)
+    def _on_mic_test_finished(self, _outcome: str) -> None:
+        if self._hotkeys_paused_for_mic:
+            self._hotkeys_paused_for_mic = False
+            try:
+                self._app._register_hotkey()
+            except Exception:
+                log.debug("could not restore the global hotkeys", exc_info=True)
 
-        model = model_from_label(self.model_combo.currentText())
-        swapped_out = None
-        if openvino and not openvino_supports_model(model):
-            swapped_out = model
-            self._model_swapped_from = model
-            model = openvino_alternative(model)
-        elif not openvino and self._model_swapped_from is not None:
-            # Restore only while the replacement is still selected — a model
-            # the user went back and picked themselves wins.
-            if model == openvino_alternative(self._model_swapped_from):
-                model = self._model_swapped_from
-            self._model_swapped_from = None
-        self._fill_model_combo(backend, model)
-
-        if backend == "parakeet":
-            note = (
-                "Note: Parakeet ignores the model and the spoken language "
-                "from the previous page — it runs one fixed model and detects the "
-                "language itself (25 supported). Go Back and choose another backend "
-                "to use them; your selections are kept either way."
-            )
-        elif swapped_out is not None:
-            note = (
-                f"Note: “{swapped_out}” has no OpenVINO version — the model on the "
-                f"previous page was switched to “{openvino_alternative(swapped_out)}”. "
-                "Choosing another backend brings your original pick back."
-            )
-        elif openvino:
-            note = (
-                "Note: the previous page now lists only models with a pre-converted "
-                "OpenVINO version; the rest need the faster-whisper backend."
-            )
-        else:
-            note = ""
-        self._engine_note.setText(note)
+    def _on_page_changed(self, _page_id: int) -> None:
+        if self.currentPage() is not self._audio_page:
+            self.mic_test.cancel()
 
     def _load_devices(self) -> None:
         values, current = input_device_choices(self.cfg["input_device"])
@@ -454,16 +363,28 @@ class OnboardingWizard(QWizard):
         CI runner)."""
         cfg = self.cfg.data
         cfg["hotkey"] = self.hotkey_edit.text().strip()
-        cfg["language"] = language_from_label(self.language_combo.currentText())
-        cfg["model"] = model_from_label(self.model_combo.currentText())
-        cfg["backend"] = backend_from_label(self.backend_combo.currentText())
-        cfg["device"] = self.device_combo.currentText()
-        cfg["openvino_device"] = self.ov_device_combo.currentText()
+        # The recommendation's keys or the manual fields; the language after
+        # them, because it is the speech page's alone, whatever they hold.
+        cfg.update(self.engine_page.values())
+        cfg["language"] = self._selected_language()
         cfg["input_device"] = input_device_from_label(self.input_combo.currentText())
         cfg["autostart"] = self.chk_autostart.isChecked()
         cfg["start_in_tray"] = self.chk_start_in_tray.isChecked()
-        log.info("onboarding completed (backend: %s, model: %s)", cfg["backend"], cfg["model"])
+        log.info(
+            "onboarding completed (%s engine: backend %s, model %s, parakeet model %s)",
+            "recommended" if self.engine_page.is_recommended() else "manual",
+            cfg["backend"],
+            cfg["model"],
+            cfg["parakeet_model"],
+        )
 
     def accept(self) -> None:
         self._apply()
         super().accept()
+
+    def done(self, result: int) -> None:
+        # Every way the wizard closes — Finish, Cancel, Esc, the close button:
+        # a level test still recording must let go of the microphone and
+        # hand the hotkey back.
+        self.mic_test.cancel()
+        super().done(result)

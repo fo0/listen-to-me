@@ -9142,6 +9142,506 @@ def _settings_engine_auto_configures_for_this_pc():
             window.force_close()
 
 
+def _process_events_until(app, condition, seconds: float = 5.0) -> bool:
+    """Process Qt events until `condition()` holds or `seconds` pass —
+    results from a worker thread arrive as queued signals, delivered only
+    while the main thread processes events. Returns the final `condition()`."""
+    import time
+
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.005)
+    return bool(condition())
+
+
+def _delete_now(app, *widgets) -> None:
+    """Destroy `widgets` before the check returns, not "later".
+
+    deleteLater() hands a PySide object over to Qt, and with no event loop
+    running here its deferred delete never comes: the widget stays alive for
+    the rest of the run. A QWizard left alive that way made a later check's
+    apply_theme() segfault inside setStyleSheet (reproduced with the wizard
+    before #286 too — `_gui_construction` only escaped it by running last).
+    Sending the deferred deletes explicitly destroys them right here."""
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    for widget in widgets:
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+
+
+def _microphone_test_widget():
+    """The three-second level test Settings → Audio and the setup wizard share
+    (mic_test_widget). The recording runs on the widget's worker thread and
+    everything it reports reaches the main thread through the widget's signal
+    bridge: the level moves the bar, each verdict reads exactly as the
+    Settings page always worded it, a failure names its reason. Cancel makes
+    whatever the detached worker still sends stale and holds the button back
+    for the cool-down; a refusal from can_start is shown and starts nothing."""
+    import threading
+
+    from listen_to_me import mic_test_widget as mtw
+    from listen_to_me.mic_test_widget import MicTestWidget
+
+    app = _ensure_qapp()
+    calls: list = []
+    events: list = []
+    gate = threading.Event()
+    answer: dict = {}
+
+    def run(device, on_level, is_cancelled):
+        calls.append((device, threading.current_thread() is not threading.main_thread()))
+        on_level(0.42)
+        gate.wait(5)
+        if answer.get("raise"):
+            raise RuntimeError(answer["raise"])
+        return dict(answer)
+
+    widget = MicTestWidget(lambda: 7, run=run)
+    widget.started.connect(lambda: events.append("started"))
+    widget.finished.connect(events.append)
+    try:
+        assert widget.button.text() == "Test microphone (3 s)"
+        assert "the level bar should move" in widget.button.toolTip()
+        assert not widget.cancel_button.isEnabled() and widget.level_bar.value() == 0
+
+        for verdict, peak, text in (
+            ("ok", 0.5, "Microphone works ✓ — peak level 50 %."),
+            (
+                "quiet",
+                0.03,
+                "Signal is very quiet (peak 3 %) — move closer to the microphone or "
+                "raise its input volume.",
+            ),
+            (
+                "silent",
+                0.001,
+                "No signal — check that the right device is selected and the OS "
+                "allows microphone access.",
+            ),
+        ):
+            gate.clear()
+            answer.clear()
+            answer.update(peak=peak, rms=peak / 4, seconds=3.0, verdict=verdict)
+            events.clear()
+            assert widget.start()
+            assert widget.is_running() and events == ["started"], events
+            assert widget.status.text() == mtw.RECORDING_TEXT
+            assert not widget.button.isEnabled() and widget.cancel_button.isEnabled()
+            assert not widget.start(), "a second start while one records"
+            assert _process_events_until(app, lambda: widget.level_bar.value() == 42), (
+                widget.level_bar.value()
+            )
+            gate.set()
+            assert _process_events_until(app, lambda: not widget.is_running())
+            assert widget.status.text() == text, (verdict, widget.status.text())
+            assert events == ["started", mtw.DONE], events
+            assert widget.button.isEnabled() and not widget.cancel_button.isEnabled()
+            widget._worker.join(5)
+        # The device is read when the test starts, the recording runs off the
+        # main thread.
+        assert calls and all(call == (7, True) for call in calls), calls
+
+        # A failing recording names its reason.
+        gate.set()
+        answer.clear()
+        answer["raise"] = "device unplugged"
+        events.clear()
+        assert widget.start()
+        assert _process_events_until(app, lambda: not widget.is_running())
+        assert widget.status.text() == "Microphone test failed: device unplugged"
+        assert events == ["started", mtw.FAILED], events
+        widget._worker.join(5)
+
+        # Cancel: stopped at once, the worker's late result is stale, and the
+        # button waits for the cool-down before the next start.
+        gate.clear()
+        answer.clear()
+        answer.update(peak=0.5, rms=0.1, seconds=3.0, verdict="ok")
+        events.clear()
+        assert widget.start()
+        cancel = widget._cancel_event
+        widget.cancel_button.click()
+        assert cancel.is_set() and not widget.is_running()
+        assert widget.status.text() == mtw.CANCELLED_TEXT and widget.level_bar.value() == 0
+        assert events == ["started", mtw.CANCELLED], events
+        assert not widget.button.isEnabled() and widget._cooldown.isActive()
+        gate.set()
+        widget._worker.join(5)
+        app.processEvents()  # the late level and result arrive now
+        assert widget.status.text() == mtw.CANCELLED_TEXT, widget.status.text()
+        assert widget.level_bar.value() == 0
+        assert not widget.cancel(), "cancelling an idle test"
+        assert _process_events_until(app, widget.button.isEnabled, seconds=2.0)
+
+        # can_start: a reason is shown and nothing starts; "" refuses quietly.
+        refusal = [mtw.APP_BUSY_TEXT]
+        refusing = MicTestWidget(lambda: None, run=run, can_start=lambda: refusal[0])
+        refusing.started.connect(lambda: events.append("refused widget started"))
+        before = len(calls)
+        assert not refusing.start()
+        assert refusing.status.text() == mtw.APP_BUSY_TEXT
+        refusal[0] = ""
+        refusing.status.setText("kept")
+        assert not refusing.start() and refusing.status.text() == "kept"
+        assert len(calls) == before and "refused widget started" not in events
+        _delete_now(app, refusing)
+
+        # The guard both hosts refuse with: App's queue is drained first.
+        class _App:
+            state, queued = "idle", "recording"
+
+            def _poll(self):
+                self.state = self.queued
+
+        assert mtw.app_busy(None) is False
+        assert mtw.app_busy(_App()) is True
+    finally:
+        gate.set()
+        _delete_now(app, widget)
+
+
+def _settings_audio_tests_the_microphone_through_the_widget():
+    """Settings → Audio runs its microphone test through the shared widget
+    and keeps every rule it had: one diagnostic at a time (the model download
+    and the transcription test wait while it records, their page says why,
+    and the microphone test waits for them), the global hotkey paused while
+    it records, the recording refused while the app itself records, and both
+    its own Cancel button and the dialog-close path stopping it."""
+    import threading
+
+    from listen_to_me import settings_ui as settings_module
+    from listen_to_me.mic_test_widget import APP_BUSY_TEXT, CANCELLED_TEXT, MicTestWidget
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    gate = threading.Event()
+    entered = threading.Event()
+    calls: list = []
+
+    class _Engine:
+        """Stands in for DiagnosticsEngine: one level, then the verdict once
+        the gate opens — or whenever the test is cancelled.
+
+        A Cancel replaces the window's engine with a real one, and the
+        worker reads the engine when it runs: every run below therefore sets
+        this stand-in again and waits until its worker is inside it before
+        cancelling, or the worker could reach for the real microphone."""
+
+        @staticmethod
+        def mic_test(device, seconds=3.0, on_level=None, is_cancelled=None):
+            calls.append((device, seconds))
+            entered.set()
+            on_level(0.4)
+            for _ in range(500):
+                if gate.is_set() or is_cancelled():
+                    break
+                gate.wait(0.01)
+            return {"peak": 0.4, "rms": 0.1, "seconds": seconds, "verdict": "ok"}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+        try:
+            audio_page = window.stack.widget(window._audio_index)
+            assert isinstance(window.mic_test, MicTestWidget)
+            assert audio_page.isAncestorOf(window.mic_test)
+            assert window.mic_test_button is window.mic_test.button
+            assert window.mic_status is window.mic_test.status
+            others = (window.model_download_button, window.tx_test_button)
+
+            # A run to its verdict, with the other diagnostics held back.
+            window._diag = _Engine()
+            window.mic_test_button.click()
+            assert window._diag_busy and window._diag_kind == "mic"
+            assert not any(button.isEnabled() for button in others)
+            assert window.diag_status.text() == settings_module._DIAG_BUSY_NOTE
+            assert not stub.hotkeys.running
+            assert window.mic_status.text() == "Recording 3 s — speak now…"
+            assert _process_events_until(app, lambda: window.mic_level_bar.value() == 40)
+            gate.set()
+            assert _process_events_until(app, lambda: not window._diag_busy)
+            assert window.mic_status.text() == "Microphone works ✓ — peak level 40 %."
+            assert all(button.isEnabled() for button in others + (window.mic_test_button,))
+            assert window.diag_status.text() != settings_module._DIAG_BUSY_NOTE
+            assert stub.hotkeys.running
+            assert calls == [(window._selected_input_device(), 3.0)], calls
+            window.mic_test._worker.join(5)
+
+            # …and the other way round: another diagnostic running holds the
+            # microphone test back, says so, and gives its result back after.
+            window._begin_diag("model")
+            assert not window.mic_test_button.isEnabled()
+            assert window.mic_status.text() == settings_module._DIAG_BUSY_NOTE
+            assert not window.mic_test.start() and not window.mic_test.is_running()
+            window._set_diag_busy(False)
+            assert window.mic_status.text() == "Microphone works ✓ — peak level 40 %."
+
+            # Not while the app records — a press still queued counts.
+            stub.queued_state = "recording"
+            window.mic_test_button.click()
+            assert window.mic_status.text() == APP_BUSY_TEXT
+            assert not window._diag_busy and not window.mic_test.is_running()
+            stub.state = "idle"
+
+            # Its own Cancel button: the window's half of a cancel follows.
+            gate.clear()
+            entered.clear()
+            window._diag = _Engine()
+            window.mic_test_button.click()
+            assert window._diag_busy and not stub.hotkeys.running
+            assert entered.wait(5)
+            window.mic_cancel_button.click()
+            assert not window._diag_busy and stub.hotkeys.running
+            assert window.mic_status.text() == CANCELLED_TEXT
+            assert window._diag_cooldown_timer.isActive()
+            assert not window.mic_test_button.isEnabled()
+            window.mic_test._worker.join(5)
+            window._end_diag_cooldown()
+
+            # The dialog-close path stops a running test the same way.
+            entered.clear()
+            window._diag = _Engine()
+            window.mic_test_button.click()
+            cancel = window.mic_test._cancel_event
+            assert entered.wait(5)
+            window._cancel_diagnostics()
+            assert cancel.is_set() and not window.mic_test.is_running()
+            assert not window._diag_busy and stub.hotkeys.running
+            assert window.mic_status.text() == CANCELLED_TEXT
+            window.mic_test._worker.join(5)
+            app.processEvents()
+            assert window.mic_status.text() == CANCELLED_TEXT  # stale result ignored
+        finally:
+            gate.set()
+            window.force_close()
+            app.processEvents()
+
+
+def _setup_wizard_recommends_the_engine_for_this_pc():
+    """The first-run wizard's engine step and microphone page (#286).
+
+    The speech page asks for the language only; the Whisper model moved to the
+    engine page's manual fields, next to the Parakeet model. "Recommended for
+    this PC" is preselected: the hardware probe runs on a worker thread from
+    the moment the wizard is built (a stand-in here, joined), and entering the
+    page recomputes the recommendation for the language chosen before it —
+    without probing again. Finish writes the recommendation's values, or the
+    manual fields when "Choose manually" is picked, and the language always
+    from the speech page. A probe that failed, or one still running when Next
+    is pressed, falls back to the manual fields with a note and never blocks.
+    The Microphone page carries the shared level test, which pauses the live
+    hotkey while it records and stops when the page is left or the wizard
+    closes."""
+    import threading
+    import time
+
+    from PySide6.QtWidgets import QComboBox, QLabel
+
+    from listen_to_me import onboarding_engine
+    from listen_to_me.choices import (
+        PARAKEET_MODELS,
+        backend_label,
+        choice_label,
+        language_label,
+        model_from_label,
+        model_label,
+    )
+    from listen_to_me.mic_test_widget import APP_BUSY_TEXT, CANCELLED_TEXT, MicTestWidget
+    from listen_to_me.onboarding import OnboardingWizard
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    def status() -> dict:
+        # No NVIDIA GPU, Parakeet installed, a strong CPU.
+        return {
+            "cuda": {"available": False, "count": 0, "error": None},
+            "openvino": {"installed": False, "devices": [], "error": None},
+            "parakeet": {"installed": True, "error": None},
+            "cpu": {
+                "physical_cores": 8,
+                "performance_cores": 8,
+                "logical": 16,
+                "avx2": True,
+                "x86": True,
+                "name": "Test CPU",
+                "error": None,
+            },
+            "model": {"target": "small", "cached": False, "error": None},
+        }
+
+    engine_keys = ("backend", "model", "device", "openvino_device", "parakeet_model")
+    wizards: list = []
+    gate = threading.Event()
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        cfg = stub.cfg
+        try:
+            probed: list = []
+
+            def probe(snapshot):
+                probed.append((threading.current_thread() is not threading.main_thread(), snapshot))
+                return status()
+
+            wizard = OnboardingWizard(cfg, app=stub, probe=probe)
+            wizards.append(wizard)
+            engine = wizard.engine_page
+
+            # The speech page asks for the language alone.
+            speech = wizard.page(wizard.pageIds()[1])
+            assert speech.findChildren(QComboBox) == [wizard.language_combo]
+            assert not hasattr(wizard, "model_combo")
+            for combo in (engine.model_combo, engine.pk_model_combo, engine.backend_combo):
+                assert engine.isAncestorOf(combo)
+
+            # Recommended is the default; until the probe lands it says so.
+            assert engine.is_recommended() and engine._manual_box.isHidden()
+            assert engine.rec_summary.text() == onboarding_engine.CHECKING_TEXT
+            engine._probe_thread.join(5)
+            assert _process_events_until(app, lambda: engine.recommendation() is not None)
+            assert [on_worker for on_worker, _ in probed] == [True], probed
+            assert probed[0][1]["backend"] == cfg["backend"]
+
+            # German on the speech page; entering the engine page recomputes.
+            wizard.language_combo.setCurrentText(language_label("de"))
+            engine.initializePage()
+            assert engine.rec_summary.text() == "Parakeet · German model · CPU"
+            detail = engine.rec_detail.text()
+            assert "fine-tuned for German" in detail and "about 0.7 GB" in detail, detail
+            assert len(probed) == 1, "entering the page probed again"
+            wizard._apply()
+            assert (cfg["backend"], cfg["parakeet_model"]) == ("parakeet", "parakeet-primeline-de")
+            assert (cfg["parakeet_quantization"], cfg["device"]) == ("int8", "cpu")
+            assert cfg["language"] == "de"
+            # The manual fields, untouched, follow the recommendation.
+            assert engine.backend_combo.currentText() == backend_label("parakeet")
+            german = choice_label(PARAKEET_MODELS, "parakeet-primeline-de")
+            assert engine.pk_model_combo.currentText() == german
+
+            # A language Parakeet does not know: faster-whisper, and the
+            # language is still the speech page's alone.
+            wizard.language_combo.setCurrentText(language_label("ja"))
+            engine.initializePage()
+            assert "language" not in engine.values()
+            wizard._apply()
+            assert (cfg["backend"], cfg["model"], cfg["device"]) == (
+                "faster-whisper",
+                "large-v3-turbo",
+                "cpu",
+            )
+            assert cfg["language"] == "ja"
+
+            # Choose manually: the fields show up and are what Finish writes;
+            # a pick by hand is not overwritten when the page is entered again.
+            engine.manual_radio.setChecked(True)
+            assert not engine._manual_box.isHidden()
+            engine.backend_combo.setCurrentText(backend_label("faster-whisper"))
+            engine.model_combo.setCurrentText(model_label("medium"))
+            engine.model_combo.activated.emit(engine.model_combo.currentIndex())  # by hand
+            engine.device_combo.setCurrentText("cuda")
+            engine.initializePage()
+            assert model_from_label(engine.model_combo.currentText()) == "medium"
+            wizard._apply()
+            assert (cfg["backend"], cfg["model"], cfg["device"]) == ("faster-whisper", "medium", "cuda")
+            assert cfg["openvino_device"] == engine.ov_device_combo.currentText()
+            assert cfg["parakeet_model"] == "parakeet-primeline-de"  # still written in manual mode
+            assert cfg["language"] == "ja"
+
+            # The Microphone page: the shared test on the wizard's device, the
+            # short instruction instead of the pointer to Settings.
+            audio = wizard._audio_page
+            assert isinstance(wizard.mic_test, MicTestWidget) and audio.isAncestorOf(wizard.mic_test)
+            texts = " ".join(label.text() for label in audio.findChildren(QLabel))
+            assert "Speak for three seconds — the bar should move." in texts, texts
+            assert "Settings → Audio" not in texts, texts
+
+            def held(device, on_level, is_cancelled):
+                # Records until cancelled (bounded, so the thread always ends).
+                for _ in range(500):
+                    if is_cancelled() or gate.is_set():
+                        break
+                    time.sleep(0.01)
+                return {"peak": 0.5, "rms": 0.1, "seconds": 3.0, "verdict": "ok"}
+
+            wizard.mic_test._run = held
+            assert stub.hotkeys.running
+            assert wizard.mic_test.start()
+            assert not stub.hotkeys.running, "the hotkey stays live while the test records"
+            wizard.restart()  # a page change — the wizard leaves the Microphone page
+            assert not wizard.mic_test.is_running() and stub.hotkeys.running
+            assert wizard.mic_test.status.text() == CANCELLED_TEXT
+            wizard.mic_test._worker.join(5)
+            wizard.mic_test._end_cooldown()
+
+            stub.queued_state = "recording"
+            assert not wizard.mic_test.start()
+            assert wizard.mic_test.status.text() == APP_BUSY_TEXT
+            stub.state = "idle"
+
+            assert wizard.mic_test.start() and not stub.hotkeys.running
+            wizard.done(0)  # Cancel / Esc / the close button
+            assert not wizard.mic_test.is_running() and stub.hotkeys.running
+            wizard.mic_test._worker.join(5)
+
+            # A probe that fails: the manual fields with a note, Next goes on,
+            # Finish writes the saved values back.
+            saved = {key: cfg[key] for key in engine_keys}
+
+            def broken(_snapshot):
+                raise RuntimeError("probe exploded")
+
+            failed = OnboardingWizard(cfg, probe=broken)
+            wizards.append(failed)
+            page = failed.engine_page
+            page._probe_thread.join(5)
+            assert _process_events_until(app, lambda: page._probe_error is not None)
+            assert not page.is_recommended() and not page.recommended_radio.isEnabled()
+            assert not page._manual_box.isHidden() and not page.note.isHidden()
+            assert page.note.text() == onboarding_engine.FAILED_NOTE
+            assert page.rec_summary.text() == onboarding_engine.FAILED_TEXT
+            assert "probe exploded" in page.rec_detail.text()
+            assert page.validatePage()
+            failed._apply()
+            assert {key: cfg[key] for key in engine_keys} == saved
+
+            # A probe still running at Next: never waited on — the first Next
+            # switches to the manual fields and says why, the second goes on;
+            # Finish meanwhile writes the manual (saved) values.
+            gate.clear()
+
+            def slow(_snapshot):
+                gate.wait(5)
+                return status()
+
+            pending = OnboardingWizard(cfg, probe=slow)
+            wizards.append(pending)
+            page = pending.engine_page
+            assert page.is_recommended() and page.recommendation() is None
+            pending._apply()
+            assert {key: cfg[key] for key in engine_keys} == saved
+            assert not page.validatePage()
+            assert not page.is_recommended() and not page._manual_box.isHidden()
+            assert page.note.text() == onboarding_engine.PENDING_NOTE
+            assert page.validatePage()
+            gate.set()
+            page._probe_thread.join(5)
+            assert _process_events_until(app, lambda: page.recommendation() is not None)
+            assert page.note.text() == onboarding_engine.READY_NOTE
+            assert page.rec_summary.text() != onboarding_engine.CHECKING_TEXT
+            assert not page.is_recommended(), "the mode flipped under the user"
+        finally:
+            gate.set()
+            for item in wizards:
+                item.mic_test.cancel()
+            _delete_now(app, *wizards)
+
+
 def _settings_window_edits_the_new_options():
     """The Settings surfaces of #190/#191: the filler phrase list on the Engine
     page, the "System audio" card on the Audio page, and the second assistant
@@ -11176,8 +11676,19 @@ def _gui_construction():
         assert not window._app_busy()
 
         # Cancel plumbing: Cancel stops the diagnostic, re-enables the buttons
-        # and makes everything the detached worker still emits stale.
-        gen, cancel = window._begin_diag("mic")
+        # and makes everything the detached worker still emits stale. Started
+        # through the microphone test widget against a stand-in engine that
+        # answers at once: its result is then queued, undelivered until the
+        # events are processed — after the Cancel, i.e. stale.
+        class _AnsweringEngine:
+            @staticmethod
+            def mic_test(device, seconds=3.0, on_level=None, is_cancelled=None):
+                return {"peak": 0.5, "rms": 0.1, "seconds": seconds, "verdict": "ok"}
+
+        window._diag = _AnsweringEngine()
+        assert window.mic_test.start()
+        window.mic_test._worker.join(5)
+        cancel = window.mic_test._cancel_event
         assert window._diag_busy and window.mic_cancel_button.isEnabled()
         assert not window.mic_test_button.isEnabled()
         # A recording test owns the microphone: the global hotkey is paused so
@@ -11194,8 +11705,9 @@ def _gui_construction():
         window._end_diag_cooldown()
         assert window.mic_test_button.isEnabled()
         assert "cancelled" in window.mic_status.text()
-        window._on_mic_done(gen, {"peak": 0.5, "rms": 0.1, "seconds": 3.0, "verdict": "ok"})
+        app.processEvents()  # the worker's queued result arrives now
         assert "cancelled" in window.mic_status.text()  # stale result ignored
+        assert not window._diag_busy and not window.mic_test.is_running()
 
         overlay = Overlay(stub)
         for state in ("recording", "processing", "idle"):
@@ -11392,34 +11904,45 @@ def _gui_construction():
         dialog = HotkeyCaptureDialog(None)
 
         # The first-run wizard: build, exercise the backend-dependent device
-        # rows, then apply — the chosen values must land in the config dict.
-        # _apply() instead of accept(): accept re-validates the current page,
-        # and the hotkey validation imports pynput (absent on the CI runner).
-        wizard = OnboardingWizard(stub.cfg)
+        # rows of its manual engine fields, then apply — the chosen values must
+        # land in the config dict. _apply() instead of accept(): accept
+        # re-validates the current page, and the hotkey validation imports
+        # pynput (absent on the CI runner). The hardware probe is a stand-in
+        # (an empty status: nothing found) on a thread joined right here.
+        wizard = OnboardingWizard(stub.cfg, probe=lambda _snapshot: {})
+        wizard.engine_page._probe_thread.join(5)
+        app.processEvents()
         wizard.restart()
+        engine = wizard.engine_page
         assert wizard.language_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus  # wheel guard
-        assert not wizard.model_combo.isEditable()  # read-only — presets only
-        wizard.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
-        assert "OpenVINO" in wizard._engine_note.text()
-        # Parakeet ignores the model and language chosen on the previous wizard
-        # page — the page must say so instead of dropping them silently.
-        wizard.backend_combo.setCurrentIndex(2)  # Parakeet
-        assert "Parakeet" in wizard._engine_note.text()
-        wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
-        assert not wizard._engine_note.text()
+        assert engine.backend_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus
+        assert not engine.model_combo.isEditable()  # read-only — presets only
+        engine.manual_radio.setChecked(True)
+        engine.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
+        assert "OpenVINO" in engine._engine_note.text()
+        # Parakeet ignores the language chosen on the previous wizard page and
+        # runs its own models — the page must say so instead of dropping the
+        # choice silently, and offer its model instead of Whisper's.
+        engine.backend_combo.setCurrentIndex(2)  # Parakeet
+        assert "Parakeet" in engine._engine_note.text()
+        assert engine._engine_form.isRowVisible(engine.pk_model_combo)
+        assert not engine._engine_form.isRowVisible(engine.model_combo)
+        engine.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert not engine._engine_note.text()
+        assert not engine._engine_form.isRowVisible(engine.pk_model_combo)
 
         # The OpenVINO backend has no conversion for a few presets. Picking one
         # of those must not survive the switch — the wizard swaps in the closest
         # model that works, says so, and restores the original when the backend
         # moves on (#112).
-        wizard._fill_model_combo("faster-whisper", GERMAN_TURBO_CT2)
-        wizard.backend_combo.setCurrentIndex(1)  # OpenVINO
-        assert model_from_label(wizard.model_combo.currentText()) == "large-v3-turbo"
-        assert GERMAN_TURBO_CT2 in wizard._engine_note.text()
-        assert wizard.model_combo.findText(model_label(GERMAN_TURBO_CT2)) < 0  # filtered out
-        wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
-        assert model_from_label(wizard.model_combo.currentText()) == GERMAN_TURBO_CT2
-        wizard._fill_model_combo("faster-whisper", "small")
+        engine._fill_model_combo("faster-whisper", GERMAN_TURBO_CT2)
+        engine.backend_combo.setCurrentIndex(1)  # OpenVINO
+        assert model_from_label(engine.model_combo.currentText()) == "large-v3-turbo"
+        assert GERMAN_TURBO_CT2 in engine._engine_note.text()
+        assert engine.model_combo.findText(model_label(GERMAN_TURBO_CT2)) < 0  # filtered out
+        engine.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert model_from_label(engine.model_combo.currentText()) == GERMAN_TURBO_CT2
+        engine._fill_model_combo("faster-whisper", "small")
         wizard._apply()
         assert stub.cfg["backend"] == "faster-whisper"
         assert stub.cfg["model"] == "small"  # preset label round-trips to the id
@@ -12471,6 +12994,11 @@ _LIGHT_CHECKS = [
      _settings_engine_offers_the_parakeet_model_and_cpu_threads),
     ("settings engine auto-configures for this PC",
      _settings_engine_auto_configures_for_this_pc),
+    ("microphone test widget", _microphone_test_widget),
+    ("settings audio tests the microphone through the widget",
+     _settings_audio_tests_the_microphone_through_the_widget),
+    ("setup wizard recommends the engine for this PC",
+     _setup_wizard_recommends_the_engine_for_this_pc),
     ("system audio picker reads as an output picker",
      _system_audio_picker_reads_as_an_output_picker),
     ("system audio hint names the outputs it cannot record",
