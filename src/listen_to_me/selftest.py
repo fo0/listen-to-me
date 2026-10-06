@@ -47,7 +47,11 @@ def _config_defaults():
     assert DEFAULTS["openvino_device"] in ("auto", "cpu", "gpu", "npu")
     assert DEFAULTS["openvino_precision"] in ("int8", "fp16", "int4")
     assert DEFAULTS["parakeet_quantization"] in ("int8", "fp32")
+    # The model the Parakeet backend ran before there was a choice (#286) —
+    # any other default would re-download for every existing installation.
+    assert DEFAULTS["parakeet_model"] == "parakeet-tdt-0.6b-v3"
     assert isinstance(DEFAULTS["beam_size"], int) and DEFAULTS["beam_size"] >= 1
+    assert DEFAULTS["cpu_threads"] == 0  # automatic
     assert set(DEFAULTS["overlay"]) >= {"enabled", "show_preview", "live_preview", "preview_seconds"}
     # The default anchor is the placement every install already has: shipping
     # "cursor" would move every existing user's preview without asking (#196).
@@ -5239,6 +5243,209 @@ def _parakeet_backend_logic():
         assert t._current_key() != key  # quantization change → reload
 
 
+def _parakeet_model_registry():
+    """`parakeet_model` picks which Parakeet export the backend runs (#286).
+
+    The default must be exactly the model the backend always ran — the same
+    onnx-asr preset, repo and model-folder name — or every existing
+    installation downloads it again. The German fine-tune comes from a third
+    party's repo, so it is pinned to one commit and fetched by name: an int8
+    choice must never count, let alone download, the 2.4 GB fp32 weights. An
+    unknown config value runs the default and says so in the log, and the
+    status card, the cache probe and the reload key all follow the selection.
+    Offline: nothing here touches the network (the file list below is the
+    pinned commit's, copied from the Hub)."""
+    import logging
+
+    from listen_to_me import parakeet_models as pk_module
+    from listen_to_me.choices import PARAKEET_MODELS
+    from listen_to_me.config import Config
+    from listen_to_me.diagnostics import model_cache_status
+    from listen_to_me.parakeet_models import (
+        DEFAULT_MODEL,
+        MODELS,
+        download_filter,
+        missing_files,
+        model_files,
+        parakeet_model,
+    )
+    from listen_to_me.transcriber_parakeet import ParakeetTranscriber, _model_is_cached
+
+    # One registry: the dropdown offers exactly the models the backend knows.
+    assert [value for value, _note in PARAKEET_MODELS] == list(MODELS)
+    assert DEFAULT_MODEL in MODELS
+    default = parakeet_model(DEFAULT_MODEL)
+    assert default.onnx_asr_model == "nemo-parakeet-tdt-0.6b-v3"
+    assert default.repo == "istupakov/parakeet-tdt-0.6b-v3-onnx"
+    assert default.dirname == "parakeet-tdt-0.6b-v3-onnx"
+    assert default.revision is None  # onnx-asr's own preset download, as before
+    assert default.language is None  # multilingual, detected
+    german = parakeet_model("parakeet-primeline-de")
+    assert german.repo == "OpenVoiceOS/primeline-parakeet-onnx"
+    assert german.revision == "411093fba73540a11c451841a8e7922c13b0fb00"
+    assert german.onnx_asr_model == "nemo-conformer-tdt"  # a model type, not a preset
+    assert german.language == "de"
+    # Its own folder: two models in one directory would read each other's files.
+    assert german.dirname != default.dirname
+
+    # The pinned commit's files: each quantization keeps its own variant plus
+    # the shared config and vocabulary, and the fp32 encoder its external data.
+    repo_files = [
+        ".gitattributes",
+        "README.md",
+        "config.json",
+        "decoder_joint-model.int8.onnx",
+        "decoder_joint-model.onnx",
+        "encoder-model.int8.onnx",
+        "encoder-model.onnx",
+        "encoder-model.onnx.data",
+        "vocab.txt",
+    ]
+    int8 = sorted(name for name in repo_files if download_filter("int8")(name))
+    fp32 = sorted(name for name in repo_files if download_filter(None)(name))
+    assert int8 == [
+        "config.json",
+        "decoder_joint-model.int8.onnx",
+        "encoder-model.int8.onnx",
+        "vocab.txt",
+    ], int8
+    assert fp32 == [
+        "config.json",
+        "decoder_joint-model.onnx",
+        "encoder-model.onnx",
+        "encoder-model.onnx.data",
+        "vocab.txt",
+    ], fp32
+    # What is counted is what is fetched: the pinned download asks for these.
+    assert sorted(model_files("int8")) == int8 and sorted(model_files(None)) == fp32
+
+    # An unknown value runs the default — logged once per value, because
+    # `loaded` asks on every live-preview tick. A missing one is silent.
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Capture()
+    pk_module.log.addHandler(handler)
+    already_logged = pk_module._UNKNOWN_MODELS_LOGGED
+    pk_module._UNKNOWN_MODELS_LOGGED = set()
+    try:
+        assert parakeet_model(None) is default and records == [], records
+        for _ in range(3):
+            assert parakeet_model("parakeet-from-the-future") is default
+        assert len(records) == 1 and "parakeet-from-the-future" in records[0], records
+        assert parakeet_model(42) is default and len(records) == 2, records
+    finally:
+        pk_module.log.removeHandler(handler)
+        pk_module._UNKNOWN_MODELS_LOGGED = already_logged
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # A pinned model in a custom folder counts as downloaded only with
+        # every file of the selected quantization in place — an interrupted
+        # download, or the other quantization, is not "cached".
+        folder = Path(tmp) / german.dirname
+        assert not _model_is_cached(german, "int8", tmp)
+        folder.mkdir()
+        files = model_files("int8")
+        for name in files[:-1]:
+            (folder / name).write_bytes(b"x")
+        assert not _model_is_cached(german, "int8", tmp)
+        assert missing_files(folder, "int8") == [files[-1]]
+        (folder / files[-1]).write_bytes(b"x")
+        assert _model_is_cached(german, "int8", tmp)
+        assert not _model_is_cached(german, None, tmp)
+        assert "encoder-model.onnx.data" in missing_files(folder, None)
+        # The default model's folder is a different one, still absent.
+        assert not _model_is_cached(default, "int8", tmp)
+
+        # The status card names the selected model's repo as what would be
+        # downloaded, and an unknown value the default's.
+        snap = {
+            "backend": "parakeet",
+            "model": "small",
+            "model_dir": tmp,
+            "parakeet_quantization": "int8",
+        }
+        status = model_cache_status(dict(snap, parakeet_model=german.id))
+        assert status == {"target": german.repo, "cached": True, "error": None}, status
+        status = model_cache_status(dict(snap, parakeet_model=DEFAULT_MODEL))
+        assert status == {"target": default.repo, "cached": False, "error": None}, status
+        assert model_cache_status(snap)["target"] == default.repo  # key missing
+
+        # Switching the model reloads; an unknown value is the default's key,
+        # so a hand-edit that falls back reloads nothing.
+        cfg = Config(path=Path(tmp) / "config.json")
+        cfg["backend"] = "parakeet"
+        t = ParakeetTranscriber(cfg)
+        key = t._current_key()
+        assert key[:2] == (cfg["device"], cfg["parakeet_quantization"])  # `runtime` reads [1]
+        cfg["parakeet_model"] = german.id
+        assert t._current_key() != key
+        pk_module._UNKNOWN_MODELS_LOGGED.add(repr("no-such-parakeet-model"))  # keep the log quiet
+        cfg["parakeet_model"] = "no-such-parakeet-model"
+        assert t._current_key() == key
+
+
+def _cpu_threads_resolution():
+    """`cpu_threads` (#286): 0 means the performance cores, held to 1–8, an
+    explicit count is used as given (within the CPUs there are), and anything
+    unusable is automatic rather than an error at model load. The topology
+    probes answer on this machine, never below one core, and the Windows
+    record parser — the one probe CI cannot run natively — reads a synthetic
+    hybrid buffer right. A changed value re-keys the faster-whisper model,
+    because CTranslate2 fixes its thread count when the model is built."""
+    import struct
+
+    from listen_to_me import cpuinfo
+    from listen_to_me.config import Config
+    from listen_to_me.cpuinfo import (
+        logical_cpus,
+        performance_cores,
+        physical_cores,
+        resolve_cpu_threads,
+    )
+    from listen_to_me.transcriber import Transcriber
+
+    physical, performance = physical_cores(), performance_cores()
+    assert isinstance(physical, int) and physical >= 1, physical
+    assert isinstance(performance, int) and 1 <= performance <= physical, (performance, physical)
+
+    auto = resolve_cpu_threads(0)
+    assert 1 <= auto <= 8 and auto <= logical_cpus(), auto
+    assert auto == min(performance, 8, logical_cpus())
+    assert resolve_cpu_threads(3) == min(3, logical_cpus())
+    assert resolve_cpu_threads("2") == min(2, logical_cpus())  # a quoted hand-edit
+    assert resolve_cpu_threads(10**9) == min(logical_cpus(), cpuinfo.MAX_CPU_THREADS)
+    for unusable in (-1, -100, "many", "", None, True, float("nan"), float("inf"), [4]):
+        assert resolve_cpu_threads(unusable) == auto, repr(unusable)
+
+    # GetLogicalProcessorInformationEx(RelationProcessorCore): two cores of
+    # efficiency class 1 (P-cores) and four of class 0 (E-cores), with a
+    # record of another relationship mixed in that must not count.
+    def record(relationship, efficiency, size=48):
+        return struct.pack("<IIBB", relationship, size, 0, efficiency) + bytes(size - 10)
+
+    hybrid = (
+        record(0, 1) + record(0, 1) + record(2, 0, 32) + b"".join(record(0, 0) for _ in range(4))
+    )
+    assert cpuinfo._parse_windows_cores(hybrid) == (6, 2)
+    uniform = b"".join(record(0, 0) for _ in range(8))
+    assert cpuinfo._parse_windows_cores(uniform) == (8, 8)  # not hybrid: all count
+    assert cpuinfo._parse_windows_cores(b"") is None
+    assert cpuinfo._parse_windows_cores(struct.pack("<IIBB", 0, 0, 0, 0)) is None  # no endless loop
+    assert cpuinfo._parse_cpulist("0-3,8,10-11") == {0, 1, 2, 3, 8, 10, 11}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        t = Transcriber(cfg)
+        key = t._current_key()
+        assert key[1:3] == (cfg["device"], cfg["compute_type"])  # indices kept
+        cfg["cpu_threads"] = 2
+        assert t._current_key() != key
+
+
 def _diagnostics_engine():
     """The Settings diagnostics engine builds a transcriber from a plain
     UI-snapshot dict, caches it while the snapshot is unchanged and rebuilds
@@ -5308,14 +5515,14 @@ def _hardware_probes():
             dict(snap, backend="openvino", model="distil-small.en")
         )
         assert no_conversion["cached"] is False and no_conversion["error"]
-        from listen_to_me.transcriber_parakeet import MODEL_REPO
+        from listen_to_me.parakeet_models import DEFAULT_MODEL, MODELS
 
         # A custom model dir without the Parakeet subfolder is decisively
         # "not downloaded" (the HF-cache probe depends on the machine).
         pk = model_cache_status(
             dict(snap, backend="parakeet", parakeet_quantization="int8", model_dir=tmp)
         )
-        assert pk == {"target": MODEL_REPO, "cached": False, "error": None}
+        assert pk == {"target": MODELS[DEFAULT_MODEL].repo, "cached": False, "error": None}
 
         assert set(hardware_status(snap)) == {"cuda", "openvino", "model"}
 
@@ -5678,9 +5885,9 @@ def _download_progress_logic():
 
     # Parakeet ships both quantizations in one repo, so the size of a download
     # is only the variant it actually fetches.
-    from listen_to_me.transcriber_parakeet import _download_filter
+    from listen_to_me.parakeet_models import download_filter
 
-    int8, fp32 = _download_filter("int8"), _download_filter(None)
+    int8, fp32 = download_filter("int8"), download_filter(None)
     assert int8("encoder-model.int8.onnx") and not int8("encoder-model.onnx")
     assert fp32("encoder-model.onnx") and fp32("encoder-model.onnx.data")
     assert not fp32("decoder_joint-model.int8.onnx")
@@ -7677,6 +7884,14 @@ def _tray_switches_the_dictation_language():
             assert len(actions) == 1, [a.text() for a in actions]
             assert actions[0].text() == tray_module._LANGUAGE_PARAKEET_NOTE
             assert not actions[0].isEnabled()
+            # A single-language Parakeet model (the German fine-tune, #286)
+            # names its language instead of claiming to detect one.
+            stub.cfg["parakeet_model"] = "parakeet-primeline-de"
+            tray._fill_language_menu()
+            actions = tray._language_menu.actions()
+            assert len(actions) == 1 and not actions[0].isEnabled()
+            assert language_label("de") in actions[0].text(), actions[0].text()
+            stub.cfg["parakeet_model"] = "parakeet-tdt-0.6b-v3"
 
             # The entry names the language in use on its own line, re-read
             # every time the tray menu opens — checking it before a dictation
@@ -7699,6 +7914,12 @@ def _tray_switches_the_dictation_language():
             stub.cfg["backend"] = "parakeet"
             stub.cfg["language"] = "de"
             assert _title_after_opening() == "Dictation language: Auto-detect"
+            # …except for a model that knows one language: that one, whatever
+            # the Whisper setting says.
+            stub.cfg["language"] = "fr"
+            stub.cfg["parakeet_model"] = "parakeet-primeline-de"
+            assert _title_after_opening() == f"Dictation language: {language_label('de')}"
+            stub.cfg["parakeet_model"] = "parakeet-tdt-0.6b-v3"
             # A hand-edited, unlisted value is shown as it is, its "&" doubled
             # so Qt does not swallow it as a mnemonic marker.
             stub.cfg["backend"] = "faster-whisper"
@@ -8257,6 +8478,104 @@ def _surfaces_name_an_unreadable_history():
         finally:
             window.force_close()
             window.deleteLater()
+
+
+def _settings_engine_offers_the_parakeet_model_and_cpu_threads():
+    """The two Engine controls of #286. The Parakeet model combo is shown
+    exactly where the Parakeet precision is — with the Parakeet backend only —
+    and the CPU-threads box with faster-whisper's other decode options. Both
+    reach `_collect()` (the only path to disk) and `_diag_snapshot()` (what
+    "Download / load model" and the status card use), both count as unsaved
+    changes, and both come back from the stored config. Switching the model is
+    a download, so it triggers the same "download it now?" offer as a
+    precision change, naming the new model's repo."""
+    from listen_to_me import settings_ui as _settings_module
+    from listen_to_me.choices import BACKENDS, PARAKEET_MODELS, choice_label, choice_labels
+    from listen_to_me.cpuinfo import resolve_cpu_threads
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+    from listen_to_me.parakeet_models import MODELS
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    german = "parakeet-primeline-de"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+        combo, spin = window.pk_model_combo, window.cpu_threads_spin
+        assert [combo.itemText(i) for i in range(combo.count())] == choice_labels(PARAKEET_MODELS)
+        assert window._collect()["parakeet_model"] == "parakeet-tdt-0.6b-v3"
+        assert window._collect()["cpu_threads"] == 0
+        assert spin.minimum() == 0 and spin.maximum() == 64
+        # 0 says what it does instead of reading as "no threads".
+        assert spin.specialValueText() == f"Automatic ({resolve_cpu_threads(0)})"
+        clean = window._collect() == window._saved_snapshot
+        assert clean, "a freshly opened window reported unsaved changes"
+
+        form = window._engine_form
+        for index, (backend, _label) in enumerate(BACKENDS):
+            window.backend_combo.setCurrentIndex(index)
+            parakeet, fw = backend == "parakeet", backend == "faster-whisper"
+            assert form.isRowVisible(combo) is parakeet, backend
+            assert form.isRowVisible(window.pk_quant_combo) is parakeet, backend
+            assert form.isRowVisible(spin) is fw, backend
+            assert form.isRowVisible(window.beam_spin) is fw, backend
+        window.backend_combo.setCurrentIndex(0)  # the saved backend again
+
+        # Edited values are collected, for Save and for the diagnostics alike,
+        # and read as unsaved.
+        combo.setCurrentText(choice_label(PARAKEET_MODELS, german))
+        spin.setValue(3)
+        values, snapshot = window._collect(), window._diag_snapshot()
+        assert values["parakeet_model"] == snapshot["parakeet_model"] == german, values
+        assert values["cpu_threads"] == snapshot["cpu_threads"] == 3, values
+        assert window._collect() != window._saved_snapshot
+
+        # A changed model offers its download like a changed precision does —
+        # about the repo of the model now selected (an empty model folder, so
+        # the answer cannot depend on this machine's Hugging Face cache).
+        class _FakeQuestionBox:
+            StandardButton = _settings_module.QMessageBox.StandardButton
+            asked: list = []
+
+            @classmethod
+            def question(cls, _parent, _title, text, *_args):
+                cls.asked.append(text)
+                return cls.StandardButton.No
+
+        window.model_dir_edit.setText(tmp)
+        window.backend_combo.setCurrentIndex([b for b, _ in BACKENDS].index("parakeet"))
+        real_box = _settings_module.QMessageBox
+        _settings_module.QMessageBox = _FakeQuestionBox
+        saved = window._saved_snapshot
+        try:
+            window._saved_snapshot = window._collect()
+            previous = dict(window._saved_snapshot, parakeet_model="parakeet-tdt-0.6b-v3")
+            assert window._offer_model_download(previous) is False  # declined
+            assert len(_FakeQuestionBox.asked) == 1, _FakeQuestionBox.asked
+            assert MODELS[german].repo in _FakeQuestionBox.asked[0], _FakeQuestionBox.asked
+            # Nothing changed: no question.
+            assert window._offer_model_download(dict(window._saved_snapshot)) is False
+            assert len(_FakeQuestionBox.asked) == 1
+        finally:
+            _settings_module.QMessageBox = real_box
+            window._saved_snapshot = saved
+        window.force_close()
+
+        # Both come back from the stored config; a hand-edited thread count
+        # outside the box's range is held to it rather than refusing to open.
+        stub.cfg["parakeet_model"] = german
+        stub.cfg["cpu_threads"] = 5
+        reopened = SettingsWindow(stub)
+        assert reopened.pk_model_combo.currentText() == choice_label(PARAKEET_MODELS, german)
+        assert reopened._collect()["parakeet_model"] == german
+        assert reopened._collect()["cpu_threads"] == 5
+        reopened.force_close()
+        stub.cfg["cpu_threads"] = -7
+        clamped = SettingsWindow(stub)
+        assert clamped.cpu_threads_spin.value() == 0
+        clamped.force_close()
 
 
 def _settings_window_edits_the_new_options():
@@ -11546,6 +11865,8 @@ _LIGHT_CHECKS = [
     ("openvino pipeline properties", _openvino_pipeline_properties),
     ("openvino backend logic", _openvino_backend_logic),
     ("parakeet backend logic", _parakeet_backend_logic),
+    ("parakeet model registry", _parakeet_model_registry),
+    ("CPU threads resolution", _cpu_threads_resolution),
     ("diagnostics engine", _diagnostics_engine),
     ("hardware/status probes", _hardware_probes),
     ("help content renders", _help_content_renders),
@@ -11580,6 +11901,8 @@ _LIGHT_CHECKS = [
     ("source-aware controls stop their take", _source_aware_controls_stop_their_take),
     ("surfaces name an unreadable history", _surfaces_name_an_unreadable_history),
     ("settings window edits the new options", _settings_window_edits_the_new_options),
+    ("settings engine offers the Parakeet model and CPU threads",
+     _settings_engine_offers_the_parakeet_model_and_cpu_threads),
     ("system audio picker reads as an output picker",
      _system_audio_picker_reads_as_an_output_picker),
     ("system audio hint names the outputs it cannot record",

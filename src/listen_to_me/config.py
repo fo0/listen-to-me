@@ -115,6 +115,12 @@ DEFAULTS: dict = {
     # Which ONNX variant of the Parakeet model to download (parakeet backend):
     # int8 (small + fast on CPU, recommended) or fp32 (most accurate, GPU).
     "parakeet_quantization": "int8",
+    # Which Parakeet model the parakeet backend runs: "parakeet-tdt-0.6b-v3"
+    # (NVIDIA's multilingual original, 25 languages) or "parakeet-primeline-de"
+    # (primeline's German fine-tune — more accurate for German, German only).
+    # An unknown value runs the default with a log line — see
+    # parakeet_models.MODELS / parakeet_model().
+    "parakeet_model": "parakeet-tdt-0.6b-v3",
     # sounddevice input device index, null = system default.
     "input_device": None,
     # Hard cap for a single recording.
@@ -242,6 +248,12 @@ DEFAULTS: dict = {
     # Decoding beam size (faster-whisper backend only): 5 = best accuracy
     # (default), 1 = greedy — roughly 1.5-2x faster at slightly lower accuracy.
     "beam_size": 5,
+    # CPU threads faster-whisper decodes with when it runs on the CPU (ignored
+    # on CUDA). 0 = automatic: the performance cores, at most 8 — CTranslate2's
+    # own default counts every logical processor, hyper-threads and slow
+    # efficiency cores included. Held to 1-64 and to the logical processor
+    # count at the point of use (cpuinfo.resolve_cpu_threads).
+    "cpu_threads": 0,
     # Keep a local history of transcribed text (never the audio) so a lost
     # transcript can be recovered from Settings → History. Stored in
     # history.json next to this config file.

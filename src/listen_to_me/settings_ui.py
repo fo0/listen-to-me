@@ -62,6 +62,7 @@ from .choices import (
     MUTE_PRESETS,
     OPENVINO_DEVICES,
     OPENVINO_PRECISIONS,
+    PARAKEET_MODELS,
     PARAKEET_QUANTIZATIONS,
     SOURCE_MIC,
     SOURCE_SYSTEM,
@@ -85,6 +86,7 @@ from .choices import (
     openvino_alternative,
     openvino_supports_model,
 )
+from .cpuinfo import MAX_CPU_THREADS, resolve_cpu_threads
 from .config import (
     DEFAULT_ASSISTANT_PROMPT,
     DEFAULT_FILLER_PHRASES,
@@ -859,6 +861,7 @@ class SettingsWindow(QDialog):
         self.backend_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
         self.ov_precision_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
         self.pk_quant_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
+        self.pk_model_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
         self.model_dir_edit.textChanged.connect(self._on_status_inputs_changed)
 
         # Footer with the version and the action buttons.
@@ -1517,6 +1520,22 @@ class SettingsWindow(QDialog):
         )
         form.addRow("Beam size:", self.beam_spin)
 
+        self.cpu_threads_spin = QSpinBox()
+        self.cpu_threads_spin.setRange(0, MAX_CPU_THREADS)
+        # 0 reads as what it does, with the number it resolves to here — a
+        # bare "0 threads" looks like a broken value.
+        self.cpu_threads_spin.setSpecialValueText(f"Automatic ({resolve_cpu_threads(0)})")
+        self.cpu_threads_spin.setValue(
+            min(MAX_CPU_THREADS, max(0, self._to_int(self.cfg["cpu_threads"], 0)))
+        )
+        self.cpu_threads_spin.setToolTip(
+            "How many CPU threads faster-whisper transcribes with when it runs "
+            "on the CPU. 0 = automatic: uses the performance cores (at most 8) — "
+            "hyper-threads and the slower efficiency cores of a hybrid CPU only "
+            "hold a transcription up. Ignored on an NVIDIA GPU."
+        )
+        form.addRow("CPU threads:", self.cpu_threads_spin)
+
         self.ov_device_combo = QComboBox()
         self.ov_device_combo.addItems(OPENVINO_DEVICES)
         self._select_combo(self.ov_device_combo, self.cfg["openvino_device"])
@@ -1538,6 +1557,20 @@ class SettingsWindow(QDialog):
         )
         elastic_combo(self.ov_precision_combo)  # long items widen the page
         form.addRow("Precision:", self.ov_precision_combo)
+
+        self.pk_model_combo = QComboBox()
+        self.pk_model_combo.addItems(choice_labels(PARAKEET_MODELS))
+        pk_model = choice_label(PARAKEET_MODELS, self.cfg["parakeet_model"])
+        self._select_combo(self.pk_model_combo, pk_model)
+        self.pk_model_combo.setToolTip(
+            "Which Parakeet model to run. parakeet-tdt-0.6b-v3 is NVIDIA's "
+            "multilingual original (25 languages, detected automatically); "
+            "parakeet-primeline-de is primeline's German fine-tune of it — "
+            "noticeably more accurate for German, but it understands German "
+            "only. Same size and speed; changing this downloads the other model."
+        )
+        elastic_combo(self.pk_model_combo)  # long items widen the page
+        form.addRow("Parakeet model:", self.pk_model_combo)
 
         self.pk_quant_combo = QComboBox()
         self.pk_quant_combo.addItems(choice_labels(PARAKEET_QUANTIZATIONS))
@@ -1567,7 +1600,8 @@ class SettingsWindow(QDialog):
             "The OpenVINO backend accelerates on Intel GPUs and NPUs instead; "
             "models are fetched pre-converted from Hugging Face (OpenVINO/whisper-…-ov). "
             "The Parakeet backend runs NVIDIA's Parakeet TDT model (not Whisper): "
-            "many times faster, 25 languages with automatic detection — the model "
+            "many times faster, 25 languages with automatic detection — or "
+            "primeline's German fine-tune of it, for German only. The model "
             "preset, language, initial prompt and VAD options don't apply to it."
         ))
 
@@ -3880,6 +3914,7 @@ class SettingsWindow(QDialog):
             "device": self.device_combo.currentText(),
             "compute_type": self.compute_combo.currentText(),
             "beam_size": int(self.beam_spin.value()),
+            "cpu_threads": int(self.cpu_threads_spin.value()),
             "model_dir": self.model_dir_edit.text().strip() or None,
             "language": self._selected_language(),
             "initial_prompt": self.initial_prompt_edit.toPlainText().strip(),
@@ -3887,6 +3922,7 @@ class SettingsWindow(QDialog):
             "openvino_device": self.ov_device_combo.currentText(),
             "openvino_precision": choice_value(OPENVINO_PRECISIONS, self.ov_precision_combo.currentText()),
             "parakeet_quantization": choice_value(PARAKEET_QUANTIZATIONS, self.pk_quant_combo.currentText()),
+            "parakeet_model": choice_value(PARAKEET_MODELS, self.pk_model_combo.currentText()),
         }
 
     def _set_hotkey_paused(self, paused: bool) -> None:
@@ -5499,9 +5535,11 @@ class SettingsWindow(QDialog):
         form.setRowVisible(self.device_combo, fw or parakeet)
         form.setRowVisible(self.compute_combo, fw)
         form.setRowVisible(self.beam_spin, fw)
+        form.setRowVisible(self.cpu_threads_spin, fw)
         form.setRowVisible(self.chk_vad, fw)  # VAD is faster-whisper only
         form.setRowVisible(self.ov_device_combo, openvino)
         form.setRowVisible(self.ov_precision_combo, openvino)
+        form.setRowVisible(self.pk_model_combo, parakeet)
         form.setRowVisible(self.pk_quant_combo, parakeet)
         # Parakeet is a single fixed model that always auto-detects the language
         # and takes no prompt — none of these are sent to it. Grey them out
@@ -5533,9 +5571,10 @@ class SettingsWindow(QDialog):
         replaced selection unexplained — that would just look broken."""
         if backend == "parakeet":
             return (
-                "The Parakeet backend ignores both: it runs one fixed model and "
-                "always detects the spoken language itself. Choose a different "
-                "backend above to use them again — your selections are kept."
+                "The Parakeet backend ignores both: it runs its own models (see "
+                "“Parakeet model” below), which handle the language themselves. "
+                "Choose a different backend above to use them again — your "
+                "selections are kept."
             )
         if backend == "openvino":
             listed = (
@@ -5803,9 +5842,11 @@ class SettingsWindow(QDialog):
             "device": self.device_combo.currentText(),
             "compute_type": self.compute_combo.currentText(),
             "beam_size": int(self.beam_spin.value()),
+            "cpu_threads": int(self.cpu_threads_spin.value()),
             "openvino_device": self.ov_device_combo.currentText(),
             "openvino_precision": choice_value(OPENVINO_PRECISIONS, self.ov_precision_combo.currentText()),
             "parakeet_quantization": choice_value(PARAKEET_QUANTIZATIONS, self.pk_quant_combo.currentText()),
+            "parakeet_model": choice_value(PARAKEET_MODELS, self.pk_model_combo.currentText()),
             "vad_filter": self.chk_vad.isChecked(),
             "history_enabled": self.chk_history_enabled.isChecked(),
             "history_max": int(self.history_max_spin.value()),
@@ -6151,7 +6192,13 @@ class SettingsWindow(QDialog):
         at that moment. model_cache_status is disk-only and never raises, so
         asking is cheap; a diagnostic already running owns the page instead.
         """
-        keys = ("model", "backend", "openvino_precision", "parakeet_quantization")
+        keys = (
+            "model",
+            "backend",
+            "openvino_precision",
+            "parakeet_quantization",
+            "parakeet_model",
+        )
         if self._diag_busy or all(previous.get(k) == self._saved_snapshot.get(k) for k in keys):
             return False
         status = model_cache_status(self._diag_snapshot())

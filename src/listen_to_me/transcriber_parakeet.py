@@ -1,12 +1,15 @@
 """Local speech-to-text via NVIDIA Parakeet TDT (onnx-asr / ONNX Runtime).
 
 The optional third transcription backend (``cfg["backend"] == "parakeet"``).
-It runs ``nvidia/parakeet-tdt-0.6b-v3`` — a 25-language transducer model
-(German included, CC-BY-4.0) that decodes an order of magnitude faster than
-the Whisper large-v3-turbo class at comparable accuracy, with punctuation,
-capitalization and automatic language detection built in. Because it is not
-a Whisper model, the Whisper-specific options (model preset, language,
-initial prompt, VAD filter, beam size, compute type) do not apply here.
+It runs one of the Parakeet TDT 0.6B exports in ``MODELS`` (picked by
+``cfg["parakeet_model"]``): NVIDIA's ``parakeet-tdt-0.6b-v3`` — a 25-language
+transducer model (German included, CC-BY-4.0) that decodes an order of
+magnitude faster than the Whisper large-v3-turbo class at comparable accuracy,
+with punctuation, capitalization and automatic language detection built in —
+or primeline's German fine-tune of it, same architecture and speed. Because
+neither is a Whisper model, the Whisper-specific options (model preset,
+language, initial prompt, VAD filter, beam size, compute type) do not apply
+here.
 
 Requires the optional ``onnx-asr`` package (``pip install "onnx-asr[cpu,hub]"``,
 or the ``[parakeet]`` extra); imported lazily so the app runs without it as
@@ -26,18 +29,18 @@ import os
 import threading
 
 from .audio import SAMPLE_RATE
+from .parakeet_models import (
+    MODELS,
+    ParakeetModel,
+    download_filter,
+    fetch_pinned,
+    missing_files,
+    model_path,
+    parakeet_model,
+)
 from .transcriber import _PREVIEW_WINDOW_SECONDS
 
 log = logging.getLogger(__name__)
-
-# onnx-asr preset name and the Hugging Face repo it resolves to. The repo id
-# is needed separately for the offline cache probe (and the status card).
-MODEL_NAME = "nemo-parakeet-tdt-0.6b-v3"
-MODEL_REPO = "istupakov/parakeet-tdt-0.6b-v3-onnx"
-
-# Subdirectory used below cfg["model_dir"] (when set) so the download never
-# mixes with the CT2/OpenVINO model folders in the same directory.
-_MODEL_DIRNAME = "parakeet-tdt-0.6b-v3-onnx"
 
 _INSTALL_HINT = (
     "The Parakeet backend needs the optional onnx-asr package. Install it "
@@ -51,37 +54,19 @@ def _quantization(cfg_value: str) -> str | None:
     return None if cfg_value == "fp32" else (cfg_value or "int8")
 
 
-def _download_filter(quantization: str | None):
-    """Which files of MODEL_REPO a download of `quantization` fetches.
-
-    The repo ships both variants side by side (int8 ≈ 0.7 GB next to fp32 ≈
-    2.5 GB), so counting all of it would leave an int8 download stuck at a
-    fifth of the bar. The variant is spelled into the file name
-    (``encoder-model.int8.onnx``); the handful of shared files carry no marker
-    and are counted with fp32 — a fraction of a megabyte either way.
-    """
-
-    def keep(name: str) -> bool:
-        return (".int8." in name) == (quantization == "int8")
-
-    return keep
-
-
-def _download_watcher(quantization: str | None, model_dir, progress):
-    """A DownloadWatcher over the folder the Parakeet model downloads into —
-    the backend's own directory under a custom model folder, the Hugging Face
-    cache otherwise."""
+def _download_watcher(model: ParakeetModel, quantization: str | None, model_dir, progress):
+    """A DownloadWatcher over the folder `model` downloads into — the
+    backend's own directory under a custom model folder, the Hugging Face
+    cache otherwise. The total is read at the revision that is downloaded:
+    a pinned commit's files are not necessarily the ones on main."""
     from .progress import DownloadWatcher, hub_cache_dir, hub_repo_size
 
-    if model_dir:
-        folder = os.path.join(str(model_dir), _MODEL_DIRNAME)
-    else:
-        folder = hub_cache_dir(MODEL_REPO)
+    folder = model_path(model, model_dir) or hub_cache_dir(model.repo)
     return DownloadWatcher(
         folder,
-        hub_repo_size(MODEL_REPO, keep=_download_filter(quantization)),
+        hub_repo_size(model.repo, keep=download_filter(quantization), revision=model.revision),
         progress,
-        label=f"Downloading {MODEL_NAME}",
+        label=f"Downloading {model.title}",
     )
 
 
@@ -140,22 +125,29 @@ def _preload_cuda_dlls() -> None:
         log.debug("onnxruntime.preload_dlls failed", exc_info=True)
 
 
-def _model_is_cached(quantization: str | None, model_dir) -> bool:
-    """Whether the Parakeet model is already on disk, so loading won't download.
+def _model_is_cached(model: ParakeetModel, quantization: str | None, model_dir) -> bool:
+    """Whether `model` is already on disk, so loading won't download.
 
-    With a custom model_dir the backend downloads into a subdirectory it fully
-    controls, so that directory existing is the answer. Otherwise probe the
-    Hugging Face cache offline for the encoder of the selected quantization —
-    the file the download could least plausibly be missing. Any uncertainty
-    counts as "not cached", same contract as the other backends.
+    An onnx-asr preset in a custom model_dir downloads into a subdirectory the
+    backend fully controls, so that directory existing is the answer (onnx-asr
+    itself treats it that way). Otherwise probe the Hugging Face cache offline
+    for the encoder of the selected quantization — the file the download could
+    least plausibly be missing. A pinned model is fetched by this module, so
+    every file of the quantization is checked, in its folder or in the cached
+    snapshot of its commit. Any uncertainty counts as "not cached", same
+    contract as the other backends.
     """
     try:
-        if model_dir:
-            return os.path.isdir(os.path.join(str(model_dir), _MODEL_DIRNAME))
+        path = model_path(model, model_dir)
+        if model.revision is not None:
+            folder = path or fetch_pinned(model, quantization, None, offline=True)
+            return not missing_files(folder, quantization)
+        if path is not None:
+            return os.path.isdir(path)
         from huggingface_hub import hf_hub_download
 
         suffix = f".{quantization}" if quantization else ""
-        hf_hub_download(MODEL_REPO, f"encoder-model{suffix}.onnx", local_files_only=True)
+        hf_hub_download(model.repo, f"encoder-model{suffix}.onnx", local_files_only=True)
         return True
     except Exception:
         return False
@@ -181,10 +173,14 @@ class ParakeetTranscriber:
         return self._cpu_fallback_for == self.cfg["device"]
 
     def _current_key(self):
+        # The model last: device and quantization keep the indices that
+        # `runtime` and the session fallback read. Normalised through the
+        # registry, so an unknown value and the default share one key.
         return (
             self.cfg["device"],
             self.cfg["parakeet_quantization"],
             self.cfg["model_dir"],
+            parakeet_model(self.cfg["parakeet_model"]).id,
         )
 
     @property
@@ -209,8 +205,9 @@ class ParakeetTranscriber:
 
         Downloads the ONNX model from Hugging Face on first use (into
         cfg["model_dir"] or the Hugging Face cache) and loads from disk on
-        every later run — onnx-asr itself resolves offline-first, so restarts
-        never re-download.
+        every later run — onnx-asr resolves its presets offline-first, and a
+        pinned model is fetched with ``local_files_only`` once it is cached,
+        so restarts never re-download or even ask the network.
 
         `progress` follows the same contract as the other backends: called
         from a background thread while the download runs, and once with
@@ -228,23 +225,24 @@ class ParakeetTranscriber:
         key = self._current_key()
         if self._model is not None and key == self._key:
             return
-        device, quant_cfg, model_dir = key
+        device, quant_cfg, model_dir, model_id = key
+        spec = MODELS[model_id]
         quantization = _quantization(quant_cfg)
         try:
             import onnx_asr
         except ImportError as exc:
             raise RuntimeError(_INSTALL_HINT) from exc
 
-        cached = _model_is_cached(quantization, model_dir)
+        cached = _model_is_cached(spec, quantization, model_dir)
         if notify is not None:
             if cached:
-                notify(f"Loading Parakeet model '{MODEL_NAME}'…")
+                notify(f"Loading the Parakeet model '{spec.title}'…")
             else:
                 notify(
-                    f"Downloading Parakeet model '{MODEL_NAME}' — "
+                    f"Downloading the Parakeet model '{spec.title}' — "
                     "one-time setup, this can take a few minutes."
                 )
-        path = os.path.join(str(model_dir), _MODEL_DIRNAME) if model_dir else None
+        path = model_path(spec, model_dir)
         providers = ["CPUExecutionProvider"] if self._forced_cpu else _resolve_providers(device)
         if device == "cuda" and not self._forced_cpu and "CUDAExecutionProvider" not in providers:
             # The default [parakeet] extra installs the CPU-only onnxruntime
@@ -262,28 +260,44 @@ class ParakeetTranscriber:
         if "CUDAExecutionProvider" in providers:
             _preload_cuda_dlls()
 
+        # Where onnx-asr reads the model from: a preset's own folder (None =
+        # onnx-asr's lookup in the HF cache), or the pinned download's folder.
+        where = path
+        watch = not cached and progress is not None
+
         def load(chosen):
             return onnx_asr.load_model(
-                MODEL_NAME,
-                path,
+                spec.onnx_asr_model,
+                where,
                 quantization=quantization,
                 providers=chosen,
             )
 
+        if spec.revision is not None:
+            # A pinned model is this module's own download, which onnx-asr
+            # then only reads. Done ahead of the session fallback below on
+            # purpose: a download that fails is no GPU problem.
+            if watch:
+                with _download_watcher(spec, quantization, model_dir, progress):
+                    where = fetch_pinned(spec, quantization, path, offline=cached)
+            else:
+                where = fetch_pinned(spec, quantization, path, offline=cached)
+            watch = False  # on disk now — the load below fetches nothing
         try:
-            if cached or progress is None:
+            if not watch:
                 model = load(providers)
             else:
-                # Only the downloading load is watched: onnx-asr fetches the
-                # files itself, so the bytes are counted where they land.
-                with _download_watcher(quantization, model_dir, progress):
+                # Only the downloading load is watched: onnx-asr fetches its
+                # presets itself, so the bytes are counted where they land.
+                with _download_watcher(spec, quantization, model_dir, progress):
                     model = load(providers)
         except FileNotFoundError:
             # onnx-asr treats an *existing* custom model directory as a
             # complete offline copy — an interrupted first download leaves it
             # permanently incomplete. Make the fix obvious instead of
-            # surfacing a bare "file not found".
-            if path is not None and os.path.isdir(path):
+            # surfacing a bare "file not found". (A pinned model's folder is
+            # completed by fetch_pinned instead, which names what is missing.)
+            if spec.revision is None and path is not None and os.path.isdir(path):
                 raise RuntimeError(
                     f"The Parakeet model folder '{path}' is incomplete "
                     "(interrupted download?) — delete that folder and try "
@@ -317,7 +331,7 @@ class ParakeetTranscriber:
         log.info(
             "parakeet model %s: %s / %s / providers=%s (dir=%s)",
             "loaded from cache" if cached else "downloaded",
-            MODEL_NAME,
+            spec.id,
             quantization or "fp32",
             providers,
             model_dir,

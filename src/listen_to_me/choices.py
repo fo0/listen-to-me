@@ -148,6 +148,16 @@ PARAKEET_QUANTIZATIONS = [
     ("int8", "recommended — fast on the CPU, ~0.7 GB"),
     ("fp32", "most accurate, best with a GPU, ~2.5 GB"),
 ]
+# Keys of parakeet_models.MODELS, which holds where each one downloads
+# from. Both are the same 0.6B architecture, so the size and the speed follow
+# the quantization above, not the model.
+PARAKEET_MODELS = [
+    ("parakeet-tdt-0.6b-v3", "NVIDIA's original — 25 languages, auto-detected, ~0.7 GB int8"),
+    (
+        "parakeet-primeline-de",
+        "German fine-tune by primeline — best German accuracy, German only, ~0.7 GB int8",
+    ),
+]
 
 # What happens to a finished transcript *besides* being inserted at the cursor.
 # (config value, label shown in the dropdown)

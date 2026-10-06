@@ -90,10 +90,10 @@ def model_cache_status(snapshot: dict) -> dict:
     it won't download). Disk-only, never touches the network, never raises.
 
     Returns ``{"target": str, "cached": bool, "error": str | None}`` — target
-    is what would be fetched (the OpenVINO Hugging Face repo id for that
-    backend, the model id otherwise); error carries the "this preset has no
-    OpenVINO conversion" message so the status card can warn before a download
-    is even attempted.
+    is what would be fetched (the Hugging Face repo id for the OpenVINO
+    backend and for the selected Parakeet model, the model id otherwise);
+    error carries the "this preset has no OpenVINO conversion" message so the
+    status card can warn before a download is even attempted.
     """
     model = str(snapshot.get("model") or "")
     model_dir = snapshot.get("model_dir")
@@ -104,12 +104,14 @@ def model_cache_status(snapshot: dict) -> dict:
             repo = openvino_model_repo(model, snapshot.get("openvino_precision") or "int8")
             return {"target": repo, "cached": _model_is_cached(repo, model_dir), "error": None}
         if snapshot.get("backend") == "parakeet":
-            from .transcriber_parakeet import MODEL_REPO, _model_is_cached, _quantization
+            from .parakeet_models import parakeet_model
+            from .transcriber_parakeet import _model_is_cached, _quantization
 
+            parakeet = parakeet_model(snapshot.get("parakeet_model"))
             quantization = _quantization(str(snapshot.get("parakeet_quantization") or "int8"))
             return {
-                "target": MODEL_REPO,
-                "cached": _model_is_cached(quantization, model_dir),
+                "target": parakeet.repo,
+                "cached": _model_is_cached(parakeet, quantization, model_dir),
                 "error": None,
             }
         from .transcriber import _model_is_cached
@@ -290,11 +292,11 @@ class DiagnosticsEngine:
         transcriber = self._transcriber_for(snapshot)
         transcriber.ensure_loaded(notify=notify, progress=progress)
         if transcriber.backend == "parakeet":
-            # The Parakeet backend runs one fixed model — the Whisper preset
+            # The Parakeet backend runs its own models — the Whisper preset
             # in the snapshot is not what was just downloaded.
-            from .transcriber_parakeet import MODEL_NAME
+            from .parakeet_models import parakeet_model
 
-            name = MODEL_NAME
+            name = parakeet_model(snapshot.get("parakeet_model")).title
         else:
             name = snapshot["model"]
         return f"Model '{name}' is downloaded and ready ({transcriber.backend} backend)."

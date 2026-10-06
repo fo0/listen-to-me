@@ -53,6 +53,9 @@ _LANGUAGE_TITLE = "Dictation language"
 # page and the Engine page already say. Thirty-five entries that change
 # nothing would be the silent no-op this menu exists to avoid.
 _LANGUAGE_PARAKEET_NOTE = "Parakeet detects the language itself"
+# The same for a single-language Parakeet model (the German fine-tune): it
+# ignores the setting too, and knows one language instead of detecting any.
+_LANGUAGE_PARAKEET_SINGLE_NOTE = "This Parakeet model knows {language} only"
 
 
 def format_duration(seconds) -> str:
@@ -442,13 +445,20 @@ class Tray:
         try:
             backend = self.app.cfg["backend"]
             current = str(self.app.cfg["language"])
+            parakeet_language = self._parakeet_language() if backend == "parakeet" else None
         except Exception:
             log.exception("could not read the configured dictation language")
             failed = menu.addAction("Could not read the settings")
             failed.setEnabled(False)
             return
         if backend == "parakeet":
-            note = menu.addAction(_LANGUAGE_PARAKEET_NOTE)
+            if parakeet_language:
+                text = _LANGUAGE_PARAKEET_SINGLE_NOTE.format(
+                    language=language_label(parakeet_language)
+                )
+            else:
+                text = _LANGUAGE_PARAKEET_NOTE
+            note = menu.addAction(text)
             note.setEnabled(False)
             return
         for code, _name in LANGUAGES:
@@ -467,6 +477,13 @@ class Tray:
                 lambda _checked=False, chosen=code: self.app.post("set_language", chosen)
             )
 
+    def _parakeet_language(self) -> str | None:
+        """The one language the selected Parakeet model knows — None for the
+        multilingual one, which detects the language itself."""
+        from .parakeet_models import parakeet_model
+
+        return parakeet_model(self.app.cfg["parakeet_model"]).language
+
     def _sync_language_title(self) -> None:
         """Name the language in use on the "Dictation language" entry itself.
 
@@ -475,7 +492,8 @@ class Tray:
         live was to open the submenu and find the tick among thirty-five
         entries. `language_label` for the spelling the submenu and the Engine
         page use; for Parakeet, which ignores the setting, the Home page's
-        "Auto-detect" rather than a language that does not apply. A config
+        "Auto-detect" (or the one language a single-language Parakeet model
+        knows) rather than a language that does not apply. A config
         that cannot be read leaves the bare title — naming a language the app
         may not be using would be worse than naming none.
         """
@@ -484,7 +502,7 @@ class Tray:
             return
         try:
             if self.app.cfg["backend"] == "parakeet":
-                current = language_label("auto")
+                current = language_label(self._parakeet_language() or "auto")
             else:
                 current = language_label(str(self.app.cfg["language"]))
         except Exception:

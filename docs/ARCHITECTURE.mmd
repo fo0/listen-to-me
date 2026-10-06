@@ -11,6 +11,7 @@ flowchart TD
         Poll("QTimer poll (main thread, 100ms)"):::backend
         Config[("config.json (DEFAULTS)")]:::database
         Net["netutil — insecure-SSL switch (corporate proxy)"]:::infra
+        CpuInfo["cpuinfo — physical / performance cores (ctypes, sysfs)"]:::infra
     end
 
     subgraph "Input and UI (Qt main thread)"
@@ -32,7 +33,7 @@ flowchart TD
         Resample("Resampler — native format → 16 kHz mono, in the capture callback"):::backend
         Transcriber("Transcriber — faster-whisper"):::backend
         TranscriberOV("OpenVinoTranscriber — OpenVINO GenAI (Intel GPU/NPU)"):::backend
-        TranscriberPK("ParakeetTranscriber — NVIDIA Parakeet TDT via onnx-asr"):::backend
+        TranscriberPK("ParakeetTranscriber — Parakeet TDT via onnx-asr (v3 or the German fine-tune)"):::backend
         Fillers("fillers — is the whole transcript one of the invented silence phrases?"):::backend
         Assistant("Assistant — LLM post-process (one profile per source)"):::backend
         Injector("Injector — paste/type at cursor"):::backend
@@ -125,7 +126,8 @@ flowchart TD
     Mute -->|"synthesize mute keybind"| OS
     Transcriber -->|"first-use download"| HF
     TranscriberOV -->|"first-use download (OpenVINO IR)"| HF
-    TranscriberPK -->|"first-use download (ONNX)"| HF
+    TranscriberPK -->|"first-use download (ONNX, German model at a pinned revision)"| HF
+    Transcriber -->|"cpu_threads on a CPU load"| CpuInfo
     Assistant -->|"chat/completions"| LLM
     Updater -->|"check/download"| GH
     Updater -->|"verify="| Net
@@ -174,6 +176,7 @@ flowchart TD
     click Autostart "src/listen_to_me/autostart.py"
     click Updater "src/listen_to_me/updater.py"
     click Net "src/listen_to_me/netutil.py"
+    click CpuInfo "src/listen_to_me/cpuinfo.py"
     click Diag "src/listen_to_me/diagnostics.py"
     click Progress "src/listen_to_me/progress.py"
 
