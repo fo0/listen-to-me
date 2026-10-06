@@ -9163,7 +9163,13 @@ def _delete_now(app, *widgets) -> None:
     the rest of the run. A QWizard left alive that way made a later check's
     apply_theme() segfault inside setStyleSheet (reproduced with the wizard
     before #286 too — `_gui_construction` only escaped it by running last).
-    Sending the deferred deletes explicitly destroys them right here."""
+    The trigger is Qt's, and self-test only: replacing the *application
+    style* (apply_theme's setStyle) while a style-sheet-polished QWizard with
+    a page exists, then setting a style sheet again — even a bare QWizard
+    does it. The app calls apply_theme once, before any wizard; a live OS
+    light/dark switch re-applies only the palette and the style sheet, which
+    a living wizard survives. Sending the deferred deletes explicitly
+    destroys them right here."""
     from PySide6.QtCore import QCoreApplication, QEvent
 
     for widget in widgets:
@@ -9610,6 +9616,21 @@ def _setup_wizard_recommends_the_engine_for_this_pc():
             failed._apply()
             assert {key: cfg[key] for key in engine_keys} == saved
 
+            # No page may push the wizard past its 620 px: the manual fields
+            # shown, a probe error and a microphone error that each carry an
+            # unbreakable path (a wrapping label demands its longest word).
+            long_path = (
+                r"C:\Users\a.verylongusername\AppData\Local\Programs\ListenToMe"
+                r"\models\huggingface\hub\models--openai--whisper-large-v3"
+            )
+            page.rec_detail.setText(f"failed: {long_path}")
+            failed.mic_test.status.setText(f"Microphone test failed: {long_path}")
+            room = failed.width() - 60  # less the wizard's own frame and margins
+            for page_id in failed.pageIds():
+                shown = failed.page(page_id)
+                demanded = shown.minimumSizeHint().width()
+                assert 0 < demanded <= room, (shown.title(), demanded, room)
+
             # A probe still running at Next: never waited on — the first Next
             # switches to the manual fields and says why, the second goes on;
             # Finish meanwhile writes the manual (saved) values.
@@ -9635,11 +9656,77 @@ def _setup_wizard_recommends_the_engine_for_this_pc():
             assert page.note.text() == onboarding_engine.READY_NOTE
             assert page.rec_summary.text() != onboarding_engine.CHECKING_TEXT
             assert not page.is_recommended(), "the mode flipped under the user"
+            # …and neither did the fields: the note promised that Next keeps
+            # what they showed, so Finish still writes the saved values.
+            pending._apply()
+            assert {key: cfg[key] for key in engine_keys} == saved, "refilled behind the note"
         finally:
             gate.set()
             for item in wizards:
                 item.mic_test.cancel()
             _delete_now(app, *wizards)
+
+
+def _app_disposes_the_setup_wizard():
+    """App._run_onboarding hands the wizard to Qt for deletion on the GUI
+    thread however it ends — Finish, Cancel, or exec() raising. Left to
+    Python's cycle collector (its pages hold bound methods of it), it would be
+    destroyed on whichever thread the collection runs — its own hardware probe
+    or the model warm-up, both busy importing — and a QWidget destroyed off
+    the GUI thread crashes the app."""
+    import logging
+
+    from listen_to_me import onboarding
+    from listen_to_me.app import App
+
+    class _Wizard:
+        made: list = []
+        result: int | None = 1  # None: exec() raises
+
+        def __init__(self, cfg, app=None):
+            self.deleted = False
+            _Wizard.made.append(self)
+
+        def exec(self):
+            if _Wizard.result is None:
+                raise RuntimeError("exec failed")
+            return _Wizard.result
+
+        def deleteLater(self):  # noqa: N802 (Qt naming)
+            self.deleted = True
+
+    class _Cfg:
+        @staticmethod
+        def save():
+            return True
+
+    class _App:
+        def __init__(self):
+            self.cfg, self._quitting, self.calls = _Cfg(), False, []
+
+        def apply_settings(self):
+            self.calls.append("apply")
+
+        def _open_settings(self):
+            self.calls.append("settings")
+
+        def notify(self, *_args, **_kwargs):
+            self.calls.append("notify")
+
+    real, onboarding.OnboardingWizard = onboarding.OnboardingWizard, _Wizard
+    app_log = logging.getLogger("listen_to_me.app")
+    level = app_log.level
+    app_log.setLevel(logging.CRITICAL)  # the raising exec() logs a traceback
+    try:
+        for result, expected in ((1, ["apply"]), (0, ["settings"]), (None, ["settings"])):
+            _Wizard.result = result
+            fake = _App()
+            App._run_onboarding(fake)
+            assert _Wizard.made[-1].deleted, f"exec() → {result}: wizard left to the GC"
+            assert fake.calls == expected, (result, fake.calls)
+    finally:
+        onboarding.OnboardingWizard = real
+        app_log.setLevel(level)
 
 
 def _settings_window_edits_the_new_options():
@@ -12999,6 +13086,7 @@ _LIGHT_CHECKS = [
      _settings_audio_tests_the_microphone_through_the_widget),
     ("setup wizard recommends the engine for this PC",
      _setup_wizard_recommends_the_engine_for_this_pc),
+    ("app disposes the setup wizard", _app_disposes_the_setup_wizard),
     ("system audio picker reads as an output picker",
      _system_audio_picker_reads_as_an_output_picker),
     ("system audio hint names the outputs it cannot record",

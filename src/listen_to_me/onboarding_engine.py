@@ -19,8 +19,10 @@ real hardware and can join the thread it started.
 
 Never waits on the probe: a probe that failed switches the page to the manual
 fields with a visible note, and Next pressed while it still runs does the
-same — the fields then hold the saved config (or the recommendation, once it
-is known and as long as the user has not edited them).
+same — the fields then hold the saved config, and keep it: the note says Next
+keeps them, so a recommendation that lands later no longer refills them. (A
+"Choose manually" picked by the user is prefilled with the recommendation as
+long as no field was edited by hand.)
 """
 
 from __future__ import annotations
@@ -126,8 +128,9 @@ class EnginePage(QWizardPage):
         self._probe_error: str | None = None
         self._probe_thread: threading.Thread | None = None
         self._pending_note_shown = False
-        # Set by the first pick by hand in the manual fields: from then on a
-        # recommendation no longer refills them (see _refresh).
+        # Set by the first pick by hand in the manual fields (or by Next
+        # pressed before the probe answered, see validatePage): from then on
+        # a recommendation no longer refills them (see _refresh).
         self._manual_edited = False
         # The preset the OpenVINO model filter swapped out, so going back to
         # another backend restores it (see _on_backend_changed).
@@ -316,6 +319,10 @@ class EnginePage(QWizardPage):
             self.manual_radio.setChecked(True)
             self._pending_note_shown = True
             self._set_note(PENDING_NOTE)
+            # The note promises that Next keeps what the fields show: a
+            # recommendation landing later — possibly after the user left
+            # the page — must not refill them behind it.
+            self._manual_edited = True
             return False
         return True
 
