@@ -22,7 +22,7 @@ Qt, `sounddevice`, `pynput`, `faster_whisper`, `numpy` are imported **inside** f
 
 ## Qt-free modules (headless-testable)
 
-`icons.py` (Pillow), `keymap.py` (QtCore only), `help_content.py`, `diagnostics.py`, `choices.py`, `fillers.py` (stdlib only), `cpuinfo.py` (stdlib only — ctypes/sysfs, never a subprocess), `system_audio.py`, `portaudio.py` (stdlib only; `sounddevice` imported inside `describe()`), `resample.py` (numpy, imported inside the functions) and the low-level parts of `qtutil.py`/`selftest.py` avoid `QtWidgets`/`QtGui` so they import and test on a headless machine. Keep new pure logic Qt-free when practical.
+`icons.py` (Pillow), `keymap.py` (QtCore only), `help_content.py`, `diagnostics.py`, `choices.py`, `fillers.py` (stdlib only), `cpuinfo.py` (stdlib only — ctypes/sysfs, never a subprocess), `autoconfig.py` (stdlib only — pure functions over the `hardware_status()` dict), `system_audio.py`, `portaudio.py` (stdlib only; `sounddevice` imported inside `describe()`), `resample.py` (numpy, imported inside the functions) and the low-level parts of `qtutil.py`/`selftest.py` avoid `QtWidgets`/`QtGui` so they import and test on a headless machine. Keep new pure logic Qt-free when practical.
 
 ## Transcription + CUDA→CPU fallback
 

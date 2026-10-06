@@ -5480,14 +5480,19 @@ def _diagnostics_engine():
 
 def _hardware_probes():
     """The status-card probes never raise and degrade to honest "not found"
-    answers on a machine without ctranslate2/openvino (like the light CI
-    runner); the model cache probe recognises a local directory as downloaded
-    and reports the presets without an OpenVINO conversion as an error."""
+    answers on a machine without ctranslate2/openvino/onnx-asr (like the light
+    CI runner); the CPU probe answers with real counts; the model cache probe
+    recognises a local directory as downloaded and reports the presets
+    without an OpenVINO conversion as an error. The whole status dict reads
+    into the recommender's Hardware on this machine."""
+    from listen_to_me.autoconfig import Hardware, hardware_from_status, recommend
     from listen_to_me.diagnostics import (
         hardware_status,
         model_cache_status,
+        probe_cpu,
         probe_cuda,
         probe_openvino,
+        probe_parakeet,
     )
 
     cuda = probe_cuda()
@@ -5497,6 +5502,19 @@ def _hardware_probes():
     ov = probe_openvino()
     assert set(ov) == {"installed", "devices", "error"}
     assert isinstance(ov["installed"], bool) and isinstance(ov["devices"], list)
+
+    pk = probe_parakeet()
+    assert set(pk) == {"installed", "error"} and isinstance(pk["installed"], bool), pk
+
+    cpu = probe_cpu()
+    assert set(cpu) == {
+        "physical_cores", "performance_cores", "logical", "avx2", "x86", "name", "error"
+    }, cpu
+    for key in ("physical_cores", "performance_cores", "logical"):
+        assert isinstance(cpu[key], int) and cpu[key] >= 1, (key, cpu)
+    assert cpu["performance_cores"] <= cpu["physical_cores"] <= cpu["logical"], cpu
+    assert cpu["avx2"] in (True, False, None) and cpu["x86"] in (True, False, None), cpu
+    assert cpu["name"] is None or (isinstance(cpu["name"], str) and cpu["name"]), cpu
 
     with tempfile.TemporaryDirectory() as tmp:
         snap = {
@@ -5525,7 +5543,281 @@ def _hardware_probes():
         )
         assert pk == {"target": MODELS[DEFAULT_MODEL].repo, "cached": False, "error": None}
 
-        assert set(hardware_status(snap)) == {"cuda", "openvino", "model"}
+        status = hardware_status(snap)
+        assert set(status) == {"cuda", "openvino", "parakeet", "cpu", "model"}, set(status)
+        hardware = hardware_from_status(status)
+        assert isinstance(hardware, Hardware)
+        assert hardware.physical_cores == status["cpu"]["physical_cores"]
+        assert hardware.parakeet is status["parakeet"]["installed"]
+        assert "language" not in recommend(hardware, "de").values
+
+
+def _engine_recommendation_matrix():
+    """The engine recommendation (#286), branch by branch: NVIDIA → the
+    (German) turbo on CUDA; otherwise Parakeet for its 25 languages and
+    auto-detection (the German fine-tune for German); otherwise an Intel Arc
+    GPU through OpenVINO; otherwise the turbo on a CPU with 8+ cores and AVX2
+    not known to be missing, small below. Every recommended value must be a
+    member of the dropdown it would land in — a renamed preset breaks this
+    check, not the user's engine — the keys are exactly the ones the backend
+    reads, `language` is never among them, and the text a user reads is
+    there, with the download size read out of the choice notes."""
+    from listen_to_me import choices
+    from listen_to_me.autoconfig import (
+        Hardware,
+        Recommendation,
+        changes,
+        differs,
+        recommend,
+    )
+    from listen_to_me.config import DEFAULTS, Config
+    from listen_to_me.parakeet_models import MODELS, V3_LANGUAGES
+
+    german_turbo = choices.GERMAN_TURBO_CT2
+    fw_cuda = {"backend": "faster-whisper", "device": "cuda", "compute_type": "auto"}
+    fw_cpu = {"backend": "faster-whisper", "device": "cpu", "compute_type": "auto"}
+    ov_arc = {
+        "backend": "openvino",
+        "model": "large-v3-turbo",
+        "openvino_device": "gpu",
+        "openvino_precision": "int8",
+    }
+    pk = {"backend": "parakeet", "parakeet_quantization": "int8", "device": "cpu"}
+    pk_de = dict(pk, parakeet_model="parakeet-primeline-de")
+    pk_v3 = dict(pk, parakeet_model="parakeet-tdt-0.6b-v3")
+    arc = {"openvino": True, "arc_gpu": True, "gpu_name": "Intel Arc A770 Graphics"}
+    strong = {"physical_cores": 8, "performance_cores": 8, "avx2": True, "x86": True}
+    weak = {"physical_cores": 4, "performance_cores": 4, "avx2": True, "x86": True}
+    cpu_turbo = dict(fw_cpu, model="large-v3-turbo")
+    cpu_small = dict(fw_cpu, model="small")
+
+    # (hardware, language, expected values)
+    matrix = [
+        (Hardware(cuda=True, parakeet=True, **arc), "de", dict(fw_cuda, model=german_turbo)),
+        (Hardware(cuda=True, parakeet=True), "en", dict(fw_cuda, model="large-v3-turbo")),
+        (Hardware(cuda=True), "ja", dict(fw_cuda, model="large-v3-turbo")),
+        (Hardware(cuda=True), "auto", dict(fw_cuda, model="large-v3-turbo")),
+        (Hardware(parakeet=True, **arc, **strong), "de", pk_de),
+        (Hardware(parakeet=True), "DE ", pk_de),  # hand-edited spelling
+        (Hardware(parakeet=True), "en", pk_v3),
+        (Hardware(parakeet=True, **arc), "auto", pk_v3),
+        (Hardware(parakeet=True), "", pk_v3),
+        (Hardware(parakeet=True), None, pk_v3),
+        (Hardware(parakeet=True), "fr", pk_v3),
+        (Hardware(parakeet=True), "mt", pk_v3),  # on the model card, not in LANGUAGES
+        (Hardware(parakeet=True, **arc, **weak), "ja", ov_arc),
+        (Hardware(parakeet=True, **weak), "ja", cpu_small),
+        (Hardware(parakeet=True, **strong), "ja", cpu_turbo),
+        (Hardware(**weak), "de", cpu_small),
+        (Hardware(**strong), "de", dict(fw_cpu, model=german_turbo)),
+        (Hardware(**arc, **strong), "de", ov_arc),  # no OpenVINO German turbo
+        (Hardware(**strong), "en", cpu_turbo),
+        # An Arc GPU without the OpenVINO backend installed is no option.
+        (Hardware(openvino=False, arc_gpu=True, **strong), "ja", cpu_turbo),
+        # OpenVINO installed, but no Arc GPU among its devices.
+        (Hardware(openvino=True, **weak), "ja", cpu_small),
+        # AVX2 missing on x86 holds a strong CPU to small; on ARM it is not
+        # missing, it is not a thing — and unknown is not missing either.
+        (Hardware(physical_cores=16, avx2=False, x86=True), "ja", cpu_small),
+        (Hardware(physical_cores=16, avx2=False, x86=None), "ja", cpu_small),
+        (Hardware(physical_cores=10, avx2=False, x86=False), "ja", cpu_turbo),
+        (Hardware(physical_cores=8), "ja", cpu_turbo),
+        (Hardware(physical_cores=7, avx2=True, x86=True), "ja", cpu_small),
+        # Nothing known at all: the setup that runs everywhere.
+        (Hardware(), "de", cpu_small),
+        (Hardware(), "auto", cpu_small),
+    ]
+    backend_keys = {
+        "faster-whisper": {"backend", "model", "device", "compute_type"},
+        "openvino": {"backend", "model", "openvino_device", "openvino_precision"},
+        "parakeet": {"backend", "parakeet_model", "parakeet_quantization", "device"},
+    }
+
+    def values_of(pairs):
+        return {value for value, _note in pairs}
+
+    members = {
+        "backend": values_of(choices.BACKENDS),
+        "model": values_of(choices.MODEL_CHOICES),
+        "device": set(choices.DEVICES),
+        "compute_type": set(choices.COMPUTE_TYPES),
+        "openvino_device": set(choices.OPENVINO_DEVICES),
+        "openvino_precision": values_of(choices.OPENVINO_PRECISIONS),
+        "parakeet_model": values_of(choices.PARAKEET_MODELS) & set(MODELS),
+        "parakeet_quantization": values_of(choices.PARAKEET_QUANTIZATIONS),
+    }
+    for hardware, language, expected in matrix:
+        case = (hardware, language)
+        rec = recommend(hardware, language)
+        assert isinstance(rec, Recommendation), case
+        assert rec.values == expected, (case, rec.values)
+        assert "language" not in rec.values, case
+        assert set(rec.values) == backend_keys[rec.values["backend"]], (case, rec.values)
+        for key, value in rec.values.items():
+            assert key in DEFAULTS, (case, key)  # a renamed config key
+            assert value in members[key], (case, key, value)
+        if rec.values["backend"] == "openvino":
+            assert choices.openvino_supports_model(rec.values["model"]), case
+        assert rec.reason.strip() and rec.summary.strip(), case
+        assert rec.reason.endswith("."), (case, rec.reason)
+        assert rec.download.startswith("~") and rec.download.endswith("B"), (case, rec.download)
+    assert MODELS["parakeet-primeline-de"].language == "de"
+    assert len(V3_LANGUAGES) == 25 and "de" in V3_LANGUAGES and "ja" not in V3_LANGUAGES
+
+    # The text names what was found and why.
+    german = recommend(Hardware(parakeet=True), "de")
+    assert "German" in german.reason and "German" in german.summary, german
+    assert recommend(Hardware(**arc), "ja").reason.startswith("Your Intel Arc A770 Graphics")
+    assert "Japanese" in recommend(Hardware(parakeet=True, **arc), "ja").reason
+    assert "AVX2" in recommend(Hardware(physical_cores=16, avx2=False, x86=True), "ja").reason
+    named = recommend(Hardware(cpu_name="AMD Ryzen 7 5800X", **strong), "en")
+    assert "AMD Ryzen 7 5800X, 8 cores" in named.reason, named.reason
+    assert "With 1 core," in recommend(Hardware(physical_cores=1), "en").reason
+    assert recommend(Hardware(cuda=True), "de").download == "~1.6 GB"
+    assert recommend(Hardware(), "de").download == "~490 MB"
+    assert recommend(Hardware(parakeet=True), "de").download == "~0.7 GB"
+    assert recommend(Hardware(**arc), "de").download == "~0.8 GB"  # int8: half of fp16
+
+    # "Already set up like this" against a plain snapshot and a Config.
+    rec = recommend(Hardware(parakeet=True), "de")
+    snapshot = dict(DEFAULTS, **rec.values)
+    assert changes(rec, snapshot) == {} and not differs(rec, snapshot)
+    moved = changes(rec, DEFAULTS)
+    assert moved["backend"] == ("faster-whisper", "parakeet"), moved
+    assert moved["device"] == ("auto", "cpu"), moved
+    assert "parakeet_quantization" not in moved, moved  # the default is int8 already
+    assert changes(rec, {}) == {key: (None, value) for key, value in rec.values.items()}
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        assert differs(rec, cfg)
+        for key, value in rec.values.items():
+            cfg[key] = value
+        assert not differs(rec, cfg)
+        assert cfg["language"] == DEFAULTS["language"]
+
+
+def _engine_recommendation_reads_the_probe():
+    """`hardware_from_status` turns a `hardware_status()` dict into the
+    recommender's Hardware: CUDA, OpenVINO and an Arc GPU among its GPU
+    devices only (not an NPU, not a UHD iGPU, not without OpenVINO itself),
+    Parakeet, the cores, AVX2 and the shortened names. A missing, malformed
+    or failed probe falls back to the conservative answer — never raises,
+    never invents hardware — and the CPU probes themselves answer with a
+    bool or None. The /proc/cpuinfo parser reads only the first processor."""
+    from listen_to_me import cpuinfo
+    from listen_to_me.autoconfig import Hardware, hardware_from_status, recommend, short_name
+
+    status = {
+        "cuda": {"available": False, "count": 0, "error": "no ctranslate2"},
+        "openvino": {
+            "installed": True,
+            "devices": [
+                {"device": "CPU", "name": "Intel(R) Core(TM) Ultra 7 155H"},
+                {"device": "NPU", "name": "Intel(R) AI Boost"},
+                {"device": "GPU.0", "name": "Intel(R) UHD Graphics (iGPU)"},
+                {"device": "GPU.1", "name": "Intel(R) Arc(TM) A770 Graphics (dGPU)"},
+            ],
+            "error": None,
+        },
+        "parakeet": {"installed": True, "error": None},
+        "cpu": {
+            "physical_cores": 16,
+            "performance_cores": 6,
+            "logical": 22,
+            "avx2": True,
+            "x86": True,
+            "name": "Intel(R) Core(TM) Ultra 7 155H",
+            "error": None,
+        },
+        "model": {"target": "small", "cached": False, "error": None},
+    }
+    assert hardware_from_status(status) == Hardware(
+        cuda=False,
+        openvino=True,
+        arc_gpu=True,
+        gpu_name="Intel Arc A770 Graphics",
+        parakeet=True,
+        physical_cores=16,
+        performance_cores=6,
+        avx2=True,
+        x86=True,
+        cpu_name="Intel Core Ultra 7 155H",
+    )
+    with_cuda = dict(status, cuda={"available": True, "count": 1, "error": None})
+    assert hardware_from_status(with_cuda).cuda is True
+
+    without_arc = status["openvino"]["devices"][:3]
+    no_arc = dict(status, openvino=dict(status["openvino"], devices=without_arc))
+    assert hardware_from_status(no_arc).arc_gpu is False
+    assert hardware_from_status(no_arc).gpu_name == ""
+    arc_named_cpu = dict(
+        status,
+        openvino={"installed": True, "devices": [{"device": "CPU", "name": "Intel Arc"}]},
+    )
+    assert hardware_from_status(arc_named_cpu).arc_gpu is False
+    not_installed = dict(status, openvino=dict(status["openvino"], installed=False))
+    assert hardware_from_status(not_installed).arc_gpu is False
+    assert hardware_from_status(not_installed).openvino is False
+
+    # Missing, malformed, failed: the conservative defaults, never an error.
+    conservative = Hardware()
+    for broken in (None, "status", [], {}, {"cpu": None}, {"cuda": "yes", "parakeet": [True]}):
+        assert hardware_from_status(broken) == conservative, broken
+    mangled = {
+        "cuda": {"available": "true", "count": "1"},
+        "openvino": {"installed": True, "devices": "GPU"},
+        "parakeet": {"installed": 1},
+        "cpu": {
+            "physical_cores": "8",
+            "performance_cores": True,
+            "avx2": "yes",
+            "x86": 1,
+            "name": 42,
+        },
+    }
+    assert hardware_from_status(mangled) == Hardware(openvino=True), hardware_from_status(mangled)
+    lopsided = {"cpu": {"physical_cores": 4, "performance_cores": 12}}
+    assert hardware_from_status(lopsided).performance_cores == 4
+    failed = {
+        "cpu": {
+            "physical_cores": 1,
+            "performance_cores": 1,
+            "logical": 1,
+            "avx2": None,
+            "x86": None,
+            "name": None,
+            "error": "boom",
+        }
+    }
+    assert recommend(hardware_from_status(failed), "de").values["model"] == "small"
+    assert recommend(hardware_from_status(None), "ja").values == {
+        "backend": "faster-whisper",
+        "model": "small",
+        "device": "cpu",
+        "compute_type": "auto",
+    }
+
+    assert short_name("Intel(R) Core(TM) i7-8650U CPU @ 1.90GHz") == "Intel Core i7-8650U"
+    assert short_name("12th Gen Intel(R) Core(TM) i7-1265U") == "12th Gen Intel Core i7-1265U"
+    assert short_name("Intel(R) Arc(TM) A770 Graphics (dGPU)") == "Intel Arc A770 Graphics"
+    assert short_name("AMD Ryzen 7 5800X 8-Core Processor") == "AMD Ryzen 7 5800X 8-Core Processor"
+    assert short_name("Apple M2 Pro") == "Apple M2 Pro"
+    assert short_name(None) == "" and short_name("x" * 500) == "x" * 64
+
+    assert cpuinfo.has_avx2() in (True, False, None)
+    assert cpuinfo.is_x86() in (True, False, None)
+    name = cpuinfo.cpu_name()
+    assert name is None or (isinstance(name, str) and name == " ".join(name.split()) and name)
+    text = (
+        "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: Intel(R)  Core(TM) i5\n"
+        "flags\t\t: fpu sse2 avx avx2 fma\n\nprocessor\t: 1\nflags\t\t: fpu\n"
+    )
+    fields = cpuinfo._parse_proc_cpuinfo(text)
+    assert fields["model name"] == "Intel(R)  Core(TM) i5", fields
+    assert "avx2" in fields["flags"].split() and fields["processor"] == "0", fields
+    assert cpuinfo._parse_proc_cpuinfo("") == {}
+    # aarch64 lists "Features", not "flags" — there is no AVX2 line to read.
+    assert "flags" not in cpuinfo._parse_proc_cpuinfo("processor\t: 0\nFeatures\t: fp asimd\n")
 
 
 def _clip_stats_verdicts():
@@ -11870,6 +12162,8 @@ _LIGHT_CHECKS = [
     ("CPU threads resolution", _cpu_threads_resolution),
     ("diagnostics engine", _diagnostics_engine),
     ("hardware/status probes", _hardware_probes),
+    ("engine recommendation matrix", _engine_recommendation_matrix),
+    ("engine recommendation reads the probe", _engine_recommendation_reads_the_probe),
     ("help content renders", _help_content_renders),
     ("help page find", _help_page_find),
     ("escape clears a search field", _escape_clears_a_search_field),

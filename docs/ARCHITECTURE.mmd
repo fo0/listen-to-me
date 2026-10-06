@@ -11,7 +11,8 @@ flowchart TD
         Poll("QTimer poll (main thread, 100ms)"):::backend
         Config[("config.json (DEFAULTS)")]:::database
         Net["netutil — insecure-SSL switch (corporate proxy)"]:::infra
-        CpuInfo["cpuinfo — physical / performance cores (ctypes, sysfs)"]:::infra
+        CpuInfo["cpuinfo — cores, AVX2, CPU name (ctypes, sysfs, registry — never a subprocess)"]:::infra
+        AutoConfig["autoconfig — engine recommendation: Hardware + language → config values + reason"]:::backend
     end
 
     subgraph "Input and UI (Qt main thread)"
@@ -128,6 +129,8 @@ flowchart TD
     TranscriberOV -->|"first-use download (OpenVINO IR)"| HF
     TranscriberPK -->|"first-use download (ONNX, German model at a pinned revision)"| HF
     Transcriber -->|"cpu_threads on a CPU load"| CpuInfo
+    Diag -->|"probe_cpu: cores, AVX2, name"| CpuInfo
+    Diag -->|"hardware_status() dict → hardware_from_status() → recommend()"| AutoConfig
     Assistant -->|"chat/completions"| LLM
     Updater -->|"check/download"| GH
     Updater -->|"verify="| Net
@@ -145,6 +148,7 @@ flowchart TD
     Selftest -->|"constructs the window headless (offscreen off Windows)"| Settings
     Selftest -->|"release gate: the loaded library must enumerate WASAPI loopback"| PortAudio
     Selftest -->|"help_html() renders every topic"| Help
+    Selftest -->|"recommendation matrix: every value a dropdown member"| AutoConfig
     Selftest -->|"paints in recording / processing / download state"| VoiceMic
 
     click Main "src/listen_to_me/app.py"
@@ -177,6 +181,7 @@ flowchart TD
     click Updater "src/listen_to_me/updater.py"
     click Net "src/listen_to_me/netutil.py"
     click CpuInfo "src/listen_to_me/cpuinfo.py"
+    click AutoConfig "src/listen_to_me/autoconfig.py"
     click Diag "src/listen_to_me/diagnostics.py"
     click Progress "src/listen_to_me/progress.py"
 
