@@ -13,6 +13,7 @@ flowchart TD
         Net["netutil — insecure-SSL switch (corporate proxy)"]:::infra
         CpuInfo["cpuinfo — cores, AVX2, CPU name (ctypes, sysfs, registry — never a subprocess)"]:::infra
         AutoConfig["autoconfig — engine recommendation: Hardware + language → config values + reason"]:::backend
+        AutoConfigText["autoconfig_text — words a recommendation: change lines, download sentence, the confirmation"]:::backend
     end
 
     subgraph "Input and UI (Qt main thread)"
@@ -119,6 +120,8 @@ flowchart TD
     Settings -->|"phrase-list status while it is edited"| Fillers
     Settings -->|"model download / mic + transcription test"| Diag
     Settings -->|"Auto-configure: recommend() → confirm → fill the Engine fields (unsaved)"| AutoConfig
+    Settings -->|"confirm_message() / describe_changes() for the question"| AutoConfigText
+    AutoConfigText -->|"Recommendation"| AutoConfig
     Diag -->|"test clip"| Recorder
     Diag -->|"snapshot transcriber"| Transcriber
     Diag -->|"snapshot transcriber"| TranscriberOV
@@ -183,6 +186,7 @@ flowchart TD
     click Net "src/listen_to_me/netutil.py"
     click CpuInfo "src/listen_to_me/cpuinfo.py"
     click AutoConfig "src/listen_to_me/autoconfig.py"
+    click AutoConfigText "src/listen_to_me/autoconfig_text.py"
     click Diag "src/listen_to_me/diagnostics.py"
     click Progress "src/listen_to_me/progress.py"
 

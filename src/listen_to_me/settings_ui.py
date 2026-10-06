@@ -50,15 +50,12 @@ from PySide6.QtWidgets import (
 from . import APP_NAME, RELEASES_URL, REPO_URL, __version__
 from .assistant import config_problem as assistant_config_problem
 from .assistant import profile as assistant_profile
-from .autoconfig import (
+from .autoconfig import Recommendation, changes, hardware_from_status, recommend
+from .autoconfig_text import (
     FIELD_LABELS,
-    Recommendation,
     already_set_up_text,
-    changes,
     confirm_message,
-    hardware_from_status,
     model_downloaded,
-    recommend,
     shown_value,
 )
 from .choices import (
@@ -880,6 +877,15 @@ class SettingsWindow(QDialog):
         self.pk_quant_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
         self.pk_model_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
         self.model_dir_edit.textChanged.connect(self._on_status_inputs_changed)
+        # The auto-configure line describes the fields as the button left
+        # them ("already set up", "filled in"), so an edit by hand retires it.
+        # _apply_recommendation writes its line after its own edits.
+        for combo in (
+            self.backend_combo, self.model_combo, self.language_combo,
+            self.device_combo, self.compute_combo, self.ov_device_combo,
+            self.ov_precision_combo, self.pk_model_combo, self.pk_quant_combo,
+        ):
+            combo.currentIndexChanged.connect(self._clear_autoconfig_status)
 
         # Footer with the version and the action buttons.
         footer = QHBoxLayout()
@@ -1656,8 +1662,9 @@ class SettingsWindow(QDialog):
         sh.addStretch(1)
         sform.addRow("", status_row)
         # What the button found or filled in. Composed from the recommendation
-        # at runtime, hence elastic; its row is hidden while it is empty.
-        self.autoconfig_status = self._hint("", elastic=True)
+        # at runtime, hence elastic, and selectable for the "Could not set"
+        # failure; its row is hidden while it is empty.
+        self.autoconfig_status = self._hint("", elastic=True, selectable=True)
         sform.addRow("", self.autoconfig_status)
         sform.setRowVisible(self.autoconfig_status, False)
         self._hw_form = sform
@@ -4685,6 +4692,9 @@ class SettingsWindow(QDialog):
             # OpenVINO filter swapped out is no longer to be restored.
             self._model_index = row
             self._model_swapped_from = None
+            # The backend switch just before may have worded a swap ("your
+            # previous choice comes back") that the line above cancelled.
+            self._speech_hint.setText(self._speech_hint_text(self._selected_backend(), None))
             return True
         plain = {
             "device": self.device_combo,
@@ -4710,6 +4720,9 @@ class SettingsWindow(QDialog):
             return False
         combo.setCurrentIndex(row)
         return True
+
+    def _clear_autoconfig_status(self, *_args) -> None:
+        self._set_autoconfig_status("")
 
     def _set_autoconfig_status(self, text: str) -> None:
         self.autoconfig_status.setText(text)

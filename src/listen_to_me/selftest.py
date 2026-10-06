@@ -8929,14 +8929,15 @@ def _settings_engine_auto_configures_for_this_pc():
     from listen_to_me.autoconfig import (
         Recommendation,
         changes,
-        describe_changes,
         hardware_from_status,
-        model_downloaded,
         recommend,
     )
+    from listen_to_me.autoconfig_text import describe_changes, model_downloaded
     from listen_to_me.choices import (
+        GERMAN_TURBO_CT2,
         PARAKEET_MODELS,
         PARAKEET_QUANTIZATIONS,
+        backend_label,
         choice_label,
         language_label,
         model_label,
@@ -9005,7 +9006,7 @@ def _settings_engine_auto_configures_for_this_pc():
             ):
                 assert f"• {line}" in details, (line, details)
             assert rec.summary in headline and rec.reason in details, (headline, details)
-            assert "Downloads about 0.7 GB on first use." in details, details
+            assert "The model (about 0.7 GB) is downloaded once, on first use." in details, details
             assert window._selected_backend() == "faster-whisper"
             assert window.autoconfig_status.text() == ""
 
@@ -9049,6 +9050,35 @@ def _settings_engine_auto_configures_for_this_pc():
             assert window.autoconfig_status.text() == (
                 f"This PC is already set up for the recommended engine: {rec.summary}."
             )
+            # An edit by hand retires that line: it no longer describes the page.
+            window.device_combo.setCurrentText("cpu")
+            assert window.autoconfig_status.text() == ""
+            assert not window._hw_form.isRowVisible(window.autoconfig_status)
+
+            # OpenVINO on an Arc, German with its fine-tune entered: the
+            # recommended model overrides the filter's swap, so the hint under
+            # the model no longer promises the fine-tune back, and leaving the
+            # backend keeps what the question said.
+            window.language_combo.setCurrentText(language_label("de"))
+            window.model_combo.setCurrentText(model_label(GERMAN_TURBO_CT2))
+            arc = dict(
+                status(cuda=False),
+                parakeet={"installed": False, "error": None},
+                openvino={
+                    "installed": True,
+                    "devices": [{"device": "GPU", "name": "Intel(R) Arc(TM) A770 Graphics"}],
+                    "error": None,
+                },
+            )
+            asked.clear()
+            window._offer_recommendation(arc)
+            assert asked and "• Backend: faster-whisper → OpenVINO" in asked[0][1], asked
+            assert window._selected_backend() == "openvino"
+            assert window._collect()["model"] == "large-v3-turbo"
+            assert window.ov_device_combo.currentText() == "gpu"
+            assert "comes back" not in window._speech_hint.text(), window._speech_hint.text()
+            window.backend_combo.setCurrentText(backend_label("faster-whisper"))
+            assert window._collect()["model"] == "large-v3-turbo"
 
             # A value its dropdown does not list is reported, never added.
             bogus = Recommendation(
