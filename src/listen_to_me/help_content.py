@@ -89,6 +89,30 @@ presets and the VAD silence filter.</li>
 """,
     },
     {
+        "id": "autoconfig",
+        "title": "Pick the best engine for this PC (Auto-configure)",
+        "body": """
+<p>Not sure which backend, model or device to choose? <b>Settings → Engine →
+Auto-configure for this PC</b> (in the <b>Detected hardware &amp; model
+status</b> box) picks the most accurate setup that still runs well on your
+computer, for the <b>spoken language</b> selected on that page.</p>
+<ul>
+<li>It prefers an NVIDIA graphics card, then the fast <b>Parakeet</b> engine
+(when it is installed and understands your language), then an Intel Arc
+graphics card through OpenVINO, and otherwise the processor &mdash; with a
+smaller model on a weaker one.</li>
+<li>Before anything changes it shows what it recommends, why, roughly how much
+it downloads, and every field it would change &mdash; and asks first.</li>
+<li><b>Use these settings</b> only fills in the fields: nothing is saved until
+you press <b>Apply</b> or <b>Save</b>, and the spoken language is never
+changed.</li>
+<li>The setup wizard of the first launch makes the same recommendation:
+<b>Recommended for this PC</b> is preselected on its engine page, and
+<b>Choose manually</b> shows the individual fields instead.</li>
+</ul>
+""",
+    },
+    {
         "id": "hotkey",
         "title": "The hotkey doesn't start recording",
         "body": f"""

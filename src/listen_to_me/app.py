@@ -2053,7 +2053,17 @@ class App:
             # or pressing the (already registered) combination while picking
             # would start a real recording behind the modal wizard.
             wizard = OnboardingWizard(self.cfg, app=self)
-            accepted = bool(wizard.exec())
+            try:
+                accepted = bool(wizard.exec())
+            finally:
+                # Destroyed by Qt on this (the GUI) thread, never by Python's
+                # cycle collector: the wizard's pages hold bound methods of
+                # it, so dropping the last name leaves a reference cycle, and
+                # the collector runs on whichever thread trips it — the
+                # wizard's own hardware probe or the model warm-up, both busy
+                # importing — and a QWidget destroyed off the GUI thread
+                # crashes the app.
+                wizard.deleteLater()
         except Exception:
             log.exception("onboarding wizard failed — opening Settings instead")
             self._open_settings()

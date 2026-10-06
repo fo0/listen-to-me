@@ -47,7 +47,11 @@ def _config_defaults():
     assert DEFAULTS["openvino_device"] in ("auto", "cpu", "gpu", "npu")
     assert DEFAULTS["openvino_precision"] in ("int8", "fp16", "int4")
     assert DEFAULTS["parakeet_quantization"] in ("int8", "fp32")
+    # The model the Parakeet backend ran before there was a choice (#286) —
+    # any other default would re-download for every existing installation.
+    assert DEFAULTS["parakeet_model"] == "parakeet-tdt-0.6b-v3"
     assert isinstance(DEFAULTS["beam_size"], int) and DEFAULTS["beam_size"] >= 1
+    assert DEFAULTS["cpu_threads"] == 0  # automatic
     assert set(DEFAULTS["overlay"]) >= {"enabled", "show_preview", "live_preview", "preview_seconds"}
     # The default anchor is the placement every install already has: shipping
     # "cursor" would move every existing user's preview without asking (#196).
@@ -5239,6 +5243,210 @@ def _parakeet_backend_logic():
         assert t._current_key() != key  # quantization change → reload
 
 
+def _parakeet_model_registry():
+    """`parakeet_model` picks which Parakeet export the backend runs (#286).
+
+    The default must be exactly the model the backend always ran — the same
+    onnx-asr preset, repo and model-folder name — or every existing
+    installation downloads it again. The German fine-tune comes from a third
+    party's repo, so it is pinned to one commit and fetched by name: an int8
+    choice must never count, let alone download, the 2.4 GB fp32 weights. An
+    unknown config value runs the default and says so in the log, and the
+    status card, the cache probe and the reload key all follow the selection.
+    Offline: nothing here touches the network (the file list below is the
+    pinned commit's, copied from the Hub)."""
+    import logging
+
+    from listen_to_me import parakeet_models as pk_module
+    from listen_to_me.choices import PARAKEET_MODELS
+    from listen_to_me.config import Config
+    from listen_to_me.diagnostics import model_cache_status
+    from listen_to_me.parakeet_models import (
+        DEFAULT_MODEL,
+        MODELS,
+        download_filter,
+        missing_files,
+        model_files,
+        parakeet_model,
+    )
+    from listen_to_me.transcriber_parakeet import ParakeetTranscriber, _model_is_cached
+
+    # One registry: the dropdown offers exactly the models the backend knows.
+    assert [value for value, _note in PARAKEET_MODELS] == list(MODELS)
+    assert DEFAULT_MODEL in MODELS
+    default = parakeet_model(DEFAULT_MODEL)
+    assert default.onnx_asr_model == "nemo-parakeet-tdt-0.6b-v3"
+    assert default.repo == "istupakov/parakeet-tdt-0.6b-v3-onnx"
+    assert default.dirname == "parakeet-tdt-0.6b-v3-onnx"
+    assert default.revision is None  # onnx-asr's own preset download, as before
+    assert default.language is None  # multilingual, detected
+    german = parakeet_model("parakeet-primeline-de")
+    assert german.repo == "OpenVoiceOS/primeline-parakeet-onnx"
+    assert german.revision == "411093fba73540a11c451841a8e7922c13b0fb00"
+    assert german.onnx_asr_model == "nemo-conformer-tdt"  # a model type, not a preset
+    assert german.language == "de"
+    # Its own folder: two models in one directory would read each other's files.
+    assert german.dirname != default.dirname
+
+    # The pinned commit's files: each quantization keeps its own variant plus
+    # the shared config and vocabulary, and the fp32 encoder its external data.
+    repo_files = [
+        ".gitattributes",
+        "README.md",
+        "config.json",
+        "decoder_joint-model.int8.onnx",
+        "decoder_joint-model.onnx",
+        "encoder-model.int8.onnx",
+        "encoder-model.onnx",
+        "encoder-model.onnx.data",
+        "vocab.txt",
+    ]
+    int8 = sorted(name for name in repo_files if download_filter("int8")(name))
+    fp32 = sorted(name for name in repo_files if download_filter(None)(name))
+    assert int8 == [
+        "config.json",
+        "decoder_joint-model.int8.onnx",
+        "encoder-model.int8.onnx",
+        "vocab.txt",
+    ], int8
+    assert fp32 == [
+        "config.json",
+        "decoder_joint-model.onnx",
+        "encoder-model.onnx",
+        "encoder-model.onnx.data",
+        "vocab.txt",
+    ], fp32
+    # What is counted is what is fetched: the pinned download asks for these.
+    assert sorted(model_files("int8")) == int8 and sorted(model_files(None)) == fp32
+
+    # An unknown value runs the default — logged once per value, because
+    # `loaded` asks on every live-preview tick. A missing one is silent.
+    records: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record.getMessage())
+
+    handler = _Capture()
+    pk_module.log.addHandler(handler)
+    already_logged = pk_module._UNKNOWN_MODELS_LOGGED
+    pk_module._UNKNOWN_MODELS_LOGGED = set()
+    try:
+        assert parakeet_model(None) is default and records == [], records
+        for _ in range(3):
+            assert parakeet_model("parakeet-from-the-future") is default
+        assert len(records) == 1 and "parakeet-from-the-future" in records[0], records
+        assert parakeet_model(42) is default and len(records) == 2, records
+    finally:
+        pk_module.log.removeHandler(handler)
+        pk_module._UNKNOWN_MODELS_LOGGED = already_logged
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # A pinned model in a custom folder counts as downloaded only with
+        # every file of the selected quantization in place — an interrupted
+        # download, or the other quantization, is not "cached".
+        folder = Path(tmp) / german.dirname
+        assert not _model_is_cached(german, "int8", tmp)
+        folder.mkdir()
+        files = model_files("int8")
+        for name in files[:-1]:
+            (folder / name).write_bytes(b"x")
+        assert not _model_is_cached(german, "int8", tmp)
+        assert missing_files(folder, "int8") == [files[-1]]
+        (folder / files[-1]).write_bytes(b"x")
+        assert _model_is_cached(german, "int8", tmp)
+        assert not _model_is_cached(german, None, tmp)
+        assert "encoder-model.onnx.data" in missing_files(folder, None)
+        # The default model's folder is a different one, still absent.
+        assert not _model_is_cached(default, "int8", tmp)
+
+        # The status card names the selected model's repo as what would be
+        # downloaded, and an unknown value the default's.
+        snap = {
+            "backend": "parakeet",
+            "model": "small",
+            "model_dir": tmp,
+            "parakeet_quantization": "int8",
+        }
+        status = model_cache_status(dict(snap, parakeet_model=german.id))
+        assert status == {"target": german.repo, "cached": True, "error": None}, status
+        status = model_cache_status(dict(snap, parakeet_model=DEFAULT_MODEL))
+        assert status == {"target": default.repo, "cached": False, "error": None}, status
+        assert model_cache_status(snap)["target"] == default.repo  # key missing
+
+        # Switching the model reloads; an unknown value is the default's key,
+        # so a hand-edit that falls back reloads nothing.
+        cfg = Config(path=Path(tmp) / "config.json")
+        cfg["backend"] = "parakeet"
+        t = ParakeetTranscriber(cfg)
+        key = t._current_key()
+        assert key[:2] == (cfg["device"], cfg["parakeet_quantization"])  # `runtime` reads [1]
+        cfg["parakeet_model"] = german.id
+        assert t._current_key() != key
+        pk_module._UNKNOWN_MODELS_LOGGED.add(repr("no-such-parakeet-model"))  # keep the log quiet
+        cfg["parakeet_model"] = "no-such-parakeet-model"
+        assert t._current_key() == key
+
+
+def _cpu_threads_resolution():
+    """`cpu_threads` (#286): 0 means the performance cores, held to 1–8, an
+    explicit count is used as given (within the CPUs there are), and anything
+    unusable is automatic rather than an error at model load. The topology
+    probes answer on this machine, never below one core, and the Windows
+    record parser — the one probe CI cannot run natively — reads a synthetic
+    hybrid buffer right. A changed value re-keys the faster-whisper model,
+    because CTranslate2 fixes its thread count when the model is built."""
+    import struct
+
+    from listen_to_me import cpuinfo
+    from listen_to_me.config import Config
+    from listen_to_me.cpuinfo import (
+        logical_cpus,
+        performance_cores,
+        physical_cores,
+        resolve_cpu_threads,
+    )
+    from listen_to_me.transcriber import Transcriber
+
+    physical, performance = physical_cores(), performance_cores()
+    assert isinstance(physical, int) and physical >= 1, physical
+    assert isinstance(performance, int) and 1 <= performance <= physical, (performance, physical)
+
+    auto = resolve_cpu_threads(0)
+    assert 1 <= auto <= 8 and auto <= logical_cpus(), auto
+    # Never below CTranslate2's old default of 4 (or the physical cores).
+    assert auto == min(max(performance, min(4, physical)), 8, logical_cpus())
+    assert resolve_cpu_threads(3) == min(3, logical_cpus())
+    assert resolve_cpu_threads("2") == min(2, logical_cpus())  # a quoted hand-edit
+    assert resolve_cpu_threads(10**9) == min(logical_cpus(), cpuinfo.MAX_CPU_THREADS)
+    for unusable in (-1, -100, "many", "", None, True, float("nan"), float("inf"), [4]):
+        assert resolve_cpu_threads(unusable) == auto, repr(unusable)
+
+    # GetLogicalProcessorInformationEx(RelationProcessorCore): two cores of
+    # efficiency class 1 (P-cores) and four of class 0 (E-cores), with a
+    # record of another relationship mixed in that must not count.
+    def record(relationship, efficiency, size=48):
+        return struct.pack("<IIBB", relationship, size, 0, efficiency) + bytes(size - 10)
+
+    hybrid = (
+        record(0, 1) + record(0, 1) + record(2, 0, 32) + b"".join(record(0, 0) for _ in range(4))
+    )
+    assert cpuinfo._parse_windows_cores(hybrid) == (6, 2)
+    uniform = b"".join(record(0, 0) for _ in range(8))
+    assert cpuinfo._parse_windows_cores(uniform) == (8, 8)  # not hybrid: all count
+    assert cpuinfo._parse_windows_cores(b"") is None
+    assert cpuinfo._parse_windows_cores(struct.pack("<IIBB", 0, 0, 0, 0)) is None  # no endless loop
+    assert cpuinfo._parse_cpulist("0-3,8,10-11") == {0, 1, 2, 3, 8, 10, 11}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        t = Transcriber(cfg)
+        key = t._current_key()
+        assert key[1:3] == (cfg["device"], cfg["compute_type"])  # indices kept
+        cfg["cpu_threads"] = 2
+        assert t._current_key() != key
+
+
 def _diagnostics_engine():
     """The Settings diagnostics engine builds a transcriber from a plain
     UI-snapshot dict, caches it while the snapshot is unchanged and rebuilds
@@ -5272,14 +5480,21 @@ def _diagnostics_engine():
 
 def _hardware_probes():
     """The status-card probes never raise and degrade to honest "not found"
-    answers on a machine without ctranslate2/openvino (like the light CI
-    runner); the model cache probe recognises a local directory as downloaded
-    and reports the presets without an OpenVINO conversion as an error."""
+    answers on a machine without ctranslate2/openvino/onnx-asr (like the light
+    CI runner); the CPU probe answers with real core counts or 0 (unknown),
+    never the hyper-thread count in their place; the model cache probe
+    recognises a local directory as downloaded and reports the presets
+    without an OpenVINO conversion as an error. The whole status dict reads
+    into the recommender's Hardware on this machine."""
+    from listen_to_me import cpuinfo
+    from listen_to_me.autoconfig import Hardware, hardware_from_status, recommend
     from listen_to_me.diagnostics import (
         hardware_status,
         model_cache_status,
+        probe_cpu,
         probe_cuda,
         probe_openvino,
+        probe_parakeet,
     )
 
     cuda = probe_cuda()
@@ -5289,6 +5504,33 @@ def _hardware_probes():
     ov = probe_openvino()
     assert set(ov) == {"installed", "devices", "error"}
     assert isinstance(ov["installed"], bool) and isinstance(ov["devices"], list)
+
+    pk = probe_parakeet()
+    assert set(pk) == {"installed", "error"} and isinstance(pk["installed"], bool), pk
+
+    cpu = probe_cpu()
+    assert set(cpu) == {
+        "physical_cores", "performance_cores", "logical", "avx2", "x86", "name", "error"
+    }, cpu
+    assert isinstance(cpu["logical"], int) and cpu["logical"] >= 1, cpu
+    # The core counts are the platform's answer or 0 ("unknown") — never the
+    # logical-count fallback, which counts hyper-threads as cores.
+    for key in ("physical_cores", "performance_cores"):
+        assert isinstance(cpu[key], int) and cpu[key] >= 0, (key, cpu)
+    assert (cpu["physical_cores"] > 0) is cpuinfo.topology_known(), cpu
+    assert (cpu["performance_cores"] > 0) is (cpu["physical_cores"] > 0), cpu
+    assert cpu["performance_cores"] <= cpu["physical_cores"] <= cpu["logical"], cpu
+    assert cpu["avx2"] in (True, False, None) and cpu["x86"] in (True, False, None), cpu
+    assert cpu["name"] is None or (isinstance(cpu["name"], str) and cpu["name"]), cpu
+    real_known = cpuinfo.topology_known
+    cpuinfo.topology_known = lambda: False
+    try:
+        unknown = probe_cpu()
+    finally:
+        cpuinfo.topology_known = real_known
+    assert unknown["physical_cores"] == unknown["performance_cores"] == 0, unknown
+    assert unknown["logical"] == cpuinfo.logical_cpus(), unknown
+    assert recommend(hardware_from_status({"cpu": unknown}), "ja").values["model"] == "small"
 
     with tempfile.TemporaryDirectory() as tmp:
         snap = {
@@ -5308,16 +5550,312 @@ def _hardware_probes():
             dict(snap, backend="openvino", model="distil-small.en")
         )
         assert no_conversion["cached"] is False and no_conversion["error"]
-        from listen_to_me.transcriber_parakeet import MODEL_REPO
+        from listen_to_me.parakeet_models import DEFAULT_MODEL, MODELS
 
         # A custom model dir without the Parakeet subfolder is decisively
         # "not downloaded" (the HF-cache probe depends on the machine).
         pk = model_cache_status(
             dict(snap, backend="parakeet", parakeet_quantization="int8", model_dir=tmp)
         )
-        assert pk == {"target": MODEL_REPO, "cached": False, "error": None}
+        assert pk == {"target": MODELS[DEFAULT_MODEL].repo, "cached": False, "error": None}
 
-        assert set(hardware_status(snap)) == {"cuda", "openvino", "model"}
+        status = hardware_status(snap)
+        assert set(status) == {"cuda", "openvino", "parakeet", "cpu", "model"}, set(status)
+        hardware = hardware_from_status(status)
+        assert isinstance(hardware, Hardware)
+        assert hardware.physical_cores == status["cpu"]["physical_cores"]
+        assert hardware.parakeet is status["parakeet"]["installed"]
+        assert "language" not in recommend(hardware, "de").values
+
+
+def _engine_recommendation_matrix():
+    """The engine recommendation (#286), branch by branch: NVIDIA → the
+    (German) turbo on CUDA; otherwise Parakeet for its 25 languages and
+    auto-detection (the German fine-tune for German); otherwise an Intel Arc
+    GPU through OpenVINO; otherwise the turbo on a CPU with 8+ cores and AVX2
+    not known to be missing, small below. Every recommended value must be a
+    member of the dropdown it would land in — a renamed preset breaks this
+    check, not the user's engine — the keys are exactly the ones the backend
+    reads, `language` is never among them, and the text a user reads is
+    there, with the download size read out of the choice notes."""
+    from listen_to_me import choices
+    from listen_to_me.autoconfig import (
+        Hardware,
+        Recommendation,
+        changes,
+        differs,
+        recommend,
+    )
+    from listen_to_me.config import DEFAULTS, Config
+    from listen_to_me.parakeet_models import MODELS, V3_LANGUAGES
+
+    german_turbo = choices.GERMAN_TURBO_CT2
+    fw_cuda = {"backend": "faster-whisper", "device": "cuda", "compute_type": "auto"}
+    fw_cpu = {"backend": "faster-whisper", "device": "cpu", "compute_type": "auto"}
+    ov_arc = {
+        "backend": "openvino",
+        "model": "large-v3-turbo",
+        "openvino_device": "gpu",
+        "openvino_precision": "int8",
+    }
+    pk = {"backend": "parakeet", "parakeet_quantization": "int8", "device": "cpu"}
+    pk_de = dict(pk, parakeet_model="parakeet-primeline-de")
+    pk_v3 = dict(pk, parakeet_model="parakeet-tdt-0.6b-v3")
+    arc = {"openvino": True, "arc_gpu": True, "gpu_name": "Intel Arc A770 Graphics"}
+    strong = {"physical_cores": 8, "performance_cores": 8, "avx2": True, "x86": True}
+    weak = {"physical_cores": 4, "performance_cores": 4, "avx2": True, "x86": True}
+    cpu_turbo = dict(fw_cpu, model="large-v3-turbo")
+    cpu_small = dict(fw_cpu, model="small")
+
+    # (hardware, language, expected values)
+    matrix = [
+        (Hardware(cuda=True, parakeet=True, **arc), "de", dict(fw_cuda, model=german_turbo)),
+        (Hardware(cuda=True, parakeet=True), "en", dict(fw_cuda, model="large-v3-turbo")),
+        (Hardware(cuda=True), "ja", dict(fw_cuda, model="large-v3-turbo")),
+        (Hardware(cuda=True), "auto", dict(fw_cuda, model="large-v3-turbo")),
+        (Hardware(parakeet=True, **arc, **strong), "de", pk_de),
+        (Hardware(parakeet=True), "DE ", pk_de),  # hand-edited spelling
+        (Hardware(parakeet=True), "en", pk_v3),
+        (Hardware(parakeet=True, **arc), "auto", pk_v3),
+        (Hardware(parakeet=True), "", pk_v3),
+        (Hardware(parakeet=True), None, pk_v3),
+        (Hardware(parakeet=True), "fr", pk_v3),
+        (Hardware(parakeet=True), "mt", pk_v3),  # on the model card, not in LANGUAGES
+        (Hardware(parakeet=True, **arc, **weak), "ja", ov_arc),
+        (Hardware(parakeet=True, **weak), "ja", cpu_small),
+        (Hardware(parakeet=True, **strong), "ja", cpu_turbo),
+        (Hardware(**weak), "de", cpu_small),
+        (Hardware(**strong), "de", dict(fw_cpu, model=german_turbo)),
+        (Hardware(**arc, **strong), "de", ov_arc),  # no OpenVINO German turbo
+        (Hardware(**strong), "en", cpu_turbo),
+        # An Arc GPU without the OpenVINO backend installed is no option.
+        (Hardware(openvino=False, arc_gpu=True, **strong), "ja", cpu_turbo),
+        # OpenVINO installed, but no Arc GPU among its devices.
+        (Hardware(openvino=True, **weak), "ja", cpu_small),
+        # AVX2 missing on x86 holds a strong CPU to small; on ARM it is not
+        # missing, it is not a thing — and unknown is not missing either.
+        (Hardware(physical_cores=16, avx2=False, x86=True), "ja", cpu_small),
+        (Hardware(physical_cores=16, avx2=False, x86=None), "ja", cpu_small),
+        (Hardware(physical_cores=10, avx2=False, x86=False), "ja", cpu_turbo),
+        (Hardware(physical_cores=8), "ja", cpu_turbo),
+        (Hardware(physical_cores=7, avx2=True, x86=True), "ja", cpu_small),
+        # Nothing known at all: the setup that runs everywhere.
+        (Hardware(), "de", cpu_small),
+        (Hardware(), "auto", cpu_small),
+    ]
+    backend_keys = {
+        "faster-whisper": {"backend", "model", "device", "compute_type"},
+        "openvino": {"backend", "model", "openvino_device", "openvino_precision"},
+        "parakeet": {"backend", "parakeet_model", "parakeet_quantization", "device"},
+    }
+
+    def values_of(pairs):
+        return {value for value, _note in pairs}
+
+    members = {
+        "backend": values_of(choices.BACKENDS),
+        "model": values_of(choices.MODEL_CHOICES),
+        "device": set(choices.DEVICES),
+        "compute_type": set(choices.COMPUTE_TYPES),
+        "openvino_device": set(choices.OPENVINO_DEVICES),
+        "openvino_precision": values_of(choices.OPENVINO_PRECISIONS),
+        "parakeet_model": values_of(choices.PARAKEET_MODELS) & set(MODELS),
+        "parakeet_quantization": values_of(choices.PARAKEET_QUANTIZATIONS),
+    }
+    for hardware, language, expected in matrix:
+        case = (hardware, language)
+        rec = recommend(hardware, language)
+        assert isinstance(rec, Recommendation), case
+        assert rec.values == expected, (case, rec.values)
+        assert "language" not in rec.values, case
+        assert set(rec.values) == backend_keys[rec.values["backend"]], (case, rec.values)
+        for key, value in rec.values.items():
+            assert key in DEFAULTS, (case, key)  # a renamed config key
+            assert value in members[key], (case, key, value)
+        if rec.values["backend"] == "openvino":
+            assert choices.openvino_supports_model(rec.values["model"]), case
+        assert rec.reason.strip() and rec.summary.strip(), case
+        assert rec.reason.endswith("."), (case, rec.reason)
+        assert rec.download.startswith("~") and rec.download.endswith("B"), (case, rec.download)
+    assert MODELS["parakeet-primeline-de"].language == "de"
+    assert len(V3_LANGUAGES) == 25 and "de" in V3_LANGUAGES and "ja" not in V3_LANGUAGES
+
+    # The text names what was found and why.
+    german = recommend(Hardware(parakeet=True), "de")
+    assert "German" in german.reason and "German" in german.summary, german
+    assert recommend(Hardware(**arc), "ja").reason.startswith("Your Intel Arc A770 Graphics")
+    assert "Japanese" in recommend(Hardware(parakeet=True, **arc), "ja").reason
+    assert "AVX2" in recommend(Hardware(physical_cores=16, avx2=False, x86=True), "ja").reason
+    named = recommend(Hardware(cpu_name="AMD Ryzen 7 5800X", **strong), "en")
+    assert "AMD Ryzen 7 5800X, 8 cores" in named.reason, named.reason
+    assert "With 1 core," in recommend(Hardware(physical_cores=1), "en").reason
+    assert recommend(Hardware(cuda=True), "de").download == "~1.6 GB"
+    assert recommend(Hardware(), "de").download == "~490 MB"
+    assert recommend(Hardware(parakeet=True), "de").download == "~0.7 GB"
+    assert recommend(Hardware(**arc), "de").download == "~0.8 GB"  # int8: half of fp16
+
+    # "Already set up like this" against a plain snapshot and a Config.
+    rec = recommend(Hardware(parakeet=True), "de")
+    snapshot = dict(DEFAULTS, **rec.values)
+    assert changes(rec, snapshot) == {} and not differs(rec, snapshot)
+    moved = changes(rec, DEFAULTS)
+    assert moved["backend"] == ("faster-whisper", "parakeet"), moved
+    assert moved["device"] == ("auto", "cpu"), moved
+    assert "parakeet_quantization" not in moved, moved  # the default is int8 already
+    assert changes(rec, {}) == {key: (None, value) for key, value in rec.values.items()}
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        assert differs(rec, cfg)
+        for key, value in rec.values.items():
+            cfg[key] = value
+        assert not differs(rec, cfg)
+        assert cfg["language"] == DEFAULTS["language"]
+
+
+def _engine_recommendation_reads_the_probe():
+    """`hardware_from_status` turns a `hardware_status()` dict into the
+    recommender's Hardware: CUDA, OpenVINO and an Arc GPU only where
+    openvino_device "gpu" reaches it — OpenVINO's "GPU" / "GPU.0", never an
+    Arc card behind a UHD iGPU, an NPU, an Iris Xe, or without OpenVINO —
+    Parakeet, the cores, AVX2 and the shortened names. A missing, malformed
+    or failed probe falls back to the conservative answer — never raises,
+    never invents hardware — and the CPU probes themselves answer with a
+    bool or None. The /proc/cpuinfo parser reads only the first processor."""
+    from listen_to_me import cpuinfo
+    from listen_to_me.autoconfig import Hardware, hardware_from_status, recommend, short_name
+
+    status = {
+        "cuda": {"available": False, "count": 0, "error": "no ctranslate2"},
+        "openvino": {
+            "installed": True,
+            "devices": [
+                {"device": "CPU", "name": "Intel(R) Core(TM) Ultra 7 155H"},
+                {"device": "NPU", "name": "Intel(R) AI Boost"},
+                {"device": "GPU.0", "name": "Intel(R) Arc(TM) Graphics (iGPU)"},
+                {"device": "GPU.1", "name": "Intel(R) Arc(TM) A770 Graphics (dGPU)"},
+            ],
+            "error": None,
+        },
+        "parakeet": {"installed": True, "error": None},
+        "cpu": {
+            "physical_cores": 16,
+            "performance_cores": 6,
+            "logical": 22,
+            "avx2": True,
+            "x86": True,
+            "name": "Intel(R) Core(TM) Ultra 7 155H",
+            "error": None,
+        },
+        "model": {"target": "small", "cached": False, "error": None},
+    }
+    assert hardware_from_status(status) == Hardware(
+        cuda=False,
+        openvino=True,
+        arc_gpu=True,
+        gpu_name="Intel Arc Graphics",  # GPU.0, what "gpu" runs on
+        parakeet=True,
+        physical_cores=16,
+        performance_cores=6,
+        avx2=True,
+        x86=True,
+        cpu_name="Intel Core Ultra 7 155H",
+    )
+    with_cuda = dict(status, cuda={"available": True, "count": 1, "error": None})
+    assert hardware_from_status(with_cuda).cuda is True
+
+    def gpus(*devices):
+        return dict(status, openvino=dict(status["openvino"], devices=list(devices)))
+
+    cpu_npu = status["openvino"]["devices"][:2]
+    # "gpu" is OpenVINO's alias for GPU.0, the iGPU when there is one: an Arc
+    # card enumerated behind a UHD iGPU is out of reach, not recommended.
+    behind_igpu = gpus(
+        *cpu_npu,
+        {"device": "GPU.0", "name": "Intel(R) UHD Graphics 770 (iGPU)"},
+        {"device": "GPU.1", "name": "Intel(R) Arc(TM) A770 Graphics (dGPU)"},
+    )
+    assert hardware_from_status(behind_igpu).arc_gpu is False
+    assert hardware_from_status(behind_igpu).gpu_name == ""
+    for name, expected in (
+        ("Intel(R) Arc(TM) A770 Graphics (dGPU)", "Intel Arc A770 Graphics"),
+        ("Intel(R) Arc(TM) 140V GPU (16GB) (iGPU)", "Intel Arc 140V GPU (16GB)"),
+        ("Intel(R) Arc(TM) Graphics (iGPU)", "Intel Arc Graphics"),
+        ("Intel(R) Iris(R) Xe Graphics (iGPU)", ""),
+        ("Intel(R) UHD Graphics", ""),
+    ):
+        only = hardware_from_status(gpus(*cpu_npu, {"device": "GPU", "name": name}))
+        assert (only.arc_gpu, only.gpu_name) == (bool(expected), expected), (name, only)
+    no_arc = gpus(*cpu_npu)
+    assert hardware_from_status(no_arc).arc_gpu is False
+    assert hardware_from_status(no_arc).gpu_name == ""
+    arc_named_cpu = dict(
+        status,
+        openvino={"installed": True, "devices": [{"device": "CPU", "name": "Intel Arc"}]},
+    )
+    assert hardware_from_status(arc_named_cpu).arc_gpu is False
+    not_installed = dict(status, openvino=dict(status["openvino"], installed=False))
+    assert hardware_from_status(not_installed).arc_gpu is False
+    assert hardware_from_status(not_installed).openvino is False
+
+    # Missing, malformed, failed: the conservative defaults, never an error.
+    conservative = Hardware()
+    for broken in (None, "status", [], {}, {"cpu": None}, {"cuda": "yes", "parakeet": [True]}):
+        assert hardware_from_status(broken) == conservative, broken
+    mangled = {
+        "cuda": {"available": "true", "count": "1"},
+        "openvino": {"installed": True, "devices": "GPU"},
+        "parakeet": {"installed": 1},
+        "cpu": {
+            "physical_cores": "8",
+            "performance_cores": True,
+            "avx2": "yes",
+            "x86": 1,
+            "name": 42,
+        },
+    }
+    assert hardware_from_status(mangled) == Hardware(openvino=True), hardware_from_status(mangled)
+    lopsided = {"cpu": {"physical_cores": 4, "performance_cores": 12}}
+    assert hardware_from_status(lopsided).performance_cores == 4
+    failed = {  # probe_cpu's answer when a probe raised
+        "cpu": {
+            "physical_cores": 0,
+            "performance_cores": 0,
+            "logical": 1,
+            "avx2": None,
+            "x86": None,
+            "name": None,
+            "error": "boom",
+        }
+    }
+    assert recommend(hardware_from_status(failed), "de").values["model"] == "small"
+    assert recommend(hardware_from_status(None), "ja").values == {
+        "backend": "faster-whisper",
+        "model": "small",
+        "device": "cpu",
+        "compute_type": "auto",
+    }
+
+    assert short_name("Intel(R) Core(TM) i7-8650U CPU @ 1.90GHz") == "Intel Core i7-8650U"
+    assert short_name("12th Gen Intel(R) Core(TM) i7-1265U") == "12th Gen Intel Core i7-1265U"
+    assert short_name("Intel(R) Arc(TM) A770 Graphics (dGPU)") == "Intel Arc A770 Graphics"
+    assert short_name("AMD Ryzen 7 5800X 8-Core Processor") == "AMD Ryzen 7 5800X 8-Core Processor"
+    assert short_name("Apple M2 Pro") == "Apple M2 Pro"
+    assert short_name(None) == "" and short_name("x" * 500) == "x" * 64
+
+    assert cpuinfo.has_avx2() in (True, False, None)
+    assert cpuinfo.is_x86() in (True, False, None)
+    name = cpuinfo.cpu_name()
+    assert name is None or (isinstance(name, str) and name == " ".join(name.split()) and name)
+    text = (
+        "processor\t: 0\nvendor_id\t: GenuineIntel\nmodel name\t: Intel(R)  Core(TM) i5\n"
+        "flags\t\t: fpu sse2 avx avx2 fma\n\nprocessor\t: 1\nflags\t\t: fpu\n"
+    )
+    fields = cpuinfo._parse_proc_cpuinfo(text)
+    assert fields["model name"] == "Intel(R)  Core(TM) i5", fields
+    assert "avx2" in fields["flags"].split() and fields["processor"] == "0", fields
+    assert cpuinfo._parse_proc_cpuinfo("") == {}
+    # aarch64 lists "Features", not "flags" — there is no AVX2 line to read.
+    assert "flags" not in cpuinfo._parse_proc_cpuinfo("processor\t: 0\nFeatures\t: fp asimd\n")
 
 
 def _clip_stats_verdicts():
@@ -5678,9 +6216,9 @@ def _download_progress_logic():
 
     # Parakeet ships both quantizations in one repo, so the size of a download
     # is only the variant it actually fetches.
-    from listen_to_me.transcriber_parakeet import _download_filter
+    from listen_to_me.parakeet_models import download_filter
 
-    int8, fp32 = _download_filter("int8"), _download_filter(None)
+    int8, fp32 = download_filter("int8"), download_filter(None)
     assert int8("encoder-model.int8.onnx") and not int8("encoder-model.onnx")
     assert fp32("encoder-model.onnx") and fp32("encoder-model.onnx.data")
     assert not fp32("decoder_joint-model.int8.onnx")
@@ -7677,6 +8215,14 @@ def _tray_switches_the_dictation_language():
             assert len(actions) == 1, [a.text() for a in actions]
             assert actions[0].text() == tray_module._LANGUAGE_PARAKEET_NOTE
             assert not actions[0].isEnabled()
+            # A single-language Parakeet model (the German fine-tune, #286)
+            # names its language instead of claiming to detect one.
+            stub.cfg["parakeet_model"] = "parakeet-primeline-de"
+            tray._fill_language_menu()
+            actions = tray._language_menu.actions()
+            assert len(actions) == 1 and not actions[0].isEnabled()
+            assert language_label("de") in actions[0].text(), actions[0].text()
+            stub.cfg["parakeet_model"] = "parakeet-tdt-0.6b-v3"
 
             # The entry names the language in use on its own line, re-read
             # every time the tray menu opens — checking it before a dictation
@@ -7699,6 +8245,12 @@ def _tray_switches_the_dictation_language():
             stub.cfg["backend"] = "parakeet"
             stub.cfg["language"] = "de"
             assert _title_after_opening() == "Dictation language: Auto-detect"
+            # …except for a model that knows one language: that one, whatever
+            # the Whisper setting says.
+            stub.cfg["language"] = "fr"
+            stub.cfg["parakeet_model"] = "parakeet-primeline-de"
+            assert _title_after_opening() == f"Dictation language: {language_label('de')}"
+            stub.cfg["parakeet_model"] = "parakeet-tdt-0.6b-v3"
             # A hand-edited, unlisted value is shown as it is, its "&" doubled
             # so Qt does not swallow it as a mnemonic marker.
             stub.cfg["backend"] = "faster-whisper"
@@ -8257,6 +8809,924 @@ def _surfaces_name_an_unreadable_history():
         finally:
             window.force_close()
             window.deleteLater()
+
+
+def _settings_engine_offers_the_parakeet_model_and_cpu_threads():
+    """The two Engine controls of #286. The Parakeet model combo is shown
+    exactly where the Parakeet precision is — with the Parakeet backend only —
+    and the CPU-threads box with faster-whisper's other decode options. Both
+    reach `_collect()` (the only path to disk) and `_diag_snapshot()` (what
+    "Download / load model" and the status card use), both count as unsaved
+    changes, and both come back from the stored config. Switching the model is
+    a download, so it triggers the same "download it now?" offer as a
+    precision change, naming the new model's repo."""
+    from listen_to_me import settings_ui as _settings_module
+    from listen_to_me.choices import BACKENDS, PARAKEET_MODELS, choice_label, choice_labels
+    from listen_to_me.cpuinfo import resolve_cpu_threads
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+    from listen_to_me.parakeet_models import MODELS
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    german = "parakeet-primeline-de"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+        combo, spin = window.pk_model_combo, window.cpu_threads_spin
+        assert [combo.itemText(i) for i in range(combo.count())] == choice_labels(PARAKEET_MODELS)
+        assert window._collect()["parakeet_model"] == "parakeet-tdt-0.6b-v3"
+        assert window._collect()["cpu_threads"] == 0
+        assert spin.minimum() == 0 and spin.maximum() == 64
+        # 0 says what it does instead of reading as "no threads".
+        assert spin.specialValueText() == f"Automatic ({resolve_cpu_threads(0)})"
+        clean = window._collect() == window._saved_snapshot
+        assert clean, "a freshly opened window reported unsaved changes"
+
+        form = window._engine_form
+        for index, (backend, _label) in enumerate(BACKENDS):
+            window.backend_combo.setCurrentIndex(index)
+            parakeet, fw = backend == "parakeet", backend == "faster-whisper"
+            assert form.isRowVisible(combo) is parakeet, backend
+            assert form.isRowVisible(window.pk_quant_combo) is parakeet, backend
+            assert form.isRowVisible(spin) is fw, backend
+            assert form.isRowVisible(window.beam_spin) is fw, backend
+        window.backend_combo.setCurrentIndex(0)  # the saved backend again
+
+        # Edited values are collected, for Save and for the diagnostics alike,
+        # and read as unsaved.
+        combo.setCurrentText(choice_label(PARAKEET_MODELS, german))
+        spin.setValue(3)
+        values, snapshot = window._collect(), window._diag_snapshot()
+        assert values["parakeet_model"] == snapshot["parakeet_model"] == german, values
+        assert values["cpu_threads"] == snapshot["cpu_threads"] == 3, values
+        assert window._collect() != window._saved_snapshot
+
+        # A changed model offers its download like a changed precision does —
+        # about the repo of the model now selected (an empty model folder, so
+        # the answer cannot depend on this machine's Hugging Face cache).
+        class _FakeQuestionBox:
+            StandardButton = _settings_module.QMessageBox.StandardButton
+            asked: list = []
+
+            @classmethod
+            def question(cls, _parent, _title, text, *_args):
+                cls.asked.append(text)
+                return cls.StandardButton.No
+
+        window.model_dir_edit.setText(tmp)
+        window.backend_combo.setCurrentIndex([b for b, _ in BACKENDS].index("parakeet"))
+        real_box = _settings_module.QMessageBox
+        _settings_module.QMessageBox = _FakeQuestionBox
+        saved = window._saved_snapshot
+        try:
+            window._saved_snapshot = window._collect()
+            previous = dict(window._saved_snapshot, parakeet_model="parakeet-tdt-0.6b-v3")
+            assert window._offer_model_download(previous) is False  # declined
+            assert len(_FakeQuestionBox.asked) == 1, _FakeQuestionBox.asked
+            assert MODELS[german].repo in _FakeQuestionBox.asked[0], _FakeQuestionBox.asked
+            # Nothing changed: no question.
+            assert window._offer_model_download(dict(window._saved_snapshot)) is False
+            assert len(_FakeQuestionBox.asked) == 1
+        finally:
+            _settings_module.QMessageBox = real_box
+            window._saved_snapshot = saved
+        window.force_close()
+
+        # Both come back from the stored config; a hand-edited thread count
+        # outside the box's range is held to it rather than refusing to open.
+        stub.cfg["parakeet_model"] = german
+        stub.cfg["cpu_threads"] = 5
+        reopened = SettingsWindow(stub)
+        assert reopened.pk_model_combo.currentText() == choice_label(PARAKEET_MODELS, german)
+        assert reopened._collect()["parakeet_model"] == german
+        assert reopened._collect()["cpu_threads"] == 5
+        reopened.force_close()
+        stub.cfg["cpu_threads"] = -7
+        clamped = SettingsWindow(stub)
+        assert clamped.cpu_threads_spin.value() == 0
+        clamped.force_close()
+
+
+def _settings_engine_auto_configures_for_this_pc():
+    """Settings → Engine → "Auto-configure for this PC" (#286 step 3). The
+    button sits in the status card and says in its tooltip that it saves
+    nothing. It recommends for the language selected in the window, not the
+    saved one, and compares with the values entered there; the question lists
+    every changed field by its dropdown wording, and a yes fills the fields
+    in as a pick by hand would — the backend first, so the Parakeet rows show
+    and the model list is re-listed — while `cfg` stays untouched and the
+    language stays as it was. A setup that already matches asks nothing and
+    says so; a value no dropdown lists is reported, never added. Pressed
+    without a probe result, the probe runs on its worker thread (never here)
+    and the flow continues when it lands; pressed again, that result is
+    reused instead of probing twice."""
+    import threading
+    import time
+
+    from listen_to_me import diagnostics
+    from listen_to_me.autoconfig import (
+        Recommendation,
+        changes,
+        hardware_from_status,
+        recommend,
+    )
+    from listen_to_me.autoconfig_text import describe_changes, model_downloaded
+    from listen_to_me.choices import (
+        GERMAN_TURBO_CT2,
+        PARAKEET_MODELS,
+        PARAKEET_QUANTIZATIONS,
+        backend_label,
+        choice_label,
+        language_label,
+        model_label,
+    )
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    def status(*, cuda: bool) -> dict:
+        # A fresh dict per call: the probe worker adds "backend"/"snapshot".
+        return {
+            "cuda": {"available": cuda, "count": int(cuda), "error": None},
+            "openvino": {"installed": False, "devices": [], "error": None},
+            "parakeet": {"installed": True, "error": None},
+            "cpu": {
+                "physical_cores": 8,
+                "performance_cores": 8,
+                "logical": 16,
+                "avx2": True,
+                "x86": True,
+                "name": "Test CPU",
+                "error": None,
+            },
+            "model": {"target": "small", "cached": False, "error": None},
+        }
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+        try:
+            button = window.autoconfig_button
+            assert window.stack.widget(window._engine_index).isAncestorOf(button)
+            assert button.text() == "Auto-configure for this PC"
+            tip = button.toolTip()
+            assert "most accurate engine setup" in tip, tip
+            assert "nothing is saved until you press Apply or Save" in tip, tip
+
+            asked: list = []
+            answer = [False]
+
+            def confirm(text, details):
+                asked.append((text, details))
+                return answer[0]
+
+            window._confirm_autoconfig = confirm
+            # Unsaved edits are what it weighs and compares with: German
+            # picked on the page while the saved language is "auto", and fp32
+            # entered for the Parakeet precision the saved config has at int8.
+            window.language_combo.setCurrentText(language_label("de"))
+            window.pk_quant_combo.setCurrentText(choice_label(PARAKEET_QUANTIZATIONS, "fp32"))
+            keys = ("backend", "device", "model", "parakeet_model", "parakeet_quantization")
+            saved = {key: stub.cfg[key] for key in keys + ("language",)}
+
+            # Declined: the question names all four changes, nothing moves.
+            rec = window._offer_recommendation(status(cuda=False))
+            assert rec.values["backend"] == "parakeet", rec
+            assert len(asked) == 1, asked
+            headline, details = asked[0]
+            for line in (
+                "Backend: faster-whisper → Parakeet",
+                "Parakeet model: parakeet-tdt-0.6b-v3 → parakeet-primeline-de",
+                "Precision: fp32 → int8",
+                "Device: auto → cpu",
+            ):
+                assert f"• {line}" in details, (line, details)
+            assert rec.summary in headline and rec.reason in details, (headline, details)
+            assert "The model (about 0.7 GB) is downloaded once, on first use." in details, details
+            assert window._selected_backend() == "faster-whisper"
+            assert window.autoconfig_status.text() == ""
+
+            # Accepted: filled in like a pick by hand, saved nowhere.
+            answer[0] = True
+            window._offer_recommendation(status(cuda=False))
+            german = choice_label(PARAKEET_MODELS, "parakeet-primeline-de")
+            assert window._selected_backend() == "parakeet"
+            assert window.pk_model_combo.currentText() == german
+            int8 = choice_label(PARAKEET_QUANTIZATIONS, "int8")
+            assert window.pk_quant_combo.currentText() == int8
+            assert window.device_combo.currentText() == "cpu"
+            assert window._engine_form.isRowVisible(window.pk_model_combo)
+            assert window._selected_language() == "de"
+            assert "press Apply or Save" in window.autoconfig_status.text()
+            assert {key: stub.cfg[key] for key in saved} == saved, "auto-configure saved"
+            values = window._collect()
+            assert values["backend"] == "parakeet", values
+            assert values["parakeet_model"] == "parakeet-primeline-de", values
+            assert (values["parakeet_quantization"], values["device"]) == ("int8", "cpu")
+            assert values["language"] == "de" and values != window._saved_snapshot
+
+            # NVIDIA + English: back to faster-whisper, its model re-listed.
+            asked.clear()
+            window.language_combo.setCurrentText(language_label("en"))
+            window._offer_recommendation(status(cuda=True))
+            assert asked and "• Backend: Parakeet → faster-whisper" in asked[0][1], asked
+            assert window._selected_backend() == "faster-whisper"
+            assert window.device_combo.currentText() == "cuda"
+            assert window.compute_combo.currentText() == "auto"
+            assert window.model_combo.currentText() == model_label("large-v3-turbo")
+            assert window._collect()["model"] == "large-v3-turbo"
+            assert window.model_combo.isEnabled()
+            assert window._selected_language() == "en"
+
+            # Already set up: no question, no change lines, the info line.
+            asked.clear()
+            rec = window._offer_recommendation(status(cuda=True))
+            assert not asked, asked
+            assert describe_changes(changes(rec, window._collect())) == []
+            assert window.autoconfig_status.text() == (
+                f"This PC is already set up for the recommended engine: {rec.summary}."
+            )
+            # An edit by hand retires that line: it no longer describes the page.
+            window.device_combo.setCurrentText("cpu")
+            assert window.autoconfig_status.text() == ""
+            assert not window._hw_form.isRowVisible(window.autoconfig_status)
+
+            # OpenVINO on an Arc, German with its fine-tune entered: the
+            # recommended model overrides the filter's swap, so the hint under
+            # the model no longer promises the fine-tune back, and leaving the
+            # backend keeps what the question said.
+            window.language_combo.setCurrentText(language_label("de"))
+            window.model_combo.setCurrentText(model_label(GERMAN_TURBO_CT2))
+            arc = dict(
+                status(cuda=False),
+                parakeet={"installed": False, "error": None},
+                openvino={
+                    "installed": True,
+                    "devices": [{"device": "GPU", "name": "Intel(R) Arc(TM) A770 Graphics"}],
+                    "error": None,
+                },
+            )
+            asked.clear()
+            window._offer_recommendation(arc)
+            assert asked and "• Backend: faster-whisper → OpenVINO" in asked[0][1], asked
+            assert window._selected_backend() == "openvino"
+            assert window._collect()["model"] == "large-v3-turbo"
+            assert window.ov_device_combo.currentText() == "gpu"
+            assert "comes back" not in window._speech_hint.text(), window._speech_hint.text()
+            window.backend_combo.setCurrentText(backend_label("faster-whisper"))
+            assert window._collect()["model"] == "large-v3-turbo"
+
+            # A value its dropdown does not list is reported, never added.
+            bogus = Recommendation(
+                values={"backend": "faster-whisper", "device": "tpu"},
+                reason="",
+                summary="",
+                download="",
+            )
+            assert window._apply_recommendation(bogus) == ["Device “tpu”"]
+            assert window.device_combo.findText("tpu") < 0
+            assert "Could not set Device “tpu”" in window.autoconfig_status.text()
+
+            # "Already downloaded" only for the very setup the probe checked.
+            pk = recommend(hardware_from_status(status(cuda=False)), "de")
+            probed = dict(
+                status(cuda=False),
+                model={"target": "x", "cached": True, "error": None},
+                snapshot={
+                    "backend": "parakeet",
+                    "parakeet_model": "parakeet-primeline-de",
+                    "parakeet_quantization": "int8",
+                    "model_dir": None,
+                },
+            )
+            assert model_downloaded(pk, probed) is True
+            assert model_downloaded(pk, probed, "/elsewhere") is False
+            other = dict(probed, snapshot=dict(probed["snapshot"], parakeet_quantization="fp32"))
+            assert model_downloaded(pk, other) is False
+            assert model_downloaded(pk, status(cuda=False)) is False  # no snapshot
+
+            # The button: no result yet → the probe runs on its worker
+            # thread, the button waits disabled, the question follows.
+            on_worker: list = []
+            real_probe = diagnostics.hardware_status
+
+            def probe(_snapshot):
+                on_worker.append(threading.current_thread() is not threading.main_thread())
+                return status(cuda=False)
+
+            diagnostics.hardware_status = probe
+            try:
+                window._hw_last = None
+                asked.clear()
+                answer[0] = False
+                button.click()
+                assert not button.isEnabled()
+                assert window.autoconfig_status.text() == "Checking this PC…"
+                deadline = time.monotonic() + 10
+                while window._hw_busy and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(0.01)
+                assert on_worker == [True], on_worker
+                assert len(asked) == 1 and button.isEnabled(), asked
+                assert window._hw_last is not None and "snapshot" in window._hw_last
+                # Pressed again: that result is reused, nothing probes.
+                button.click()
+                assert on_worker == [True] and len(asked) == 2, (on_worker, asked)
+            finally:
+                diagnostics.hardware_status = real_probe
+        finally:
+            window.force_close()
+
+
+def _process_events_until(app, condition, seconds: float = 5.0) -> bool:
+    """Process Qt events until `condition()` holds or `seconds` pass —
+    results from a worker thread arrive as queued signals, delivered only
+    while the main thread processes events. Returns the final `condition()`."""
+    import time
+
+    deadline = time.monotonic() + seconds
+    while not condition() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.005)
+    return bool(condition())
+
+
+def _delete_now(app, *widgets) -> None:
+    """Destroy `widgets` before the check returns, not "later".
+
+    deleteLater() hands a PySide object over to Qt, and with no event loop
+    running here its deferred delete never comes: the widget stays alive for
+    the rest of the run. A QWizard left alive that way made a later check's
+    apply_theme() segfault inside setStyleSheet (reproduced with the wizard
+    before #286 too — `_gui_construction` only escaped it by running last).
+    The trigger is Qt's, and self-test only: replacing the *application
+    style* (apply_theme's setStyle) while a style-sheet-polished QWizard with
+    a page exists, then setting a style sheet again — even a bare QWizard
+    does it. The app calls apply_theme once, before any wizard; a live OS
+    light/dark switch re-applies only the palette and the style sheet, which
+    a living wizard survives. Sending the deferred deletes explicitly
+    destroys them right here."""
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    for widget in widgets:
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    app.processEvents()
+
+
+def _microphone_test_widget():
+    """The three-second level test Settings → Audio and the setup wizard share
+    (mic_test_widget). The recording runs on the widget's worker thread and
+    everything it reports reaches the main thread through the widget's signal
+    bridge: the level moves the bar, each verdict reads exactly as the
+    Settings page always worded it, a failure names its reason. Cancel makes
+    whatever the detached worker still sends stale and holds the button back
+    for the cool-down; a refusal from can_start is shown and starts nothing."""
+    import threading
+
+    from listen_to_me import mic_test_widget as mtw
+    from listen_to_me.mic_test_widget import MicTestWidget
+
+    app = _ensure_qapp()
+    calls: list = []
+    events: list = []
+    gate = threading.Event()
+    answer: dict = {}
+
+    def run(device, on_level, is_cancelled):
+        calls.append((device, threading.current_thread() is not threading.main_thread()))
+        on_level(0.42)
+        gate.wait(5)
+        if answer.get("raise"):
+            raise RuntimeError(answer["raise"])
+        return dict(answer)
+
+    widget = MicTestWidget(lambda: 7, run=run)
+    widget.started.connect(lambda: events.append("started"))
+    widget.finished.connect(events.append)
+    try:
+        assert widget.button.text() == "Test microphone (3 s)"
+        assert "the level bar should move" in widget.button.toolTip()
+        assert not widget.cancel_button.isEnabled() and widget.level_bar.value() == 0
+
+        for verdict, peak, text in (
+            ("ok", 0.5, "Microphone works ✓ — peak level 50 %."),
+            (
+                "quiet",
+                0.03,
+                "Signal is very quiet (peak 3 %) — move closer to the microphone or "
+                "raise its input volume.",
+            ),
+            (
+                "silent",
+                0.001,
+                "No signal — check that the right device is selected and the OS "
+                "allows microphone access.",
+            ),
+        ):
+            gate.clear()
+            answer.clear()
+            answer.update(peak=peak, rms=peak / 4, seconds=3.0, verdict=verdict)
+            events.clear()
+            assert widget.start()
+            assert widget.is_running() and events == ["started"], events
+            assert widget.status.text() == mtw.RECORDING_TEXT
+            assert not widget.button.isEnabled() and widget.cancel_button.isEnabled()
+            assert not widget.start(), "a second start while one records"
+            assert _process_events_until(app, lambda: widget.level_bar.value() == 42), (
+                widget.level_bar.value()
+            )
+            gate.set()
+            assert _process_events_until(app, lambda: not widget.is_running())
+            assert widget.status.text() == text, (verdict, widget.status.text())
+            assert events == ["started", mtw.DONE], events
+            assert widget.button.isEnabled() and not widget.cancel_button.isEnabled()
+            widget._worker.join(5)
+        # The device is read when the test starts, the recording runs off the
+        # main thread.
+        assert calls and all(call == (7, True) for call in calls), calls
+
+        # A failing recording names its reason.
+        gate.set()
+        answer.clear()
+        answer["raise"] = "device unplugged"
+        events.clear()
+        assert widget.start()
+        assert _process_events_until(app, lambda: not widget.is_running())
+        assert widget.status.text() == "Microphone test failed: device unplugged"
+        assert events == ["started", mtw.FAILED], events
+        widget._worker.join(5)
+
+        # Cancel: stopped at once, the worker's late result is stale, and the
+        # button waits for the cool-down before the next start.
+        gate.clear()
+        answer.clear()
+        answer.update(peak=0.5, rms=0.1, seconds=3.0, verdict="ok")
+        events.clear()
+        assert widget.start()
+        cancel = widget._cancel_event
+        widget.cancel_button.click()
+        assert cancel.is_set() and not widget.is_running()
+        assert widget.status.text() == mtw.CANCELLED_TEXT and widget.level_bar.value() == 0
+        assert events == ["started", mtw.CANCELLED], events
+        assert not widget.button.isEnabled() and widget._cooldown.isActive()
+        gate.set()
+        widget._worker.join(5)
+        app.processEvents()  # the late level and result arrive now
+        assert widget.status.text() == mtw.CANCELLED_TEXT, widget.status.text()
+        assert widget.level_bar.value() == 0
+        assert not widget.cancel(), "cancelling an idle test"
+        assert _process_events_until(app, widget.button.isEnabled, seconds=2.0)
+
+        # can_start: a reason is shown and nothing starts; "" refuses quietly.
+        refusal = [mtw.APP_BUSY_TEXT]
+        refusing = MicTestWidget(lambda: None, run=run, can_start=lambda: refusal[0])
+        refusing.started.connect(lambda: events.append("refused widget started"))
+        before = len(calls)
+        assert not refusing.start()
+        assert refusing.status.text() == mtw.APP_BUSY_TEXT
+        refusal[0] = ""
+        refusing.status.setText("kept")
+        assert not refusing.start() and refusing.status.text() == "kept"
+        assert len(calls) == before and "refused widget started" not in events
+        _delete_now(app, refusing)
+
+        # The guard both hosts refuse with: App's queue is drained first.
+        class _App:
+            state, queued = "idle", "recording"
+
+            def _poll(self):
+                self.state = self.queued
+
+        assert mtw.app_busy(None) is False
+        assert mtw.app_busy(_App()) is True
+    finally:
+        gate.set()
+        _delete_now(app, widget)
+
+
+def _settings_audio_tests_the_microphone_through_the_widget():
+    """Settings → Audio runs its microphone test through the shared widget
+    and keeps every rule it had: one diagnostic at a time (the model download
+    and the transcription test wait while it records, their page says why,
+    and the microphone test waits for them), the global hotkey paused while
+    it records, the recording refused while the app itself records, and both
+    its own Cancel button and the dialog-close path stopping it."""
+    import threading
+
+    from listen_to_me import settings_ui as settings_module
+    from listen_to_me.mic_test_widget import APP_BUSY_TEXT, CANCELLED_TEXT, MicTestWidget
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    gate = threading.Event()
+    entered = threading.Event()
+    calls: list = []
+
+    class _Engine:
+        """Stands in for DiagnosticsEngine: one level, then the verdict once
+        the gate opens — or whenever the test is cancelled.
+
+        A Cancel replaces the window's engine with a real one, and the
+        worker reads the engine when it runs: every run below therefore sets
+        this stand-in again and waits until its worker is inside it before
+        cancelling, or the worker could reach for the real microphone."""
+
+        @staticmethod
+        def mic_test(device, seconds=3.0, on_level=None, is_cancelled=None):
+            calls.append((device, seconds))
+            entered.set()
+            on_level(0.4)
+            for _ in range(500):
+                if gate.is_set() or is_cancelled():
+                    break
+                gate.wait(0.01)
+            return {"peak": 0.4, "rms": 0.1, "seconds": seconds, "verdict": "ok"}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+        try:
+            audio_page = window.stack.widget(window._audio_index)
+            assert isinstance(window.mic_test, MicTestWidget)
+            assert audio_page.isAncestorOf(window.mic_test)
+            assert window.mic_test_button is window.mic_test.button
+            assert window.mic_status is window.mic_test.status
+            others = (window.model_download_button, window.tx_test_button)
+
+            # A run to its verdict, with the other diagnostics held back.
+            window._diag = _Engine()
+            window.mic_test_button.click()
+            assert window._diag_busy and window._diag_kind == "mic"
+            assert not any(button.isEnabled() for button in others)
+            assert window.diag_status.text() == settings_module._DIAG_BUSY_NOTE
+            assert not stub.hotkeys.running
+            assert window.mic_status.text() == "Recording 3 s — speak now…"
+            assert _process_events_until(app, lambda: window.mic_level_bar.value() == 40)
+            gate.set()
+            assert _process_events_until(app, lambda: not window._diag_busy)
+            assert window.mic_status.text() == "Microphone works ✓ — peak level 40 %."
+            assert all(button.isEnabled() for button in others + (window.mic_test_button,))
+            assert window.diag_status.text() != settings_module._DIAG_BUSY_NOTE
+            assert stub.hotkeys.running
+            assert calls == [(window._selected_input_device(), 3.0)], calls
+            window.mic_test._worker.join(5)
+
+            # …and the other way round: another diagnostic running holds the
+            # microphone test back, says so, and gives its result back after.
+            window._begin_diag("model")
+            assert not window.mic_test_button.isEnabled()
+            assert window.mic_status.text() == settings_module._DIAG_BUSY_NOTE
+            assert not window.mic_test.start() and not window.mic_test.is_running()
+            window._set_diag_busy(False)
+            assert window.mic_status.text() == "Microphone works ✓ — peak level 40 %."
+
+            # Not while the app records — a press still queued counts.
+            stub.queued_state = "recording"
+            window.mic_test_button.click()
+            assert window.mic_status.text() == APP_BUSY_TEXT
+            assert not window._diag_busy and not window.mic_test.is_running()
+            stub.state = "idle"
+
+            # Its own Cancel button: the window's half of a cancel follows.
+            gate.clear()
+            entered.clear()
+            window._diag = _Engine()
+            window.mic_test_button.click()
+            assert window._diag_busy and not stub.hotkeys.running
+            assert entered.wait(5)
+            window.mic_cancel_button.click()
+            assert not window._diag_busy and stub.hotkeys.running
+            assert window.mic_status.text() == CANCELLED_TEXT
+            assert window._diag_cooldown_timer.isActive()
+            assert not window.mic_test_button.isEnabled()
+            window.mic_test._worker.join(5)
+            window._end_diag_cooldown()
+
+            # The dialog-close path stops a running test the same way.
+            entered.clear()
+            window._diag = _Engine()
+            window.mic_test_button.click()
+            cancel = window.mic_test._cancel_event
+            assert entered.wait(5)
+            window._cancel_diagnostics()
+            assert cancel.is_set() and not window.mic_test.is_running()
+            assert not window._diag_busy and stub.hotkeys.running
+            assert window.mic_status.text() == CANCELLED_TEXT
+            window.mic_test._worker.join(5)
+            app.processEvents()
+            assert window.mic_status.text() == CANCELLED_TEXT  # stale result ignored
+        finally:
+            gate.set()
+            window.force_close()
+            app.processEvents()
+
+
+def _setup_wizard_recommends_the_engine_for_this_pc():
+    """The first-run wizard's engine step and microphone page (#286).
+
+    The speech page asks for the language only; the Whisper model moved to the
+    engine page's manual fields, next to the Parakeet model. "Recommended for
+    this PC" is preselected: the hardware probe runs on a worker thread from
+    the moment the wizard is built (a stand-in here, joined), and entering the
+    page recomputes the recommendation for the language chosen before it —
+    without probing again. Finish writes the recommendation's values, or the
+    manual fields when "Choose manually" is picked, and the language always
+    from the speech page. A probe that failed, or one still running when Next
+    is pressed, falls back to the manual fields with a note and never blocks.
+    The Microphone page carries the shared level test, which pauses the live
+    hotkey while it records and stops when the page is left or the wizard
+    closes."""
+    import threading
+    import time
+
+    from PySide6.QtWidgets import QComboBox, QLabel
+
+    from listen_to_me import onboarding_engine
+    from listen_to_me.choices import (
+        PARAKEET_MODELS,
+        backend_label,
+        choice_label,
+        language_label,
+        model_from_label,
+        model_label,
+    )
+    from listen_to_me.mic_test_widget import APP_BUSY_TEXT, CANCELLED_TEXT, MicTestWidget
+    from listen_to_me.onboarding import OnboardingWizard
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    def status() -> dict:
+        # No NVIDIA GPU, Parakeet installed, a strong CPU.
+        return {
+            "cuda": {"available": False, "count": 0, "error": None},
+            "openvino": {"installed": False, "devices": [], "error": None},
+            "parakeet": {"installed": True, "error": None},
+            "cpu": {
+                "physical_cores": 8,
+                "performance_cores": 8,
+                "logical": 16,
+                "avx2": True,
+                "x86": True,
+                "name": "Test CPU",
+                "error": None,
+            },
+            "model": {"target": "small", "cached": False, "error": None},
+        }
+
+    engine_keys = ("backend", "model", "device", "openvino_device", "parakeet_model")
+    wizards: list = []
+    gate = threading.Event()
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        cfg = stub.cfg
+        try:
+            probed: list = []
+
+            def probe(snapshot):
+                probed.append((threading.current_thread() is not threading.main_thread(), snapshot))
+                return status()
+
+            wizard = OnboardingWizard(cfg, app=stub, probe=probe)
+            wizards.append(wizard)
+            engine = wizard.engine_page
+
+            # The speech page asks for the language alone.
+            speech = wizard.page(wizard.pageIds()[1])
+            assert speech.findChildren(QComboBox) == [wizard.language_combo]
+            assert not hasattr(wizard, "model_combo")
+            for combo in (engine.model_combo, engine.pk_model_combo, engine.backend_combo):
+                assert engine.isAncestorOf(combo)
+
+            # Recommended is the default; until the probe lands it says so.
+            assert engine.is_recommended() and engine._manual_box.isHidden()
+            assert engine.rec_summary.text() == onboarding_engine.CHECKING_TEXT
+            engine._probe_thread.join(5)
+            assert _process_events_until(app, lambda: engine.recommendation() is not None)
+            assert [on_worker for on_worker, _ in probed] == [True], probed
+            assert probed[0][1]["backend"] == cfg["backend"]
+
+            # German on the speech page; entering the engine page recomputes.
+            wizard.language_combo.setCurrentText(language_label("de"))
+            engine.initializePage()
+            assert engine.rec_summary.text() == "Parakeet · German model · CPU"
+            detail = engine.rec_detail.text()
+            assert "fine-tuned for German" in detail and "about 0.7 GB" in detail, detail
+            assert len(probed) == 1, "entering the page probed again"
+            wizard._apply()
+            assert (cfg["backend"], cfg["parakeet_model"]) == ("parakeet", "parakeet-primeline-de")
+            assert (cfg["parakeet_quantization"], cfg["device"]) == ("int8", "cpu")
+            assert cfg["language"] == "de"
+            # The manual fields, untouched, follow the recommendation.
+            assert engine.backend_combo.currentText() == backend_label("parakeet")
+            german = choice_label(PARAKEET_MODELS, "parakeet-primeline-de")
+            assert engine.pk_model_combo.currentText() == german
+
+            # A language Parakeet does not know: faster-whisper, and the
+            # language is still the speech page's alone.
+            wizard.language_combo.setCurrentText(language_label("ja"))
+            engine.initializePage()
+            assert "language" not in engine.values()
+            wizard._apply()
+            assert (cfg["backend"], cfg["model"], cfg["device"]) == (
+                "faster-whisper",
+                "large-v3-turbo",
+                "cpu",
+            )
+            assert cfg["language"] == "ja"
+
+            # Choose manually: the fields show up and are what Finish writes;
+            # a pick by hand is not overwritten when the page is entered again.
+            engine.manual_radio.setChecked(True)
+            assert not engine._manual_box.isHidden()
+            engine.backend_combo.setCurrentText(backend_label("faster-whisper"))
+            engine.model_combo.setCurrentText(model_label("medium"))
+            engine.model_combo.activated.emit(engine.model_combo.currentIndex())  # by hand
+            engine.device_combo.setCurrentText("cuda")
+            engine.initializePage()
+            assert model_from_label(engine.model_combo.currentText()) == "medium"
+            wizard._apply()
+            assert (cfg["backend"], cfg["model"], cfg["device"]) == ("faster-whisper", "medium", "cuda")
+            assert cfg["openvino_device"] == engine.ov_device_combo.currentText()
+            assert cfg["parakeet_model"] == "parakeet-primeline-de"  # still written in manual mode
+            assert cfg["language"] == "ja"
+
+            # The Microphone page: the shared test on the wizard's device, the
+            # short instruction instead of the pointer to Settings.
+            audio = wizard._audio_page
+            assert isinstance(wizard.mic_test, MicTestWidget) and audio.isAncestorOf(wizard.mic_test)
+            texts = " ".join(label.text() for label in audio.findChildren(QLabel))
+            assert "Speak for three seconds — the bar should move." in texts, texts
+            assert "Settings → Audio" not in texts, texts
+
+            def held(device, on_level, is_cancelled):
+                # Records until cancelled (bounded, so the thread always ends).
+                for _ in range(500):
+                    if is_cancelled() or gate.is_set():
+                        break
+                    time.sleep(0.01)
+                return {"peak": 0.5, "rms": 0.1, "seconds": 3.0, "verdict": "ok"}
+
+            wizard.mic_test._run = held
+            assert stub.hotkeys.running
+            assert wizard.mic_test.start()
+            assert not stub.hotkeys.running, "the hotkey stays live while the test records"
+            wizard.restart()  # a page change — the wizard leaves the Microphone page
+            assert not wizard.mic_test.is_running() and stub.hotkeys.running
+            assert wizard.mic_test.status.text() == CANCELLED_TEXT
+            wizard.mic_test._worker.join(5)
+            wizard.mic_test._end_cooldown()
+
+            stub.queued_state = "recording"
+            assert not wizard.mic_test.start()
+            assert wizard.mic_test.status.text() == APP_BUSY_TEXT
+            stub.state = "idle"
+
+            assert wizard.mic_test.start() and not stub.hotkeys.running
+            wizard.done(0)  # Cancel / Esc / the close button
+            assert not wizard.mic_test.is_running() and stub.hotkeys.running
+            wizard.mic_test._worker.join(5)
+
+            # A probe that fails: the manual fields with a note, Next goes on,
+            # Finish writes the saved values back.
+            saved = {key: cfg[key] for key in engine_keys}
+
+            def broken(_snapshot):
+                raise RuntimeError("probe exploded")
+
+            failed = OnboardingWizard(cfg, probe=broken)
+            wizards.append(failed)
+            page = failed.engine_page
+            page._probe_thread.join(5)
+            assert _process_events_until(app, lambda: page._probe_error is not None)
+            assert not page.is_recommended() and not page.recommended_radio.isEnabled()
+            assert not page._manual_box.isHidden() and not page.note.isHidden()
+            assert page.note.text() == onboarding_engine.FAILED_NOTE
+            assert page.rec_summary.text() == onboarding_engine.FAILED_TEXT
+            assert "probe exploded" in page.rec_detail.text()
+            assert page.validatePage()
+            failed._apply()
+            assert {key: cfg[key] for key in engine_keys} == saved
+
+            # No page may push the wizard past its 620 px: the manual fields
+            # shown, a probe error and a microphone error that each carry an
+            # unbreakable path (a wrapping label demands its longest word).
+            long_path = (
+                r"C:\Users\a.verylongusername\AppData\Local\Programs\ListenToMe"
+                r"\models\huggingface\hub\models--openai--whisper-large-v3"
+            )
+            page.rec_detail.setText(f"failed: {long_path}")
+            failed.mic_test.status.setText(f"Microphone test failed: {long_path}")
+            room = failed.width() - 60  # less the wizard's own frame and margins
+            for page_id in failed.pageIds():
+                shown = failed.page(page_id)
+                demanded = shown.minimumSizeHint().width()
+                assert 0 < demanded <= room, (shown.title(), demanded, room)
+
+            # A probe still running at Next: never waited on — the first Next
+            # switches to the manual fields and says why, the second goes on;
+            # Finish meanwhile writes the manual (saved) values.
+            gate.clear()
+
+            def slow(_snapshot):
+                gate.wait(5)
+                return status()
+
+            pending = OnboardingWizard(cfg, probe=slow)
+            wizards.append(pending)
+            page = pending.engine_page
+            assert page.is_recommended() and page.recommendation() is None
+            pending._apply()
+            assert {key: cfg[key] for key in engine_keys} == saved
+            assert not page.validatePage()
+            assert not page.is_recommended() and not page._manual_box.isHidden()
+            assert page.note.text() == onboarding_engine.PENDING_NOTE
+            assert page.validatePage()
+            gate.set()
+            page._probe_thread.join(5)
+            assert _process_events_until(app, lambda: page.recommendation() is not None)
+            assert page.note.text() == onboarding_engine.READY_NOTE
+            assert page.rec_summary.text() != onboarding_engine.CHECKING_TEXT
+            assert not page.is_recommended(), "the mode flipped under the user"
+            # …and neither did the fields: the note promised that Next keeps
+            # what they showed, so Finish still writes the saved values.
+            pending._apply()
+            assert {key: cfg[key] for key in engine_keys} == saved, "refilled behind the note"
+        finally:
+            gate.set()
+            for item in wizards:
+                item.mic_test.cancel()
+            _delete_now(app, *wizards)
+
+
+def _app_disposes_the_setup_wizard():
+    """App._run_onboarding hands the wizard to Qt for deletion on the GUI
+    thread however it ends — Finish, Cancel, or exec() raising. Left to
+    Python's cycle collector (its pages hold bound methods of it), it would be
+    destroyed on whichever thread the collection runs — its own hardware probe
+    or the model warm-up, both busy importing — and a QWidget destroyed off
+    the GUI thread crashes the app."""
+    import logging
+
+    from listen_to_me import onboarding
+    from listen_to_me.app import App
+
+    class _Wizard:
+        made: list = []
+        result: int | None = 1  # None: exec() raises
+
+        def __init__(self, cfg, app=None):
+            self.deleted = False
+            _Wizard.made.append(self)
+
+        def exec(self):
+            if _Wizard.result is None:
+                raise RuntimeError("exec failed")
+            return _Wizard.result
+
+        def deleteLater(self):  # noqa: N802 (Qt naming)
+            self.deleted = True
+
+    class _Cfg:
+        @staticmethod
+        def save():
+            return True
+
+    class _App:
+        def __init__(self):
+            self.cfg, self._quitting, self.calls = _Cfg(), False, []
+
+        def apply_settings(self):
+            self.calls.append("apply")
+
+        def _open_settings(self):
+            self.calls.append("settings")
+
+        def notify(self, *_args, **_kwargs):
+            self.calls.append("notify")
+
+    real, onboarding.OnboardingWizard = onboarding.OnboardingWizard, _Wizard
+    app_log = logging.getLogger("listen_to_me.app")
+    level = app_log.level
+    app_log.setLevel(logging.CRITICAL)  # the raising exec() logs a traceback
+    try:
+        for result, expected in ((1, ["apply"]), (0, ["settings"]), (None, ["settings"])):
+            _Wizard.result = result
+            fake = _App()
+            App._run_onboarding(fake)
+            assert _Wizard.made[-1].deleted, f"exec() → {result}: wizard left to the GC"
+            assert fake.calls == expected, (result, fake.calls)
+    finally:
+        onboarding.OnboardingWizard = real
+        app_log.setLevel(level)
 
 
 def _settings_window_edits_the_new_options():
@@ -10293,8 +11763,19 @@ def _gui_construction():
         assert not window._app_busy()
 
         # Cancel plumbing: Cancel stops the diagnostic, re-enables the buttons
-        # and makes everything the detached worker still emits stale.
-        gen, cancel = window._begin_diag("mic")
+        # and makes everything the detached worker still emits stale. Started
+        # through the microphone test widget against a stand-in engine that
+        # answers at once: its result is then queued, undelivered until the
+        # events are processed — after the Cancel, i.e. stale.
+        class _AnsweringEngine:
+            @staticmethod
+            def mic_test(device, seconds=3.0, on_level=None, is_cancelled=None):
+                return {"peak": 0.5, "rms": 0.1, "seconds": seconds, "verdict": "ok"}
+
+        window._diag = _AnsweringEngine()
+        assert window.mic_test.start()
+        window.mic_test._worker.join(5)
+        cancel = window.mic_test._cancel_event
         assert window._diag_busy and window.mic_cancel_button.isEnabled()
         assert not window.mic_test_button.isEnabled()
         # A recording test owns the microphone: the global hotkey is paused so
@@ -10311,8 +11792,9 @@ def _gui_construction():
         window._end_diag_cooldown()
         assert window.mic_test_button.isEnabled()
         assert "cancelled" in window.mic_status.text()
-        window._on_mic_done(gen, {"peak": 0.5, "rms": 0.1, "seconds": 3.0, "verdict": "ok"})
+        app.processEvents()  # the worker's queued result arrives now
         assert "cancelled" in window.mic_status.text()  # stale result ignored
+        assert not window._diag_busy and not window.mic_test.is_running()
 
         overlay = Overlay(stub)
         for state in ("recording", "processing", "idle"):
@@ -10509,34 +11991,45 @@ def _gui_construction():
         dialog = HotkeyCaptureDialog(None)
 
         # The first-run wizard: build, exercise the backend-dependent device
-        # rows, then apply — the chosen values must land in the config dict.
-        # _apply() instead of accept(): accept re-validates the current page,
-        # and the hotkey validation imports pynput (absent on the CI runner).
-        wizard = OnboardingWizard(stub.cfg)
+        # rows of its manual engine fields, then apply — the chosen values must
+        # land in the config dict. _apply() instead of accept(): accept
+        # re-validates the current page, and the hotkey validation imports
+        # pynput (absent on the CI runner). The hardware probe is a stand-in
+        # (an empty status: nothing found) on a thread joined right here.
+        wizard = OnboardingWizard(stub.cfg, probe=lambda _snapshot: {})
+        wizard.engine_page._probe_thread.join(5)
+        app.processEvents()
         wizard.restart()
+        engine = wizard.engine_page
         assert wizard.language_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus  # wheel guard
-        assert not wizard.model_combo.isEditable()  # read-only — presets only
-        wizard.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
-        assert "OpenVINO" in wizard._engine_note.text()
-        # Parakeet ignores the model and language chosen on the previous wizard
-        # page — the page must say so instead of dropping them silently.
-        wizard.backend_combo.setCurrentIndex(2)  # Parakeet
-        assert "Parakeet" in wizard._engine_note.text()
-        wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
-        assert not wizard._engine_note.text()
+        assert engine.backend_combo.focusPolicy() == Qt.FocusPolicy.StrongFocus
+        assert not engine.model_combo.isEditable()  # read-only — presets only
+        engine.manual_radio.setChecked(True)
+        engine.backend_combo.setCurrentIndex(1)  # OpenVINO → Intel device row
+        assert "OpenVINO" in engine._engine_note.text()
+        # Parakeet ignores the language chosen on the previous wizard page and
+        # runs its own models — the page must say so instead of dropping the
+        # choice silently, and offer its model instead of Whisper's.
+        engine.backend_combo.setCurrentIndex(2)  # Parakeet
+        assert "Parakeet" in engine._engine_note.text()
+        assert engine._engine_form.isRowVisible(engine.pk_model_combo)
+        assert not engine._engine_form.isRowVisible(engine.model_combo)
+        engine.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert not engine._engine_note.text()
+        assert not engine._engine_form.isRowVisible(engine.pk_model_combo)
 
         # The OpenVINO backend has no conversion for a few presets. Picking one
         # of those must not survive the switch — the wizard swaps in the closest
         # model that works, says so, and restores the original when the backend
         # moves on (#112).
-        wizard._fill_model_combo("faster-whisper", GERMAN_TURBO_CT2)
-        wizard.backend_combo.setCurrentIndex(1)  # OpenVINO
-        assert model_from_label(wizard.model_combo.currentText()) == "large-v3-turbo"
-        assert GERMAN_TURBO_CT2 in wizard._engine_note.text()
-        assert wizard.model_combo.findText(model_label(GERMAN_TURBO_CT2)) < 0  # filtered out
-        wizard.backend_combo.setCurrentIndex(0)  # back to faster-whisper
-        assert model_from_label(wizard.model_combo.currentText()) == GERMAN_TURBO_CT2
-        wizard._fill_model_combo("faster-whisper", "small")
+        engine._fill_model_combo("faster-whisper", GERMAN_TURBO_CT2)
+        engine.backend_combo.setCurrentIndex(1)  # OpenVINO
+        assert model_from_label(engine.model_combo.currentText()) == "large-v3-turbo"
+        assert GERMAN_TURBO_CT2 in engine._engine_note.text()
+        assert engine.model_combo.findText(model_label(GERMAN_TURBO_CT2)) < 0  # filtered out
+        engine.backend_combo.setCurrentIndex(0)  # back to faster-whisper
+        assert model_from_label(engine.model_combo.currentText()) == GERMAN_TURBO_CT2
+        engine._fill_model_combo("faster-whisper", "small")
         wizard._apply()
         assert stub.cfg["backend"] == "faster-whisper"
         assert stub.cfg["model"] == "small"  # preset label round-trips to the id
@@ -11546,8 +13039,12 @@ _LIGHT_CHECKS = [
     ("openvino pipeline properties", _openvino_pipeline_properties),
     ("openvino backend logic", _openvino_backend_logic),
     ("parakeet backend logic", _parakeet_backend_logic),
+    ("parakeet model registry", _parakeet_model_registry),
+    ("CPU threads resolution", _cpu_threads_resolution),
     ("diagnostics engine", _diagnostics_engine),
     ("hardware/status probes", _hardware_probes),
+    ("engine recommendation matrix", _engine_recommendation_matrix),
+    ("engine recommendation reads the probe", _engine_recommendation_reads_the_probe),
     ("help content renders", _help_content_renders),
     ("help page find", _help_page_find),
     ("escape clears a search field", _escape_clears_a_search_field),
@@ -11580,6 +13077,16 @@ _LIGHT_CHECKS = [
     ("source-aware controls stop their take", _source_aware_controls_stop_their_take),
     ("surfaces name an unreadable history", _surfaces_name_an_unreadable_history),
     ("settings window edits the new options", _settings_window_edits_the_new_options),
+    ("settings engine offers the Parakeet model and CPU threads",
+     _settings_engine_offers_the_parakeet_model_and_cpu_threads),
+    ("settings engine auto-configures for this PC",
+     _settings_engine_auto_configures_for_this_pc),
+    ("microphone test widget", _microphone_test_widget),
+    ("settings audio tests the microphone through the widget",
+     _settings_audio_tests_the_microphone_through_the_widget),
+    ("setup wizard recommends the engine for this PC",
+     _setup_wizard_recommends_the_engine_for_this_pc),
+    ("app disposes the setup wizard", _app_disposes_the_setup_wizard),
     ("system audio picker reads as an output picker",
      _system_audio_picker_reads_as_an_output_picker),
     ("system audio hint names the outputs it cannot record",

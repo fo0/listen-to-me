@@ -50,6 +50,14 @@ from PySide6.QtWidgets import (
 from . import APP_NAME, RELEASES_URL, REPO_URL, __version__
 from .assistant import config_problem as assistant_config_problem
 from .assistant import profile as assistant_profile
+from .autoconfig import Recommendation, changes, hardware_from_status, recommend
+from .autoconfig_text import (
+    FIELD_LABELS,
+    already_set_up_text,
+    confirm_message,
+    model_downloaded,
+    shown_value,
+)
 from .choices import (
     BACKENDS,
     CLIPBOARD_COPY_MODES,
@@ -62,6 +70,7 @@ from .choices import (
     MUTE_PRESETS,
     OPENVINO_DEVICES,
     OPENVINO_PRECISIONS,
+    PARAKEET_MODELS,
     PARAKEET_QUANTIZATIONS,
     SOURCE_MIC,
     SOURCE_SYSTEM,
@@ -85,6 +94,7 @@ from .choices import (
     openvino_alternative,
     openvino_supports_model,
 )
+from .cpuinfo import MAX_CPU_THREADS, resolve_cpu_threads
 from .config import (
     DEFAULT_ASSISTANT_PROMPT,
     DEFAULT_FILLER_PHRASES,
@@ -98,6 +108,7 @@ from .glyphs import glyph_icon
 from .home_page import HomePage
 from .hotkeys import Hotkeys
 from .keymap import hotkey_label
+from .mic_test_widget import APP_BUSY_TEXT, CANCELLED, MicTestWidget, app_busy
 # The transcript-bubble anchor's vocabulary lives with the placement that
 # reads it, so the dropdown can never offer a value overlay.py cannot place
 # (#196). Importable up here for the same reason `system_audio` is: overlay.py
@@ -171,19 +182,17 @@ class _AssistantSignals(QObject):
 
 
 class _DiagSignals(QObject):
-    """Marshals diagnostics results (model download, microphone/transcription
-    test, hotkey test, hardware probe) from worker threads back to the Qt main
-    thread. The leading int is the diagnostic generation the worker was started
-    with — a handler ignores the payload when it no longer matches, so a worker
-    detached by Cancel (or superseded by a newer run) can't touch the UI."""
+    """Marshals diagnostics results (model download, transcription test,
+    hotkey test, hardware probe) from worker threads back to the Qt main
+    thread; the microphone test brings its own (mic_test_widget). The leading
+    int is the diagnostic generation the worker was started with — a handler
+    ignores the payload when it no longer matches, so a worker detached by
+    Cancel (or superseded by a newer run) can't touch the UI."""
 
     model_status = Signal(int, str)
     model_progress = Signal(int, int, int)  # generation, bytes done, bytes total
     model_done = Signal(int, str)
     model_failed = Signal(int, str)
-    mic_level = Signal(int, float)  # recent peak 0.0-1.0 while the mic test records
-    mic_done = Signal(int, object)  # diagnostics.clip_stats() dict
-    mic_failed = Signal(int, str)
     tx_status = Signal(int, str)
     tx_level = Signal(int, float)
     tx_done = Signal(int, str)  # recognized text ("" = nothing understood)
@@ -725,9 +734,6 @@ class SettingsWindow(QDialog):
         self._dsig.model_progress.connect(self._on_model_progress)
         self._dsig.model_done.connect(self._on_model_done)
         self._dsig.model_failed.connect(self._on_model_failed)
-        self._dsig.mic_level.connect(self._on_mic_level)
-        self._dsig.mic_done.connect(self._on_mic_done)
-        self._dsig.mic_failed.connect(self._on_mic_failed)
         self._dsig.tx_status.connect(self._on_diag_status)
         self._dsig.tx_level.connect(self._on_tx_level)
         self._dsig.tx_done.connect(self._on_tx_done)
@@ -749,6 +755,12 @@ class SettingsWindow(QDialog):
         self._hw_gen = 0
         self._hw_busy = False
         self._status_probed = False  # first probe runs when the page is opened
+        # The last probe result of this window (None before the first), which
+        # "Auto-configure for this PC" reuses — the hardware does not change
+        # while the window is open — and whether that button waits for the
+        # probe running now (see _auto_configure).
+        self._hw_last: dict | None = None
+        self._autoconfig_pending = False
         # The preset the OpenVINO model filter swapped out (see
         # _reload_model_combo), so leaving that backend puts it back.
         self._model_swapped_from: str | None = None
@@ -859,7 +871,17 @@ class SettingsWindow(QDialog):
         self.backend_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
         self.ov_precision_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
         self.pk_quant_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
+        self.pk_model_combo.currentIndexChanged.connect(self._on_status_inputs_changed)
         self.model_dir_edit.textChanged.connect(self._on_status_inputs_changed)
+        # The auto-configure line describes the fields as the button left
+        # them ("already set up", "filled in"), so an edit by hand retires it.
+        # _apply_recommendation writes its line after its own edits.
+        for combo in (
+            self.backend_combo, self.model_combo, self.language_combo,
+            self.device_combo, self.compute_combo, self.ov_device_combo,
+            self.ov_precision_combo, self.pk_model_combo, self.pk_quant_combo,
+        ):
+            combo.currentIndexChanged.connect(self._clear_autoconfig_status)
 
         # Footer with the version and the action buttons.
         footer = QHBoxLayout()
@@ -1517,6 +1539,22 @@ class SettingsWindow(QDialog):
         )
         form.addRow("Beam size:", self.beam_spin)
 
+        self.cpu_threads_spin = QSpinBox()
+        self.cpu_threads_spin.setRange(0, MAX_CPU_THREADS)
+        # 0 reads as what it does, with the number it resolves to here — a
+        # bare "0 threads" looks like a broken value.
+        self.cpu_threads_spin.setSpecialValueText(f"Automatic ({resolve_cpu_threads(0)})")
+        self.cpu_threads_spin.setValue(
+            min(MAX_CPU_THREADS, max(0, self._to_int(self.cfg["cpu_threads"], 0)))
+        )
+        self.cpu_threads_spin.setToolTip(
+            "How many CPU threads faster-whisper transcribes with when it runs "
+            "on the CPU. 0 = automatic: uses the performance cores, at least 4 "
+            "and at most 8 — hyper-threads and the slower efficiency cores of a "
+            "hybrid CPU add little. Ignored on an NVIDIA GPU."
+        )
+        form.addRow("CPU threads:", self.cpu_threads_spin)
+
         self.ov_device_combo = QComboBox()
         self.ov_device_combo.addItems(OPENVINO_DEVICES)
         self._select_combo(self.ov_device_combo, self.cfg["openvino_device"])
@@ -1538,6 +1576,20 @@ class SettingsWindow(QDialog):
         )
         elastic_combo(self.ov_precision_combo)  # long items widen the page
         form.addRow("Precision:", self.ov_precision_combo)
+
+        self.pk_model_combo = QComboBox()
+        self.pk_model_combo.addItems(choice_labels(PARAKEET_MODELS))
+        pk_model = choice_label(PARAKEET_MODELS, self.cfg["parakeet_model"])
+        self._select_combo(self.pk_model_combo, pk_model)
+        self.pk_model_combo.setToolTip(
+            "Which Parakeet model to run. parakeet-tdt-0.6b-v3 is NVIDIA's "
+            "multilingual original (25 languages, detected automatically); "
+            "parakeet-primeline-de is primeline's German fine-tune of it — "
+            "noticeably more accurate for German, but it understands German "
+            "only. Same size and speed; changing this downloads the other model."
+        )
+        elastic_combo(self.pk_model_combo)  # long items widen the page
+        form.addRow("Parakeet model:", self.pk_model_combo)
 
         self.pk_quant_combo = QComboBox()
         self.pk_quant_combo.addItems(choice_labels(PARAKEET_QUANTIZATIONS))
@@ -1567,7 +1619,8 @@ class SettingsWindow(QDialog):
             "The OpenVINO backend accelerates on Intel GPUs and NPUs instead; "
             "models are fetched pre-converted from Hugging Face (OpenVINO/whisper-…-ov). "
             "The Parakeet backend runs NVIDIA's Parakeet TDT model (not Whisper): "
-            "many times faster, 25 languages with automatic detection — the model "
+            "many times faster, 25 languages with automatic detection — or "
+            "primeline's German fine-tune of it, for German only. The model "
             "preset, language, initial prompt and VAD options don't apply to it."
         ))
 
@@ -1593,8 +1646,24 @@ class SettingsWindow(QDialog):
         )
         self.hw_refresh_button.clicked.connect(self._refresh_hw_status)
         sh.addWidget(self.hw_refresh_button)
+        self.autoconfig_button = QPushButton("Auto-configure for this PC")
+        self.autoconfig_button.setAutoDefault(False)
+        self.autoconfig_button.setToolTip(
+            "Pick the most accurate engine setup that still runs well on this PC, "
+            "for the spoken language selected above. Shows what would change and "
+            "asks first — nothing is saved until you press Apply or Save."
+        )
+        self.autoconfig_button.clicked.connect(self._auto_configure)
+        sh.addWidget(self.autoconfig_button)
         sh.addStretch(1)
         sform.addRow("", status_row)
+        # What the button found or filled in. Composed from the recommendation
+        # at runtime, hence elastic, and selectable for the "Could not set"
+        # failure; its row is hidden while it is empty.
+        self.autoconfig_status = self._hint("", elastic=True, selectable=True)
+        sform.addRow("", self.autoconfig_status)
+        sform.setRowVisible(self.autoconfig_status, False)
+        self._hw_form = sform
         layout.addWidget(status)
 
         folder = QGroupBox("Model download folder")
@@ -1999,33 +2068,29 @@ class SettingsWindow(QDialog):
         )
         form.addRow("Max recording length (s):", self.max_seconds_spin)
 
-        mic_test = QWidget()
-        mh = QHBoxLayout(mic_test)
-        mh.setContentsMargins(0, 0, 0, 0)
-        self.mic_test_button = QPushButton("Test microphone (3 s)")
-        self.mic_test_button.setAutoDefault(False)
-        self.mic_test_button.setToolTip(
-            "Record three seconds from the selected device and check that a "
-            "signal arrives. Speak normally — the level bar should move."
+        # The same widget as the first-run wizard's Microphone page. It owns
+        # its worker, signals, generation and cancel event; this window folds
+        # it into its one-diagnostic-at-a-time rule through can_start and the
+        # started/finished signals, and runs the cool-down after a Cancel over
+        # all three start buttons itself (hence cooldown_ms=0). `_diag` is
+        # read when the worker runs, as before: a Cancel replaces the engine.
+        self.mic_test = MicTestWidget(
+            self._selected_input_device,
+            run=lambda device, on_level, is_cancelled: self._diag.mic_test(
+                device, seconds=3.0, on_level=on_level, is_cancelled=is_cancelled
+            ),
+            can_start=self._mic_test_refusal,
+            cooldown_ms=0,
         )
-        self.mic_test_button.clicked.connect(self._test_microphone)
-        mh.addWidget(self.mic_test_button)
-        self.mic_cancel_button = QPushButton("Cancel")
-        self.mic_cancel_button.setAutoDefault(False)
-        self.mic_cancel_button.setEnabled(False)
-        self.mic_cancel_button.setToolTip("Stop the running microphone test.")
-        self.mic_cancel_button.clicked.connect(self._cancel_diagnostic)
-        mh.addWidget(self.mic_cancel_button)
-        mh.addStretch(1)
-        form.addRow("", mic_test)
-        self.mic_level_bar = QProgressBar()
-        self.mic_level_bar.setRange(0, 100)
-        self.mic_level_bar.setValue(0)
-        self.mic_level_bar.setTextVisible(False)
-        self.mic_level_bar.setToolTip("Input level while the microphone test records.")
-        form.addRow("Level:", self.mic_level_bar)
-        self.mic_status = self._hint("", elastic=True, selectable=True)
-        form.addRow("", self.mic_status)
+        self.mic_test.started.connect(self._on_mic_test_started)
+        self.mic_test.finished.connect(self._on_mic_test_finished)
+        # The parts by their old names: the diagnostics rule and the
+        # self-test address them directly.
+        self.mic_test_button = self.mic_test.button
+        self.mic_cancel_button = self.mic_test.cancel_button
+        self.mic_level_bar = self.mic_test.level_bar
+        self.mic_status = self.mic_test.status
+        form.addRow("", self.mic_test)
         layout.addWidget(card)
 
         # Everything the second recording source needs, in one card: its
@@ -3855,21 +3920,8 @@ class SettingsWindow(QDialog):
     def _app_busy(self) -> bool:
         """Whether the app is recording or transcribing right now — the guard
         every test that borrows the microphone or the hotkey listener runs.
-
-        A hotkey press posted by the listener thread can sit in App's event
-        queue for up to one poll tick (100 ms), so App.state alone is stale:
-        hold the combo and start a test within that window and the guard would
-        pass, the test takes over, and the queued press then starts a recording
-        whose release is never delivered. Draining the queue first applies the
-        press before the state is read.
-        """
-        poll = getattr(self.app, "_poll", None)
-        if callable(poll):
-            try:
-                poll()
-            except Exception:
-                log.debug("could not drain the app event queue", exc_info=True)
-        return getattr(self.app, "state", "idle") != "idle"
+        Drains App's event queue first; why: `mic_test_widget.app_busy`."""
+        return app_busy(self.app)
 
     def _diag_snapshot(self) -> dict:
         """The UI values the transcribers read, as a plain dict — so the
@@ -3880,6 +3932,7 @@ class SettingsWindow(QDialog):
             "device": self.device_combo.currentText(),
             "compute_type": self.compute_combo.currentText(),
             "beam_size": int(self.beam_spin.value()),
+            "cpu_threads": int(self.cpu_threads_spin.value()),
             "model_dir": self.model_dir_edit.text().strip() or None,
             "language": self._selected_language(),
             "initial_prompt": self.initial_prompt_edit.toPlainText().strip(),
@@ -3887,6 +3940,7 @@ class SettingsWindow(QDialog):
             "openvino_device": self.ov_device_combo.currentText(),
             "openvino_precision": choice_value(OPENVINO_PRECISIONS, self.ov_precision_combo.currentText()),
             "parakeet_quantization": choice_value(PARAKEET_QUANTIZATIONS, self.pk_quant_combo.currentText()),
+            "parakeet_model": choice_value(PARAKEET_MODELS, self.pk_model_combo.currentText()),
         }
 
     def _set_hotkey_paused(self, paused: bool) -> None:
@@ -3982,10 +4036,13 @@ class SettingsWindow(QDialog):
             self._diag_cancel_event.set()
         self._diag = DiagnosticsEngine()
         self._set_diag_busy(False)
+        if kind == "mic":
+            # After _set_diag_busy: the widget's finished signal then finds
+            # no microphone diagnostic left to settle (_on_mic_test_finished).
+            # A no-op when its own Cancel button brought us here.
+            self.mic_test.cancel()
         self._begin_diag_cooldown()
         if kind == "mic":
-            self.mic_level_bar.setValue(0)
-            self.mic_status.setText("Microphone test cancelled.")
             return
         self.diag_progress.setVisible(False)
         if kind == "model":
@@ -4188,61 +4245,28 @@ class SettingsWindow(QDialog):
         self.diag_status.setText(f"Transcription test failed: {message}")
         self._after_model_diagnostic()
 
-    def _test_microphone(self) -> None:
+    def _mic_test_refusal(self) -> str | None:
+        """The microphone test's can_start: None lets it start."""
         if self._diag_busy:
-            return
+            return ""  # another test owns the recorder; its button says so
         if self._app_busy():
-            self.mic_status.setText("Finish the current recording first, then run the test.")
-            return
-        device = self._selected_input_device()
-        gen, cancel = self._begin_diag("mic")
-        self.mic_level_bar.setValue(0)
-        self.mic_status.setText("Recording 3 s — speak now…")
+            return APP_BUSY_TEXT
+        return None
 
-        def work():
-            try:
-                result = self._diag.mic_test(
-                    device,
-                    seconds=3.0,
-                    on_level=lambda level: self._dsig.mic_level.emit(gen, float(level)),
-                    is_cancelled=cancel.is_set,
-                )
-                self._dsig.mic_done.emit(gen, result)
-            except Exception as exc:  # surfaced in the UI
-                log.exception("microphone test failed")
-                self._dsig.mic_failed.emit(gen, str(exc))
+    def _on_mic_test_started(self) -> None:
+        # The widget runs its own worker and cancel event; this is the busy
+        # state, the hotkey pause and the notes of the other diagnostics.
+        self._begin_diag("mic")
 
-        threading.Thread(target=work, name="diag-mic", daemon=True).start()
-
-    def _on_mic_level(self, gen: int, level: float) -> None:
-        if gen != self._diag_gen:
-            return
-        self.mic_level_bar.setValue(int(level * 100))
-
-    def _on_mic_done(self, gen: int, result: dict) -> None:
-        if gen != self._diag_gen:
-            return
-        self._set_diag_busy(False)
-        peak = int(result["peak"] * 100)
-        verdict = result["verdict"]
-        if verdict == "silent":
-            self.mic_status.setText(
-                "No signal — check that the right device is selected and the "
-                "OS allows microphone access."
-            )
-        elif verdict == "quiet":
-            self.mic_status.setText(
-                f"Signal is very quiet (peak {peak} %) — move closer to the "
-                "microphone or raise its input volume."
-            )
+    def _on_mic_test_finished(self, outcome: str) -> None:
+        if self._diag_kind != "mic":
+            return  # _cancel_diagnostic has settled it already
+        if outcome == CANCELLED:
+            # The widget's own Cancel button: the window's half of a cancel
+            # (generation, engine, cool-down) follows.
+            self._cancel_diagnostic()
         else:
-            self.mic_status.setText(f"Microphone works ✓ — peak level {peak} %.")
-
-    def _on_mic_failed(self, gen: int, message: str) -> None:
-        if gen != self._diag_gen:
-            return
-        self._set_diag_busy(False)
-        self.mic_status.setText(f"Microphone test failed: {message}")
+            self._set_diag_busy(False)
 
     def _test_hotkey(self) -> None:
         if self._hotkey_test is not None:
@@ -4328,6 +4352,9 @@ class SettingsWindow(QDialog):
         self._diag = DiagnosticsEngine()
         if self._hotkey_test is not None:
             self._finish_hotkey_test("")
+        # A probe still running for "Auto-configure" must not open its
+        # question over a window that is gone.
+        self._autoconfig_pending = False
 
     # ------------------------------------------------ hardware/model status
 
@@ -4341,6 +4368,7 @@ class SettingsWindow(QDialog):
         self._hw_gen += 1
         gen = self._hw_gen
         self.hw_refresh_button.setEnabled(False)
+        self.autoconfig_button.setEnabled(False)
         for label in (self.hw_cuda_label, self.hw_ov_label, self.hw_model_label):
             label.setText("Checking…")
         snapshot = self._diag_snapshot()
@@ -4353,6 +4381,9 @@ class SettingsWindow(QDialog):
             # The backend the probe was taken for: _format_cuda_status names
             # it, and the combo may have moved on before the result lands.
             result["backend"] = snapshot["backend"]
+            # And the values the "model" entry is about, which auto-configure
+            # compares before it calls a model already downloaded.
+            result["snapshot"] = snapshot
             self._dsig.hw_done.emit(gen, result)
 
         threading.Thread(target=work, name="diag-hw", daemon=True).start()
@@ -4374,6 +4405,8 @@ class SettingsWindow(QDialog):
             return
         self._hw_busy = False
         self.hw_refresh_button.setEnabled(True)
+        self.autoconfig_button.setEnabled(True)
+        self._hw_last = result
         # A result from before the backend was recorded (or a synthetic one)
         # falls back to the current selection.
         backend = result.get("backend") or self._selected_backend()
@@ -4381,6 +4414,9 @@ class SettingsWindow(QDialog):
         self.hw_ov_label.setText(self._format_openvino_status(result["openvino"]))
         self.hw_model_label.setText(self._format_model_status(result["model"]))
         self._refresh_runtime_status()
+        if self._autoconfig_pending:
+            self._autoconfig_pending = False
+            self._offer_recommendation(result)
 
     def _refresh_runtime_status(self) -> None:
         """Fill the "Running on" line from what is actually loaded.
@@ -4514,6 +4550,132 @@ class SettingsWindow(QDialog):
             f"'{info['target']}' is not downloaded yet — use “Download / load "
             "model” below, or it is fetched automatically on first use."
         )
+
+    # ------------------------------------------------ engine auto-configure
+
+    def _auto_configure(self) -> None:
+        """"Auto-configure for this PC": recommend the engine setup for this
+        machine and the language selected on this page, and fill it in on a
+        yes (_offer_recommendation).
+
+        The machine is the status card's probe: its last result of this
+        window when there is one and no probe is running, else the probe is
+        started — or the running one awaited — and _on_hw_done continues
+        here. Never probes on this thread: the probe imports CTranslate2,
+        OpenVINO and ONNX Runtime, which would freeze the window.
+        """
+        if self._hw_last is not None and not self._hw_busy:
+            self._offer_recommendation(self._hw_last)
+            return
+        self._autoconfig_pending = True
+        self.autoconfig_button.setEnabled(False)
+        self._set_autoconfig_status("Checking this PC…")
+        self._refresh_hw_status()  # returns at once while a probe is running
+
+    def _offer_recommendation(self, status: dict) -> Recommendation:
+        """Recommend for `status` (a hardware_status result) and the language
+        selected in this window — not the saved one — and compare with the
+        values entered here. Nothing to change says so on the status line;
+        otherwise `_confirm_autoconfig` asks before the fields are filled in.
+        Returns the recommendation."""
+        rec = recommend(hardware_from_status(status), self._selected_language())
+        changed = changes(rec, self._collect())
+        if not changed:
+            self._set_autoconfig_status(already_set_up_text(rec))
+            return rec
+        model_dir = self.model_dir_edit.text().strip() or None
+        text, details = confirm_message(rec, changed, model_downloaded(rec, status, model_dir))
+        if not self._confirm_autoconfig(text, details):
+            self._set_autoconfig_status("")
+            return rec
+        self._apply_recommendation(rec)
+        return rec
+
+    def _confirm_autoconfig(self, text: str, details: str) -> bool:
+        """Ask before a recommendation is filled in. A method of its own so
+        the self-test can answer it without a modal dialog."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Auto-configure for this PC")
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText(text)
+        box.setInformativeText(details)
+        use = box.addButton("Use these settings", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(use)
+        box.exec()
+        return box.clickedButton() is use
+
+    def _apply_recommendation(self, rec: Recommendation) -> list[str]:
+        """Fill `rec` into the Engine fields as a pick by hand would — the
+        backend first, whose change re-lists the model dropdown and shows the
+        rows the other values live in. Saves nothing: the fields are unsaved
+        edits like any other until Apply or Save. The language is never
+        among the values. Returns the fields that could not be set, which
+        the status line names as well."""
+        failed = []
+        for key, value in sorted(rec.values.items(), key=lambda item: item[0] != "backend"):
+            if not self._set_engine_value(key, value):
+                log.warning("auto-configure: the %s field has no entry for %r", key, value)
+                failed.append(f"{FIELD_LABELS.get(key, key)} “{shown_value(key, value)}”")
+        text = "Recommended settings filled in — press Apply or Save to keep them."
+        if failed:
+            text += (
+                f" Could not set {', '.join(failed)}: the list has no such entry — "
+                "pick it by hand."
+            )
+        self._set_autoconfig_status(text)
+        return failed
+
+    def _set_engine_value(self, key: str, value) -> bool:
+        """Select `value` in the Engine field for `key`; False when the field
+        has no such entry (or there is no field for `key`). Unlike
+        _select_combo it never adds a missing entry — a recommendation the
+        dropdown does not list is a bug to report, not a value to invent."""
+        if key == "model":
+            row = self.model_combo.findText(model_label(value))
+            if row < 0 or self.model_combo.itemText(row) == CUSTOM_MODEL_LABEL:
+                return False
+            self.model_combo.setCurrentIndex(row)
+            # What _on_model_activated records for a pick by hand: the row a
+            # cancelled custom-id dialog returns to, and that a model the
+            # OpenVINO filter swapped out is no longer to be restored.
+            self._model_index = row
+            self._model_swapped_from = None
+            # The backend switch just before may have worded a swap ("your
+            # previous choice comes back") that the line above cancelled.
+            self._speech_hint.setText(self._speech_hint_text(self._selected_backend(), None))
+            return True
+        plain = {
+            "device": self.device_combo,
+            "compute_type": self.compute_combo,
+            "openvino_device": self.ov_device_combo,
+        }
+        noted = {
+            "openvino_precision": (self.ov_precision_combo, OPENVINO_PRECISIONS),
+            "parakeet_model": (self.pk_model_combo, PARAKEET_MODELS),
+            "parakeet_quantization": (self.pk_quant_combo, PARAKEET_QUANTIZATIONS),
+        }
+        if key == "backend":
+            combo, label = self.backend_combo, backend_label(value)
+        elif key in noted:
+            combo, choices = noted[key]
+            label = choice_label(choices, value)
+        elif key in plain:
+            combo, label = plain[key], str(value)
+        else:
+            return False
+        row = combo.findText(label)
+        if row < 0:
+            return False
+        combo.setCurrentIndex(row)
+        return True
+
+    def _clear_autoconfig_status(self, *_args) -> None:
+        self._set_autoconfig_status("")
+
+    def _set_autoconfig_status(self, text: str) -> None:
+        self.autoconfig_status.setText(text)
+        self._hw_form.setRowVisible(self.autoconfig_status, bool(text))
 
     def done(self, result: int) -> None:
         # Covers every way the dialog closes: Save, Cancel, Esc and the
@@ -5499,14 +5661,17 @@ class SettingsWindow(QDialog):
         form.setRowVisible(self.device_combo, fw or parakeet)
         form.setRowVisible(self.compute_combo, fw)
         form.setRowVisible(self.beam_spin, fw)
+        form.setRowVisible(self.cpu_threads_spin, fw)
         form.setRowVisible(self.chk_vad, fw)  # VAD is faster-whisper only
         form.setRowVisible(self.ov_device_combo, openvino)
         form.setRowVisible(self.ov_precision_combo, openvino)
+        form.setRowVisible(self.pk_model_combo, parakeet)
         form.setRowVisible(self.pk_quant_combo, parakeet)
-        # Parakeet is a single fixed model that always auto-detects the language
-        # and takes no prompt — none of these are sent to it. Grey them out
-        # instead of leaving fields that silently do nothing (the Home page
-        # already reports "Auto-detect" for this backend). Values are kept.
+        # Parakeet runs its own models (the "Parakeet model" row), which either
+        # auto-detect the language or know only one, and takes no prompt —
+        # none of these are sent to it. Grey them out instead of leaving
+        # fields that silently do nothing (the Home page names the language
+        # the Parakeet model uses instead). Values are kept.
         self.model_combo.setEnabled(not parakeet)
         self.language_combo.setEnabled(not parakeet)
         self.initial_prompt_edit.setEnabled(not parakeet)
@@ -5533,9 +5698,10 @@ class SettingsWindow(QDialog):
         replaced selection unexplained — that would just look broken."""
         if backend == "parakeet":
             return (
-                "The Parakeet backend ignores both: it runs one fixed model and "
-                "always detects the spoken language itself. Choose a different "
-                "backend above to use them again — your selections are kept."
+                "The Parakeet backend ignores both: it runs its own models (see "
+                "“Parakeet model” below), which handle the language themselves. "
+                "Choose a different backend above to use them again — your "
+                "selections are kept."
             )
         if backend == "openvino":
             listed = (
@@ -5803,9 +5969,11 @@ class SettingsWindow(QDialog):
             "device": self.device_combo.currentText(),
             "compute_type": self.compute_combo.currentText(),
             "beam_size": int(self.beam_spin.value()),
+            "cpu_threads": int(self.cpu_threads_spin.value()),
             "openvino_device": self.ov_device_combo.currentText(),
             "openvino_precision": choice_value(OPENVINO_PRECISIONS, self.ov_precision_combo.currentText()),
             "parakeet_quantization": choice_value(PARAKEET_QUANTIZATIONS, self.pk_quant_combo.currentText()),
+            "parakeet_model": choice_value(PARAKEET_MODELS, self.pk_model_combo.currentText()),
             "vad_filter": self.chk_vad.isChecked(),
             "history_enabled": self.chk_history_enabled.isChecked(),
             "history_max": int(self.history_max_spin.value()),
@@ -6123,6 +6291,7 @@ class SettingsWindow(QDialog):
         # A saved device/precision/model change invalidates the loaded model
         # (or swapped the transcriber), so the "Running on" line changes too.
         self._refresh_runtime_status()
+        self._set_autoconfig_status("")  # its "press Apply or Save" is answered
         self._refresh_autostart_status()  # apply_settings just (re)wrote the entry
         # The floating icon was just created or destroyed by apply_settings, so
         # whether there is a position to reset has changed with it.
@@ -6151,7 +6320,13 @@ class SettingsWindow(QDialog):
         at that moment. model_cache_status is disk-only and never raises, so
         asking is cheap; a diagnostic already running owns the page instead.
         """
-        keys = ("model", "backend", "openvino_precision", "parakeet_quantization")
+        keys = (
+            "model",
+            "backend",
+            "openvino_precision",
+            "parakeet_quantization",
+            "parakeet_model",
+        )
         if self._diag_busy or all(previous.get(k) == self._saved_snapshot.get(k) for k in keys):
             return False
         status = model_cache_status(self._diag_snapshot())

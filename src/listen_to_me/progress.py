@@ -101,14 +101,21 @@ def hub_cache_dir(repo: str, cache_dir=None) -> Path | None:
         return None
 
 
-def hub_repo_size(repo: str, keep: Callable[[str], bool] | None = None) -> int | None:
+def hub_repo_size(
+    repo: str,
+    keep: Callable[[str], bool] | None = None,
+    revision: str | None = None,
+) -> int | None:
     """Total size in bytes of the files a download of `repo` will fetch, from
     the Hugging Face metadata — None when it cannot be determined.
 
     `keep` filters the repo's files down to the ones the caller actually
     downloads; without it every file counts. A repo that ships several variants
     of the same model (Parakeet: int8 next to fp32) must pass one, or the
-    percentage would stall at a fraction of the way through.
+    percentage would stall at a fraction of the way through. `revision` is the
+    commit a pinned download fetches (None = the main branch, which is what
+    every unpinned download gets): the files of an old commit need not be the
+    ones on main.
 
     One extra HTTP request, and only on a download that is about to move
     hundreds of megabytes anyway. Never raises: no metadata simply means no
@@ -117,7 +124,7 @@ def hub_repo_size(repo: str, keep: Callable[[str], bool] | None = None) -> int |
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi().model_info(repo, files_metadata=True)
+        info = HfApi().model_info(repo, revision=revision, files_metadata=True)
         total = 0
         for sibling in info.siblings or ():
             name = str(getattr(sibling, "rfilename", ""))

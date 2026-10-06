@@ -11,6 +11,9 @@ flowchart TD
         Poll("QTimer poll (main thread, 100ms)"):::backend
         Config[("config.json (DEFAULTS)")]:::database
         Net["netutil — insecure-SSL switch (corporate proxy)"]:::infra
+        CpuInfo["cpuinfo — cores, AVX2, CPU name (ctypes, sysfs, registry — never a subprocess)"]:::infra
+        AutoConfig["autoconfig — engine recommendation: Hardware + language → config values + reason"]:::backend
+        AutoConfigText["autoconfig_text — words a recommendation: change lines, download sentence, the confirmation"]:::backend
     end
 
     subgraph "Input and UI (Qt main thread)"
@@ -21,6 +24,8 @@ flowchart TD
         Settings("SettingsWindow — main window: Home hub + settings pages"):::frontend
         Home("HomePage — live state, quick actions, recent transcripts"):::frontend
         Onboarding("OnboardingWizard — first-run setup"):::frontend
+        OnboardingEngine("EnginePage — wizard engine step: Recommended for this PC / Choose manually"):::frontend
+        MicTest("MicTestWidget — 3 s microphone level test (Settings + wizard)"):::frontend
         Help["help_content — Qt-free Help/Troubleshooting topics → help_html()"]:::frontend
         Theme["theme / icons / glyphs / qtutil / keymap / widgets / choices"]:::frontend
     end
@@ -32,7 +37,7 @@ flowchart TD
         Resample("Resampler — native format → 16 kHz mono, in the capture callback"):::backend
         Transcriber("Transcriber — faster-whisper"):::backend
         TranscriberOV("OpenVinoTranscriber — OpenVINO GenAI (Intel GPU/NPU)"):::backend
-        TranscriberPK("ParakeetTranscriber — NVIDIA Parakeet TDT via onnx-asr"):::backend
+        TranscriberPK("ParakeetTranscriber — Parakeet TDT via onnx-asr (v3 or the German fine-tune)"):::backend
         Fillers("fillers — is the whole transcript one of the invented silence phrases?"):::backend
         Assistant("Assistant — LLM post-process (one profile per source)"):::backend
         Injector("Injector — paste/type at cursor"):::backend
@@ -76,6 +81,9 @@ flowchart TD
     App --> Settings
     App -->|"first run (no config yet)"| Onboarding
     Onboarding -->|"essential settings"| Config
+    Onboarding -->|"engine page: values() on Finish"| OnboardingEngine
+    Onboarding -->|"Microphone page"| MicTest
+    Settings -->|"Audio page"| MicTest
     Settings -->|"first page; set_app_state mirrors state"| Home
     Home -->|"post toggle/cancel"| Events
     Overlay -->|"set_recording/set_processing on state, set_progress(%) while a model downloads"| VoiceMic
@@ -115,7 +123,14 @@ flowchart TD
     Settings -->|"loopback candidates for the device list"| SysAudio
     Settings -->|"input profiles + list_output_devices() for the two-group picker and its hint"| Recorder
     Settings -->|"phrase-list status while it is edited"| Fillers
-    Settings -->|"model download / mic + transcription test"| Diag
+    Settings -->|"model download / transcription test / hardware_status() on a worker thread"| Diag
+    MicTest -->|"mic_test() on its worker, results via its own signal bridge"| Diag
+    OnboardingEngine -->|"hardware_status() once, on a worker thread"| Diag
+    OnboardingEngine -->|"recommend() for the language of the page before"| AutoConfig
+    OnboardingEngine -->|"download_line() / model_downloaded()"| AutoConfigText
+    Settings -->|"Auto-configure: hardware_from_status(probe) → recommend() → confirm → fill the Engine fields (unsaved)"| AutoConfig
+    Settings -->|"confirm_message() / describe_changes() for the question"| AutoConfigText
+    AutoConfigText -->|"Recommendation"| AutoConfig
     Diag -->|"test clip"| Recorder
     Diag -->|"snapshot transcriber"| Transcriber
     Diag -->|"snapshot transcriber"| TranscriberOV
@@ -125,7 +140,9 @@ flowchart TD
     Mute -->|"synthesize mute keybind"| OS
     Transcriber -->|"first-use download"| HF
     TranscriberOV -->|"first-use download (OpenVINO IR)"| HF
-    TranscriberPK -->|"first-use download (ONNX)"| HF
+    TranscriberPK -->|"first-use download (ONNX, German model at a pinned revision)"| HF
+    Transcriber -->|"cpu_threads on a CPU load"| CpuInfo
+    Diag -->|"probe_cpu: cores, AVX2, name"| CpuInfo
     Assistant -->|"chat/completions"| LLM
     Updater -->|"check/download"| GH
     Updater -->|"verify="| Net
@@ -143,7 +160,9 @@ flowchart TD
     Selftest -->|"constructs the window headless (offscreen off Windows)"| Settings
     Selftest -->|"release gate: the loaded library must enumerate WASAPI loopback"| PortAudio
     Selftest -->|"help_html() renders every topic"| Help
+    Selftest -->|"recommendation matrix: every value a dropdown member"| AutoConfig
     Selftest -->|"paints in recording / processing / download state"| VoiceMic
+    Selftest -->|"stand-in probe on a joined thread: recommended, manual, failed, pending"| OnboardingEngine
 
     click Main "src/listen_to_me/app.py"
     click Single "src/listen_to_me/singleinstance.py"
@@ -157,6 +176,8 @@ flowchart TD
     click Settings "src/listen_to_me/settings_ui.py"
     click Home "src/listen_to_me/home_page.py"
     click Onboarding "src/listen_to_me/onboarding.py"
+    click OnboardingEngine "src/listen_to_me/onboarding_engine.py"
+    click MicTest "src/listen_to_me/mic_test_widget.py"
     click Help "src/listen_to_me/help_content.py"
     click Recorder "src/listen_to_me/audio.py"
     click SysAudio "src/listen_to_me/system_audio.py"
@@ -174,6 +195,9 @@ flowchart TD
     click Autostart "src/listen_to_me/autostart.py"
     click Updater "src/listen_to_me/updater.py"
     click Net "src/listen_to_me/netutil.py"
+    click CpuInfo "src/listen_to_me/cpuinfo.py"
+    click AutoConfig "src/listen_to_me/autoconfig.py"
+    click AutoConfigText "src/listen_to_me/autoconfig_text.py"
     click Diag "src/listen_to_me/diagnostics.py"
     click Progress "src/listen_to_me/progress.py"
 

@@ -7,6 +7,7 @@ import os
 import threading
 
 from .audio import SAMPLE_RATE
+from .cpuinfo import resolve_cpu_threads
 
 log = logging.getLogger(__name__)
 
@@ -233,7 +234,17 @@ class Transcriber:
         compute_type = self.cfg["compute_type"]
         if forced and compute_type in _GPU_ONLY_COMPUTE:
             compute_type = "auto"  # a GPU-only precision can't run on the CPU
-        return (self.cfg["model"], device, compute_type, self.cfg["model_dir"])
+        # cpu_threads last, so the indices above stay put. Part of the key
+        # because CTranslate2 fixes the thread count when the model is built:
+        # a changed value only takes effect through a reload. (On CUDA that
+        # reload is for nothing — a rare save, not worth a key per device.)
+        return (
+            self.cfg["model"],
+            device,
+            compute_type,
+            self.cfg["model_dir"],
+            self.cfg["cpu_threads"],
+        )
 
     @property
     def loaded(self) -> bool:
@@ -271,10 +282,16 @@ class Transcriber:
         key = self._current_key()
         if self._model is not None and key == self._key:
             return
-        model_name, device, compute_type, model_dir = key
+        model_name, device, compute_type, model_dir, cpu_threads = key
         # Resolved once per load, right here, so the log line below and the
         # `runtime` property describe the pair the model really runs with.
         run_device, run_compute = resolve_runtime(device, compute_type)
+        # Only a CPU load gets an explicit thread count: on CUDA the CPU
+        # threads barely matter and faster-whisper's default stays. An "auto"
+        # the probe could not resolve leaves the choice to CTranslate2 too.
+        # The session CPU fallback reloads through here with device "cpu",
+        # so it gets the threads as well.
+        threads = resolve_cpu_threads(cpu_threads) if run_device == "cpu" else None
         cached = _model_is_cached(model_name, model_dir)
         if notify is not None:
             if cached:
@@ -286,6 +303,8 @@ class Transcriber:
                 )
         from faster_whisper import WhisperModel
 
+        extra = {} if threads is None else {"cpu_threads": threads}
+
         def load():
             return WhisperModel(
                 model_name,
@@ -295,6 +314,7 @@ class Transcriber:
                 # Already cached → load straight from disk, skipping the network
                 # revision check so restarts are fast and work fully offline.
                 local_files_only=cached,
+                **extra,
             )
 
         try:
@@ -319,11 +339,19 @@ class Transcriber:
         self._key = key
         self._runtime = (run_device, run_compute)
         log.info(
-            "whisper model %s: %s / %s / %s (dir=%s) — running on %s as %s",
+            "whisper model %s: %s / %s / %s (dir=%s) — running on %s as %s%s",
             "loaded from cache" if cached else "downloaded",
-            *key,
+            model_name,
+            device,
+            compute_type,
+            model_dir,
             run_device,
             run_compute,
+            (
+                ""
+                if threads is None
+                else f" with {threads} CPU thread(s) (cpu_threads={cpu_threads!r})"
+            ),
         )
 
     def _maybe_force_cpu(self, device: str, exc: Exception, notify) -> bool:

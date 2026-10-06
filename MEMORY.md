@@ -39,6 +39,7 @@ _(none recorded yet — superseded designs live in the archive: the TCP-port sin
 
 ## User Preferences
 
+- **Trusted dependencies stay unpinned; no Hugging Face account.** Lower-bound pins only, so updates arrive automatically — don't propose caps "for safety"; the release `--selftest` is the guard. Model conversions we would host need another home than Hugging Face (e.g. a GitHub Release asset). (2026-10-06)
 - **No new tooling without approval** — there is intentionally no linter/formatter/type-checker/test-framework. Don't add ruff/black/mypy/pytest to make a check pass; match style by hand. (2026-07-19)
 - **Windows-first**, Linux/macOS paths kept coherent. (2026-07-19)
 - **Every agent-config rule is stated in exactly one place; the others point at it.** Three that were pruned back and should not be rebuilt: reviews run **on demand** via the `basic-review` skill — don't re-add "every implementation triggers a review" to `agent_docs/review_process.md`; Dependabot PRs route like any other PR — don't re-add a separate dep-bot PR workflow to the `pr` skill, `/pr merge` already covers them; the `gh` → `mcp__github__*` fallback is stated once in `agent_docs/mcp_catalog.md` — skills link to it instead of each restating a different variant. (2026-08-02)

@@ -505,14 +505,23 @@ class HomePage(QWidget):
 
     def _refresh_stats(self) -> None:
         backend = self.cfg["backend"]
+        parakeet = None
         if backend == "parakeet":
-            self.card_model.value.setText("Parakeet TDT 0.6b v3")
-            self.card_model.detail.setText("25 languages, auto-detected")
+            from .parakeet_models import parakeet_model
+
+            parakeet = parakeet_model(self.cfg["parakeet_model"])
+            self.card_model.value.setText(parakeet.title)
+            self.card_model.detail.setText(parakeet.detail)
         else:
             model = str(self.cfg["model"])
             self.card_model.value.setText(model.rsplit("/", 1)[-1])
             self.card_model.detail.setText(_BACKEND_SHORT.get(backend, backend))
-        if backend == "parakeet":
+        if parakeet is not None and parakeet.language:
+            # A single-language Parakeet model: that language, whatever the
+            # Whisper setting says.
+            self.card_language.value.setText(language_label(parakeet.language))
+            self.card_language.detail.setText("the only language this model knows")
+        elif parakeet is not None:
             # The language setting does not apply to Parakeet — it always
             # auto-detects; showing the configured Whisper language here
             # would be wrong.

@@ -85,15 +85,73 @@ def probe_openvino() -> dict:
     return {"installed": True, "devices": devices, "error": error}
 
 
+def probe_parakeet() -> dict:
+    """Whether the optional Parakeet backend is installed: onnx-asr plus the
+    ONNX Runtime it runs on (an extra of onnx-asr, so either can be missing).
+
+    Returns ``{"installed": bool, "error": str | None}``. Asks the import
+    system whether the modules are there (``find_spec``) instead of importing
+    them — onnxruntime takes seconds to load, and loading it is the backend's
+    job at the first recording. Never raises.
+    """
+    import importlib.util
+
+    try:
+        missing = [
+            name for name in ("onnx_asr", "onnxruntime") if importlib.util.find_spec(name) is None
+        ]
+    except Exception as exc:  # a broken half-install can raise from find_spec
+        log.debug("Parakeet probe failed", exc_info=True)
+        return {"installed": False, "error": str(exc)}
+    return {"installed": not missing, "error": None}
+
+
+def probe_cpu() -> dict:
+    """What the processor offers, for the engine recommendation.
+
+    Returns ``{"physical_cores": int, "performance_cores": int, "logical":
+    int, "avx2": bool | None, "x86": bool | None, "name": str | None,
+    "error": str | None}`` — the cpuinfo probes, which answer in-process and
+    degrade on their own. The core counts are 0 ("unknown") when the
+    platform could not be asked: cpuinfo's logical-processor fallback counts
+    hyper-threads and would overstate the processor. Never raises: should a
+    probe fail anyway, the core counts stay at 0 and avx2/name at None, the
+    answers that recommend the lightest engine.
+    """
+    from . import cpuinfo
+
+    result = {
+        "physical_cores": 0,
+        "performance_cores": 0,
+        "logical": 1,
+        "avx2": None,
+        "x86": None,
+        "name": None,
+        "error": None,
+    }
+    try:
+        result["logical"] = cpuinfo.logical_cpus()
+        if cpuinfo.topology_known():
+            result["physical_cores"] = cpuinfo.physical_cores()
+            result["performance_cores"] = cpuinfo.performance_cores()
+        result["avx2"] = cpuinfo.has_avx2()
+        result["x86"] = cpuinfo.is_x86()
+        result["name"] = cpuinfo.cpu_name()
+    except Exception as exc:
+        log.debug("CPU probe failed", exc_info=True)
+        result["error"] = str(exc)
+    return result
+
+
 def model_cache_status(snapshot: dict) -> dict:
     """Whether the model the snapshot describes is already on disk (so loading
     it won't download). Disk-only, never touches the network, never raises.
 
     Returns ``{"target": str, "cached": bool, "error": str | None}`` — target
-    is what would be fetched (the OpenVINO Hugging Face repo id for that
-    backend, the model id otherwise); error carries the "this preset has no
-    OpenVINO conversion" message so the status card can warn before a download
-    is even attempted.
+    is what would be fetched (the Hugging Face repo id for the OpenVINO
+    backend and for the selected Parakeet model, the model id otherwise);
+    error carries the "this preset has no OpenVINO conversion" message so the
+    status card can warn before a download is even attempted.
     """
     model = str(snapshot.get("model") or "")
     model_dir = snapshot.get("model_dir")
@@ -104,12 +162,14 @@ def model_cache_status(snapshot: dict) -> dict:
             repo = openvino_model_repo(model, snapshot.get("openvino_precision") or "int8")
             return {"target": repo, "cached": _model_is_cached(repo, model_dir), "error": None}
         if snapshot.get("backend") == "parakeet":
-            from .transcriber_parakeet import MODEL_REPO, _model_is_cached, _quantization
+            from .parakeet_models import parakeet_model
+            from .transcriber_parakeet import _model_is_cached, _quantization
 
+            parakeet = parakeet_model(snapshot.get("parakeet_model"))
             quantization = _quantization(str(snapshot.get("parakeet_quantization") or "int8"))
             return {
-                "target": MODEL_REPO,
-                "cached": _model_is_cached(quantization, model_dir),
+                "target": parakeet.repo,
+                "cached": _model_is_cached(parakeet, quantization, model_dir),
                 "error": None,
             }
         from .transcriber import _model_is_cached
@@ -121,10 +181,14 @@ def model_cache_status(snapshot: dict) -> dict:
 
 def hardware_status(snapshot: dict) -> dict:
     """Everything the Settings status card shows, in one worker-thread call:
-    CUDA availability, OpenVINO install/devices and the model cache state."""
+    CUDA availability, OpenVINO install/devices and the model cache state —
+    plus the CPU and whether the Parakeet backend is installed, which with
+    the first two is what ``autoconfig.hardware_from_status`` reads."""
     return {
         "cuda": probe_cuda(),
         "openvino": probe_openvino(),
+        "parakeet": probe_parakeet(),
+        "cpu": probe_cpu(),
         "model": model_cache_status(snapshot),
     }
 
@@ -290,11 +354,11 @@ class DiagnosticsEngine:
         transcriber = self._transcriber_for(snapshot)
         transcriber.ensure_loaded(notify=notify, progress=progress)
         if transcriber.backend == "parakeet":
-            # The Parakeet backend runs one fixed model — the Whisper preset
+            # The Parakeet backend runs its own models — the Whisper preset
             # in the snapshot is not what was just downloaded.
-            from .transcriber_parakeet import MODEL_NAME
+            from .parakeet_models import parakeet_model
 
-            name = MODEL_NAME
+            name = parakeet_model(snapshot.get("parakeet_model")).title
         else:
             name = snapshot["model"]
         return f"Model '{name}' is downloaded and ready ({transcriber.backend} backend)."
