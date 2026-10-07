@@ -9250,6 +9250,20 @@ def _microphone_test_widget():
         # main thread.
         assert calls and all(call == (7, True) for call in calls), calls
 
+        # Keyboard focus follows the run: Test hands it to Cancel while the
+        # clip records and gets it back when the test ends — Qt alone would
+        # move it on past whichever of the two is disabled.
+        gate.clear()
+        answer.clear()
+        answer.update(peak=0.5, rms=0.1, seconds=3.0, verdict="ok")
+        widget.button.setFocus()
+        assert widget.start()
+        assert widget.focusWidget() is widget.cancel_button, widget.focusWidget()
+        gate.set()
+        assert _process_events_until(app, lambda: not widget.is_running())
+        assert widget.focusWidget() is widget.button, widget.focusWidget()
+        widget._worker.join(5)
+
         # A failing recording names its reason.
         gate.set()
         answer.clear()

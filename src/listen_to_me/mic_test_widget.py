@@ -233,8 +233,14 @@ class MicTestWidget(QWidget):
         self._cancel_event = cancel
         self._running = True
         self._cooldown.stop()
-        self.button.setEnabled(False)
+        # Cancel takes the keyboard focus before the button it sat on is
+        # disabled: Qt would move it on past the still-disabled Cancel, and a
+        # keyboard user would have to hunt for the way to stop the test.
+        refocus = self.window().focusWidget() is self.button
         self.cancel_button.setEnabled(True)
+        if refocus:
+            self.cancel_button.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.button.setEnabled(False)
         self.level_bar.setValue(0)
         # Before the status line: a host reacting to `started` (Settings
         # clears its "another test is running" note) must not overwrite it.
@@ -286,7 +292,12 @@ class MicTestWidget(QWidget):
 
     def _settle(self) -> None:
         self._running = False
+        # The way back from start(): focus returns to the test button, where
+        # the next run starts, instead of skipping on from a disabled Cancel.
+        refocus = self.window().focusWidget() is self.cancel_button
         self.button.setEnabled(True)
+        if refocus:
+            self.button.setFocus(Qt.FocusReason.OtherFocusReason)
         self.cancel_button.setEnabled(False)
 
     # ------------------------------------------------------------- results
