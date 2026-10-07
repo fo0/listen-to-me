@@ -293,8 +293,12 @@ class EnginePage(QWizardPage):
 
     def _on_probe_failed(self, message: str) -> None:
         self._probe_error = message
-        self.recommended_radio.setEnabled(False)
         self.manual_radio.setChecked(True)
+        # Onto the choice that now applies, where the note is voiced — not
+        # wherever Qt moves focus off the radio button disabled below.
+        if self.window().focusWidget() is self.recommended_radio:
+            self.manual_radio.setFocus()
+        self.recommended_radio.setEnabled(False)
         self._set_note(FAILED_NOTE)
         self._refresh()
 
@@ -319,6 +323,8 @@ class EnginePage(QWizardPage):
             self.manual_radio.setChecked(True)
             self._pending_note_shown = True
             self._set_note(PENDING_NOTE)
+            # Focus stays on Next otherwise, and the note is never read out.
+            self.manual_radio.setFocus()
             # The note promises that Next keeps what the fields show: a
             # recommendation landing later — possibly after the user left
             # the page — must not refill them behind it.
@@ -347,6 +353,9 @@ class EnginePage(QWizardPage):
     def _set_note(self, text: str) -> None:
         self.note.setText(text)
         self.note.setVisible(bool(text))
+        # Every note explains the manual choice; a screen reader hears it on
+        # that radio button, not from the label above it.
+        self.manual_radio.setAccessibleDescription(text)
 
     def _on_mode_changed(self, *_args) -> None:
         manual = self.manual_radio.isChecked()

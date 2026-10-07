@@ -9630,6 +9630,7 @@ def _setup_wizard_recommends_the_engine_for_this_pc():
             assert not page.is_recommended() and not page.recommended_radio.isEnabled()
             assert not page._manual_box.isHidden() and not page.note.isHidden()
             assert page.note.text() == onboarding_engine.FAILED_NOTE
+            assert page.manual_radio.accessibleDescription() == onboarding_engine.FAILED_NOTE
             assert page.rec_summary.text() == onboarding_engine.FAILED_TEXT
             assert "probe exploded" in page.rec_detail.text()
             assert page.validatePage()
@@ -9669,6 +9670,9 @@ def _setup_wizard_recommends_the_engine_for_this_pc():
             assert not page.validatePage()
             assert not page.is_recommended() and not page._manual_box.isHidden()
             assert page.note.text() == onboarding_engine.PENDING_NOTE
+            # The refusal is voiced where focus goes, not left on Next.
+            assert page.manual_radio.accessibleDescription() == onboarding_engine.PENDING_NOTE
+            assert pending.focusWidget() is page.manual_radio, pending.focusWidget()
             assert page.validatePage()
             gate.set()
             page._probe_thread.join(5)
