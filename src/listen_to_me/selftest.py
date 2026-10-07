@@ -9022,6 +9022,7 @@ def _settings_engine_auto_configures_for_this_pc():
             assert window._engine_form.isRowVisible(window.pk_model_combo)
             assert window._selected_language() == "de"
             assert "press Apply or Save" in window.autoconfig_status.text()
+            assert button.accessibleDescription() == window.autoconfig_status.text()
             assert {key: stub.cfg[key] for key in saved} == saved, "auto-configure saved"
             values = window._collect()
             assert values["backend"] == "parakeet", values
@@ -9053,6 +9054,7 @@ def _settings_engine_auto_configures_for_this_pc():
             # An edit by hand retires that line: it no longer describes the page.
             window.device_combo.setCurrentText("cpu")
             assert window.autoconfig_status.text() == ""
+            assert button.accessibleDescription() == "", "a stale outcome is still voiced"
             assert not window._hw_form.isRowVisible(window.autoconfig_status)
 
             # OpenVINO on an Arc, German with its fine-tune entered: the

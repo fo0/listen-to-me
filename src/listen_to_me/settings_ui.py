@@ -4676,6 +4676,9 @@ class SettingsWindow(QDialog):
     def _set_autoconfig_status(self, text: str) -> None:
         self.autoconfig_status.setText(text)
         self._hw_form.setRowVisible(self.autoconfig_status, bool(text))
+        # Focus stays on the button, and the line below it is never read out:
+        # "already set up" or "press Apply or Save" would reach no screen reader.
+        self.autoconfig_button.setAccessibleDescription(text)
 
     def done(self, result: int) -> None:
         # Covers every way the dialog closes: Save, Cancel, Esc and the
