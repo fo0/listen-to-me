@@ -1475,11 +1475,22 @@ def _implausible_take_inserts_nothing():
     What must pass is pinned with it: a normal 70-s German dictation; a prompt
     echo on Parakeet, which reads no prompt and so cannot echo one; and a take
     that already live-typed, which cannot be taken back — refusing the rest
-    would leave half of it on screen and the app claiming nothing happened."""
+    would leave half of it on screen and the app claiming nothing happened.
+
+    Three refinements from the review of #293: the length rule holds for the
+    microphone only (a recording played at 2× legitimately runs past 30
+    characters a second — loop and echo still apply to it); an OpenVINO take
+    decoded without a prompt (under 3 s) is not checked for an echo of one —
+    driven through the real OpenVinoTranscriber on a fake pipeline, since that
+    decision is the backend's; and a refused transcript is stored the way the
+    normal path stores one, with the replacement rules applied."""
+    from types import SimpleNamespace
+
     from listen_to_me import assistant as assistant_module
+    from listen_to_me import transcriber_openvino
     from listen_to_me.app import App
     from listen_to_me.audio import SAMPLE_RATE
-    from listen_to_me.choices import SOURCE_MIC
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
     from listen_to_me.config import Config
 
     class _Transcriber:
@@ -1532,9 +1543,9 @@ def _implausible_take_inserts_nothing():
     class _App:
         _process = App._process
 
-        def __init__(self, cfg, text, broken_history=False):
+        def __init__(self, cfg, text, broken_history=False, transcriber=None):
             self.cfg = cfg
-            self.transcriber = _Transcriber(text)
+            self.transcriber = transcriber or _Transcriber(text)
             self.injector = _Injector()
             self.history = _History(broken_history)
             self.inserted: list[str] = []
@@ -1560,10 +1571,45 @@ def _implausible_take_inserts_nothing():
         def flashed(self):
             return [payload for kind, payload in self.posts if kind == "flash_text"]
 
-    def _take(cfg, text, seconds, live=None, broken_history=False):
-        app = _App(cfg, text, broken_history)
-        app._process([0.0] * int(seconds * SAMPLE_RATE), live, SOURCE_MIC)
+    def _take(cfg, text, seconds, live=None, broken_history=False, source=SOURCE_MIC, **kw):
+        app = _App(cfg, text, broken_history, **kw)
+        app._process([0.0] * int(seconds * SAMPLE_RATE), live, source)
         return app
+
+    class _Samples(list):
+        """The Recorder's array as OpenVinoTranscriber._decode uses it."""
+
+        def __getitem__(self, index):
+            part = super().__getitem__(index)
+            return _Samples(part) if isinstance(index, slice) else part
+
+        def tolist(self):
+            return list(self)
+
+    class _Pipe:
+        """A loaded WhisperPipeline that says `text` whatever it hears."""
+
+        def __init__(self, text):
+            self.text, self.prompts = text, []
+
+        def get_generation_config(self):
+            return SimpleNamespace(max_new_tokens=2**64 - 1, max_length=448, initial_prompt=None)
+
+        def get_tokenizer(self):
+            raise RuntimeError("no tokenizer")  # the estimate will do here
+
+        def generate(self, audio, config):
+            self.prompts.append(config.initial_prompt)
+            return SimpleNamespace(texts=[self.text])
+
+    def _openvino_take(cfg, text, seconds):
+        transcriber = transcriber_openvino.OpenVinoTranscriber(cfg)
+        pipe = _Pipe(text)
+        transcriber._pipe, transcriber._key = pipe, transcriber._current_key()
+        transcriber._device = "CPU"
+        app = _App(cfg, text, transcriber=transcriber)
+        app._process(_Samples([0.0] * int(seconds * SAMPLE_RATE)), None, SOURCE_MIC)
+        return app, pipe.prompts
 
     prompt = "mergen, ci-radar, contract-manager,"
     loop = ("contract-manager, " * 90)[:1547]
@@ -1613,6 +1659,41 @@ def _implausible_take_inserts_nothing():
             assert dictated.inserted == [prompt] and dictated.messages == [], dictated.messages
             refined.clear()
             cfg["backend"] = "openvino"
+
+            # --- no echo of a prompt OpenVINO never gave -------------------
+            # Under 3 s of audio the backend decodes without a prompt, so
+            # three of its terms said in its order are just those words.
+            terms = "Kubernetes, Docker, Helm."
+            cfg["initial_prompt"] = terms
+            short, prompts = _openvino_take(cfg, terms, 2.0)
+            assert prompts == [None] and short.transcriber.last_prompt == "", prompts
+            assert short.inserted == [terms] and short.messages == [], short.messages
+            longer, prompts = _openvino_take(cfg, terms, 5.0)
+            assert prompts == [terms] and longer.transcriber.last_prompt == terms, prompts
+            assert longer.inserted == [], longer.inserted
+            assert "it repeats the initial prompt" in longer.messages[0][0], longer.messages
+            cfg["initial_prompt"] = prompt
+            refined.clear()
+
+            # --- the length rule is the microphone's ------------------------
+            fast = _PLAIN_GERMAN_DICTATION  # ~1500 characters from 40 s: 38 a second
+            played = _take(cfg, fast, 40.0, source=SOURCE_SYSTEM)
+            assert played.inserted == [fast] and played.messages == [], played.messages
+            spoken_fast = _take(cfg, fast, 40.0)
+            assert spoken_fast.inserted == [], spoken_fast.inserted
+            assert f"{len(fast)} characters from 40.0 s" in spoken_fast.messages[0][0]
+            looped_played = _take(cfg, loop, 0.5, source=SOURCE_SYSTEM)  # a loop still is one
+            assert looped_played.inserted == [], looped_played.inserted
+            assert "the same words repeat" in looped_played.messages[0][0]
+            refined.clear()
+
+            # --- a refused transcript is stored with the user's rules -------
+            cfg["replacements"] = "contract-manager => Contract Manager"
+            replaced = _take(cfg, loop, 0.5)
+            stored = replaced.history.stored
+            assert stored and stored[0].startswith("Contract Manager, Contract Manager"), stored
+            assert "contract-manager" not in stored[0], stored[0][:60]
+            cfg["replacements"] = ""
 
             # --- a take that already live-typed is not guarded --------------
             typed = _take(cfg, loop, 1.0, live=_Live("Ich fange an", SAMPLE_RATE // 2))
@@ -5085,7 +5166,13 @@ def _hallucination_prompt_tail():
     over as its tail — starting on a whole term, never on the half of one the
     cut went through. With the model's tokenizer the cut is exact; without it,
     or when the tokenizer fails, a character estimate stands in, and nothing
-    here may raise: a prompt problem must never cost a transcription."""
+    here may raise: a prompt problem must never cost a transcription.
+
+    The estimate is 2.5 characters a token — a de/en technical term list
+    measured 2.6 with the real Whisper tokenizer (578 characters = 223
+    tokens) — and 2 tokens for every CJK, Kana or Hangul character, which at
+    3 characters a token came out at 1334 tokens for a "223-token" Chinese
+    list."""
     import re
 
     from listen_to_me.hallucination import (
@@ -5101,15 +5188,28 @@ def _hallucination_prompt_tail():
     prompt = ", ".join(terms) + ","
     assert prompt_exceeds_window(prompt) and not prompt_exceeds_window("mergen, ci-radar")
     assert estimate_prompt_tokens("") == 0 and estimate_prompt_tokens(" abcd ") == 2
+    assert estimate_prompt_tokens("a" * 578) == 232  # the measured 223 errs high
+    assert not prompt_exceeds_window("a" * 557) and prompt_exceeds_window("a" * 558)
+    assert estimate_prompt_tokens("这是一个测试") == 12
+    assert estimate_prompt_tokens("한국어") == 6 and estimate_prompt_tokens("カタカナ") == 8
+    assert estimate_prompt_tokens("Kubernetes 集群") == 9  # 11 / 2.5 + 2 × 2
+    assert estimate_prompt_tokens("Größe, Zürich, café") == 8  # Latin letters are not dense
 
     tail = prompt_tail(prompt)  # the character estimate
     assert prompt.endswith(tail) and tail.endswith("term399,"), tail
     assert tail.split(", ")[0] in terms, tail[:20]
     assert estimate_prompt_tokens(tail) <= PROMPT_TOKEN_BUDGET, len(tail)
     # A cut right on a boundary keeps that first term; one a character later
-    # drops the fragment it leaves.
-    assert prompt_tail("x" * 20 + ", abcd, efg", budget=3) == "abcd, efg"
-    assert prompt_tail("x" * 20 + ", zabcd, efg", budget=3) == "efg"
+    # drops the fragment it leaves (budget 3: 7 characters fit).
+    assert prompt_tail("x" * 20 + ", ab, efg", budget=3) == "ab, efg"
+    assert prompt_tail("x" * 20 + ", zab, efg", budget=3) == "efg"
+    # A dense list is cut by the same estimate, so its tail is about 150
+    # characters, not the 557 a Latin list gets.
+    cjk_terms = [chr(0x4E00 + 2 * k) + chr(0x4E01 + 2 * k) for k in range(300)]
+    cjk = "，".join(cjk_terms)
+    cjk_tail = prompt_tail(cjk)
+    assert cjk.endswith(cjk_tail) and cjk_tail.split("，")[0] in cjk_terms, cjk_tail[:10]
+    assert estimate_prompt_tokens(cjk_tail) <= PROMPT_TOKEN_BUDGET and len(cjk_tail) < 160
 
     # A fake whitespace tokenizer that splits every term in two, the way BPE
     # splits a word: the last 9 tokens start on the second half of term395.
@@ -5925,20 +6025,25 @@ def _openvino_decode_guards():
     "mergen, ci-radar, contract-manager," into exactly 1547 characters on four
     takes of 0.5–2.7 s, all pasted. So the output budget scales with the audio
     (8 tokens a second, at least 32, set only below GenAI's own per-window
-    bound), a take under 3 s gets no initial prompt, and foreign-script runs
-    are cut from the text. No repetition guard is set: GenAI's
-    no_repeat_ngram_size only acts in beam search (this pipeline is greedy)
-    and repetition_penalty reweights normal speech — both stay at GenAI's
-    defaults.
+    bound: max_length minus what goes in front of the output), a take under
+    3 s gets no initial prompt, and foreign-script runs are cut from the text.
+    No repetition guard is set: GenAI's no_repeat_ngram_size only acts in beam
+    search (this pipeline is greedy) and repetition_penalty reweights normal
+    speech — both stay at GenAI's defaults.
 
     The budget and the prompt rule are judged on the audio actually decoded —
     after the final transcription trims its silence — and previews skip the
     trim (they run every tick) but keep every other guard. A prompt longer
-    than the 223 tokens Whisper reads goes over as its tail, cut on a whole
-    term by the character estimate, and the cut is logged once per prompt.
-    Runs on a fake pipeline and a list stand-in for the audio, with
-    trim_silence swapped for a spy: no openvino, no numpy."""
+    than the 223 tokens Whisper reads goes over as its tail, cut with the
+    pipeline's own tokenizer: GenAI never truncates a prompt, and a character
+    estimate sent a Chinese list of 1334 tokens (refused by generate()) and a
+    ticket-ID list of 417 (26 tokens left for the first window). The cut is
+    tokenised and logged once per prompt; only a pipeline whose tokenizer is
+    missing or fails gets the estimate. Runs on a fake pipeline and tokenizer
+    and a list stand-in for the audio, with trim_silence swapped for a spy:
+    no openvino, no numpy."""
     import logging
+    import re
     from types import SimpleNamespace
 
     from listen_to_me import transcriber_openvino as ov
@@ -5961,17 +6066,47 @@ def _openvino_decode_guards():
         return Samples([0.0] * int(seconds * SAMPLE_RATE))
 
     unset = 2**64 - 1  # what GenAI reports for a max_new_tokens nobody set
+    ideograph = f"[{chr(0x4E00)}-{chr(0x9FFF)}]"
+    pieces = re.compile(rf"\s*{ideograph}|\s*[A-Za-z]{{1,3}}|\s*\S")
+
+    class FakeTokenizer:
+        """Dense where the real one is: two tokens per ideograph, one per
+        digit or mark, one per up to three letters (leading whitespace rides
+        along) — with GenAI's encode(...).input_ids and decode(ids) -> str."""
+
+        def __init__(self):
+            self.vocab, self.encodes = [], 0
+
+        def encode(self, text, add_special_tokens=True):
+            assert add_special_tokens is False  # GenAI adds none to a prompt
+            self.encodes += 1
+            ids = []
+            for piece in pieces.findall(text):
+                for part in [piece, ""] if re.search(ideograph, piece) else [piece]:
+                    self.vocab.append(part)
+                    ids.append(len(self.vocab) - 1)
+            return SimpleNamespace(input_ids=SimpleNamespace(data=[ids], get_size=lambda: len(ids)))
+
+        def decode(self, ids):
+            return "".join(self.vocab[i] for i in ids)
+
+        def count(self, text):
+            return len(self.encode(" " + text, add_special_tokens=False).input_ids.data[0])
+
+    class BrokenTokenizer:
+        def encode(self, *_args, **_kwargs):
+            raise RuntimeError("tokenizer exploded")
 
     class FakePipe:
         """GenAI's own defaults: max_new_tokens unset (SIZE_MAX), max_length
         448 from the model's generation_config.json, no repetition guard."""
 
-        def __init__(self):
+        def __init__(self, tokenizer):
             self.text, self.default_max, self.calls = "Hallo Welt.", unset, []
-            self.prompt_tokens = None  # what its tokenizer counts; None: it fails
+            self.tokenizer = tokenizer  # None: get_tokenizer() fails
 
         def get_generation_config(self):
-            config = SimpleNamespace(
+            return SimpleNamespace(
                 max_new_tokens=self.default_max,
                 max_length=448,
                 initial_prompt=None,
@@ -5980,13 +6115,11 @@ def _openvino_decode_guards():
                 no_repeat_ngram_size=0,
                 repetition_penalty=1.0,
             )
-            return config
 
         def get_tokenizer(self):
-            if self.prompt_tokens is None:
+            if self.tokenizer is None:
                 raise RuntimeError("no tokenizer")
-            ids = SimpleNamespace(get_size=lambda: self.prompt_tokens)
-            return SimpleNamespace(encode=lambda text, **_kw: SimpleNamespace(input_ids=ids))
+            return self.tokenizer
 
         def generate(self, audio, config):
             assert type(audio) is list, type(audio)
@@ -6017,20 +6150,25 @@ def _openvino_decode_guards():
             cfg["language"] = "de"
             prompt = "mergen, ci-radar, contract-manager,"
             cfg["initial_prompt"] = prompt
-            t = ov.OpenVinoTranscriber(cfg)
-            pipe = FakePipe()
-            t._pipe, t._key, t._device = pipe, t._current_key(), "CPU"  # "loaded"
 
-            # GenAI's own per-window bound (max_length minus what goes in front
-            # of the output) is never raised: set, a cap replaces it, and a
-            # looping window then decodes past the decoder's 448 positions.
-            # Without a tokenizer the 36-byte prompt costs at most 36 tokens,
-            # leaving 448 - 4 - 1 - 36 = 407: 50 s (400) fits, 60 s (480) not.
+            def loaded(tokenizer):
+                t = ov.OpenVinoTranscriber(cfg)
+                pipe = FakePipe(tokenizer)
+                t._pipe, t._key, t._device = pipe, t._current_key(), "CPU"  # "loaded"
+                return t, pipe
+
+            tok = FakeTokenizer()
+            t, pipe = loaded(tok)
+            # GenAI's own per-window bound (max_length minus <|startoftranscript|>,
+            # language, task, <|notimestamps|>, <|startofprev|> and the prompt
+            # tokens) is never raised: set, a cap replaces it, and a looping
+            # window then decodes past the decoder's 448 positions.
+            room = 448 - 4 - 1 - tok.count(prompt)
             for seconds, budget, prompted in (
                 (0.5, 32, None),
                 (10, 80, prompt),
-                (50, 400, prompt),
-                (60, unset, prompt),
+                ((room - 1) / 8, room - 1, prompt),
+                (room / 8, unset, prompt),  # a cap of `room` would replace the bound
             ):
                 assert t.transcribe(take(seconds)) == "Hallo Welt."
                 config = pipe.calls[-1][1]
@@ -6039,19 +6177,11 @@ def _openvino_decode_guards():
                 # Untouched on purpose — see the comment in _decode.
                 assert config.no_repeat_ngram_size == 0 and config.repetition_penalty == 1.0
                 assert config.language == "<|de|>"
-            assert trims == [0.5, 10.0, 50.0, 60.0], trims
-            pipe.prompt_tokens = 13  # the real count: room 430
-            t.transcribe(take(53))
-            assert pipe.calls[-1][1].max_new_tokens == 424
-            t.transcribe(take(54))
-            assert pipe.calls[-1][1].max_new_tokens == unset  # 432 would not fit
+            assert trims == [0.5, 10.0, (room - 1) / 8, room / 8], trims
             cfg["initial_prompt"] = ""  # nothing in front: room 444
             t.transcribe(take(55))
             assert pipe.calls[-1][1].max_new_tokens == 440
-            # A prompt the tokenizer cannot count is charged its 1001 bytes:
-            # no room is left to tighten, GenAI keeps its own bound.
-            cfg["initial_prompt"], pipe.prompt_tokens = "x" * 1000, None
-            t.transcribe(take(10))
+            t.transcribe(take(55.5))
             assert pipe.calls[-1][1].max_new_tokens == unset
             cfg["initial_prompt"] = prompt
             pipe.default_max = 120  # a model that sets its own, lower default
@@ -6059,6 +6189,7 @@ def _openvino_decode_guards():
             assert pipe.calls[-1][1].max_new_tokens == 80
             t.transcribe(take(20))
             assert pipe.calls[-1][1].max_new_tokens == 120
+            pipe.default_max = unset
 
             # Judged after the trim: 10 s of which 0.5 s is speech is a 0.5-s take.
             ov.trim_silence = lambda audio, rate: audio[: rate // 2]
@@ -6069,7 +6200,6 @@ def _openvino_decode_guards():
             ov.trim_silence = spy_trim
 
             trims.clear()
-            pipe.default_max = unset
             assert t.preview(take(10)) == "Hallo Welt."
             config = pipe.calls[-1][1]
             assert trims == [], "a preview must not trim"
@@ -6081,19 +6211,53 @@ def _openvino_decode_guards():
             pipe.text = "这是一个测试"
             assert t.transcribe(take(10)) == "这是一个测试"  # the speaker's language
             cfg["language"] = "de"
-
             pipe.text = "Hallo Welt."
-            long_prompt = ", ".join(f"term{i:03d}" for i in range(400)) + ","
-            cfg["initial_prompt"] = long_prompt
-            records.clear()
-            t.transcribe(take(10))
-            t.preview(take(10))
-            sent = pipe.calls[-1][1].initial_prompt
-            assert sent == prompt_tail(long_prompt) and sent != long_prompt, sent[:40]
-            assert long_prompt.endswith(sent) and sent.startswith("term"), sent[:40]
-            cuts = [r for r in records if "initial prompt is" in r.getMessage()]
-            assert len(cuts) == 1 and cuts[0].levelno == logging.INFO, cuts
+
+            # Long prompts are cut with the pipeline's tokenizer: what goes in
+            # front is at most 223 tokens, even where the estimate is far off.
+            cjk_terms = [chr(0x4E00 + 2 * k) + chr(0x4E01 + 2 * k) for k in range(300)]
+            tickets = [f"JIRA-{4000 + k}" for k in range(300)]
+            for terms, sep in ((cjk_terms, "，"), (tickets, ", ")):
+                long_prompt = sep.join(terms)
+                cfg["initial_prompt"] = long_prompt
+                records.clear()
+                t.transcribe(take(10))
+                encodes = tok.encodes
+                t.transcribe(take(10))
+                t.preview(take(10))
+                assert tok.encodes == encodes, "the prompt is tokenised once, not per take"
+                sent = pipe.calls[-1][1].initial_prompt
+                assert long_prompt.endswith(sent) and sent.split(sep)[0] in terms, sent[:20]
+                assert tok.count(sent) <= 223, tok.count(sent)
+                assert tok.count(prompt_tail(long_prompt)) > 223  # the estimate overshoots
+                cuts = [r.getMessage() for r in records if "initial prompt is" in r.getMessage()]
+                assert len(cuts) == 1 and "about" not in cuts[0], cuts  # an exact count
+                # The room follows the tail actually sent.
+                room = 448 - 4 - 1 - tok.count(sent)
+                t.transcribe(take((room - 1) / 8))
+                assert pipe.calls[-1][1].max_new_tokens == room - 1
+                t.transcribe(take(room / 8))
+                assert pipe.calls[-1][1].max_new_tokens == unset
+
+            # No tokenizer, or one that fails: the estimate, never an error.
+            # The room then charges the tail its UTF-8 bytes, which byte-level
+            # BPE never exceeds: the 36-byte prompt leaves 407 tokens.
             cfg["initial_prompt"] = prompt
+            for tokenizer in (None, BrokenTokenizer()):
+                fallback, fake = loaded(tokenizer)
+                fallback.transcribe(take(50))
+                assert fake.calls[-1][1].max_new_tokens == 400
+                fallback.transcribe(take(51))
+                assert fake.calls[-1][1].max_new_tokens == unset
+                cfg["initial_prompt"] = long_prompt
+                records.clear()
+                fallback.transcribe(take(10))
+                config = fake.calls[-1][1]
+                assert config.initial_prompt == prompt_tail(long_prompt)
+                assert config.max_new_tokens == unset  # ~560 bytes in front: no room
+                cuts = [r.getMessage() for r in records if "initial prompt is" in r.getMessage()]
+                assert len(cuts) == 1 and "about" in cuts[0], cuts
+                cfg["initial_prompt"] = prompt
     finally:
         ov.trim_silence = saved_trim
         ov.log.removeHandler(handler)
@@ -9832,6 +9996,7 @@ def _settings_prompt_window_hint():
         assert not hint.isHidden(), "a prompt beyond the window must be named"
         assert "223 tokens" in text, text
         assert f"about {estimate_prompt_tokens(long_prompt)} tokens" in text, text
+        assert "about 560 characters" in text, text  # 223 tokens × 2.5, rounded
         assert edit.accessibleDescription() == text
 
         edit.setPlainText("Kubernetes, PostgreSQL, Jira")
