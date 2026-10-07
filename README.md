@@ -432,7 +432,7 @@ guards of their own:
 | `notifications` / `beep`                        | `true` / `true`               | Desktop notifications and the audible start/stop cue (the beep is Windows only)                                                                                                                                                                                                                                                                                                                                             |
 | `autostart`                                     | `false`                       | Start with the OS                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `start_in_tray`                                 | `false`                       | Start silently into the tray instead of opening the window                                                                                                                                                                                                                                                                                                                                                                  |
-| `initial_prompt`                                | `""`                          | Whisper initial prompt (domain vocabulary hint, not an instruction)                                                                                                                                                                                                                                                                                                                                                         |
+| `initial_prompt`                                | `""`                          | Whisper initial prompt (domain vocabulary hint, not an instruction). Whisper reads only its last ~223 tokens (about 670 characters), and only for the first 30 s of a take, so a short list works best, the most important terms last — Settings says when a prompt is longer. Not used by Parakeet                                                                                                                         |
 | `replacements`                                  | `""`                          | Find/replace rules applied to every finished transcript, one `find => replace` per line — see [Text replacements](#text-replacements)                                                                                                                                                                                                                                                                                       |
 | `filler_filter`                                 | `true`                        | Drop a transcript that came out of a **silent or too quiet** recording and is **nothing but** a phrase Whisper invents for a take with no speech. A take that carried real speech is never filtered, however it reads — see [Silent takes and invented phrases](#silent-takes-and-invented-phrases)                                                                                                                         |
 | `filler_phrases`                                | _(18 built-in phrases)_       | The list those transcripts are matched against, one phrase per line (`#` comments allowed); consulted only for a take whose own audio was silent or too quiet; editable in Settings → Engine                                                                                                                                                                                                                                |
@@ -625,6 +625,24 @@ Untertitelung des ZDF, 2020
   append-only typing cannot take it back.
 - Switch the whole thing off with `filler_filter` if you would rather see
   whatever the model produced for a silent take.
+
+**Invented text in a take that did carry speech** is a different failure, and
+other guards catch it (#293). A hard stretch of audio is re-decoded at ever
+higher sampling temperatures, and high up that ladder Whisper writes random
+multilingual tokens — `結, 那个, 这 果` at the end of a German dictation. The
+app now stops the ladder at 0.4, and while decoding, a segment that is mostly
+foreign script for a Latin-script language is dropped, and so is one still
+looping after every fallback temperature; a stray foreign run inside a real
+sentence is only cut out, and a sentence that was merely hard to hear is never
+dropped for its low confidence alone. The OpenVINO backend also trims the
+silence around a take, holds its output to what the take's length can carry,
+forbids a 10-token run from repeating, and gives a take under 3 s no initial
+prompt — that is where it read its own prompt back for 1547 characters. Last, a
+finished transcript that cannot have come from the audio — the same words over
+and over, the initial prompt read back, far more text than the take's length
+allows — is **not inserted**: it is kept in Settings → History (when the
+history is on) and one notification says why. That last check is skipped while
+`live_typing` is on, for the same reason as the phrase list.
 
 ### Recording system audio (a call, a meeting, a video)
 

@@ -4856,6 +4856,125 @@ def _whisper_decode_guards():
     assert ("faster_whisper" in sys.modules) == imported_before
 
 
+def _whisper_prompt_window():
+    """faster-whisper is handed only the prompt tail it reads (#293). It keeps
+    the last 223 prompt tokens and cuts wherever that falls, so a long term
+    list reached the decoder starting on half a term. The decode now passes
+    that tail itself, starting on a whole term and counted with the model's
+    own tokenizer the way faster-whisper encodes the prompt (" " + prompt) —
+    once per prompt and model, never once per take, with the cut logged once.
+    A short prompt goes through whole, an empty one as None, and a model
+    without a tokenizer, or one whose tokenizer fails, gets the character
+    estimate instead of a failed take.
+
+    Runs on a stub model with a fake BPE-like tokenizer set straight into
+    `_model`: no faster_whisper import, no download."""
+    import logging
+    import re
+    from types import SimpleNamespace
+
+    from listen_to_me import transcriber as fw
+    from listen_to_me.config import Config
+    from listen_to_me.hallucination import prompt_tail
+
+    class FakeTokenizer:
+        """The `tokenizers.Tokenizer` surface faster-whisper's model carries:
+        every "termNNN," becomes two tokens, " term" and "NNN,", so a cut can
+        fall through the middle of a term exactly as BPE's can."""
+
+        def __init__(self):
+            self.vocab, self.encoded = [], []
+
+        def encode(self, text, add_special_tokens=True):
+            assert add_special_tokens is False
+            self.encoded.append(text)
+            ids = []
+            for piece in re.findall(r"\s*\S{1,4}", text):
+                self.vocab.append(piece)
+                ids.append(len(self.vocab) - 1)
+            return SimpleNamespace(ids=ids)
+
+        def decode(self, ids):
+            return "".join(self.vocab[i] for i in ids)
+
+    class BrokenTokenizer(FakeTokenizer):
+        def encode(self, text, add_special_tokens=True):
+            raise RuntimeError("tokenizer exploded")
+
+    class StubModel:
+        def __init__(self):
+            self.hf_tokenizer, self.calls = FakeTokenizer(), []
+
+        def transcribe(self, audio, **kwargs):
+            self.calls.append(kwargs)
+            segment = SimpleNamespace(end=1.0, text=" Hallo.", temperature=0.0)
+            return iter([segment]), SimpleNamespace(language="de")
+
+    def term_list(word):
+        return ", ".join(f"{word}{i:03d}" for i in range(400)) + ","
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler, saved_level = _Capture(), fw.log.level
+    imported_before = "faster_whisper" in sys.modules
+    fw.log.addHandler(handler)
+    fw.log.setLevel(logging.INFO)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(path=Path(tmp) / "config.json")
+            cfg["language"] = "de"
+            prompt = term_list("term")
+            cfg["initial_prompt"] = prompt
+            t = fw.Transcriber(cfg)
+            model = StubModel()
+            tokenizer = model.hf_tokenizer
+            t._model, t._key = model, t._current_key()  # "loaded" without a load
+            audio = [0.0] * 16000
+
+            # 800 tokens; the last 223 start on "288," — the cut term goes.
+            expected = ", ".join(f"term{i:03d}" for i in range(289, 400)) + ","
+            assert t.transcribe(audio) == "Hallo."
+            sent = model.calls[-1]["initial_prompt"]
+            assert sent == expected, sent[:40]
+            assert expected != prompt_tail(prompt), "the tokenizer, not the estimate, must cut"
+            assert tokenizer.encoded == [" " + prompt], tokenizer.encoded[:1]
+            # Memoised: the next take and a preview tokenise nothing again.
+            t.transcribe(audio)
+            assert t.preview(audio) == "Hallo."
+            assert [call["initial_prompt"] for call in model.calls[1:]] == [expected, expected]
+            assert len(tokenizer.encoded) == 1, len(tokenizer.encoded)
+            cuts = [r for r in records if "initial prompt is" in r.getMessage()]
+            assert len(cuts) == 1 and cuts[0].levelno == logging.INFO, cuts
+            assert "800 tokens" in cuts[0].getMessage(), cuts[0].getMessage()
+
+            # A prompt that fits goes through whole; an empty one as None.
+            cfg["initial_prompt"] = "  mergen, ci-radar, contract-manager, "
+            t.transcribe(audio)
+            assert model.calls[-1]["initial_prompt"] == "mergen, ci-radar, contract-manager,"
+            cfg["initial_prompt"] = ""
+            t.transcribe(audio)
+            assert model.calls[-1]["initial_prompt"] is None
+            assert len([r for r in records if "initial prompt is" in r.getMessage()]) == 1
+
+            # No tokenizer, or a failing one: the character estimate.
+            model.hf_tokenizer = None
+            cfg["initial_prompt"] = other = term_list("word")
+            assert t.transcribe(audio) == "Hallo."
+            assert model.calls[-1]["initial_prompt"] == prompt_tail(other)
+            model.hf_tokenizer = BrokenTokenizer()
+            cfg["initial_prompt"] = third = term_list("item")
+            assert t.transcribe(audio) == "Hallo."
+            assert model.calls[-1]["initial_prompt"] == prompt_tail(third)
+    finally:
+        fw.log.removeHandler(handler)
+        fw.log.setLevel(saved_level)
+    assert ("faster_whisper" in sys.modules) == imported_before
+
+
 # A ~70-s German dictation of ~1500 characters (about 21 a second) with a few
 # hesitations in it: what the plausibility check must always let through.
 _PLAIN_GERMAN_DICTATION = (
@@ -5779,16 +5898,20 @@ def _openvino_decode_guards():
 
     The budget and the prompt rule are judged on the audio actually decoded —
     after the final transcription trims its silence — and previews skip the
-    trim (they run every tick) but keep every other guard. An openvino-genai
-    without no_repeat_ngram_size decodes on and says so once per process, not
-    once per take. Runs on a fake pipeline and a list stand-in for the audio,
-    with trim_silence swapped for a spy: no openvino, no numpy."""
+    trim (they run every tick) but keep every other guard. A prompt longer
+    than the 223 tokens Whisper reads goes over as its tail, cut on a whole
+    term by the character estimate, and the cut is logged once per prompt. An
+    openvino-genai without no_repeat_ngram_size decodes on and says so once
+    per process, not once per take. Runs on a fake pipeline and a list
+    stand-in for the audio, with trim_silence swapped for a spy: no openvino,
+    no numpy."""
     import logging
     from types import SimpleNamespace
 
     from listen_to_me import transcriber_openvino as ov
     from listen_to_me.audio import SAMPLE_RATE
     from listen_to_me.config import Config
+    from listen_to_me.hallucination import prompt_tail
 
     class Samples(list):
         """The Recorder's numpy array, as far as _decode uses it: slices stay
@@ -5883,6 +6006,19 @@ def _openvino_decode_guards():
             pipe.text = "这是一个测试"
             assert t.transcribe(take(10)) == "这是一个测试"  # the speaker's language
             cfg["language"] = "de"
+
+            pipe.text = "Hallo Welt."
+            long_prompt = ", ".join(f"term{i:03d}" for i in range(400)) + ","
+            cfg["initial_prompt"] = long_prompt
+            records.clear()
+            t.transcribe(take(10))
+            t.preview(take(10))
+            sent = pipe.calls[-1][1].initial_prompt
+            assert sent == prompt_tail(long_prompt) and sent != long_prompt, sent[:40]
+            assert long_prompt.endswith(sent) and sent.startswith("term"), sent[:40]
+            cuts = [r for r in records if "initial prompt is" in r.getMessage()]
+            assert len(cuts) == 1 and cuts[0].levelno == logging.INFO, cuts
+            cfg["initial_prompt"] = prompt
 
             pipe.guard = False
             pipe.text = "Hallo Welt."
@@ -9601,6 +9737,53 @@ def _settings_engine_offers_the_parakeet_model_and_cpu_threads():
         clamped = SettingsWindow(stub)
         assert clamped.cpu_threads_spin.value() == 0
         clamped.force_close()
+
+
+def _settings_prompt_window_hint():
+    """Settings → Engine says when the initial prompt is longer than Whisper
+    reads (#293). Only its last ~223 tokens reach the model, and the ~4500-
+    character term list in the issue lost its first nine tenths without a
+    word anywhere. The line under the field appears while such a prompt is
+    typed — and when a stored one opens the window —, names its estimated
+    size, and is announced with the field; a short prompt hides it rather
+    than leaving a blank line; and it greys out with the field for Parakeet,
+    which takes no prompt."""
+    from listen_to_me.choices import BACKENDS
+    from listen_to_me.hallucination import estimate_prompt_tokens
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    long_prompt = ", ".join(f"term{i:04d}" for i in range(450))  # 4498 characters
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+        edit, hint = window.initial_prompt_edit, window.initial_prompt_window_hint
+        assert hint.isHidden() and not hint.text(), hint.text()  # DEFAULTS: no prompt
+
+        edit.setPlainText(long_prompt)
+        text = hint.text()
+        assert not hint.isHidden(), "a prompt beyond the window must be named"
+        assert "223 tokens" in text, text
+        assert f"about {estimate_prompt_tokens(long_prompt)} tokens" in text, text
+        assert edit.accessibleDescription() == text
+
+        edit.setPlainText("Kubernetes, PostgreSQL, Jira")
+        assert hint.isHidden() and not edit.accessibleDescription()
+
+        edit.setPlainText(long_prompt)
+        window.backend_combo.setCurrentIndex([b for b, _ in BACKENDS].index("parakeet"))
+        assert not edit.isEnabled() and not hint.isEnabled()
+        window.backend_combo.setCurrentIndex(0)
+        assert edit.isEnabled() and hint.isEnabled()
+        window.force_close()
+
+        stub.cfg["initial_prompt"] = long_prompt
+        reopened = SettingsWindow(stub)
+        assert not reopened.initial_prompt_window_hint.isHidden()
+        reopened.force_close()
 
 
 def _settings_engine_auto_configures_for_this_pc():
@@ -13768,6 +13951,7 @@ _LIGHT_CHECKS = [
     ("foreign-script runs are stripped", _hallucination_script_filter),
     ("segment drop reasons", _hallucination_segment_drop_reason),
     ("whisper decode carries the hallucination guards", _whisper_decode_guards),
+    ("whisper gets the prompt tail it reads", _whisper_prompt_window),
     ("implausible transcripts are named", _hallucination_implausible_reason),
     ("prompt tail fits the window", _hallucination_prompt_tail),
     ("speech bounds", _hallucination_speech_bounds),
@@ -13815,6 +13999,7 @@ _LIGHT_CHECKS = [
     ("settings window edits the new options", _settings_window_edits_the_new_options),
     ("settings engine offers the Parakeet model and CPU threads",
      _settings_engine_offers_the_parakeet_model_and_cpu_threads),
+    ("settings names a prompt beyond the window", _settings_prompt_window_hint),
     ("settings engine auto-configures for this PC",
      _settings_engine_auto_configures_for_this_pc),
     ("microphone test widget", _microphone_test_widget),

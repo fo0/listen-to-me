@@ -23,7 +23,13 @@ from pathlib import Path
 
 from .audio import SAMPLE_RATE
 from .choices import OPENVINO_UNSUPPORTED_MODELS, openvino_alternative
-from .hallucination import strip_foreign_runs, trim_silence
+from .hallucination import (
+    PROMPT_TOKEN_BUDGET,
+    estimate_prompt_tokens,
+    prompt_tail,
+    strip_foreign_runs,
+    trim_silence,
+)
 from .transcriber import _PREVIEW_WINDOW_SECONDS
 
 log = logging.getLogger(__name__)
@@ -184,6 +190,8 @@ class OpenVinoTranscriber:
         # still asks for that same (device, precision) setup, so changing
         # either in Settings retries the device.
         self._cpu_fallback_for: tuple | None = None
+        # The last prompt whose cut was logged: once per prompt, not per take.
+        self._prompt_cut_logged: str | None = None
 
     # ------------------------------------------------------------- keying
 
@@ -415,7 +423,8 @@ class OpenVinoTranscriber:
         The #293 guards: `final` (what reaches the cursor) first trims the
         silence Whisper invents text in — previews, run every tick, skip that.
         Every decode gets an output budget scaled to its audio, a repetition
-        guard, no prompt when too short to outweigh one, and foreign runs cut."""
+        guard, no prompt when too short to outweigh one (else only the tail
+        Whisper reads), and foreign runs cut."""
         pipe = self._pipe
         if pipe is None:
             return None
@@ -440,7 +449,8 @@ class OpenVinoTranscriber:
             if isinstance(current, int) and not isinstance(current, bool) and current > 0:
                 cap = min(current, cap)
             config.max_new_tokens = cap
-        prompt = self.cfg["initial_prompt"]
+        # Only the tail Whisper reads, and only for the first 30-s window.
+        prompt = self._prompt_tail(self.cfg["initial_prompt"])
         if prompt and hasattr(config, "initial_prompt"):
             if seconds >= _MIN_PROMPT_SECONDS:
                 config.initial_prompt = prompt
@@ -465,6 +475,22 @@ class OpenVinoTranscriber:
                 text,
             )
         return cleaned
+
+    def _prompt_tail(self, prompt) -> str:
+        """The tail of `prompt` Whisper reads: its last 223 tokens, starting
+        on a whole term (#293) — by the character estimate, which errs toward
+        a shorter tail. GenAI hands `initial_prompt` to the first 30-s window
+        of a take only, like faster-whisper without condition_on_previous_text.
+        The cut is logged once per prompt, not once per take."""
+        tail = prompt_tail(prompt)
+        if tail != str(prompt or "").strip() and prompt != self._prompt_cut_logged:
+            self._prompt_cut_logged = prompt
+            log.info(
+                "initial prompt is about %d tokens — only the last %d reach the model",
+                estimate_prompt_tokens(prompt),
+                PROMPT_TOKEN_BUDGET,
+            )
+        return tail
 
     def transcribe(self, audio, notify=None, progress=None) -> str:
         self.ensure_loaded(notify=notify, progress=progress)
