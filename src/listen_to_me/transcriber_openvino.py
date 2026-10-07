@@ -16,12 +16,14 @@ public surface of :class:`listen_to_me.transcriber.Transcriber` (``ensure_loaded
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 from pathlib import Path
 
 from .audio import SAMPLE_RATE
 from .choices import OPENVINO_UNSUPPORTED_MODELS, openvino_alternative
+from .hallucination import strip_foreign_runs, trim_silence
 from .transcriber import _PREVIEW_WINDOW_SECONDS
 
 log = logging.getLogger(__name__)
@@ -31,6 +33,34 @@ _INSTALL_HINT = (
     "Install it with: pip install openvino-genai — or set "
     "Backend = faster-whisper in Settings → Engine."
 )
+
+# The output budget per second of audio (#293): a prompt echo ran takes of
+# 0.5–2.7 s out to 1547 characters each. Dictated German is 3–4 Whisper tokens
+# a second, so 8 never cuts real speech; the floor leaves a short take room.
+_TOKENS_PER_SECOND = 8.0
+_MIN_NEW_TOKENS = 32
+
+# Takes shorter than this get no initial prompt (#293): all four echo takes
+# were 0.5–2.7 s — too little audio to outweigh a prompt, so the decoder read
+# the prompt back instead — while a vocabulary hint matters for real speech.
+_MIN_PROMPT_SECONDS = 3.0
+
+# Forbids any 10-token run from recurring inside one 30-s chunk (#293). That
+# breaks a "contract-manager, " loop after two cycles, while a legitimately
+# repeated 10-token phrase inside one chunk is rare. `repetition_penalty` is
+# deliberately not set: it reweights every token of normal speech.
+_NO_REPEAT_NGRAM = 10
+
+# Whether this process already said that its openvino-genai offers no
+# no_repeat_ngram_size — once is information, once per take is noise.
+_no_repeat_guard_missing_logged = False
+
+
+def _log_missing_repeat_guard() -> None:
+    global _no_repeat_guard_missing_logged
+    if not _no_repeat_guard_missing_logged:
+        _no_repeat_guard_missing_logged = True
+        log.info("this openvino-genai has no no_repeat_ngram_size — no repetition guard (#293)")
 
 
 def openvino_model_repo(model: str, precision: str) -> str:
@@ -377,40 +407,77 @@ class OpenVinoTranscriber:
 
     # ----------------------------------------------------------- decoding
 
-    def _decode(self, audio) -> str | None:
+    def _decode(self, audio, *, final: bool = False) -> str | None:
         """Run the pipeline on `audio` and return the text, or None when no
         pipeline is loaded (a concurrent CPU fallback nulled it mid-reload).
-        Caller holds _use_lock."""
+        Caller holds _use_lock.
+
+        The #293 guards: `final` (what reaches the cursor) first trims the
+        silence Whisper invents text in — previews, run every tick, skip that.
+        Every decode gets an output budget scaled to its audio, a repetition
+        guard, no prompt when too short to outweigh one, and foreign runs cut."""
         pipe = self._pipe
         if pipe is None:
             return None
+        if final:
+            before = len(audio)
+            audio = trim_silence(audio, SAMPLE_RATE)
+            if len(audio) != before:
+                log.debug("trimmed %.1f s of silence", (before - len(audio)) / SAMPLE_RATE)
+        seconds = len(audio) / SAMPLE_RATE  # after the trim: what is decoded
         config = pipe.get_generation_config()
         language = self.cfg["language"]
         if language not in ("", "auto"):
             config.language = f"<|{language}|>"
             config.task = "transcribe"
+        if hasattr(config, "max_new_tokens"):
+            # GenAI applies the cap per 30-s chunk (a 4130-character OpenVINO
+            # dictation is in the field logs, far beyond 448 tokens), so on a
+            # long take the computed cap exceeds the default and changes
+            # nothing; only a short take gets a tight bound.
+            cap = max(_MIN_NEW_TOKENS, math.ceil(seconds * _TOKENS_PER_SECOND))
+            current = config.max_new_tokens
+            if isinstance(current, int) and not isinstance(current, bool) and current > 0:
+                cap = min(current, cap)
+            config.max_new_tokens = cap
         prompt = self.cfg["initial_prompt"]
         if prompt and hasattr(config, "initial_prompt"):
-            config.initial_prompt = prompt
+            if seconds >= _MIN_PROMPT_SECONDS:
+                config.initial_prompt = prompt
+            else:
+                log.debug("initial prompt skipped for a %.1f-s take", seconds)
+        if hasattr(config, "no_repeat_ngram_size"):
+            config.no_repeat_ngram_size = _NO_REPEAT_NGRAM
+        else:
+            _log_missing_repeat_guard()
         # The pipeline chunks audio longer than 30 s internally (sliding
         # window); it expects a plain float list at 16 kHz, which is exactly
         # what the Recorder captures.
         result = pipe.generate(audio.tolist(), config)
         texts = getattr(result, "texts", None)
-        return (texts[0] if texts else str(result)).strip()
+        text = (texts[0] if texts else str(result)).strip()
+        cleaned = strip_foreign_runs(text, language)
+        if cleaned != text:
+            # A preview repeats every tick: one INFO line per take, not per tick.
+            log.log(
+                logging.INFO if final else logging.DEBUG,
+                "foreign-script run stripped from the transcript: %.60r",
+                text,
+            )
+        return cleaned
 
     def transcribe(self, audio, notify=None, progress=None) -> str:
         self.ensure_loaded(notify=notify, progress=progress)
         try:
             with self._use_lock:
-                text = self._decode(audio)
+                text = self._decode(audio, final=True)
             if text is None:
                 raise RuntimeError("Whisper model is not loaded")
         except Exception as exc:
             if not self._recover_on_cpu(exc, notify):
                 raise
             with self._use_lock:
-                text = self._decode(audio)
+                text = self._decode(audio, final=True)
             if text is None:
                 # `from exc`: keeps the GPU/NPU failure that triggered the CPU
                 # retry as the reported cause instead of a second, unrelated

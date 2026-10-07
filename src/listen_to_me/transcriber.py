@@ -438,17 +438,17 @@ class Transcriber:
         for segment in segments:
             text = segment.text.strip()
             temperature = getattr(segment, "temperature", 0.0)
-            avg_logprob = getattr(segment, "avg_logprob", 0.0)
+            ratio = getattr(segment, "compression_ratio", 0.0)
             reason = segment_drop_reason(
-                text, language=script, temperature=temperature, avg_logprob=avg_logprob
+                text, language=script, temperature=temperature, compression_ratio=ratio
             )
             if reason:
                 log.log(
                     level,
-                    "segment dropped (%s, temperature=%s, avg_logprob=%s): %.60r",
+                    "segment dropped (%s, temperature=%s, compression_ratio=%s): %.60r",
                     reason,
                     temperature,
-                    avg_logprob,
+                    ratio,
                     text,
                 )
                 continue

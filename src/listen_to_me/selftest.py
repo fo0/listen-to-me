@@ -4537,11 +4537,17 @@ def _hallucination_script_filter():
 def _hallucination_segment_drop_reason():
     """Which decoded segments are dropped whole (#293): one largely in a script
     the configured Latin-script language never uses, and one sampled at a
-    raised temperature that still scored below faster-whisper's own log-prob
-    threshold — the fallback the decoder itself doubted. A poor score at
-    temperature 0 is a hard-to-hear sentence, not a guess, and stays; so does
-    every segment of a non-Latin or unknown language, and one stray ideograph
-    in a real sentence is stripped later rather than costing the sentence."""
+    raised temperature that still compresses beyond faster-whisper's own
+    threshold of 2.4 — a repetition loop that survived every rung of the
+    fallback ladder.
+
+    A low avg_logprob is deliberately no reason, at any temperature: for a
+    window that failed every rung faster-whisper reports the last rung's
+    temperature whatever attempt it kept, so the earlier "sampled and below
+    -1.0" rule dropped real, hard-to-hear speech without a trace. Kept as well:
+    every segment of a non-Latin or unknown language, and a real sentence with
+    one stray ideograph, which is stripped later rather than costing the
+    sentence."""
     from listen_to_me.hallucination import segment_drop_reason
 
     garbage = "这 果, 这 ,, 压 ,, hof"
@@ -4551,16 +4557,34 @@ def _hallucination_segment_drop_reason():
     sentence = "Das Deployment läuft seit heute Morgen."
     assert segment_drop_reason(sentence, language="de") is None
     assert segment_drop_reason("Das Deployment läuft 好 seit heute.", language="de") is None
+    loop = "und dann und dann und dann und dann und dann und dann"
     assert (
-        segment_drop_reason(sentence, language="de", temperature=0.4, avg_logprob=-1.4)
-        == "low-confidence fallback"
+        segment_drop_reason(loop, language="de", temperature=0.4, compression_ratio=3.1)
+        == "repetition loop after the fallback"
     )
-    assert segment_drop_reason(sentence, language="de", temperature=0.0, avg_logprob=-1.4) is None
-    assert segment_drop_reason(sentence, language="de", temperature=0.4, avg_logprob=-0.3) is None
-    # faster-whisper's Segment.temperature is Optional: None must not raise.
-    assert segment_drop_reason(sentence, language="de", temperature=None, avg_logprob=None) is None
+    # At temperature 0 the first rung was accepted: nothing was given up on.
+    assert segment_drop_reason(loop, language="de", temperature=0.0, compression_ratio=3.1) is None
+    assert segment_drop_reason(loop, language="de", temperature=0.4, compression_ratio=2.4) is None
+    # Hard-to-hear speech is kept: what the 0.4 rung decoded with avg_logprob
+    # -1.4 has an ordinary ratio, and the score is no longer an argument at
+    # all, so no caller can drop a segment by it.
+    assert (
+        segment_drop_reason(sentence, language="de", temperature=0.4, compression_ratio=1.5)
+        is None
+    )
+    try:
+        segment_drop_reason(sentence, language="de", temperature=0.4, avg_logprob=-1.4)
+        raise AssertionError("avg_logprob must not be a drop criterion any more")
+    except TypeError:
+        pass
+    # faster-whisper's Segment.temperature is Optional: None must not raise,
+    # and neither must a malformed field.
+    for temperature, ratio in ((None, None), ("x", 9.0), (0.4, "x")):
+        assert segment_drop_reason(
+            sentence, language="de", temperature=temperature, compression_ratio=ratio
+        ) is None
     assert segment_drop_reason("", language="de") is None
-    assert segment_drop_reason("  ", language="de", temperature=1.0, avg_logprob=-5.0) is None
+    assert segment_drop_reason("  ", language="de", temperature=1.0, compression_ratio=9.0) is None
 
 
 def _whisper_decode_guards():
@@ -4569,10 +4593,12 @@ def _whisper_decode_guards():
     samples random multilingual tokens) and never conditions a window on the
     one before; only the final transcription asks for word timestamps and the
     silence-hallucination threshold, so previews and live typing stay cheap.
-    A foreign-script segment never reaches the returned text, a doubted
-    fallback is dropped, a stray run inside a kept segment is stripped, and
-    under "auto" the language Whisper detected decides the script check — a
-    take detected as Chinese keeps its Chinese.
+    A foreign-script segment never reaches the returned text, nor does a loop
+    that survived the whole fallback ladder (sampled, compression ratio above
+    2.4); a sampled low-confidence segment of real speech is kept, its
+    compression ratio — not its avg_logprob — decides. A stray run inside a
+    kept segment is stripped, and under "auto" the language Whisper detected
+    decides the script check — a take detected as Chinese keeps its Chinese.
 
     Runs on a stub model set straight into `_model`: no faster_whisper import,
     no download, and the check asserts it did not import faster_whisper."""
@@ -4585,9 +4611,13 @@ def _whisper_decode_guards():
         Transcriber,
     )
 
-    def segment(end, text, temperature=0.0, avg_logprob=-0.2):
+    def segment(end, text, temperature=0.0, avg_logprob=-0.2, compression_ratio=1.4):
         return SimpleNamespace(
-            end=end, text=text, temperature=temperature, avg_logprob=avg_logprob
+            end=end,
+            text=text,
+            temperature=temperature,
+            avg_logprob=avg_logprob,
+            compression_ratio=compression_ratio,
         )
 
     class StubModel:
@@ -4605,11 +4635,12 @@ def _whisper_decode_guards():
             segment(2.0, sentence),
             segment(4.0, garbage, temperature=1.0, avg_logprob=-0.8),
             segment(5.0, " Und dann noch etwas.", temperature=0.4, avg_logprob=-1.4),
+            segment(5.5, " und dann" * 6, temperature=0.4, compression_ratio=3.1),
             segment(6.5, " Das läuft 这 gut."),
         ],
         "de",
     )
-    kept = "Ich habe den Pull Request gemergt. Das läuft gut."
+    kept = "Ich habe den Pull Request gemergt. Und dann noch etwas. Das läuft gut."
     imported_before = "faster_whisper" in sys.modules
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Config(path=Path(tmp) / "config.json")
@@ -4629,6 +4660,7 @@ def _whisper_decode_guards():
         assert t.preview(audio) == kept
         assert t.preview_segments(audio) == [
             (2.0, "Ich habe den Pull Request gemergt."),
+            (5.0, "Und dann noch etwas."),
             (6.5, "Das läuft gut."),
         ]
         assert len(model.calls) == 3
@@ -5545,6 +5577,138 @@ def _openvino_backend_logic():
         # Already on the CPU there is nothing to fall back to.
         t2 = create_transcriber(cfg)
         assert t2._maybe_force_cpu("CPU", RuntimeError("anything"), None) is False
+
+
+def _openvino_decode_guards():
+    """The OpenVINO decode carries the #293 guards. GenAI echoed the prompt
+    "mergen, ci-radar, contract-manager," into exactly 1547 characters on four
+    takes of 0.5–2.7 s, all pasted. So the output budget scales with the audio
+    (8 tokens a second, at least 32, never above the model's own default), a
+    take under 3 s gets no initial prompt, any 10-token run may occur only once
+    per chunk, and foreign-script runs are cut from the text.
+
+    The budget and the prompt rule are judged on the audio actually decoded —
+    after the final transcription trims its silence — and previews skip the
+    trim (they run every tick) but keep every other guard. An openvino-genai
+    without no_repeat_ngram_size decodes on and says so once per process, not
+    once per take. Runs on a fake pipeline and a list stand-in for the audio,
+    with trim_silence swapped for a spy: no openvino, no numpy."""
+    import logging
+    from types import SimpleNamespace
+
+    from listen_to_me import transcriber_openvino as ov
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.config import Config
+
+    class Samples(list):
+        """The Recorder's numpy array, as far as _decode uses it: slices stay
+        Samples and tolist() hands the pipeline a plain list."""
+
+        def __getitem__(self, index):
+            part = super().__getitem__(index)
+            return Samples(part) if isinstance(index, slice) else part
+
+        def tolist(self):
+            return list(self)
+
+    def take(seconds):
+        return Samples([0.0] * int(seconds * SAMPLE_RATE))
+
+    class FakePipe:
+        def __init__(self):
+            self.text, self.guard, self.default_max, self.calls = "Hallo Welt.", True, 448, []
+
+        def get_generation_config(self):
+            config = SimpleNamespace(
+                max_new_tokens=self.default_max, initial_prompt=None, language=None, task=None
+            )
+            if self.guard:
+                config.no_repeat_ngram_size = 0
+            return config
+
+        def generate(self, audio, config):
+            assert type(audio) is list, type(audio)
+            self.calls.append((len(audio), config))
+            return SimpleNamespace(texts=[self.text])
+
+    trims = []
+
+    def spy_trim(audio, sample_rate):
+        trims.append(len(audio) / sample_rate)
+        return audio
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler, saved_level = _Capture(), ov.log.level
+    saved_trim, saved_flag = ov.trim_silence, ov._no_repeat_guard_missing_logged
+    imported_before = "openvino_genai" in sys.modules
+    ov.log.addHandler(handler)
+    ov.log.setLevel(logging.DEBUG)  # the once-only line is INFO
+    ov.trim_silence = spy_trim
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(path=Path(tmp) / "config.json")
+            cfg["language"] = "de"
+            prompt = "mergen, ci-radar, contract-manager,"
+            cfg["initial_prompt"] = prompt
+            t = ov.OpenVinoTranscriber(cfg)
+            pipe = FakePipe()
+            t._pipe, t._key, t._device = pipe, t._current_key(), "CPU"  # "loaded"
+
+            for seconds, budget, prompted in ((0.5, 32, None), (10, 80, prompt), (60, 448, prompt)):
+                assert t.transcribe(take(seconds)) == "Hallo Welt."
+                config = pipe.calls[-1][1]
+                assert config.max_new_tokens == budget, (seconds, config.max_new_tokens)
+                assert config.initial_prompt == prompted, (seconds, config.initial_prompt)
+                assert config.no_repeat_ngram_size == 10
+                assert config.language == "<|de|>"
+            assert trims == [0.5, 10.0, 60.0], trims
+            pipe.default_max = 0  # no usable default: the computed cap alone
+            t.transcribe(take(60))
+            assert pipe.calls[-1][1].max_new_tokens == 480
+
+            # Judged after the trim: 10 s of which 0.5 s is speech is a 0.5-s take.
+            ov.trim_silence = lambda audio, rate: audio[: rate // 2]
+            t.transcribe(take(10))
+            samples, config = pipe.calls[-1]
+            assert samples == SAMPLE_RATE // 2
+            assert config.max_new_tokens == 32 and config.initial_prompt is None
+            ov.trim_silence = spy_trim
+
+            trims.clear()
+            pipe.default_max = 448
+            assert t.preview(take(10)) == "Hallo Welt."
+            config = pipe.calls[-1][1]
+            assert trims == [], "a preview must not trim"
+            assert config.max_new_tokens == 80 and config.initial_prompt == prompt
+            assert config.no_repeat_ngram_size == 10
+
+            pipe.text = "Ich habe den Pull Request gemergt. 結, 那个, 这 果 ,, " + chr(0xFFFD)
+            assert t.transcribe(take(10)) == "Ich habe den Pull Request gemergt"
+            cfg["language"] = "zh"
+            pipe.text = "这是一个测试"
+            assert t.transcribe(take(10)) == "这是一个测试"  # the speaker's language
+            cfg["language"] = "de"
+
+            pipe.guard = False
+            pipe.text = "Hallo Welt."
+            ov._no_repeat_guard_missing_logged = False
+            records.clear()
+            assert t.transcribe(take(10)) == "Hallo Welt."
+            assert t.preview(take(10)) == "Hallo Welt."
+            assert not hasattr(pipe.calls[-1][1], "no_repeat_ngram_size")
+            notes = [r for r in records if "no_repeat_ngram_size" in r.getMessage()]
+            assert len(notes) == 1 and notes[0].levelno == logging.INFO, notes
+    finally:
+        ov.trim_silence = saved_trim
+        ov._no_repeat_guard_missing_logged = saved_flag
+        ov.log.removeHandler(handler)
+        ov.log.setLevel(saved_level)
+    assert ("openvino_genai" in sys.modules) == imported_before
 
 
 def _parakeet_backend_logic():
@@ -13418,6 +13582,7 @@ _LIGHT_CHECKS = [
     ("speech bounds", _hallucination_speech_bounds),
     ("openvino pipeline properties", _openvino_pipeline_properties),
     ("openvino backend logic", _openvino_backend_logic),
+    ("openvino decode carries the hallucination guards", _openvino_decode_guards),
     ("parakeet backend logic", _parakeet_backend_logic),
     ("parakeet model registry", _parakeet_model_registry),
     ("CPU threads resolution", _cpu_threads_resolution),

@@ -38,9 +38,14 @@ LATIN_SCRIPT_LANGUAGES = frozenset(
 # stray ideograph in a real sentence stays below it and is only stripped.
 _SEGMENT_FOREIGN_SHARE = 0.2
 
-# faster-whisper's own `log_prob_threshold`: a sampled segment below it failed
-# the gate at every temperature and was only accepted because the ladder ended.
-_FALLBACK_MIN_LOGPROB = -1.0
+# faster-whisper's own `compression_ratio_threshold`: text that compresses
+# better than this is repetitive, and its window is re-decoded one rung up.
+# A window that fails every rung keeps an attempt below the ratio when any
+# exists, so a sampled segment still above it is a loop that survived the
+# whole ladder. A low avg_logprob proves no such thing: faster-whisper then
+# reports the last rung's temperature whatever it kept, and the low score is
+# as often real, hard-to-hear speech — which must never be dropped.
+_MAX_COMPRESSION_RATIO = 2.4
 
 # Dictation runs at 15 to 20 characters a second; 30 is no human, while the
 # 1547-character echo came from 0.5 s. The floor keeps a short take from
@@ -167,24 +172,25 @@ def strip_foreign_runs(text, language=None):
     return re.sub(r"\s+", " ", "".join(out)).strip()
 
 
-def segment_drop_reason(text, *, language, temperature=0.0, avg_logprob=0.0) -> str | None:
+def segment_drop_reason(text, *, language, temperature=0.0, compression_ratio=0.0) -> str | None:
     """Why one decoded segment is not kept, or None to keep it.
 
     "foreign script" for a Latin-script language and a segment at least
-    _SEGMENT_FOREIGN_SHARE foreign; "low-confidence fallback" when it was
-    sampled (temperature > 0) and still scored below _FALLBACK_MIN_LOGPROB. A
-    temperature-0 segment with a poor score is kept: that is a hard-to-hear
-    sentence, the decoder's best effort, not a guess.
+    _SEGMENT_FOREIGN_SHARE foreign; "repetition loop after the fallback" when
+    it was sampled (temperature > 0) and still compresses beyond
+    _MAX_COMPRESSION_RATIO. A low-confidence segment is never dropped for its
+    score alone: that is a hard-to-hear sentence, and losing it is worse.
     """
     if not text or not str(text).strip():
         return None
     if script_language(language) is True and foreign_share(text) >= _SEGMENT_FOREIGN_SHARE:
         return "foreign script"
     try:
-        doubted = float(temperature or 0) > 0 and float(avg_logprob or 0) < _FALLBACK_MIN_LOGPROB
+        ratio = float(compression_ratio or 0)
+        looped = float(temperature or 0) > 0 and ratio > _MAX_COMPRESSION_RATIO
     except (TypeError, ValueError):
-        doubted = False  # a malformed segment field proves nothing
-    return "low-confidence fallback" if doubted else None
+        looped = False  # a malformed segment field proves nothing
+    return "repetition loop after the fallback" if looped else None
 
 
 def _words(text) -> list[str]:
