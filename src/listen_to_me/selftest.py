@@ -11461,6 +11461,14 @@ def _gui_construction():
 
         window.backend_combo.setCurrentIndex(0)  # back to faster-whisper
         assert model_from_label(window.model_combo.currentText()) == GERMAN_TURBO_CT2
+        # A pick by hand — even re-picking the swapped-in model — cancels the
+        # restore, so the hint must stop promising it.
+        window.backend_combo.setCurrentIndex(1)  # OpenVINO again: swapped
+        assert "comes back" in window._speech_hint.text(), window._speech_hint.text()
+        window._on_model_activated(window.model_combo.currentIndex())
+        assert "comes back" not in window._speech_hint.text(), window._speech_hint.text()
+        window.backend_combo.setCurrentIndex(0)
+        assert window._selected_model() == "large-v3-turbo"
         window._fill_model_combo("faster-whisper", saved_model)
         window._model_index = window.model_combo.currentIndex()
         assert window._collect() == window._saved_snapshot
