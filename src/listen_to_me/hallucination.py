@@ -62,8 +62,13 @@ _LOOP_SHARE = 0.5
 _MAX_LOOP_NGRAM = 4
 
 # A transcript of at least this many words that is a verbatim run of the
-# prompt is the prompt echoed back; fewer prove nothing ("Ja, gut").
+# prompt can be the prompt echoed back; fewer prove nothing ("Ja, gut").
 _MIN_ECHO_WORDS = 3
+# …and is one only when it is most of the prompt, or long. A term list exists
+# because those terms get dictated: "Kubernetes, Docker, Helm." is three of
+# its entries said in its order, not an echo of a four- or 600-term list.
+_ECHO_PROMPT_SHARE = 0.8
+_LONG_ECHO_WORDS = 8
 
 # Prompt tokens Whisper reads (448 // 2 - 1), and the characters one token is
 # assumed to cover without a tokenizer — low for a German/English term list,
@@ -237,9 +242,11 @@ def implausible_reason(text, seconds, prompt="") -> str | None:
         if repeats >= _MIN_LOOP_REPEATS and repeats * n >= _LOOP_SHARE * len(words):
             return f"the same words repeat {repeats} times"
     prompt_words = _words(prompt)
+    count = len(words)
+    sized = count >= _LONG_ECHO_WORDS or count >= _ECHO_PROMPT_SHARE * len(prompt_words)
     # Space-joined with a space at each end: no word holds a space, so this
     # matches exactly a run of whole words.
-    if _MIN_ECHO_WORDS <= len(words) <= len(prompt_words):
+    if sized and _MIN_ECHO_WORDS <= count <= len(prompt_words):
         if f" {' '.join(words)} " in f" {' '.join(prompt_words)} ":
             return "it repeats the initial prompt"
     try:

@@ -35,6 +35,7 @@ from .choices import (
 )
 from .config import Config, clamp_setting, config_dir, log_path
 from .fillers import EMPTY_TRANSCRIPT, is_filler
+from .hallucination import implausible_reason
 from .history import TranscriptHistory
 from .hotkeys import Hotkeys
 from .injector import Injector, ModifierHeldError, sanitize_typed_text
@@ -1406,6 +1407,34 @@ class App:
                         # inserted, and nothing goes into the history either.
                         self._notify_no_speech(captured, source, verdict)
                         return
+            if not typed_already:
+                # A decoder loop, a prompt echo or more text than the audio can
+                # hold is not what was said (#293) — kept in the history, never
+                # pasted. Skipped after live typing like the filter above, and
+                # only the Whisper backends read the prompt they could echo.
+                seconds = len(audio) / SAMPLE_RATE
+                whisper = self.cfg["backend"] in ("faster-whisper", "openvino")
+                prompt = self.cfg["initial_prompt"] if whisper else ""
+                reason = implausible_reason(full_text, seconds, prompt)
+                if reason:
+                    log.warning(
+                        "transcript not inserted — %s (%d chars from %.1fs)",
+                        reason, len(full_text), seconds,
+                    )
+                    kept = False
+                    if self.cfg["history_enabled"]:
+                        try:
+                            self.history.add(full_text)
+                            kept = True
+                        except Exception:
+                            log.exception("could not add transcript to history")
+                    where = "It is in Settings → History." if kept else "It was discarded."
+                    self.notify(
+                        "Transcript not inserted — it looks like a recognition error "
+                        f"({reason}). {where}",
+                        force=True,
+                    )
+                    return
             acfg = assistant.profile(self.cfg["assistant"], source)
             if acfg["enabled"]:
                 if live is not None:

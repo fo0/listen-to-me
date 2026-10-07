@@ -1459,6 +1459,181 @@ def _filler_take_inserts_nothing():
         diagnostics_module.clip_stats = real_stats
 
 
+def _implausible_take_inserts_nothing():
+    """A transcript that cannot have come from its take reaches neither the
+    cursor nor the assistant, but stays in the history (#293).
+
+    OpenVINO turned four takes of 0.5 to 2.7 s into 1547 characters of
+    "contract-manager, " each — its own prompt in a loop — and pasted them all.
+    `App._process` is borrowed onto a stub the way
+    `_filler_take_inserts_nothing` does it, so the wiring is under test, not
+    only `implausible_reason`: one forced notification that names the
+    recognition error, the state machine handed back, and the text kept in the
+    history, since a false positive must still leave the user their words —
+    or, with the history off, a message that says they are gone.
+
+    What must pass is pinned with it: a normal 70-s German dictation; a prompt
+    echo on Parakeet, which reads no prompt and so cannot echo one; and a take
+    that already live-typed, which cannot be taken back — refusing the rest
+    would leave half of it on screen and the app claiming nothing happened."""
+    from listen_to_me import assistant as assistant_module
+    from listen_to_me.app import App
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.choices import SOURCE_MIC
+    from listen_to_me.config import Config
+
+    class _Transcriber:
+        def __init__(self, text):
+            self.text = text
+
+        def ensure_loaded(self, notify=None, progress=None):
+            pass
+
+        def transcribe(self, audio, notify=None, progress=None):
+            return self.text
+
+    class _Injector:
+        def __init__(self):
+            self.typed: list[str] = []
+
+        def clipboard_mode(self):
+            return "on_failure"
+
+        def type_plain_blocking(self, text):
+            self.typed.append(text)
+            return ""
+
+    class _History:
+        def __init__(self, broken=False):
+            self.broken = broken
+            self.stored: list[str] = []
+
+        def add(self, text):
+            if self.broken:
+                raise OSError("disk full")
+            self.stored.append(text)
+
+    class _Live:
+        """A LiveTyper that already typed `committed`, as _process reads it."""
+
+        def __init__(self, committed, frames):
+            self.committed_text = committed
+            self.committed_frames = frames
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def hand_over(self):
+            return ("", True)
+
+    class _App:
+        _process = App._process
+
+        def __init__(self, cfg, text, broken_history=False):
+            self.cfg = cfg
+            self.transcriber = _Transcriber(text)
+            self.injector = _Injector()
+            self.history = _History(broken_history)
+            self.inserted: list[str] = []
+            self.no_speech: list = []
+            self.posts: list[tuple] = []
+            self.messages: list[tuple[str, bool]] = []
+
+        def notify(self, message, force=False):
+            self.messages.append((message, force))
+
+        def post(self, kind, payload=None):
+            self.posts.append((kind, payload))
+
+        def progress(self, *args, **kwargs):
+            pass
+
+        def _insert_transcript(self, text):
+            self.inserted.append(text)
+
+        def _notify_no_speech(self, audio, source=SOURCE_MIC, verdict=None):
+            self.no_speech.append(source)
+
+        def flashed(self):
+            return [payload for kind, payload in self.posts if kind == "flash_text"]
+
+    def _take(cfg, text, seconds, live=None, broken_history=False):
+        app = _App(cfg, text, broken_history)
+        app._process([0.0] * int(seconds * SAMPLE_RATE), live, SOURCE_MIC)
+        return app
+
+    prompt = "mergen, ci-radar, contract-manager,"
+    loop = ("contract-manager, " * 90)[:1547]
+    refined: list[str] = []
+
+    def _refine(text, acfg):
+        refined.append(text)
+        return text
+
+    real_refine = assistant_module.refine
+    assistant_module.refine = _refine
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(path=Path(tmp) / "config.json")
+            cfg["backend"] = "openvino"
+            cfg["initial_prompt"] = prompt
+            # On, so "never called" is a fact about the guard.
+            cfg["assistant"]["enabled"] = True
+
+            # --- the field case: 1547 characters from 0.5 s -----------------
+            looped = _take(cfg, loop, 0.5)
+            assert looped.inserted == [] and looped.flashed() == [], looped.inserted
+            assert refined == [], "an implausible transcript reached the assistant"
+            assert looped.history.stored == [loop], looped.history.stored
+            assert len(looped.messages) == 1, looped.messages
+            message, forced = looped.messages[0]
+            assert forced and "recognition error" in message, looped.messages
+            assert "Settings → History" in message, message
+            assert looped.posts == [("done", None)], looped.posts
+            assert looped.no_speech == [] and looped.injector.typed == []
+
+            # --- a normal dictation passes ---------------------------------
+            spoken = _take(cfg, _PLAIN_GERMAN_DICTATION, 70.0)
+            assert spoken.inserted == [_PLAIN_GERMAN_DICTATION], spoken.inserted
+            assert refined == [_PLAIN_GERMAN_DICTATION] and spoken.messages == []
+            assert spoken.history.stored == spoken.inserted
+            refined.clear()
+
+            # --- a prompt echo: only a backend that reads the prompt --------
+            for backend in ("faster-whisper", "openvino"):
+                cfg["backend"] = backend
+                echoed = _take(cfg, prompt, 1.4)
+                assert echoed.inserted == [], (backend, echoed.inserted)
+                assert "it repeats the initial prompt" in echoed.messages[0][0], echoed.messages
+            cfg["backend"] = "parakeet"
+            dictated = _take(cfg, prompt, 1.4)
+            assert dictated.inserted == [prompt] and dictated.messages == [], dictated.messages
+            refined.clear()
+            cfg["backend"] = "openvino"
+
+            # --- a take that already live-typed is not guarded --------------
+            typed = _take(cfg, loop, 1.0, live=_Live("Ich fange an", SAMPLE_RATE // 2))
+            assert typed.history.stored == [f"Ich fange an {loop}"], typed.history.stored
+            assert typed.injector.typed == [f" {loop}"], typed.injector.typed[:1]
+            assert typed.messages == [] and typed.flashed() == [f"Ich fange an {loop}"]
+
+            # --- nowhere to keep it: the message must not point at History --
+            for history_on, broken in ((False, False), (True, True)):
+                cfg["history_enabled"] = history_on
+                lost = _take(cfg, loop, 0.5, broken_history=broken)
+                assert lost.history.stored == [] and lost.inserted == [], lost.inserted
+                assert len(lost.messages) == 1, lost.messages
+                assert "discarded" in lost.messages[0][0], lost.messages
+                assert "History" not in lost.messages[0][0], lost.messages
+                assert lost.posts == [("done", None)], lost.posts
+            assert refined == []
+    finally:
+        assistant_module.refine = real_refine
+
+
 def _assistant_failure_is_actionable():
     """A failing assistant interrupts a real dictation, so its notification has
     to say what to do — not print the `requests` transport chain. The app's own
@@ -4712,9 +4887,11 @@ def _hallucination_implausible_reason():
     the echo that is also too long is named for its cause.
 
     Just as pinned is what passes: a normal 70-s German dictation of ~1500
-    characters with "äh, äh, äh, äh" in it, and a short real sentence from a
-    one-second take — every false positive here throws a real dictation
-    away."""
+    characters with "äh, äh, äh, äh" in it, a short real sentence from a
+    one-second take, and a few prompt terms dictated in the prompt's order —
+    an echo has to be most of the prompt or a long run of it, since a term
+    list exists to be dictated. Every false positive here throws a real
+    dictation away."""
     from listen_to_me.hallucination import implausible_reason
 
     prompt = "mergen, ci-radar, contract-manager,"
@@ -4726,11 +4903,24 @@ def _hallucination_implausible_reason():
     assert implausible_reason("x y z " * 40, 10.0) == "the same words repeat 40 times"
 
     assert implausible_reason(prompt, 1.4, prompt) == "it repeats the initial prompt"
-    longer = "Kubernetes, mergen, ci-radar, contract-manager, Pull Request"
-    assert implausible_reason("Mergen. CI-Radar, Contract-Manager", 1.4, longer) == (
+    assert implausible_reason("Mergen. CI-Radar, Contract-Manager", 1.4, prompt) == (
+        "it repeats the initial prompt"
+    )
+    # An echo is most of the prompt (4 of 5 words is) or a long run of it.
+    longer = "mergen, ci-radar, contract-manager, Kubernetes, Helm"
+    assert implausible_reason("ci-radar, contract-manager, Kubernetes, Helm", 1.4, longer) == (
         "it repeats the initial prompt"
     )
     assert implausible_reason("ci-radar, mergen", 1.4, longer) is None  # too few words to tell
+    # A few of its terms in its order are what a term list exists for: 3 of 4
+    # words, or 3 of 600, is a dictation and must pass.
+    said = "Kubernetes, Docker, Helm."
+    assert implausible_reason(said, 1.4, "Kubernetes, Docker, Helm, ArgoCD") is None
+    catalogue = ", ".join(["Kubernetes", "Docker", "Helm"] + [f"term{i:03d}" for i in range(597)])
+    assert implausible_reason(said, 1.4, catalogue) is None
+    run = [f"term{i:03d}" for i in range(100, 108)]
+    assert implausible_reason(", ".join(run), 3.0, catalogue) == "it repeats the initial prompt"
+    assert implausible_reason(", ".join(run[:7]), 3.0, catalogue) is None
 
     dictation = _PLAIN_GERMAN_DICTATION
     assert 1400 <= len(dictation) <= 1600, len(dictation)
@@ -13515,6 +13705,7 @@ _LIGHT_CHECKS = [
     ("filler filter drops a silent take", _filler_filter_drops_a_silent_take),
     ("filler phrases report what was skipped", _filler_phrases_report_what_was_skipped),
     ("filler take inserts nothing", _filler_take_inserts_nothing),
+    ("implausible take inserts nothing", _implausible_take_inserts_nothing),
     ("the parsers bound the lines they walk", _the_parsers_bound_the_lines_they_walk),
     ("missing microphone falls back", _missing_microphone_falls_back),
     ("loopback device is ranked and resolved", _loopback_device_is_ranked_and_resolved),
