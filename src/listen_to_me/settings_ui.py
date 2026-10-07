@@ -5861,6 +5861,9 @@ class SettingsWindow(QDialog):
             # chosen here. Only on a pick that sticks — a cancelled custom
             # dialog below changes nothing and must not drop it either.
             self._model_swapped_from = None
+            # The hint may still word a swap ("your previous choice comes
+            # back") that the line above just cancelled.
+            self._speech_hint.setText(self._speech_hint_text(self._selected_backend(), None))
             return
         previous = model_from_label(self.model_combo.itemText(self._model_index))
         is_preset = any(previous == model for model, _ in MODEL_CHOICES)
@@ -5890,6 +5893,7 @@ class SettingsWindow(QDialog):
             self.model_combo.setCurrentIndex(self._model_index)
             return
         self._model_swapped_from = None
+        self._speech_hint.setText(self._speech_hint_text(self._selected_backend(), None))
         row = self.model_combo.findText(model_label(model))
         if row < 0:
             # Keep a single custom entry, directly above the sentinel.
