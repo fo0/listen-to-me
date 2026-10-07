@@ -16,12 +16,20 @@ public surface of :class:`listen_to_me.transcriber.Transcriber` (``ensure_loaded
 from __future__ import annotations
 
 import logging
+import math
 import os
 import threading
 from pathlib import Path
 
 from .audio import SAMPLE_RATE
 from .choices import OPENVINO_UNSUPPORTED_MODELS, openvino_alternative
+from .hallucination import (
+    PROMPT_TOKEN_BUDGET,
+    estimate_prompt_tokens,
+    prompt_tail,
+    strip_foreign_runs,
+    trim_silence,
+)
 from .transcriber import _PREVIEW_WINDOW_SECONDS
 
 log = logging.getLogger(__name__)
@@ -31,6 +39,61 @@ _INSTALL_HINT = (
     "Install it with: pip install openvino-genai — or set "
     "Backend = faster-whisper in Settings → Engine."
 )
+
+# The output budget per second of audio (#293): a prompt echo ran takes of
+# 0.5–2.7 s out to 1547 characters each. A cap below the speech is a
+# transcript cut short without a word, so it sits well above any real rate.
+# Measured with the Whisper tokenizer, German runs 0.25 tokens a character,
+# technical German 0.32: the 30 characters a second App._process still
+# accepts from a microphone are up to ~10 tokens a second, and system audio
+# played at 2× has no such limit at all. 16 cuts neither; the floor leaves a
+# short take room, and implausible_reason catches the loop the cap bounds.
+_TOKENS_PER_SECOND = 16.0
+_MIN_NEW_TOKENS = 32
+
+# Whisper's decoder has 448 positions per 30-s window, shared with what GenAI
+# puts in front of the output: <|startoftranscript|>, language, task and
+# <|notimestamps|>, plus <|startofprev|> and the prompt when there is one.
+_DECODER_POSITIONS = 448
+_SOT_TOKENS = 4
+
+# Takes shorter than this get no initial prompt (#293): all four echo takes
+# were 0.5–2.7 s — too little audio to outweigh a prompt, so the decoder read
+# the prompt back instead — while a vocabulary hint matters for real speech.
+_MIN_PROMPT_SECONDS = 3.0
+
+
+def _is_count(value) -> bool:
+    """Whether `value` is a real token count — not None, a bool, 0, or the
+    SIZE_MAX GenAI reports for "unset"."""
+    return isinstance(value, int) and not isinstance(value, bool) and 0 < value < 2**32
+
+
+def _token_room(config, prompt_tokens: int) -> int:
+    """The most tokens GenAI itself lets one window generate. An unset
+    max_new_tokens reads as SIZE_MAX, and GenAI then stops a window at
+    max_length minus its context. A cap set at or above that bound replaces
+    it, and a looping window then decodes past the decoder's 448 positions:
+    one window of a 120-s take generated 960 tokens (openvino-genai 2026.4,
+    CPU), and the NPU's KV cache is a fixed 448."""
+    length = getattr(config, "max_length", None)
+    room = (length if _is_count(length) else _DECODER_POSITIONS) - _SOT_TOKENS
+    if prompt_tokens:
+        room -= 1 + prompt_tokens  # <|startofprev|> and the prompt
+    current = getattr(config, "max_new_tokens", None)
+    return min(room, current) if _is_count(current) else room
+
+
+def _prompt_tokens(pipe, prompt: str) -> int:
+    """How many tokens GenAI puts in front for `prompt` (it encodes " " +
+    prompt). Falls back to the UTF-8 byte count: byte-level BPE never needs
+    more tokens than bytes, so the room is never overestimated."""
+    text = " " + prompt
+    try:
+        return int(pipe.get_tokenizer().encode(text, add_special_tokens=False).input_ids.get_size())
+    except Exception:
+        log.debug("could not count the prompt's tokens — using its byte length", exc_info=True)
+        return len(text.encode("utf-8"))
 
 
 def openvino_model_repo(model: str, precision: str) -> str:
@@ -154,6 +217,14 @@ class OpenVinoTranscriber:
         # still asks for that same (device, precision) setup, so changing
         # either in Settings retries the device.
         self._cpu_fallback_for: tuple | None = None
+        # ((prompt, key, id(pipe)), tail, its token count) of the last
+        # _prompt_tail() answer: tokenised and logged once per prompt and
+        # pipeline, never once per take.
+        self._prompt_memo: tuple | None = None
+        # The prompt the last final decode handed the model, "" for none: a
+        # take too short for one gets none (#293), and App._process must not
+        # look for an echo of a prompt the model never read.
+        self.last_prompt = ""
 
     # ------------------------------------------------------------- keying
 
@@ -377,40 +448,134 @@ class OpenVinoTranscriber:
 
     # ----------------------------------------------------------- decoding
 
-    def _decode(self, audio) -> str | None:
+    def _decode(self, audio, *, final: bool = False) -> str | None:
         """Run the pipeline on `audio` and return the text, or None when no
         pipeline is loaded (a concurrent CPU fallback nulled it mid-reload).
-        Caller holds _use_lock."""
+        Caller holds _use_lock.
+
+        The #293 guards: `final` (what reaches the cursor) first trims the
+        silence Whisper invents text in — previews, run every tick, skip that.
+        Every decode gets an output budget scaled to its audio, no prompt when
+        too short to outweigh one (else only the tail Whisper reads), and
+        foreign runs cut."""
         pipe = self._pipe
         if pipe is None:
             return None
+        if final:
+            before = len(audio)
+            audio = trim_silence(audio, SAMPLE_RATE)
+            if len(audio) != before:
+                log.debug("trimmed %.1f s of silence", (before - len(audio)) / SAMPLE_RATE)
+        seconds = len(audio) / SAMPLE_RATE  # after the trim: what is decoded
         config = pipe.get_generation_config()
         language = self.cfg["language"]
         if language not in ("", "auto"):
             config.language = f"<|{language}|>"
             config.task = "transcribe"
-        prompt = self.cfg["initial_prompt"]
+        # Only the tail Whisper reads, and only for the first 30-s window.
+        prompt, prompt_tokens = self._prompt_tail(pipe, self.cfg["initial_prompt"])
+        prompted = ""
         if prompt and hasattr(config, "initial_prompt"):
-            config.initial_prompt = prompt
+            if seconds >= _MIN_PROMPT_SECONDS:
+                config.initial_prompt = prompted = prompt
+            else:
+                log.debug("initial prompt skipped for a %.1f-s take", seconds)
+        if final:
+            self.last_prompt = prompted
+        if hasattr(config, "max_new_tokens"):
+            # GenAI applies the cap per 30-s chunk (a 4130-character OpenVINO
+            # dictation is in the field logs, far beyond 448 tokens). Only a
+            # cap below GenAI's own per-window bound is set — on a long take
+            # the bound stays as it is; only a short take gets a tight one.
+            cap = max(_MIN_NEW_TOKENS, math.ceil(seconds * _TOKENS_PER_SECOND))
+            if cap < _token_room(config, prompt_tokens if prompted else 0):
+                config.max_new_tokens = cap
+        # No repetition guard is set, on purpose (#293). GenAI applies
+        # no_repeat_ngram_size only in its beam-search sampler, and this
+        # pipeline decodes greedily — the output is identical with and
+        # without it (openvino-genai 2026.4.1); in the beam path its n-gram
+        # history includes the prompt, so it would forbid dictating prompt
+        # terms in their listed order. repetition_penalty reweights every
+        # token of normal speech. The length cap above and the app-level
+        # implausible_reason check carry the loop protection.
         # The pipeline chunks audio longer than 30 s internally (sliding
         # window); it expects a plain float list at 16 kHz, which is exactly
         # what the Recorder captures.
         result = pipe.generate(audio.tolist(), config)
         texts = getattr(result, "texts", None)
-        return (texts[0] if texts else str(result)).strip()
+        text = (texts[0] if texts else str(result)).strip()
+        cleaned = strip_foreign_runs(text, language)
+        if cleaned != text:
+            # A preview repeats every tick: one INFO line per take, not per tick.
+            log.log(
+                logging.INFO if final else logging.DEBUG,
+                "foreign-script run stripped from the transcript: %.60r",
+                text,
+            )
+        return cleaned
+
+    def _prompt_tail(self, pipe, prompt) -> tuple[str, int]:
+        """(tail, tokens it puts in front of the output) of `prompt`: the last
+        223 tokens Whisper reads, starting on a whole term (#293).
+
+        Cut with the pipeline's own tokenizer: GenAI never truncates a prompt
+        — every token goes in front of the first window — and the character
+        estimate is far off for dense scripts (a Chinese list came out at 1334
+        tokens, a Japanese one at 641: generate() refused both, and a
+        `JIRA-4000, …` list at 417 left the first window 26 tokens of room).
+        The estimate is only the fallback for a pipeline whose tokenizer is
+        unavailable or fails. GenAI hands `initial_prompt` to the first 30-s
+        window of a take only, like faster-whisper without
+        condition_on_previous_text. Memoised per prompt and pipeline (caller
+        holds _use_lock), so the cut is tokenised and logged once per prompt.
+        """
+        prompt = str(prompt or "")
+        key = (prompt, self._key, id(pipe))
+        if self._prompt_memo is not None and self._prompt_memo[0] == key:
+            return self._prompt_memo[1], self._prompt_memo[2]
+        encode = decode = None
+        counts: list[int] = []
+        try:
+            tokenizer = pipe.get_tokenizer()
+        except Exception:
+            log.debug("the pipeline has no tokenizer — estimating the prompt tail", exc_info=True)
+        else:
+
+            def encode(text):
+                # The ids GenAI itself builds: it encodes " " + prompt.
+                tokens = tokenizer.encode(" " + text, add_special_tokens=False)
+                ids = [int(i) for i in tokens.input_ids.data[0]]
+                counts.append(len(ids))
+                return ids
+
+            def decode(ids):
+                return tokenizer.decode(ids)
+
+        tail = prompt_tail(prompt, encode=encode, decode=decode)
+        if tail != prompt.strip():
+            log.info(
+                "initial prompt is %s%d tokens — only the last %d reach the model",
+                "" if counts else "about ",
+                counts[0] if counts else estimate_prompt_tokens(prompt),
+                PROMPT_TOKEN_BUDGET,
+            )
+        # What the tail costs in front of the output, for _token_room.
+        used = _prompt_tokens(pipe, tail) if tail else 0
+        self._prompt_memo = (key, tail, used)
+        return tail, used
 
     def transcribe(self, audio, notify=None, progress=None) -> str:
         self.ensure_loaded(notify=notify, progress=progress)
         try:
             with self._use_lock:
-                text = self._decode(audio)
+                text = self._decode(audio, final=True)
             if text is None:
                 raise RuntimeError("Whisper model is not loaded")
         except Exception as exc:
             if not self._recover_on_cpu(exc, notify):
                 raise
             with self._use_lock:
-                text = self._decode(audio)
+                text = self._decode(audio, final=True)
             if text is None:
                 # `from exc`: keeps the GPU/NPU failure that triggered the CPU
                 # retry as the reported cause instead of a second, unrelated

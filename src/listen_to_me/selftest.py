@@ -1459,6 +1459,262 @@ def _filler_take_inserts_nothing():
         diagnostics_module.clip_stats = real_stats
 
 
+def _implausible_take_inserts_nothing():
+    """A transcript that cannot have come from its take reaches neither the
+    cursor nor the assistant, but stays in the history (#293).
+
+    OpenVINO turned four takes of 0.5 to 2.7 s into 1547 characters of
+    "contract-manager, " each — its own prompt in a loop — and pasted them all.
+    `App._process` is borrowed onto a stub the way
+    `_filler_take_inserts_nothing` does it, so the wiring is under test, not
+    only `implausible_reason`: one forced notification that names the
+    recognition error, the state machine handed back, and the text kept in the
+    history, since a false positive must still leave the user their words —
+    or, with the history off, a message that says they are gone.
+
+    What must pass is pinned with it: a normal 70-s German dictation; a prompt
+    echo on Parakeet, which reads no prompt and so cannot echo one; and a take
+    that already live-typed, which cannot be taken back — refusing the rest
+    would leave half of it on screen and the app claiming nothing happened.
+
+    Three refinements from the review of #293: the length rule holds for the
+    microphone only (a recording played at 2× legitimately runs past 30
+    characters a second — loop and echo still apply to it); an OpenVINO take
+    decoded without a prompt (under 3 s) is not checked for an echo of one —
+    driven through the real OpenVinoTranscriber on a fake pipeline, since that
+    decision is the backend's; and a refused transcript is stored the way the
+    normal path stores one, with the replacement rules applied."""
+    from types import SimpleNamespace
+
+    from listen_to_me import assistant as assistant_module
+    from listen_to_me import transcriber_openvino
+    from listen_to_me.app import App
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+    from listen_to_me.config import Config
+
+    class _Transcriber:
+        def __init__(self, text):
+            self.text = text
+
+        def ensure_loaded(self, notify=None, progress=None):
+            pass
+
+        def transcribe(self, audio, notify=None, progress=None):
+            return self.text
+
+    class _Injector:
+        def __init__(self):
+            self.typed: list[str] = []
+
+        def clipboard_mode(self):
+            return "on_failure"
+
+        def type_plain_blocking(self, text):
+            self.typed.append(text)
+            return ""
+
+    class _History:
+        def __init__(self, broken=False):
+            self.broken = broken
+            self.stored: list[str] = []
+
+        def add(self, text):
+            if self.broken:
+                raise OSError("disk full")
+            self.stored.append(text)
+
+    class _Live:
+        """A LiveTyper that already typed `committed`, as _process reads it."""
+
+        def __init__(self, committed, frames):
+            self.committed_text = committed
+            self.committed_frames = frames
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def hand_over(self):
+            return ("", True)
+
+    class _App:
+        _process = App._process
+
+        def __init__(self, cfg, text, broken_history=False, transcriber=None):
+            self.cfg = cfg
+            self.transcriber = transcriber or _Transcriber(text)
+            self.injector = _Injector()
+            self.history = _History(broken_history)
+            self.inserted: list[str] = []
+            self.no_speech: list = []
+            self.posts: list[tuple] = []
+            self.messages: list[tuple[str, bool]] = []
+
+        def notify(self, message, force=False):
+            self.messages.append((message, force))
+
+        def post(self, kind, payload=None):
+            self.posts.append((kind, payload))
+
+        def progress(self, *args, **kwargs):
+            pass
+
+        def _insert_transcript(self, text):
+            self.inserted.append(text)
+
+        def _notify_no_speech(self, audio, source=SOURCE_MIC, verdict=None):
+            self.no_speech.append(source)
+
+        def flashed(self):
+            return [payload for kind, payload in self.posts if kind == "flash_text"]
+
+    def _take(cfg, text, seconds, live=None, broken_history=False, source=SOURCE_MIC, **kw):
+        app = _App(cfg, text, broken_history, **kw)
+        app._process([0.0] * int(seconds * SAMPLE_RATE), live, source)
+        return app
+
+    class _Samples(list):
+        """The Recorder's array as OpenVinoTranscriber._decode uses it."""
+
+        def __getitem__(self, index):
+            part = super().__getitem__(index)
+            return _Samples(part) if isinstance(index, slice) else part
+
+        def tolist(self):
+            return list(self)
+
+    class _Pipe:
+        """A loaded WhisperPipeline that says `text` whatever it hears."""
+
+        def __init__(self, text):
+            self.text, self.prompts = text, []
+
+        def get_generation_config(self):
+            return SimpleNamespace(max_new_tokens=2**64 - 1, max_length=448, initial_prompt=None)
+
+        def get_tokenizer(self):
+            raise RuntimeError("no tokenizer")  # the estimate will do here
+
+        def generate(self, audio, config):
+            self.prompts.append(config.initial_prompt)
+            return SimpleNamespace(texts=[self.text])
+
+    def _openvino_take(cfg, text, seconds):
+        transcriber = transcriber_openvino.OpenVinoTranscriber(cfg)
+        pipe = _Pipe(text)
+        transcriber._pipe, transcriber._key = pipe, transcriber._current_key()
+        transcriber._device = "CPU"
+        app = _App(cfg, text, transcriber=transcriber)
+        app._process(_Samples([0.0] * int(seconds * SAMPLE_RATE)), None, SOURCE_MIC)
+        return app, pipe.prompts
+
+    prompt = "mergen, ci-radar, contract-manager,"
+    loop = ("contract-manager, " * 90)[:1547]
+    refined: list[str] = []
+
+    def _refine(text, acfg):
+        refined.append(text)
+        return text
+
+    real_refine = assistant_module.refine
+    assistant_module.refine = _refine
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(path=Path(tmp) / "config.json")
+            cfg["backend"] = "openvino"
+            cfg["initial_prompt"] = prompt
+            # On, so "never called" is a fact about the guard.
+            cfg["assistant"]["enabled"] = True
+
+            # --- the field case: 1547 characters from 0.5 s -----------------
+            looped = _take(cfg, loop, 0.5)
+            assert looped.inserted == [] and looped.flashed() == [], looped.inserted
+            assert refined == [], "an implausible transcript reached the assistant"
+            assert looped.history.stored == [loop], looped.history.stored
+            assert len(looped.messages) == 1, looped.messages
+            message, forced = looped.messages[0]
+            assert forced and "recognition error" in message, looped.messages
+            assert "Settings → History" in message, message
+            assert looped.posts == [("done", None)], looped.posts
+            assert looped.no_speech == [] and looped.injector.typed == []
+
+            # --- a normal dictation passes ---------------------------------
+            spoken = _take(cfg, _PLAIN_GERMAN_DICTATION, 70.0)
+            assert spoken.inserted == [_PLAIN_GERMAN_DICTATION], spoken.inserted
+            assert refined == [_PLAIN_GERMAN_DICTATION] and spoken.messages == []
+            assert spoken.history.stored == spoken.inserted
+            refined.clear()
+
+            # --- a prompt echo: only a backend that reads the prompt --------
+            for backend in ("faster-whisper", "openvino"):
+                cfg["backend"] = backend
+                echoed = _take(cfg, prompt, 1.4)
+                assert echoed.inserted == [], (backend, echoed.inserted)
+                assert "it repeats the initial prompt" in echoed.messages[0][0], echoed.messages
+            cfg["backend"] = "parakeet"
+            dictated = _take(cfg, prompt, 1.4)
+            assert dictated.inserted == [prompt] and dictated.messages == [], dictated.messages
+            refined.clear()
+            cfg["backend"] = "openvino"
+
+            # --- no echo of a prompt OpenVINO never gave -------------------
+            # Under 3 s of audio the backend decodes without a prompt, so
+            # three of its terms said in its order are just those words.
+            terms = "Kubernetes, Docker, Helm."
+            cfg["initial_prompt"] = terms
+            short, prompts = _openvino_take(cfg, terms, 2.0)
+            assert prompts == [None] and short.transcriber.last_prompt == "", prompts
+            assert short.inserted == [terms] and short.messages == [], short.messages
+            longer, prompts = _openvino_take(cfg, terms, 5.0)
+            assert prompts == [terms] and longer.transcriber.last_prompt == terms, prompts
+            assert longer.inserted == [], longer.inserted
+            assert "it repeats the initial prompt" in longer.messages[0][0], longer.messages
+            cfg["initial_prompt"] = prompt
+            refined.clear()
+
+            # --- the length rule is the microphone's ------------------------
+            fast = _PLAIN_GERMAN_DICTATION  # ~1500 characters from 40 s: 38 a second
+            played = _take(cfg, fast, 40.0, source=SOURCE_SYSTEM)
+            assert played.inserted == [fast] and played.messages == [], played.messages
+            spoken_fast = _take(cfg, fast, 40.0)
+            assert spoken_fast.inserted == [], spoken_fast.inserted
+            assert f"{len(fast)} characters from 40.0 s" in spoken_fast.messages[0][0]
+            looped_played = _take(cfg, loop, 0.5, source=SOURCE_SYSTEM)  # a loop still is one
+            assert looped_played.inserted == [], looped_played.inserted
+            assert "the same words repeat" in looped_played.messages[0][0]
+            refined.clear()
+
+            # --- a refused transcript is stored with the user's rules -------
+            cfg["replacements"] = "contract-manager => Contract Manager"
+            replaced = _take(cfg, loop, 0.5)
+            stored = replaced.history.stored
+            assert stored and stored[0].startswith("Contract Manager, Contract Manager"), stored
+            assert "contract-manager" not in stored[0], stored[0][:60]
+            cfg["replacements"] = ""
+
+            # --- a take that already live-typed is not guarded --------------
+            typed = _take(cfg, loop, 1.0, live=_Live("Ich fange an", SAMPLE_RATE // 2))
+            assert typed.history.stored == [f"Ich fange an {loop}"], typed.history.stored
+            assert typed.injector.typed == [f" {loop}"], typed.injector.typed[:1]
+            assert typed.messages == [] and typed.flashed() == [f"Ich fange an {loop}"]
+
+            # --- nowhere to keep it: the message must not point at History --
+            for history_on, broken in ((False, False), (True, True)):
+                cfg["history_enabled"] = history_on
+                lost = _take(cfg, loop, 0.5, broken_history=broken)
+                assert lost.history.stored == [] and lost.inserted == [], lost.inserted
+                assert len(lost.messages) == 1, lost.messages
+                assert "discarded" in lost.messages[0][0], lost.messages
+                assert "History" not in lost.messages[0][0], lost.messages
+                assert lost.posts == [("done", None)], lost.posts
+            assert refined == []
+    finally:
+        assistant_module.refine = real_refine
+
+
 def _assistant_failure_is_actionable():
     """A failing assistant interrupts a real dictation, so its notification has
     to say what to do — not print the `requests` transport chain. The app's own
@@ -4479,6 +4735,563 @@ def _compute_type_resolution():
             sys.modules["ctranslate2"] = previous
 
 
+def _hallucination_script_filter():
+    """Foreign-script garbage inside a Latin-script dictation is removed and
+    the dictation kept (#293): faster-whisper's high-temperature fallback ended
+    a German take in `結, hof, 那个, Share, 这 果, …, �`, and all of it was
+    pasted. The run goes together with the separators around it — the full
+    stop in front included — so no `, ,` is left behind.
+
+    The other half pins what must never be touched: German with umlauts, ß,
+    €, typographic quotes and a dash comes back as the very same object, and
+    so does a text in a non-Latin language, or a mostly non-Latin one under
+    "auto" — that is the speaker's own language, not a hallucination."""
+    import unicodedata
+
+    from listen_to_me.hallucination import foreign_share, script_language, strip_foreign_runs
+
+    assert script_language("de") is True and script_language("EN") is True
+    assert script_language("zh") is False and script_language("ru") is False
+    assert script_language("auto") is None and script_language("") is None
+    assert script_language(None) is None
+
+    german = "Ich habe den Pull Request gemergt und das Deployment läuft."
+    garbage = "結, hof, 那个, Share, 这 果, 这 ,, 压 ,, 这 ,, ,, " + chr(0xFFFD)
+    garbage += " , 这 , ,, ที่นี่ 한국어"  # Thai with its combining vowel signs
+    cleaned = strip_foreign_runs(f"{german} {garbage}", "de")
+    for ch in cleaned:
+        assert not unicodedata.name(ch, "").startswith(("CJK", "THAI", "HANGUL")), cleaned
+    assert chr(0xFFFD) not in cleaned and foreign_share(cleaned) == 0.0, cleaned
+    assert cleaned == german[:-1] + " hof Share", cleaned  # Latin words are not judged
+    assert strip_foreign_runs("Das ist 好 gut.", "de") == "Das ist gut."
+
+    clean = "Die Prüfung läuft, Maß 5 €, „Zitat“ und ‚noch eins‘ – Pull Request deployen."
+    assert strip_foreign_runs(clean, "de") is clean
+    assert foreign_share(clean) == 0.0
+    # Letters Latin text uses although Unicode does not name them LATIN.
+    assert foreign_share("5 µm, 1ª, 2º, Oʻzbekiston") == 0.0
+    # A Greek letter standing alone is the symbol and a letterlike one a unit
+    # sign: stripping either would turn "5 μm" into "5 m". A Greek word is not.
+    technical = "Die Schicht ist 5 μm dick, 10 kΩ, 10 k\u2126, 2π r, ΔT = 3 \u212a, x ∈ ℝ."
+    assert strip_foreign_runs(technical, "de") is technical
+    assert foreign_share(technical) == 0.0
+    greek = "Das heißt Ελλάδα auf Griechisch."
+    assert strip_foreign_runs(greek, "de") == "Das heißt auf Griechisch."
+
+    chinese = "这是一个测试，好的 ok"
+    assert strip_foreign_runs(chinese, "zh") is chinese
+    assert strip_foreign_runs(chinese, "auto") is chinese
+    assert strip_foreign_runs(chinese, None) is chinese
+    assert strip_foreign_runs("Das ist gut 这 果", "auto") == "Das ist gut"  # mostly Latin
+
+    assert foreign_share("") == 0.0 and foreign_share("123 !? €") == 0.0
+    assert foreign_share("这这") == 1.0 and foreign_share("ab这这") == 0.5
+    assert foreign_share(chr(0xFFFD) + " , ,") == 1.0  # a broken token is no letter of ours
+    assert 0.2 < foreign_share(garbage) < 1.0
+
+
+def _hallucination_segment_drop_reason():
+    """Which decoded segments are dropped whole (#293): one largely in a script
+    the configured Latin-script language never uses, and one from a window
+    sampled at a raised temperature that still compresses beyond
+    faster-whisper's own threshold of 2.4 — a repetition loop that survived
+    every rung of the fallback ladder — when the segment's own text
+    compresses beyond it too. Temperature and ratio are the whole 30-s
+    window's, shared by every segment in it, so 239 characters of normal
+    German decoded beside 30× "und dann" (a window of 2.61) must survive the
+    loop next to them.
+
+    A low avg_logprob is deliberately no reason, at any temperature: for a
+    window that failed every rung faster-whisper reports the last rung's
+    temperature whatever attempt it kept, so the earlier "sampled and below
+    -1.0" rule dropped real, hard-to-hear speech without a trace. Kept as well:
+    every segment of a non-Latin or unknown language, and a real sentence with
+    one stray ideograph, which is stripped later rather than costing the
+    sentence."""
+    from listen_to_me.hallucination import _compression_ratio, segment_drop_reason
+
+    garbage = "这 果, 这 ,, 压 ,, hof"
+    assert segment_drop_reason(garbage, language="de") == "foreign script"
+    assert segment_drop_reason(garbage, language="zh") is None
+    assert segment_drop_reason(garbage, language=None) is None
+    sentence = "Das Deployment läuft seit heute Morgen."
+    assert segment_drop_reason(sentence, language="de") is None
+    assert segment_drop_reason("Das Deployment läuft 好 seit heute.", language="de") is None
+    loop = " ".join(["und dann"] * 30)
+    assert (
+        segment_drop_reason(loop, language="de", temperature=0.4, compression_ratio=3.1)
+        == "repetition loop after the fallback"
+    )
+    # One window, two segments: its figures are the loop's doing, and only
+    # the loop goes. The ratio is faster-whisper's get_compression_ratio.
+    german = (
+        "Wir haben heute kurz über den Release-Plan gesprochen, weil der Build am "
+        "Montag zweimal fehlgeschlagen ist. Thomas meint, die Pipeline braucht zu "
+        "lange und wir sollten die Tests parallel laufen lassen. Danach ging es um "
+        "das neue Dashboard."
+    )
+    assert len(german) == 239
+    assert _compression_ratio(german) < 2.4 < _compression_ratio(f"{german} {loop}")
+    window = {"language": "de", "temperature": 0.4, "compression_ratio": 2.61}
+    assert segment_drop_reason(german, **window) is None
+    assert segment_drop_reason(loop, **window) == "repetition loop after the fallback"
+    # At temperature 0 the first rung was accepted: nothing was given up on.
+    assert segment_drop_reason(loop, language="de", temperature=0.0, compression_ratio=3.1) is None
+    assert segment_drop_reason(loop, language="de", temperature=0.4, compression_ratio=2.4) is None
+    # Hard-to-hear speech is kept: what the 0.4 rung decoded with avg_logprob
+    # -1.4 has an ordinary ratio, and the score is no longer an argument at
+    # all, so no caller can drop a segment by it.
+    assert (
+        segment_drop_reason(sentence, language="de", temperature=0.4, compression_ratio=1.5)
+        is None
+    )
+    try:
+        segment_drop_reason(sentence, language="de", temperature=0.4, avg_logprob=-1.4)
+        raise AssertionError("avg_logprob must not be a drop criterion any more")
+    except TypeError:
+        pass
+    # faster-whisper's Segment.temperature is Optional: None must not raise,
+    # and neither must a malformed field.
+    for temperature, ratio in ((None, None), ("x", 9.0), (0.4, "x")):
+        assert segment_drop_reason(
+            sentence, language="de", temperature=temperature, compression_ratio=ratio
+        ) is None
+    assert segment_drop_reason("", language="de") is None
+    assert segment_drop_reason("  ", language="de", temperature=1.0, compression_ratio=9.0) is None
+
+
+def _whisper_decode_guards():
+    """The faster-whisper decode carries the #293 guards. Every decode passes a
+    temperature ladder capped at 0.4 (the default runs to 1.0, where Whisper
+    samples random multilingual tokens) and never conditions a window on the
+    one before; only the final transcription asks for word timestamps and the
+    silence-hallucination threshold, so previews and live typing stay cheap.
+    A foreign-script segment never reaches the returned text, nor does a loop
+    that survived the whole fallback ladder (a sampled window above the
+    compression ratio of 2.4, and the segment's own text above it too) — while
+    the normal speech decoded in that same window is kept, and so is a sampled
+    low-confidence segment of real speech: the compression ratio decides, not
+    the avg_logprob. A stray run inside a kept segment is stripped, and under
+    "auto" the language Whisper detected decides the script check — a take
+    detected as Chinese keeps its Chinese.
+
+    Runs on a stub model set straight into `_model`: no faster_whisper import,
+    no download, and the check asserts it did not import faster_whisper."""
+    from types import SimpleNamespace
+
+    from listen_to_me.config import Config
+    from listen_to_me.transcriber import (
+        _HALLUCINATION_SILENCE_S,
+        _TEMPERATURE_FALLBACK,
+        Transcriber,
+    )
+
+    def segment(end, text, temperature=0.0, avg_logprob=-0.2, compression_ratio=1.4):
+        return SimpleNamespace(
+            end=end,
+            text=text,
+            temperature=temperature,
+            avg_logprob=avg_logprob,
+            compression_ratio=compression_ratio,
+        )
+
+    class StubModel:
+        def __init__(self, segments, language):
+            self.segments, self.language, self.calls = segments, language, []
+
+        def transcribe(self, audio, **kwargs):
+            self.calls.append(kwargs)
+            return iter(list(self.segments)), SimpleNamespace(language=self.language)
+
+    sentence = " Ich habe den Pull Request gemergt."
+    garbage = " 結, hof, 那个, Share, 这 果, 这 ,, 压 ,, " + chr(0xFFFD) + " ,,"
+    looped = {"temperature": 0.4, "compression_ratio": 2.61}
+    model = StubModel(
+        [
+            segment(2.0, sentence),
+            segment(4.0, garbage, temperature=1.0, avg_logprob=-0.8),
+            segment(5.0, " Und dann noch etwas.", temperature=0.4, avg_logprob=-1.4),
+            # One window, its figures shared: the loop made them, only it goes.
+            segment(5.2, " Thomas meint, die Pipeline braucht zu lange.", **looped),
+            segment(5.5, " und dann" * 30, **looped),
+            segment(6.5, " Das läuft 这 gut."),
+        ],
+        "de",
+    )
+    kept = (
+        "Ich habe den Pull Request gemergt. Und dann noch etwas. "
+        "Thomas meint, die Pipeline braucht zu lange. Das läuft gut."
+    )
+    imported_before = "faster_whisper" in sys.modules
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        cfg["language"] = "de"
+        t = Transcriber(cfg)
+        t._model, t._key = model, t._current_key()  # "loaded" without a load
+        audio = [0.0] * 16000
+
+        assert t.transcribe(audio) == kept
+        final = model.calls[-1]
+        assert final["temperature"] == _TEMPERATURE_FALLBACK == (0.0, 0.2, 0.4)
+        assert final["condition_on_previous_text"] is False
+        assert final["word_timestamps"] is True
+        assert final["hallucination_silence_threshold"] == _HALLUCINATION_SILENCE_S == 2.0
+        assert final["language"] == "de"
+
+        assert t.preview(audio) == kept
+        assert t.preview_segments(audio) == [
+            (2.0, "Ich habe den Pull Request gemergt."),
+            (5.0, "Und dann noch etwas."),
+            (5.2, "Thomas meint, die Pipeline braucht zu lange."),
+            (6.5, "Das läuft gut."),
+        ]
+        assert len(model.calls) == 3
+        for preview in model.calls[1:]:
+            assert preview["temperature"] == _TEMPERATURE_FALLBACK
+            assert preview["condition_on_previous_text"] is False
+            assert "word_timestamps" not in preview, preview
+            assert "hallucination_silence_threshold" not in preview, preview
+
+        # Under "auto" the detected language decides: German drops the Chinese
+        # segment, Chinese keeps it — the speaker's language is never garbage.
+        cfg["language"] = "auto"
+        model.segments = [segment(2.0, sentence), segment(3.0, " 这是一个测试")]
+        assert t.transcribe(audio) == "Ich habe den Pull Request gemergt."
+        assert model.calls[-1]["language"] is None
+        model.language = "zh"
+        assert t.transcribe(audio) == "Ich habe den Pull Request gemergt. 这是一个测试"
+    assert ("faster_whisper" in sys.modules) == imported_before
+
+
+def _whisper_prompt_window():
+    """faster-whisper is handed only the prompt tail it reads (#293). It keeps
+    the last 223 prompt tokens and cuts wherever that falls, so a long term
+    list reached the decoder starting on half a term. The decode now passes
+    that tail itself, starting on a whole term and counted with the model's
+    own tokenizer the way faster-whisper encodes the prompt (" " + prompt) —
+    once per prompt and model, never once per take, with the cut logged once.
+    A short prompt goes through whole, an empty one as None, and a model
+    without a tokenizer, or one whose tokenizer fails, gets the character
+    estimate instead of a failed take.
+
+    Runs on a stub model with a fake BPE-like tokenizer set straight into
+    `_model`: no faster_whisper import, no download."""
+    import logging
+    import re
+    from types import SimpleNamespace
+
+    from listen_to_me import transcriber as fw
+    from listen_to_me.config import Config
+    from listen_to_me.hallucination import prompt_tail
+
+    class FakeTokenizer:
+        """The `tokenizers.Tokenizer` surface faster-whisper's model carries:
+        every "termNNN," becomes two tokens, " term" and "NNN,", so a cut can
+        fall through the middle of a term exactly as BPE's can."""
+
+        def __init__(self):
+            self.vocab, self.encoded = [], []
+
+        def encode(self, text, add_special_tokens=True):
+            assert add_special_tokens is False
+            self.encoded.append(text)
+            ids = []
+            for piece in re.findall(r"\s*\S{1,4}", text):
+                self.vocab.append(piece)
+                ids.append(len(self.vocab) - 1)
+            return SimpleNamespace(ids=ids)
+
+        def decode(self, ids):
+            return "".join(self.vocab[i] for i in ids)
+
+    class BrokenTokenizer(FakeTokenizer):
+        def encode(self, text, add_special_tokens=True):
+            raise RuntimeError("tokenizer exploded")
+
+    class StubModel:
+        def __init__(self):
+            self.hf_tokenizer, self.calls = FakeTokenizer(), []
+
+        def transcribe(self, audio, **kwargs):
+            self.calls.append(kwargs)
+            segment = SimpleNamespace(end=1.0, text=" Hallo.", temperature=0.0)
+            return iter([segment]), SimpleNamespace(language="de")
+
+    def term_list(word):
+        return ", ".join(f"{word}{i:03d}" for i in range(400)) + ","
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler, saved_level = _Capture(), fw.log.level
+    imported_before = "faster_whisper" in sys.modules
+    fw.log.addHandler(handler)
+    fw.log.setLevel(logging.INFO)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(path=Path(tmp) / "config.json")
+            cfg["language"] = "de"
+            prompt = term_list("term")
+            cfg["initial_prompt"] = prompt
+            t = fw.Transcriber(cfg)
+            model = StubModel()
+            tokenizer = model.hf_tokenizer
+            t._model, t._key = model, t._current_key()  # "loaded" without a load
+            audio = [0.0] * 16000
+
+            # 800 tokens; the last 223 start on "288," — the cut term goes.
+            expected = ", ".join(f"term{i:03d}" for i in range(289, 400)) + ","
+            assert t.transcribe(audio) == "Hallo."
+            sent = model.calls[-1]["initial_prompt"]
+            assert sent == expected, sent[:40]
+            assert expected != prompt_tail(prompt), "the tokenizer, not the estimate, must cut"
+            assert tokenizer.encoded == [" " + prompt], tokenizer.encoded[:1]
+            # Memoised: the next take and a preview tokenise nothing again.
+            t.transcribe(audio)
+            assert t.preview(audio) == "Hallo."
+            assert [call["initial_prompt"] for call in model.calls[1:]] == [expected, expected]
+            assert len(tokenizer.encoded) == 1, len(tokenizer.encoded)
+            cuts = [r for r in records if "initial prompt is" in r.getMessage()]
+            assert len(cuts) == 1 and cuts[0].levelno == logging.INFO, cuts
+            assert "800 tokens" in cuts[0].getMessage(), cuts[0].getMessage()
+
+            # A prompt that fits goes through whole; an empty one as None.
+            cfg["initial_prompt"] = "  mergen, ci-radar, contract-manager, "
+            t.transcribe(audio)
+            assert model.calls[-1]["initial_prompt"] == "mergen, ci-radar, contract-manager,"
+            cfg["initial_prompt"] = ""
+            t.transcribe(audio)
+            assert model.calls[-1]["initial_prompt"] is None
+            assert len([r for r in records if "initial prompt is" in r.getMessage()]) == 1
+
+            # No tokenizer, or a failing one: the character estimate.
+            model.hf_tokenizer = None
+            cfg["initial_prompt"] = other = term_list("word")
+            assert t.transcribe(audio) == "Hallo."
+            assert model.calls[-1]["initial_prompt"] == prompt_tail(other)
+            model.hf_tokenizer = BrokenTokenizer()
+            cfg["initial_prompt"] = third = term_list("item")
+            assert t.transcribe(audio) == "Hallo."
+            assert model.calls[-1]["initial_prompt"] == prompt_tail(third)
+    finally:
+        fw.log.removeHandler(handler)
+        fw.log.setLevel(saved_level)
+    assert ("faster_whisper" in sys.modules) == imported_before
+
+
+# A ~70-s German dictation of ~1500 characters (about 21 a second) with a few
+# hesitations in it: what the plausibility check must always let through.
+_PLAIN_GERMAN_DICTATION = (
+    "Also, ich fasse kurz zusammen, was heute im Team besprochen wurde. Äh, äh, äh, äh, wir "
+    "haben zuerst über den Release-Plan für die nächste Woche geredet, weil der Build am Montag "
+    "zweimal fehlgeschlagen ist. Thomas meint, dass die Pipeline zu lange braucht und wir die "
+    "Tests parallel laufen lassen sollten. Danach ging es um den Pull Request für das neue "
+    "Dashboard: Die Kollegen aus dem Vertrieb wünschen sich eine Übersicht über alle offenen "
+    "Verträge, sortiert nach Laufzeit und Kunde. Ich habe vorgeschlagen, dass wir zuerst einen "
+    "einfachen Prototyp bauen und ihn am Donnerstag zeigen. Außerdem müssen wir noch klären, wer "
+    "die Dokumentation übernimmt, denn bisher fühlt sich niemand richtig zuständig. Der Server im "
+    "Rechenzentrum hatte letzte Nacht wieder einen Ausfall von etwa zwanzig Minuten, die Ursache "
+    "ist noch unklar. Bitte schaut euch die Logs an, falls ihr Zeit habt, und schreibt mir eine "
+    "kurze Nachricht. Zum Schluss noch etwas Organisatorisches: Das Sommerfest findet am dritten "
+    "Juli statt, die Anmeldung läuft bis Ende des Monats über das Formular im Intranet. Wer ein "
+    "Gericht mitbringen möchte, trägt sich bitte in die Liste ein, damit wir nicht fünf "
+    "Nudelsalate haben. Ach ja, und die neue Kaffeemaschine in der zweiten Etage funktioniert "
+    "endlich wieder, nachdem der Techniker da war. Ich bin ab morgen für zwei Tage auf einer "
+    "Schulung in München und nur eingeschränkt erreichbar, dringende Fragen bitte an Sabine. Das "
+    "war es von meiner Seite, vielen Dank fürs Zuhören und bis nächste Woche."
+)
+
+
+def _hallucination_implausible_reason():
+    """The transcript-level plausibility check (#293): OpenVINO turned 0.5 s
+    of audio into 1547 characters of "contract-manager, " — its own prompt in
+    a loop — and pasted it. A loop, a verbatim echo of the prompt and more
+    characters than anyone speaks in the audio are each named, loop first so
+    the echo that is also too long is named for its cause.
+
+    Just as pinned is what passes: a normal 70-s German dictation of ~1500
+    characters with "äh, äh, äh, äh" in it, a short real sentence from a
+    one-second take, and a few prompt terms dictated in the prompt's order —
+    an echo has to be most of the prompt or a long run of it, since a term
+    list exists to be dictated. Every false positive here throws a real
+    dictation away."""
+    from listen_to_me.hallucination import implausible_reason
+
+    prompt = "mergen, ci-radar, contract-manager,"
+    loop = ("contract-manager, " * 90)[:1547]
+    assert len(loop) == 1547
+    for words in (prompt, ""):
+        reason = implausible_reason(loop, 0.5, words)
+        assert reason == "the same words repeat 86 times", reason
+    assert implausible_reason("x y z " * 40, 10.0) == "the same words repeat 40 times"
+
+    assert implausible_reason(prompt, 1.4, prompt) == "it repeats the initial prompt"
+    assert implausible_reason("Mergen. CI-Radar, Contract-Manager", 1.4, prompt) == (
+        "it repeats the initial prompt"
+    )
+    # An echo is most of the prompt (4 of 5 words is) or a long run of it.
+    longer = "mergen, ci-radar, contract-manager, Kubernetes, Helm"
+    assert implausible_reason("ci-radar, contract-manager, Kubernetes, Helm", 1.4, longer) == (
+        "it repeats the initial prompt"
+    )
+    assert implausible_reason("ci-radar, mergen", 1.4, longer) is None  # too few words to tell
+    # A few of its terms in its order are what a term list exists for: 3 of 4
+    # words, or 3 of 600, is a dictation and must pass.
+    said = "Kubernetes, Docker, Helm."
+    assert implausible_reason(said, 1.4, "Kubernetes, Docker, Helm, ArgoCD") is None
+    catalogue = ", ".join(["Kubernetes", "Docker", "Helm"] + [f"term{i:03d}" for i in range(597)])
+    assert implausible_reason(said, 1.4, catalogue) is None
+    run = [f"term{i:03d}" for i in range(100, 108)]
+    assert implausible_reason(", ".join(run), 3.0, catalogue) == "it repeats the initial prompt"
+    assert implausible_reason(", ".join(run[:7]), 3.0, catalogue) is None
+
+    dictation = _PLAIN_GERMAN_DICTATION
+    assert 1400 <= len(dictation) <= 1600, len(dictation)
+    assert implausible_reason(dictation, 70.0, prompt) is None
+    assert implausible_reason("Ja, mach ruhig.", 1.0, prompt) is None
+    assert implausible_reason(dictation[:60], 0.5) is None  # the floor for short takes
+    hurried = dictation[:400]
+    assert implausible_reason(hurried, 2.0) == f"{len(hurried)} characters from 2.0 s of audio"
+    assert implausible_reason(hurried, None) is None  # no usable length: not measured
+    assert implausible_reason(hurried, float("nan")) is None
+    assert implausible_reason("", 0.5, prompt) is None
+
+
+def _hallucination_prompt_tail():
+    """The initial prompt is cut to what Whisper actually reads (#293): only
+    its last 223 tokens ever reach the model, so a long term list is handed
+    over as its tail — starting on a whole term, never on the half of one the
+    cut went through. With the model's tokenizer the cut is exact; without it,
+    or when the tokenizer fails, a character estimate stands in, and nothing
+    here may raise: a prompt problem must never cost a transcription.
+
+    The estimate is 2.5 characters a token — a de/en technical term list
+    measured 2.6 with the real Whisper tokenizer (578 characters = 223
+    tokens) — and 2 tokens for every CJK, Kana or Hangul character, which at
+    3 characters a token came out at 1334 tokens for a "223-token" Chinese
+    list."""
+    import re
+
+    from listen_to_me.hallucination import (
+        PROMPT_TOKEN_BUDGET,
+        estimate_prompt_tokens,
+        prompt_exceeds_window,
+        prompt_tail,
+    )
+
+    assert prompt_tail("  mergen, ci-radar \n") == "mergen, ci-radar"
+    assert prompt_tail("") == "" and prompt_tail(None) == ""
+    terms = [f"term{i:03d}" for i in range(400)]
+    prompt = ", ".join(terms) + ","
+    assert prompt_exceeds_window(prompt) and not prompt_exceeds_window("mergen, ci-radar")
+    assert estimate_prompt_tokens("") == 0 and estimate_prompt_tokens(" abcd ") == 2
+    assert estimate_prompt_tokens("a" * 578) == 232  # the measured 223 errs high
+    assert not prompt_exceeds_window("a" * 557) and prompt_exceeds_window("a" * 558)
+    assert estimate_prompt_tokens("这是一个测试") == 12
+    assert estimate_prompt_tokens("한국어") == 6 and estimate_prompt_tokens("カタカナ") == 8
+    assert estimate_prompt_tokens("Kubernetes 集群") == 9  # 11 / 2.5 + 2 × 2
+    assert estimate_prompt_tokens("Größe, Zürich, café") == 8  # Latin letters are not dense
+
+    tail = prompt_tail(prompt)  # the character estimate
+    assert prompt.endswith(tail) and tail.endswith("term399,"), tail
+    assert tail.split(", ")[0] in terms, tail[:20]
+    assert estimate_prompt_tokens(tail) <= PROMPT_TOKEN_BUDGET, len(tail)
+    # A cut right on a boundary keeps that first term; one a character later
+    # drops the fragment it leaves (budget 3: 7 characters fit).
+    assert prompt_tail("x" * 20 + ", ab, efg", budget=3) == "ab, efg"
+    assert prompt_tail("x" * 20 + ", zab, efg", budget=3) == "efg"
+    # A dense list is cut by the same estimate, so its tail is about 150
+    # characters, not the 557 a Latin list gets.
+    cjk_terms = [chr(0x4E00 + 2 * k) + chr(0x4E01 + 2 * k) for k in range(300)]
+    cjk = "，".join(cjk_terms)
+    cjk_tail = prompt_tail(cjk)
+    assert cjk.endswith(cjk_tail) and cjk_tail.split("，")[0] in cjk_terms, cjk_tail[:10]
+    assert estimate_prompt_tokens(cjk_tail) <= PROMPT_TOKEN_BUDGET and len(cjk_tail) < 160
+
+    # A fake whitespace tokenizer that splits every term in two, the way BPE
+    # splits a word: the last 9 tokens start on the second half of term395.
+    vocab = []
+
+    def encode(text):
+        ids = []
+        for piece in re.findall(r"\s*\S{1,4}", text):
+            vocab.append(piece)
+            ids.append(len(vocab) - 1)
+        return ids
+
+    def decode(ids):
+        return "".join(vocab[i] for i in ids)
+
+    assert decode(encode(prompt)) == prompt
+    assert prompt_tail(prompt, budget=9, encode=encode, decode=decode) == (
+        "term396, term397, term398, term399,"
+    )
+    assert prompt_tail("mergen, ci-radar", budget=9, encode=encode, decode=decode) == (
+        "mergen, ci-radar"  # fits by the tokenizer's own count
+    )
+
+    def broken(_text):
+        raise RuntimeError("tokenizer exploded")
+
+    assert prompt_tail(prompt, encode=broken, decode=decode) == tail
+    assert prompt_tail(prompt, encode=encode, decode=lambda ids: None) == tail
+
+
+def _hallucination_speech_bounds():
+    """Where speech starts and ends in a take, from per-frame levels — what
+    trimming the silence Whisper fills with invented text rests on (#293).
+    Plain lists, so the light run covers it: a level counts from 5 % of the
+    take's 90th-percentile frame but never below the floor, so room noise
+    alone has no speech at all — and one key click far louder than quiet
+    speech no longer sets a bar the whole dictation stays under. trim_silence
+    hands back the very same audio whenever it has nothing to trim or cannot
+    run (no numpy on the CI runner)."""
+    from listen_to_me.hallucination import speech_bounds, trim_silence
+
+    assert speech_bounds([]) is None
+    assert speech_bounds([0.0, 0.001, 0.002]) is None  # below the floor: no speech
+    assert speech_bounds([0.0, 0.001, 0.2, 0.5, 0.1, 0.0, 0.001]) == (2, 4)
+    assert speech_bounds([0.0005, 0.004, 0.01, 0.0005]) == (1, 2)  # a quiet speaker
+    assert speech_bounds([0.1, 0.5, 0.2], relative=0.5) == (1, 1)
+    assert speech_bounds([0.5]) == (0, 0)
+    assert speech_bounds([0.0, float("nan"), 0.3]) == (2, 2)
+    # A 30-ms hotkey click at 0.6, then 3 s of quiet speech at 0.02: judged by
+    # the loudest frame the bar was 0.03 and only the click counted.
+    clicked = [0.001] * 6 + [0.6] + [0.001] * 10 + [0.02] * 100 + [0.001] * 17
+    assert speech_bounds(clicked) == (6, 116)
+    silent = [0.0] * 1600
+    assert trim_silence(silent, 16000) is silent
+
+
+def _hallucination_trim_silence():
+    """trim_silence cuts the silence around a take down to its pad and no
+    further (#293): Whisper invents text in silence, while a cut into the
+    speech itself would lose a soft onset or a trailing consonant. The light
+    run cannot see the cut (no numpy there), so this pins the slicing itself
+    in the full self-test: one second of speech in five comes back as that
+    second plus 0.3 s on each side, rounded out to whole 30-ms frames."""
+    import numpy as np
+
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.hallucination import trim_silence
+
+    audio = np.zeros(5 * SAMPLE_RATE, dtype="float32")
+    audio[2 * SAMPLE_RATE : 3 * SAMPLE_RATE] = 0.3
+    trimmed = trim_silence(audio, SAMPLE_RATE)
+    frame, pad = int(SAMPLE_RATE * 0.03), int(SAMPLE_RATE * 0.3)
+    start = 2 * SAMPLE_RATE // frame * frame - pad
+    assert np.array_equal(trimmed, audio[start : start + len(trimmed)]), start
+    lead = int(np.flatnonzero(trimmed)[0])
+    tail = len(trimmed) - 1 - int(np.flatnonzero(trimmed)[-1])
+    assert pad <= lead < pad + frame and pad <= tail < pad + frame, (lead, tail)
+    loud = np.full(SAMPLE_RATE, 0.3, dtype="float32")
+    assert trim_silence(loud, SAMPLE_RATE) is loud  # nothing to trim
+    assert trim_silence(np.zeros((4, 2), dtype="float32"), SAMPLE_RATE).shape == (4, 2)
+
+
 def _openvino_pipeline_properties():
     """The OpenVINO compile cache is requested for the GPU/NPU only, lives
     under the custom model folder when one is set (the config dir otherwise),
@@ -5205,6 +6018,258 @@ def _openvino_backend_logic():
         # Already on the CPU there is nothing to fall back to.
         t2 = create_transcriber(cfg)
         assert t2._maybe_force_cpu("CPU", RuntimeError("anything"), None) is False
+
+
+def _openvino_decode_guards():
+    """The OpenVINO decode carries the #293 guards. GenAI echoed the prompt
+    "mergen, ci-radar, contract-manager," into exactly 1547 characters on four
+    takes of 0.5–2.7 s, all pasted. So the output budget scales with the audio
+    (16 tokens a second, at least 32, set only below GenAI's own per-window
+    bound: max_length minus what goes in front of the output), a take under
+    3 s gets no initial prompt, and foreign-script runs are cut from the text.
+    The rate is far above any real speech on purpose: a cap below it cuts the
+    transcript short without a word, and the 30 characters a second the app
+    guard accepts from a microphone are ~10 tokens a second in technical
+    German, while system audio played at 2× has no such limit at all.
+    No repetition guard is set: GenAI's no_repeat_ngram_size only acts in beam
+    search (this pipeline is greedy) and repetition_penalty reweights normal
+    speech — both stay at GenAI's defaults.
+
+    The budget and the prompt rule are judged on the audio actually decoded —
+    after the final transcription trims its silence — and previews skip the
+    trim (they run every tick) but keep every other guard. A prompt longer
+    than the 223 tokens Whisper reads goes over as its tail, cut with the
+    pipeline's own tokenizer: GenAI never truncates a prompt, and a character
+    estimate sent a Chinese list of 1334 tokens (refused by generate()) and a
+    ticket-ID list of 417 (26 tokens left for the first window). The cut is
+    tokenised and logged once per prompt; only a pipeline whose tokenizer is
+    missing or fails gets the estimate. Runs on a fake pipeline and tokenizer
+    and a list stand-in for the audio, with trim_silence swapped for a spy:
+    no openvino, no numpy."""
+    import logging
+    import re
+    from types import SimpleNamespace
+
+    from listen_to_me import transcriber_openvino as ov
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.config import Config
+    from listen_to_me.hallucination import prompt_tail
+
+    class Samples(list):
+        """The Recorder's numpy array, as far as _decode uses it: slices stay
+        Samples and tolist() hands the pipeline a plain list."""
+
+        def __getitem__(self, index):
+            part = super().__getitem__(index)
+            return Samples(part) if isinstance(index, slice) else part
+
+        def tolist(self):
+            return list(self)
+
+    def take(seconds):
+        return Samples([0.0] * int(seconds * SAMPLE_RATE))
+
+    unset = 2**64 - 1  # what GenAI reports for a max_new_tokens nobody set
+    ideograph = f"[{chr(0x4E00)}-{chr(0x9FFF)}]"
+    pieces = re.compile(rf"\s*{ideograph}|\s*[A-Za-z]{{1,3}}|\s*\S")
+
+    class FakeTokenizer:
+        """Dense where the real one is: two tokens per ideograph, one per
+        digit or mark, one per up to three letters (leading whitespace rides
+        along) — with GenAI's encode(...).input_ids and decode(ids) -> str."""
+
+        def __init__(self):
+            self.vocab, self.encodes = [], 0
+
+        def encode(self, text, add_special_tokens=True):
+            assert add_special_tokens is False  # GenAI adds none to a prompt
+            self.encodes += 1
+            ids = []
+            for piece in pieces.findall(text):
+                for part in [piece, ""] if re.search(ideograph, piece) else [piece]:
+                    self.vocab.append(part)
+                    ids.append(len(self.vocab) - 1)
+            return SimpleNamespace(input_ids=SimpleNamespace(data=[ids], get_size=lambda: len(ids)))
+
+        def decode(self, ids):
+            return "".join(self.vocab[i] for i in ids)
+
+        def count(self, text):
+            return len(self.encode(" " + text, add_special_tokens=False).input_ids.data[0])
+
+    class BrokenTokenizer:
+        def encode(self, *_args, **_kwargs):
+            raise RuntimeError("tokenizer exploded")
+
+    class FakePipe:
+        """GenAI's own defaults: max_new_tokens unset (SIZE_MAX), max_length
+        448 from the model's generation_config.json, no repetition guard."""
+
+        def __init__(self, tokenizer):
+            self.text, self.default_max, self.calls = "Hallo Welt.", unset, []
+            self.tokenizer = tokenizer  # None: get_tokenizer() fails
+
+        def get_generation_config(self):
+            return SimpleNamespace(
+                max_new_tokens=self.default_max,
+                max_length=448,
+                initial_prompt=None,
+                language=None,
+                task=None,
+                no_repeat_ngram_size=0,
+                repetition_penalty=1.0,
+            )
+
+        def get_tokenizer(self):
+            if self.tokenizer is None:
+                raise RuntimeError("no tokenizer")
+            return self.tokenizer
+
+        def generate(self, audio, config):
+            assert type(audio) is list, type(audio)
+            self.calls.append((len(audio), config))
+            return SimpleNamespace(texts=[self.text])
+
+    trims = []
+
+    def spy_trim(audio, sample_rate):
+        trims.append(len(audio) / sample_rate)
+        return audio
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler, saved_level = _Capture(), ov.log.level
+    saved_trim = ov.trim_silence
+    imported_before = "openvino_genai" in sys.modules
+    ov.log.addHandler(handler)
+    ov.log.setLevel(logging.DEBUG)  # the once-per-prompt line is INFO
+    ov.trim_silence = spy_trim
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Config(path=Path(tmp) / "config.json")
+            cfg["language"] = "de"
+            prompt = "mergen, ci-radar, contract-manager,"
+            cfg["initial_prompt"] = prompt
+
+            def loaded(tokenizer):
+                t = ov.OpenVinoTranscriber(cfg)
+                pipe = FakePipe(tokenizer)
+                t._pipe, t._key, t._device = pipe, t._current_key(), "CPU"  # "loaded"
+                return t, pipe
+
+            tok = FakeTokenizer()
+            t, pipe = loaded(tok)
+            # GenAI's own per-window bound (max_length minus <|startoftranscript|>,
+            # language, task, <|notimestamps|>, <|startofprev|> and the prompt
+            # tokens) is never raised: set, a cap replaces it, and a looping
+            # window then decodes past the decoder's 448 positions.
+            room = 448 - 4 - 1 - tok.count(prompt)
+            for seconds, budget, prompted in (
+                (0.5, 32, None),
+                (10, 160, prompt),
+                # 20 s at the app guard's 30 characters a second in technical
+                # German (0.32 tokens each) is ~190 tokens, a video at 2× ~210.
+                (20, 320, prompt),
+                ((room - 1) / 16, room - 1, prompt),
+                (room / 16, unset, prompt),  # a cap of `room` would replace the bound
+            ):
+                assert t.transcribe(take(seconds)) == "Hallo Welt."
+                config = pipe.calls[-1][1]
+                assert config.max_new_tokens == budget, (seconds, config.max_new_tokens)
+                assert config.initial_prompt == prompted, (seconds, config.initial_prompt)
+                # Untouched on purpose — see the comment in _decode.
+                assert config.no_repeat_ngram_size == 0 and config.repetition_penalty == 1.0
+                assert config.language == "<|de|>"
+            assert trims == [0.5, 10.0, 20.0, (room - 1) / 16, room / 16], trims
+            cfg["initial_prompt"] = ""  # nothing in front: room 444
+            t.transcribe(take(27.5))
+            assert pipe.calls[-1][1].max_new_tokens == 440
+            t.transcribe(take(27.75))
+            assert pipe.calls[-1][1].max_new_tokens == unset
+            cfg["initial_prompt"] = prompt
+            pipe.default_max = 120  # a model that sets its own, lower default
+            t.transcribe(take(5))
+            assert pipe.calls[-1][1].max_new_tokens == 80
+            t.transcribe(take(20))
+            assert pipe.calls[-1][1].max_new_tokens == 120
+            pipe.default_max = unset
+
+            # Judged after the trim: 10 s of which 0.5 s is speech is a 0.5-s take.
+            ov.trim_silence = lambda audio, rate: audio[: rate // 2]
+            t.transcribe(take(10))
+            samples, config = pipe.calls[-1]
+            assert samples == SAMPLE_RATE // 2
+            assert config.max_new_tokens == 32 and config.initial_prompt is None
+            ov.trim_silence = spy_trim
+
+            trims.clear()
+            assert t.preview(take(10)) == "Hallo Welt."
+            config = pipe.calls[-1][1]
+            assert trims == [], "a preview must not trim"
+            assert config.max_new_tokens == 160 and config.initial_prompt == prompt
+
+            pipe.text = "Ich habe den Pull Request gemergt. 結, 那个, 这 果 ,, " + chr(0xFFFD)
+            assert t.transcribe(take(10)) == "Ich habe den Pull Request gemergt"
+            cfg["language"] = "zh"
+            pipe.text = "这是一个测试"
+            assert t.transcribe(take(10)) == "这是一个测试"  # the speaker's language
+            cfg["language"] = "de"
+            pipe.text = "Hallo Welt."
+
+            # Long prompts are cut with the pipeline's tokenizer: what goes in
+            # front is at most 223 tokens, even where the estimate is far off.
+            cjk_terms = [chr(0x4E00 + 2 * k) + chr(0x4E01 + 2 * k) for k in range(300)]
+            tickets = [f"JIRA-{4000 + k}" for k in range(300)]
+            for terms, sep in ((cjk_terms, "，"), (tickets, ", ")):
+                long_prompt = sep.join(terms)
+                cfg["initial_prompt"] = long_prompt
+                records.clear()
+                t.transcribe(take(10))
+                encodes = tok.encodes
+                t.transcribe(take(10))
+                t.preview(take(10))
+                assert tok.encodes == encodes, "the prompt is tokenised once, not per take"
+                sent = pipe.calls[-1][1].initial_prompt
+                assert long_prompt.endswith(sent) and sent.split(sep)[0] in terms, sent[:20]
+                assert tok.count(sent) <= 223, tok.count(sent)
+                assert tok.count(prompt_tail(long_prompt)) > 223  # the estimate overshoots
+                cuts = [r.getMessage() for r in records if "initial prompt is" in r.getMessage()]
+                assert len(cuts) == 1 and "about" not in cuts[0], cuts  # an exact count
+                # The room follows the tail actually sent.
+                room = 448 - 4 - 1 - tok.count(sent)
+                t.transcribe(take((room - 1) / 16))
+                assert pipe.calls[-1][1].max_new_tokens == room - 1
+                t.transcribe(take(room / 16))
+                assert pipe.calls[-1][1].max_new_tokens == unset
+
+            # No tokenizer, or one that fails: the estimate, never an error.
+            # The room then charges the tail its UTF-8 bytes, which byte-level
+            # BPE never exceeds: the 36-byte prompt leaves 407 tokens.
+            cfg["initial_prompt"] = prompt
+            for tokenizer in (None, BrokenTokenizer()):
+                fallback, fake = loaded(tokenizer)
+                fallback.transcribe(take(25))
+                assert fake.calls[-1][1].max_new_tokens == 400
+                fallback.transcribe(take(25.5))
+                assert fake.calls[-1][1].max_new_tokens == unset
+                cfg["initial_prompt"] = long_prompt
+                records.clear()
+                fallback.transcribe(take(10))
+                config = fake.calls[-1][1]
+                assert config.initial_prompt == prompt_tail(long_prompt)
+                assert config.max_new_tokens == unset  # ~560 bytes in front: no room
+                cuts = [r.getMessage() for r in records if "initial prompt is" in r.getMessage()]
+                assert len(cuts) == 1 and "about" in cuts[0], cuts
+                cfg["initial_prompt"] = prompt
+    finally:
+        ov.trim_silence = saved_trim
+        ov.log.removeHandler(handler)
+        ov.log.setLevel(saved_level)
+    assert ("openvino_genai" in sys.modules) == imported_before
 
 
 def _parakeet_backend_logic():
@@ -8907,6 +9972,54 @@ def _settings_engine_offers_the_parakeet_model_and_cpu_threads():
         clamped = SettingsWindow(stub)
         assert clamped.cpu_threads_spin.value() == 0
         clamped.force_close()
+
+
+def _settings_prompt_window_hint():
+    """Settings → Engine says when the initial prompt is longer than Whisper
+    reads (#293). Only its last ~223 tokens reach the model, and the ~4500-
+    character term list in the issue lost its first nine tenths without a
+    word anywhere. The line under the field appears while such a prompt is
+    typed — and when a stored one opens the window —, names its estimated
+    size, and is announced with the field; a short prompt hides it rather
+    than leaving a blank line; and it greys out with the field for Parakeet,
+    which takes no prompt."""
+    from listen_to_me.choices import BACKENDS
+    from listen_to_me.hallucination import estimate_prompt_tokens
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    long_prompt = ", ".join(f"term{i:04d}" for i in range(450))  # 4498 characters
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        window = SettingsWindow(stub)
+        edit, hint = window.initial_prompt_edit, window.initial_prompt_window_hint
+        assert hint.isHidden() and not hint.text(), hint.text()  # DEFAULTS: no prompt
+
+        edit.setPlainText(long_prompt)
+        text = hint.text()
+        assert not hint.isHidden(), "a prompt beyond the window must be named"
+        assert "223 tokens" in text, text
+        assert f"about {estimate_prompt_tokens(long_prompt)} tokens" in text, text
+        assert "about 560 characters" in text, text  # 223 tokens × 2.5, rounded
+        assert edit.accessibleDescription() == text
+
+        edit.setPlainText("Kubernetes, PostgreSQL, Jira")
+        assert hint.isHidden() and not edit.accessibleDescription()
+
+        edit.setPlainText(long_prompt)
+        window.backend_combo.setCurrentIndex([b for b, _ in BACKENDS].index("parakeet"))
+        assert not edit.isEnabled() and not hint.isEnabled()
+        window.backend_combo.setCurrentIndex(0)
+        assert edit.isEnabled() and hint.isEnabled()
+        window.force_close()
+
+        stub.cfg["initial_prompt"] = long_prompt
+        reopened = SettingsWindow(stub)
+        assert not reopened.initial_prompt_window_hint.isHidden()
+        reopened.force_close()
 
 
 def _settings_engine_auto_configures_for_this_pc():
@@ -13011,6 +14124,7 @@ _LIGHT_CHECKS = [
     ("filler filter drops a silent take", _filler_filter_drops_a_silent_take),
     ("filler phrases report what was skipped", _filler_phrases_report_what_was_skipped),
     ("filler take inserts nothing", _filler_take_inserts_nothing),
+    ("implausible take inserts nothing", _implausible_take_inserts_nothing),
     ("the parsers bound the lines they walk", _the_parsers_bound_the_lines_they_walk),
     ("missing microphone falls back", _missing_microphone_falls_back),
     ("loopback device is ranked and resolved", _loopback_device_is_ranked_and_resolved),
@@ -13070,8 +14184,16 @@ _LIGHT_CHECKS = [
     ("CUDA error detection", _cuda_error_detection),
     ("transcriber CPU fallback", _transcriber_cpu_fallback),
     ("compute type resolution", _compute_type_resolution),
+    ("foreign-script runs are stripped", _hallucination_script_filter),
+    ("segment drop reasons", _hallucination_segment_drop_reason),
+    ("whisper decode carries the hallucination guards", _whisper_decode_guards),
+    ("whisper gets the prompt tail it reads", _whisper_prompt_window),
+    ("implausible transcripts are named", _hallucination_implausible_reason),
+    ("prompt tail fits the window", _hallucination_prompt_tail),
+    ("speech bounds", _hallucination_speech_bounds),
     ("openvino pipeline properties", _openvino_pipeline_properties),
     ("openvino backend logic", _openvino_backend_logic),
+    ("openvino decode carries the hallucination guards", _openvino_decode_guards),
     ("parakeet backend logic", _parakeet_backend_logic),
     ("parakeet model registry", _parakeet_model_registry),
     ("CPU threads resolution", _cpu_threads_resolution),
@@ -13113,6 +14235,7 @@ _LIGHT_CHECKS = [
     ("settings window edits the new options", _settings_window_edits_the_new_options),
     ("settings engine offers the Parakeet model and CPU threads",
      _settings_engine_offers_the_parakeet_model_and_cpu_threads),
+    ("settings names a prompt beyond the window", _settings_prompt_window_hint),
     ("settings engine auto-configures for this PC",
      _settings_engine_auto_configures_for_this_pc),
     ("microphone test widget", _microphone_test_widget),
@@ -13211,6 +14334,7 @@ _FULL_EXTRA = [
     ("resampler converts without aliasing", _resampler_converts_without_aliasing),
     ("recorder falls back to the native format", _recorder_falls_back_to_the_native_format),
     ("clip stats verdicts", _clip_stats_verdicts),
+    ("silence trim keeps its pad", _hallucination_trim_silence),
     ("insecure hub client builds", _insecure_hub_client_builds),
     ("PortAudio supports WASAPI loopback", _portaudio_supports_wasapi_loopback),
 ]

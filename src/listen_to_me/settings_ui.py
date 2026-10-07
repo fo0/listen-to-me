@@ -105,6 +105,12 @@ from .config import (
 from .diagnostics import DiagnosticsEngine, model_cache_status
 from .fillers import describe_filler_phrases
 from .glyphs import glyph_icon
+from .hallucination import (
+    _CHARS_PER_TOKEN_ESTIMATE,
+    PROMPT_TOKEN_BUDGET,
+    estimate_prompt_tokens,
+    prompt_exceeds_window,
+)
 from .home_page import HomePage
 from .hotkeys import Hotkeys
 from .keymap import hotkey_label
@@ -1772,6 +1778,13 @@ class SettingsWindow(QDialog):
         self.initial_prompt_edit.setAccessibleName("Initial prompt (domain vocabulary hint)")
         self.initial_prompt_edit.setFixedHeight(text_rows_height(self.initial_prompt_edit, 4))
         pv.addWidget(self.initial_prompt_edit)
+        # A prompt longer than Whisper's window loses its start without a
+        # word anywhere (#293): only its last ~223 tokens are read. This line
+        # says so while it is typed; `elastic` because it is composed here.
+        self.initial_prompt_window_hint = self._hint("", elastic=True)
+        pv.addWidget(self.initial_prompt_window_hint)
+        self.initial_prompt_edit.textChanged.connect(self._refresh_prompt_window_hint)
+        self._refresh_prompt_window_hint()
         pv.addWidget(self._hint(
             "Biases recognition towards these words — it is not an instruction "
             "prompt. Use the Assistant page for rewriting/cleanup."
@@ -1952,6 +1965,26 @@ class SettingsWindow(QDialog):
         # line's worth of space for a field nobody has written in yet.
         self.replacements_status.setVisible(bool(status))
         self.replacements_edit.setAccessibleDescription(status)
+
+    def _refresh_prompt_window_hint(self) -> None:
+        """Re-render the line under the Initial prompt field: shown only
+        while the prompt is longer than Whisper reads, hidden otherwise so a
+        normal prompt leaves no gap. Per keystroke, like the replacements
+        status — the estimate is a length, nothing is tokenised — and on the
+        field's accessible description for the same reason."""
+        text = self.initial_prompt_edit.toPlainText()
+        hint = ""
+        if prompt_exceeds_window(text):
+            characters = round(PROMPT_TOKEN_BUDGET * _CHARS_PER_TOKEN_ESTIMATE, -1)
+            hint = (
+                f"Whisper only reads roughly the last {PROMPT_TOKEN_BUDGET} tokens of "
+                f"the prompt (about {characters:.0f} characters) — this one is about "
+                f"{estimate_prompt_tokens(text)} tokens, so only its end is used. Keep "
+                "it short, with the most important terms last."
+            )
+        self.initial_prompt_window_hint.setText(hint)
+        self.initial_prompt_window_hint.setVisible(bool(hint))
+        self.initial_prompt_edit.setAccessibleDescription(hint)
 
     def _refresh_replacements_try(self) -> None:
         """Re-render the result under the Text replacements "Try" field.
@@ -5678,6 +5711,7 @@ class SettingsWindow(QDialog):
         self.model_combo.setEnabled(not parakeet)
         self.language_combo.setEnabled(not parakeet)
         self.initial_prompt_edit.setEnabled(not parakeet)
+        self.initial_prompt_window_hint.setEnabled(not parakeet)
         self._speech_hint.setText(self._speech_hint_text(backend, swapped_out))
         # Live typing (General page) needs faster-whisper's segment timestamps,
         # so the option is greyed out for the other backends — the hint under

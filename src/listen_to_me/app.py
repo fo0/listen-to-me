@@ -35,6 +35,7 @@ from .choices import (
 )
 from .config import Config, clamp_setting, config_dir, log_path
 from .fillers import EMPTY_TRANSCRIPT, is_filler
+from .hallucination import implausible_reason
 from .history import TranscriptHistory
 from .hotkeys import Hotkeys
 from .injector import Injector, ModifierHeldError, sanitize_typed_text
@@ -1406,6 +1407,50 @@ class App:
                         # inserted, and nothing goes into the history either.
                         self._notify_no_speech(captured, source, verdict)
                         return
+            if not typed_already:
+                # A decoder loop, a prompt echo or more text than the audio can
+                # hold is not what was said (#293) — kept in the history, never
+                # pasted. Skipped after live typing like the filter above, and
+                # only the Whisper backends read the prompt they could echo.
+                seconds = len(audio) / SAMPLE_RATE
+                whisper = self.cfg["backend"] in ("faster-whisper", "openvino")
+                prompt = self.cfg["initial_prompt"] if whisper else ""
+                # What the decode actually read, where the backend says: the
+                # OpenVINO one gives a take under 3 s of (trimmed) audio no
+                # prompt at all, and a prompt nobody gave cannot be echoed —
+                # "Kubernetes, Docker, Helm." is then just those three words.
+                prompt = getattr(self.transcriber, "last_prompt", prompt)
+                # The length rule only for the microphone: nobody speaks 30
+                # characters a second, but a recording played at 2× does. The
+                # loop and echo rules hold for both sources.
+                measured = seconds if source == SOURCE_MIC else None
+                reason = implausible_reason(full_text, measured, prompt)
+                if reason:
+                    log.warning(
+                        "transcript not inserted — %s (%d chars from %.1fs)",
+                        reason, len(full_text), seconds,
+                    )
+                    kept = False
+                    if self.cfg["history_enabled"]:
+                        try:
+                            # Stored as the normal path stores a transcript,
+                            # with the user's replacement rules applied (not
+                            # after live typing, which skips them as well).
+                            self.history.add(
+                                apply_replacements(full_text, self.cfg["replacements"])
+                                if live is None
+                                else full_text
+                            )
+                            kept = True
+                        except Exception:
+                            log.exception("could not add transcript to history")
+                    where = "It is in Settings → History." if kept else "It was discarded."
+                    self.notify(
+                        "Transcript not inserted — it looks like a recognition error "
+                        f"({reason}). {where}",
+                        force=True,
+                    )
+                    return
             acfg = assistant.profile(self.cfg["assistant"], source)
             if acfg["enabled"]:
                 if live is not None:
