@@ -4999,9 +4999,11 @@ def _hallucination_speech_bounds():
     """Where speech starts and ends in a take, from per-frame levels — what
     trimming the silence Whisper fills with invented text rests on (#293).
     Plain lists, so the light run covers it: a level counts from 5 % of the
-    loudest frame but never below the floor, so room noise alone has no
-    speech at all. trim_silence hands back the very same audio whenever it
-    has nothing to trim or cannot run (no numpy on the CI runner)."""
+    take's 90th-percentile frame but never below the floor, so room noise
+    alone has no speech at all — and one key click far louder than quiet
+    speech no longer sets a bar the whole dictation stays under. trim_silence
+    hands back the very same audio whenever it has nothing to trim or cannot
+    run (no numpy on the CI runner)."""
     from listen_to_me.hallucination import speech_bounds, trim_silence
 
     assert speech_bounds([]) is None
@@ -5011,6 +5013,10 @@ def _hallucination_speech_bounds():
     assert speech_bounds([0.1, 0.5, 0.2], relative=0.5) == (1, 1)
     assert speech_bounds([0.5]) == (0, 0)
     assert speech_bounds([0.0, float("nan"), 0.3]) == (2, 2)
+    # A 30-ms hotkey click at 0.6, then 3 s of quiet speech at 0.02: judged by
+    # the loudest frame the bar was 0.03 and only the click counted.
+    clicked = [0.001] * 6 + [0.6] + [0.001] * 10 + [0.02] * 100 + [0.001] * 17
+    assert speech_bounds(clicked) == (6, 116)
     silent = [0.0] * 1600
     assert trim_silence(silent, 16000) is silent
 
@@ -5773,9 +5779,9 @@ def _openvino_decode_guards():
     """The OpenVINO decode carries the #293 guards. GenAI echoed the prompt
     "mergen, ci-radar, contract-manager," into exactly 1547 characters on four
     takes of 0.5–2.7 s, all pasted. So the output budget scales with the audio
-    (8 tokens a second, at least 32, never above the model's own default), a
-    take under 3 s gets no initial prompt, any 10-token run may occur only once
-    per chunk, and foreign-script runs are cut from the text.
+    (8 tokens a second, at least 32, set only below GenAI's own per-window
+    bound), a take under 3 s gets no initial prompt, any 10-token run may
+    occur only once per chunk, and foreign-script runs are cut from the text.
 
     The budget and the prompt rule are judged on the audio actually decoded —
     after the final transcription trims its silence — and previews skip the
@@ -5804,17 +5810,33 @@ def _openvino_decode_guards():
     def take(seconds):
         return Samples([0.0] * int(seconds * SAMPLE_RATE))
 
+    unset = 2**64 - 1  # what GenAI reports for a max_new_tokens nobody set
+
     class FakePipe:
+        """GenAI's own defaults: max_new_tokens unset (SIZE_MAX), max_length
+        448 from the model's generation_config.json."""
+
         def __init__(self):
-            self.text, self.guard, self.default_max, self.calls = "Hallo Welt.", True, 448, []
+            self.text, self.guard, self.default_max, self.calls = "Hallo Welt.", True, unset, []
+            self.prompt_tokens = None  # what its tokenizer counts; None: it fails
 
         def get_generation_config(self):
             config = SimpleNamespace(
-                max_new_tokens=self.default_max, initial_prompt=None, language=None, task=None
+                max_new_tokens=self.default_max,
+                max_length=448,
+                initial_prompt=None,
+                language=None,
+                task=None,
             )
             if self.guard:
                 config.no_repeat_ngram_size = 0
             return config
+
+        def get_tokenizer(self):
+            if self.prompt_tokens is None:
+                raise RuntimeError("no tokenizer")
+            ids = SimpleNamespace(get_size=lambda: self.prompt_tokens)
+            return SimpleNamespace(encode=lambda text, **_kw: SimpleNamespace(input_ids=ids))
 
         def generate(self, audio, config):
             assert type(audio) is list, type(audio)
@@ -5849,17 +5871,43 @@ def _openvino_decode_guards():
             pipe = FakePipe()
             t._pipe, t._key, t._device = pipe, t._current_key(), "CPU"  # "loaded"
 
-            for seconds, budget, prompted in ((0.5, 32, None), (10, 80, prompt), (60, 448, prompt)):
+            # GenAI's own per-window bound (max_length minus what goes in front
+            # of the output) is never raised: set, a cap replaces it, and a
+            # looping window then decodes past the decoder's 448 positions.
+            # Without a tokenizer the 36-byte prompt costs at most 36 tokens,
+            # leaving 448 - 4 - 1 - 36 = 407: 50 s (400) fits, 60 s (480) not.
+            for seconds, budget, prompted in (
+                (0.5, 32, None),
+                (10, 80, prompt),
+                (50, 400, prompt),
+                (60, unset, prompt),
+            ):
                 assert t.transcribe(take(seconds)) == "Hallo Welt."
                 config = pipe.calls[-1][1]
                 assert config.max_new_tokens == budget, (seconds, config.max_new_tokens)
                 assert config.initial_prompt == prompted, (seconds, config.initial_prompt)
                 assert config.no_repeat_ngram_size == 10
                 assert config.language == "<|de|>"
-            assert trims == [0.5, 10.0, 60.0], trims
-            pipe.default_max = 0  # no usable default: the computed cap alone
-            t.transcribe(take(60))
-            assert pipe.calls[-1][1].max_new_tokens == 480
+            assert trims == [0.5, 10.0, 50.0, 60.0], trims
+            pipe.prompt_tokens = 13  # the real count: room 430
+            t.transcribe(take(53))
+            assert pipe.calls[-1][1].max_new_tokens == 424
+            t.transcribe(take(54))
+            assert pipe.calls[-1][1].max_new_tokens == unset  # 432 would not fit
+            cfg["initial_prompt"] = ""  # nothing in front: room 444
+            t.transcribe(take(55))
+            assert pipe.calls[-1][1].max_new_tokens == 440
+            # A prompt the tokenizer cannot count is charged its 1001 bytes:
+            # no room is left to tighten, GenAI keeps its own bound.
+            cfg["initial_prompt"], pipe.prompt_tokens = "x" * 1000, None
+            t.transcribe(take(10))
+            assert pipe.calls[-1][1].max_new_tokens == unset
+            cfg["initial_prompt"] = prompt
+            pipe.default_max = 120  # a model that sets its own, lower default
+            t.transcribe(take(10))
+            assert pipe.calls[-1][1].max_new_tokens == 80
+            t.transcribe(take(20))
+            assert pipe.calls[-1][1].max_new_tokens == 120
 
             # Judged after the trim: 10 s of which 0.5 s is speech is a 0.5-s take.
             ov.trim_silence = lambda audio, rate: audio[: rate // 2]
@@ -5870,7 +5918,7 @@ def _openvino_decode_guards():
             ov.trim_silence = spy_trim
 
             trims.clear()
-            pipe.default_max = 448
+            pipe.default_max = unset
             assert t.preview(take(10)) == "Hallo Welt."
             config = pipe.calls[-1][1]
             assert trims == [], "a preview must not trim"

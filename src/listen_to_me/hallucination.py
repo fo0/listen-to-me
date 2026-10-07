@@ -313,13 +313,18 @@ def prompt_tail(prompt, *, budget=PROMPT_TOKEN_BUDGET, encode=None, decode=None)
 def speech_bounds(levels, *, relative=0.05, floor=0.003) -> tuple[int, int] | None:
     """(first, last) index of the levels that count as speech, or None.
 
-    A level counts from `relative` of the loudest one, never below `floor`,
-    so pure room noise has no speech instead of its own hiss as the reference.
+    A level counts from `relative` of the take's 90th-percentile level, never
+    below `floor`, so pure room noise has no speech instead of its own hiss as
+    the reference. Not of the loudest level: one key click or mic bump 30
+    times louder than quiet speech set a bar the whole dictation stayed under
+    (a 30-ms click before 3 s of speech kept 0.5 s of the take). A transient
+    shorter than a tenth of the take no longer sets that bar.
     """
     values = [value if math.isfinite(value) else 0.0 for value in map(float, levels)]
     if not values:
         return None
-    threshold = max(floor, max(values) * relative)
+    reference = sorted(values)[math.ceil(0.9 * len(values)) - 1]
+    threshold = max(floor, reference * relative)
     loud = [index for index, value in enumerate(values) if value >= threshold]
     return (loud[0], loud[-1]) if loud else None
 
