@@ -9243,6 +9243,8 @@ def _microphone_test_widget():
             gate.set()
             assert _process_events_until(app, lambda: not widget.is_running())
             assert widget.status.text() == text, (verdict, widget.status.text())
+            # Voiced where focus is, not only shown on a label nobody reads out.
+            assert widget.button.accessibleDescription() == text, verdict
             assert events == ["started", mtw.DONE], events
             assert widget.button.isEnabled() and not widget.cancel_button.isEnabled()
             widget._worker.join(5)
@@ -9259,9 +9261,11 @@ def _microphone_test_widget():
         widget.button.setFocus()
         assert widget.start()
         assert widget.focusWidget() is widget.cancel_button, widget.focusWidget()
+        assert widget.cancel_button.accessibleDescription() == mtw.RECORDING_TEXT
         gate.set()
         assert _process_events_until(app, lambda: not widget.is_running())
         assert widget.focusWidget() is widget.button, widget.focusWidget()
+        assert widget.cancel_button.accessibleDescription() == "", "speak now, after the test"
         widget._worker.join(5)
 
         # A failing recording names its reason.
@@ -9272,6 +9276,7 @@ def _microphone_test_widget():
         assert widget.start()
         assert _process_events_until(app, lambda: not widget.is_running())
         assert widget.status.text() == "Microphone test failed: device unplugged"
+        assert widget.button.accessibleDescription() == widget.status.text()
         assert events == ["started", mtw.FAILED], events
         widget._worker.join(5)
 
@@ -9303,6 +9308,7 @@ def _microphone_test_widget():
         before = len(calls)
         assert not refusing.start()
         assert refusing.status.text() == mtw.APP_BUSY_TEXT
+        assert refusing.button.accessibleDescription() == mtw.APP_BUSY_TEXT
         refusal[0] = ""
         refusing.status.setText("kept")
         assert not refusing.start() and refusing.status.text() == "kept"
