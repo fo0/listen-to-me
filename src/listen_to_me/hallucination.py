@@ -89,21 +89,44 @@ def _is_foreign(ch: str) -> bool:
     """A letter outside the Latin script, or U+FFFD. Digits, punctuation,
     symbols and combining marks are neutral, and so are the spacing modifier
     letters (U+02B0–U+02FF): the ʻ of Uzbek "Oʻzbekiston" is Latin orthography
-    although its name says MODIFIER LETTER."""
+    although its name says MODIFIER LETTER. So are the Letterlike Symbols
+    (U+2100–U+214F — Ω OHM SIGN, K KELVIN SIGN, Å, ℓ, ℝ): units and math
+    signs Unicode happens to file as letters."""
     if ch == _REPLACEMENT:
         return True
     if not unicodedata.category(ch).startswith("L") or ch in _LATIN_EXTRAS:
         return False
-    if "\u02b0" <= ch <= "\u02ff":
+    if "\u02b0" <= ch <= "\u02ff" or "\u2100" <= ch <= "\u214f":
         return False
     return not unicodedata.name(ch, "").startswith("LATIN")
+
+
+def _is_greek(ch: str) -> bool:
+    return "\u0370" <= ch <= "\u03ff" or "\u1f00" <= ch <= "\u1fff"
+
+
+def _foreign_flags(text: str) -> list[bool]:
+    """_is_foreign for each character of `text`, except that a Greek letter
+    with no Greek letter on either side is neutral: that is the symbol Latin
+    text borrows it as — 5 μm, 10 kΩ, 2π, ΔT, β-Version — where stripping it
+    would silently change the value; a run of them is a Greek word, foreign
+    like any other script."""
+    flags = [_is_foreign(ch) for ch in text]
+    for i, ch in enumerate(text):
+        if flags[i] and _is_greek(ch):
+            before = i > 0 and _is_greek(text[i - 1])
+            after = i + 1 < len(text) and _is_greek(text[i + 1])
+            flags[i] = before or after
+    return flags
 
 
 def foreign_share(text) -> float:
     """The share of foreign characters among the letters of `text`, 0.0 when
     it has none. U+FFFD counts as a foreign letter, so `� , ,` is 1.0."""
-    letters = [c for c in str(text or "") if _is_foreign(c) or unicodedata.category(c)[0] == "L"]
-    return sum(map(_is_foreign, letters)) / len(letters) if letters else 0.0
+    text = str(text or "")
+    flags = _foreign_flags(text)
+    letters = sum(1 for ch, flag in zip(text, flags) if flag or unicodedata.category(ch)[0] == "L")
+    return sum(flags) / letters if letters else 0.0
 
 
 def strip_foreign_runs(text, language=None):
@@ -119,21 +142,22 @@ def strip_foreign_runs(text, language=None):
     if not text:
         return text
     script = script_language(language)
-    if script is False or not any(_is_foreign(ch) for ch in text):
+    if script is False:
         return text
-    if script is None and foreign_share(text) >= 0.5:
+    flags = _foreign_flags(text)
+    if not any(flags) or (script is None and foreign_share(text) >= 0.5):
         return text
     out: list[str] = []
     i, n = 0, len(text)
     while i < n:
-        if not _is_foreign(text[i]):
+        if not flags[i]:
             out.append(text[i])
             i += 1
             continue
         while out and (out[-1].isspace() or out[-1] in _RUN_SEPARATORS):
             out.pop()  # the ", " in front of the run
         while i < n and (
-            _is_foreign(text[i])
+            flags[i]
             or text[i].isspace()
             or text[i] in _RUN_SEPARATORS
             or unicodedata.category(text[i]).startswith("M")

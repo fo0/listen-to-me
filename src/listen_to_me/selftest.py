@@ -4514,6 +4514,13 @@ def _hallucination_script_filter():
     assert foreign_share(clean) == 0.0
     # Letters Latin text uses although Unicode does not name them LATIN.
     assert foreign_share("5 µm, 1ª, 2º, Oʻzbekiston") == 0.0
+    # A Greek letter standing alone is the symbol and a letterlike one a unit
+    # sign: stripping either would turn "5 μm" into "5 m". A Greek word is not.
+    technical = "Die Schicht ist 5 μm dick, 10 kΩ, 10 k\u2126, 2π r, ΔT = 3 \u212a, x ∈ ℝ."
+    assert strip_foreign_runs(technical, "de") is technical
+    assert foreign_share(technical) == 0.0
+    greek = "Das heißt Ελλάδα auf Griechisch."
+    assert strip_foreign_runs(greek, "de") == "Das heißt auf Griechisch."
 
     chinese = "这是一个测试，好的 ok"
     assert strip_foreign_runs(chinese, "zh") is chinese
@@ -4784,6 +4791,32 @@ def _hallucination_speech_bounds():
     assert speech_bounds([0.0, float("nan"), 0.3]) == (2, 2)
     silent = [0.0] * 1600
     assert trim_silence(silent, 16000) is silent
+
+
+def _hallucination_trim_silence():
+    """trim_silence cuts the silence around a take down to its pad and no
+    further (#293): Whisper invents text in silence, while a cut into the
+    speech itself would lose a soft onset or a trailing consonant. The light
+    run cannot see the cut (no numpy there), so this pins the slicing itself
+    in the full self-test: one second of speech in five comes back as that
+    second plus 0.3 s on each side, rounded out to whole 30-ms frames."""
+    import numpy as np
+
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.hallucination import trim_silence
+
+    audio = np.zeros(5 * SAMPLE_RATE, dtype="float32")
+    audio[2 * SAMPLE_RATE : 3 * SAMPLE_RATE] = 0.3
+    trimmed = trim_silence(audio, SAMPLE_RATE)
+    frame, pad = int(SAMPLE_RATE * 0.03), int(SAMPLE_RATE * 0.3)
+    start = 2 * SAMPLE_RATE // frame * frame - pad
+    assert np.array_equal(trimmed, audio[start : start + len(trimmed)]), start
+    lead = int(np.flatnonzero(trimmed)[0])
+    tail = len(trimmed) - 1 - int(np.flatnonzero(trimmed)[-1])
+    assert pad <= lead < pad + frame and pad <= tail < pad + frame, (lead, tail)
+    loud = np.full(SAMPLE_RATE, 0.3, dtype="float32")
+    assert trim_silence(loud, SAMPLE_RATE) is loud  # nothing to trim
+    assert trim_silence(np.zeros((4, 2), dtype="float32"), SAMPLE_RATE).shape == (4, 2)
 
 
 def _openvino_pipeline_properties():
@@ -13524,6 +13557,7 @@ _FULL_EXTRA = [
     ("resampler converts without aliasing", _resampler_converts_without_aliasing),
     ("recorder falls back to the native format", _recorder_falls_back_to_the_native_format),
     ("clip stats verdicts", _clip_stats_verdicts),
+    ("silence trim keeps its pad", _hallucination_trim_silence),
     ("insecure hub client builds", _insecure_hub_client_builds),
     ("PortAudio supports WASAPI loopback", _portaudio_supports_wasapi_loopback),
 ]
