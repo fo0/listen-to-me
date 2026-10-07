@@ -8,7 +8,13 @@ import threading
 
 from .audio import SAMPLE_RATE
 from .cpuinfo import resolve_cpu_threads
-from .hallucination import segment_drop_reason, strip_foreign_runs
+from .hallucination import (
+    PROMPT_TOKEN_BUDGET,
+    estimate_prompt_tokens,
+    prompt_tail,
+    segment_drop_reason,
+    strip_foreign_runs,
+)
 
 log = logging.getLogger(__name__)
 
@@ -220,6 +226,9 @@ class Transcriber:
         # config's "auto" values resolved by resolve_runtime(). None until a
         # model is loaded; reset whenever the model is dropped.
         self._runtime: tuple[str, str] | None = None
+        # ((prompt, model key), tail) of the last _initial_prompt() answer:
+        # the prompt is tokenised once per edit or model, never once per take.
+        self._prompt_memo: tuple | None = None
 
     @property
     def runtime(self) -> tuple[str, str] | None:
@@ -417,7 +426,9 @@ class Transcriber:
         segments, info = model.transcribe(
             audio,
             language=configured,
-            initial_prompt=self.cfg["initial_prompt"] or None,
+            # Only the tail Whisper reads — and, with the reset below, only
+            # for the first 30-s window of the take.
+            initial_prompt=self._initial_prompt(model),
             vad_filter=bool(self.cfg["vad_filter"]),
             beam_size=beam_size,
             # Never: a window decoded into garbage would be fed to the next one
@@ -457,6 +468,45 @@ class Transcriber:
                 log.log(level, "foreign-script run stripped from a segment: %.60r", text)
             kept.append((float(segment.end), cleaned))
         return kept, info
+
+    def _initial_prompt(self, model) -> str | None:
+        """What of cfg["initial_prompt"] to hand `model`, None for nothing.
+
+        faster-whisper keeps only the last 223 prompt tokens and cuts wherever
+        that falls, usually through a term (#293); `prompt_tail` hands it that
+        tail starting on a whole term, counted with the model's own tokenizer
+        — the character estimate when it has none or it fails. The prompt
+        conditions only the first 30-s window of a take: with
+        condition_on_previous_text off, faster-whisper resets it after every
+        window. Memoised per prompt and model (caller holds _use_lock), so the
+        cut is tokenised and logged once, not once per take."""
+        prompt = self.cfg["initial_prompt"] or ""
+        key = (prompt, self._key)
+        if self._prompt_memo is not None and self._prompt_memo[0] == key:
+            return self._prompt_memo[1]
+        tokenizer = getattr(model, "hf_tokenizer", None)
+        counts: list[int] = []
+
+        def encode(text):
+            # The ids faster-whisper itself builds: it encodes " " + prompt.
+            ids = tokenizer.encode(" " + text, add_special_tokens=False).ids
+            counts.append(len(ids))
+            return ids
+
+        tail = prompt_tail(
+            prompt,
+            encode=encode if tokenizer is not None else None,
+            decode=getattr(tokenizer, "decode", None),
+        )
+        if tail != prompt.strip():
+            log.info(
+                "initial prompt is %s%d tokens — only the last %d reach the model",
+                "" if counts else "about ",
+                counts[0] if counts else estimate_prompt_tokens(prompt),
+                PROMPT_TOKEN_BUDGET,
+            )
+        self._prompt_memo = (key, tail or None)
+        return tail or None
 
     def _decode(self, audio, *, beam_size: int, final: bool = False):
         """Run the model on `audio` and return (text, info), or None when no
