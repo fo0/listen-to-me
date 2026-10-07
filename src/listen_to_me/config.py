@@ -175,9 +175,15 @@ DEFAULTS: dict = {
     # restore_clipboard — putting the old content back would undo it);
     # "off" = never touch the clipboard beyond what paste mode needs.
     "clipboard_copy": "on_failure",
+    # Paste mode only: put the previous clipboard content back after the
+    # Ctrl+V (injector._paste); clipboard_copy = "always" suppresses it.
     "restore_clipboard": True,
+    # Desktop notifications (tray.py) and the audible start/stop cue — the
+    # beep is Windows only (winsound, see App._beep).
     "notifications": True,
     "beep": True,
+    # Start with the OS: registry Run key / LaunchAgent / XDG autostart entry
+    # (autostart.py).
     "autostart": False,
     # When true the app starts silently into the tray; when false (default)
     # the settings window opens on launch so the app is visibly running.
@@ -244,6 +250,8 @@ DEFAULTS: dict = {
     # replacements above — see DEFAULT_FILLER_PHRASES for the matching rules.
     "filler_filter": True,
     "filler_phrases": DEFAULT_FILLER_PHRASES,
+    # Voice-activity filter that skips silence before decoding (faster-whisper
+    # backend only; openvino and parakeet ignore it).
     "vad_filter": True,
     # Decoding beam size (faster-whisper backend only): 5 = best accuracy
     # (default), 1 = greedy — roughly 1.5-2x faster at slightly lower accuracy.
@@ -271,11 +279,17 @@ DEFAULTS: dict = {
     "insecure_ssl": False,
     # Optional LLM post-processing via an OpenAI-compatible API (e.g. Ollama).
     "assistant": {
+        # Post-process microphone transcripts (the microphone profile).
         "enabled": False,
+        # Any OpenAI-compatible endpoint; the default is a local Ollama.
         "base_url": "http://localhost:11434/v1",
+        # Sent as a Bearer token when set; empty for Ollama. A secret: stays
+        # in this local file, never logged.
         "api_key": "",
         "model": "llama3.2",
         "system_prompt": DEFAULT_ASSISTANT_PROMPT,
+        # Held to 0.0-2.0 and 5-600 seconds where they take effect
+        # (assistant._TEMPERATURE_RANGE / _TIMEOUT_RANGE).
         "temperature": 0.2,
         "timeout": 120,
         # Second profile, for the transcript of recorded system audio (see
