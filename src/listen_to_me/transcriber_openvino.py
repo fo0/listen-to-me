@@ -41,9 +41,14 @@ _INSTALL_HINT = (
 )
 
 # The output budget per second of audio (#293): a prompt echo ran takes of
-# 0.5–2.7 s out to 1547 characters each. Dictated German is 3–4 Whisper tokens
-# a second, so 8 never cuts real speech; the floor leaves a short take room.
-_TOKENS_PER_SECOND = 8.0
+# 0.5–2.7 s out to 1547 characters each. A cap below the speech is a
+# transcript cut short without a word, so it sits well above any real rate.
+# Measured with the Whisper tokenizer, German runs 0.25 tokens a character,
+# technical German 0.32: the 30 characters a second App._process still
+# accepts from a microphone are up to ~10 tokens a second, and system audio
+# played at 2× has no such limit at all. 16 cuts neither; the floor leaves a
+# short take room, and implausible_reason catches the loop the cap bounds.
+_TOKENS_PER_SECOND = 16.0
 _MIN_NEW_TOKENS = 32
 
 # Whisper's decoder has 448 positions per 30-s window, shared with what GenAI

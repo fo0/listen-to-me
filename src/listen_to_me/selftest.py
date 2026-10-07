@@ -6024,9 +6024,13 @@ def _openvino_decode_guards():
     """The OpenVINO decode carries the #293 guards. GenAI echoed the prompt
     "mergen, ci-radar, contract-manager," into exactly 1547 characters on four
     takes of 0.5–2.7 s, all pasted. So the output budget scales with the audio
-    (8 tokens a second, at least 32, set only below GenAI's own per-window
+    (16 tokens a second, at least 32, set only below GenAI's own per-window
     bound: max_length minus what goes in front of the output), a take under
     3 s gets no initial prompt, and foreign-script runs are cut from the text.
+    The rate is far above any real speech on purpose: a cap below it cuts the
+    transcript short without a word, and the 30 characters a second the app
+    guard accepts from a microphone are ~10 tokens a second in technical
+    German, while system audio played at 2× has no such limit at all.
     No repetition guard is set: GenAI's no_repeat_ngram_size only acts in beam
     search (this pipeline is greedy) and repetition_penalty reweights normal
     speech — both stay at GenAI's defaults.
@@ -6166,9 +6170,12 @@ def _openvino_decode_guards():
             room = 448 - 4 - 1 - tok.count(prompt)
             for seconds, budget, prompted in (
                 (0.5, 32, None),
-                (10, 80, prompt),
-                ((room - 1) / 8, room - 1, prompt),
-                (room / 8, unset, prompt),  # a cap of `room` would replace the bound
+                (10, 160, prompt),
+                # 20 s at the app guard's 30 characters a second in technical
+                # German (0.32 tokens each) is ~190 tokens, a video at 2× ~210.
+                (20, 320, prompt),
+                ((room - 1) / 16, room - 1, prompt),
+                (room / 16, unset, prompt),  # a cap of `room` would replace the bound
             ):
                 assert t.transcribe(take(seconds)) == "Hallo Welt."
                 config = pipe.calls[-1][1]
@@ -6177,15 +6184,15 @@ def _openvino_decode_guards():
                 # Untouched on purpose — see the comment in _decode.
                 assert config.no_repeat_ngram_size == 0 and config.repetition_penalty == 1.0
                 assert config.language == "<|de|>"
-            assert trims == [0.5, 10.0, (room - 1) / 8, room / 8], trims
+            assert trims == [0.5, 10.0, 20.0, (room - 1) / 16, room / 16], trims
             cfg["initial_prompt"] = ""  # nothing in front: room 444
-            t.transcribe(take(55))
+            t.transcribe(take(27.5))
             assert pipe.calls[-1][1].max_new_tokens == 440
-            t.transcribe(take(55.5))
+            t.transcribe(take(27.75))
             assert pipe.calls[-1][1].max_new_tokens == unset
             cfg["initial_prompt"] = prompt
             pipe.default_max = 120  # a model that sets its own, lower default
-            t.transcribe(take(10))
+            t.transcribe(take(5))
             assert pipe.calls[-1][1].max_new_tokens == 80
             t.transcribe(take(20))
             assert pipe.calls[-1][1].max_new_tokens == 120
@@ -6203,7 +6210,7 @@ def _openvino_decode_guards():
             assert t.preview(take(10)) == "Hallo Welt."
             config = pipe.calls[-1][1]
             assert trims == [], "a preview must not trim"
-            assert config.max_new_tokens == 80 and config.initial_prompt == prompt
+            assert config.max_new_tokens == 160 and config.initial_prompt == prompt
 
             pipe.text = "Ich habe den Pull Request gemergt. 結, 那个, 这 果 ,, " + chr(0xFFFD)
             assert t.transcribe(take(10)) == "Ich habe den Pull Request gemergt"
@@ -6234,9 +6241,9 @@ def _openvino_decode_guards():
                 assert len(cuts) == 1 and "about" not in cuts[0], cuts  # an exact count
                 # The room follows the tail actually sent.
                 room = 448 - 4 - 1 - tok.count(sent)
-                t.transcribe(take((room - 1) / 8))
+                t.transcribe(take((room - 1) / 16))
                 assert pipe.calls[-1][1].max_new_tokens == room - 1
-                t.transcribe(take(room / 8))
+                t.transcribe(take(room / 16))
                 assert pipe.calls[-1][1].max_new_tokens == unset
 
             # No tokenizer, or one that fails: the estimate, never an error.
@@ -6245,9 +6252,9 @@ def _openvino_decode_guards():
             cfg["initial_prompt"] = prompt
             for tokenizer in (None, BrokenTokenizer()):
                 fallback, fake = loaded(tokenizer)
-                fallback.transcribe(take(50))
+                fallback.transcribe(take(25))
                 assert fake.calls[-1][1].max_new_tokens == 400
-                fallback.transcribe(take(51))
+                fallback.transcribe(take(25.5))
                 assert fake.calls[-1][1].max_new_tokens == unset
                 cfg["initial_prompt"] = long_prompt
                 records.clear()
