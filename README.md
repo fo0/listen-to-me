@@ -636,8 +636,8 @@ looping after every fallback temperature; a stray foreign run inside a real
 sentence is only cut out, and a sentence that was merely hard to hear is never
 dropped for its low confidence alone. The OpenVINO backend also trims the
 silence around a take, holds its output to what the take's length can carry,
-forbids a 10-token run from repeating, and gives a take under 3 s no initial
-prompt — that is where it read its own prompt back for 1547 characters. Last, a
+and gives a take under 3 s no initial prompt — that is where it read its own
+prompt back for 1547 characters. Last, a
 finished transcript that cannot have come from the audio — the same words over
 and over, the initial prompt read back, far more text than the take's length
 allows — is **not inserted**: it is kept in Settings → History (when the

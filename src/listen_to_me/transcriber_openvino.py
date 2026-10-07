@@ -57,16 +57,6 @@ _SOT_TOKENS = 4
 # the prompt back instead — while a vocabulary hint matters for real speech.
 _MIN_PROMPT_SECONDS = 3.0
 
-# Forbids any 10-token run from recurring inside one 30-s chunk (#293). That
-# breaks a "contract-manager, " loop after two cycles, while a legitimately
-# repeated 10-token phrase inside one chunk is rare. `repetition_penalty` is
-# deliberately not set: it reweights every token of normal speech.
-_NO_REPEAT_NGRAM = 10
-
-# Whether this process already said that its openvino-genai offers no
-# no_repeat_ngram_size — once is information, once per take is noise.
-_no_repeat_guard_missing_logged = False
-
 
 def _is_count(value) -> bool:
     """Whether `value` is a real token count — not None, a bool, 0, or the
@@ -99,13 +89,6 @@ def _prompt_tokens(pipe, prompt: str) -> int:
     except Exception:
         log.debug("could not count the prompt's tokens — using its byte length", exc_info=True)
         return len(text.encode("utf-8"))
-
-
-def _log_missing_repeat_guard() -> None:
-    global _no_repeat_guard_missing_logged
-    if not _no_repeat_guard_missing_logged:
-        _no_repeat_guard_missing_logged = True
-        log.info("this openvino-genai has no no_repeat_ngram_size — no repetition guard (#293)")
 
 
 def openvino_model_repo(model: str, precision: str) -> str:
@@ -461,9 +444,9 @@ class OpenVinoTranscriber:
 
         The #293 guards: `final` (what reaches the cursor) first trims the
         silence Whisper invents text in — previews, run every tick, skip that.
-        Every decode gets an output budget scaled to its audio, a repetition
-        guard, no prompt when too short to outweigh one (else only the tail
-        Whisper reads), and foreign runs cut."""
+        Every decode gets an output budget scaled to its audio, no prompt when
+        too short to outweigh one (else only the tail Whisper reads), and
+        foreign runs cut."""
         pipe = self._pipe
         if pipe is None:
             return None
@@ -495,10 +478,14 @@ class OpenVinoTranscriber:
             used = _prompt_tokens(pipe, prompted) if prompted else 0
             if cap < _token_room(config, used):
                 config.max_new_tokens = cap
-        if hasattr(config, "no_repeat_ngram_size"):
-            config.no_repeat_ngram_size = _NO_REPEAT_NGRAM
-        else:
-            _log_missing_repeat_guard()
+        # No repetition guard is set, on purpose (#293). GenAI applies
+        # no_repeat_ngram_size only in its beam-search sampler, and this
+        # pipeline decodes greedily — the output is identical with and
+        # without it (openvino-genai 2026.4.1); in the beam path its n-gram
+        # history includes the prompt, so it would forbid dictating prompt
+        # terms in their listed order. repetition_penalty reweights every
+        # token of normal speech. The length cap above and the app-level
+        # implausible_reason check carry the loop protection.
         # The pipeline chunks audio longer than 30 s internally (sliding
         # window); it expects a plain float list at 16 kHz, which is exactly
         # what the Recorder captures.

@@ -23,6 +23,7 @@ import logging
 import math
 import re
 import unicodedata
+import zlib
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +45,9 @@ _SEGMENT_FOREIGN_SHARE = 0.2
 # exists, so a sampled segment still above it is a loop that survived the
 # whole ladder. A low avg_logprob proves no such thing: faster-whisper then
 # reports the last rung's temperature whatever it kept, and the low score is
-# as often real, hard-to-hear speech — which must never be dropped.
+# as often real, hard-to-hear speech — which must never be dropped. Both
+# figures belong to the whole window, so a segment's own text has to compress
+# beyond the ratio too before it goes.
 _MAX_COMPRESSION_RATIO = 2.4
 
 # Dictation runs at 15 to 20 characters a second; 30 is no human, while the
@@ -182,20 +185,33 @@ def segment_drop_reason(text, *, language, temperature=0.0, compression_ratio=0.
 
     "foreign script" for a Latin-script language and a segment at least
     _SEGMENT_FOREIGN_SHARE foreign; "repetition loop after the fallback" when
-    it was sampled (temperature > 0) and still compresses beyond
-    _MAX_COMPRESSION_RATIO. A low-confidence segment is never dropped for its
-    score alone: that is a hard-to-hear sentence, and losing it is worse.
+    its window was sampled (temperature > 0) and still compresses beyond
+    _MAX_COMPRESSION_RATIO, and the segment's own text does as well.
+    `temperature` and `compression_ratio` are the 30-s window's, shared by
+    every segment in it: normal speech decoded next to a loop must not go
+    with it (239 characters of German beside 30× "und dann" made a window of
+    2.61). A low-confidence segment is never dropped for its score alone:
+    that is a hard-to-hear sentence, and losing it is worse.
     """
     if not text or not str(text).strip():
         return None
     if script_language(language) is True and foreign_share(text) >= _SEGMENT_FOREIGN_SHARE:
         return "foreign script"
     try:
-        ratio = float(compression_ratio or 0)
-        looped = float(temperature or 0) > 0 and ratio > _MAX_COMPRESSION_RATIO
+        sampled = float(temperature or 0) > 0
+        window_looped = float(compression_ratio or 0) > _MAX_COMPRESSION_RATIO
     except (TypeError, ValueError):
-        looped = False  # a malformed segment field proves nothing
-    return "repetition loop after the fallback" if looped else None
+        return None  # a malformed segment field proves nothing
+    if sampled and window_looped and _compression_ratio(text) > _MAX_COMPRESSION_RATIO:
+        return "repetition loop after the fallback"
+    return None
+
+
+def _compression_ratio(text) -> float:
+    """faster-whisper's own measure (`get_compression_ratio`): the UTF-8
+    length over its zlib-compressed length — high for repetitive text."""
+    data = str(text).encode("utf-8")
+    return len(data) / len(zlib.compress(data))
 
 
 def _words(text) -> list[str]:

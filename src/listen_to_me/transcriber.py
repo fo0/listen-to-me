@@ -456,7 +456,7 @@ class Transcriber:
             if reason:
                 log.log(
                     level,
-                    "segment dropped (%s, temperature=%s, compression_ratio=%s): %.60r",
+                    "segment dropped (%s; window temperature=%s, compression_ratio=%s): %.60r",
                     reason,
                     temperature,
                     ratio,
