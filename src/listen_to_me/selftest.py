@@ -9022,6 +9022,7 @@ def _settings_engine_auto_configures_for_this_pc():
             assert window._engine_form.isRowVisible(window.pk_model_combo)
             assert window._selected_language() == "de"
             assert "press Apply or Save" in window.autoconfig_status.text()
+            assert button.accessibleDescription() == window.autoconfig_status.text()
             assert {key: stub.cfg[key] for key in saved} == saved, "auto-configure saved"
             values = window._collect()
             assert values["backend"] == "parakeet", values
@@ -9053,6 +9054,7 @@ def _settings_engine_auto_configures_for_this_pc():
             # An edit by hand retires that line: it no longer describes the page.
             window.device_combo.setCurrentText("cpu")
             assert window.autoconfig_status.text() == ""
+            assert button.accessibleDescription() == "", "a stale outcome is still voiced"
             assert not window._hw_form.isRowVisible(window.autoconfig_status)
 
             # OpenVINO on an Arc, German with its fine-tune entered: the
@@ -9243,12 +9245,30 @@ def _microphone_test_widget():
             gate.set()
             assert _process_events_until(app, lambda: not widget.is_running())
             assert widget.status.text() == text, (verdict, widget.status.text())
+            # Voiced where focus is, not only shown on a label nobody reads out.
+            assert widget.button.accessibleDescription() == text, verdict
             assert events == ["started", mtw.DONE], events
             assert widget.button.isEnabled() and not widget.cancel_button.isEnabled()
             widget._worker.join(5)
         # The device is read when the test starts, the recording runs off the
         # main thread.
         assert calls and all(call == (7, True) for call in calls), calls
+
+        # Keyboard focus follows the run: Test hands it to Cancel while the
+        # clip records and gets it back when the test ends — Qt alone would
+        # move it on past whichever of the two is disabled.
+        gate.clear()
+        answer.clear()
+        answer.update(peak=0.5, rms=0.1, seconds=3.0, verdict="ok")
+        widget.button.setFocus()
+        assert widget.start()
+        assert widget.focusWidget() is widget.cancel_button, widget.focusWidget()
+        assert widget.cancel_button.accessibleDescription() == mtw.RECORDING_TEXT
+        gate.set()
+        assert _process_events_until(app, lambda: not widget.is_running())
+        assert widget.focusWidget() is widget.button, widget.focusWidget()
+        assert widget.cancel_button.accessibleDescription() == "", "speak now, after the test"
+        widget._worker.join(5)
 
         # A failing recording names its reason.
         gate.set()
@@ -9258,6 +9278,7 @@ def _microphone_test_widget():
         assert widget.start()
         assert _process_events_until(app, lambda: not widget.is_running())
         assert widget.status.text() == "Microphone test failed: device unplugged"
+        assert widget.button.accessibleDescription() == widget.status.text()
         assert events == ["started", mtw.FAILED], events
         widget._worker.join(5)
 
@@ -9289,6 +9310,7 @@ def _microphone_test_widget():
         before = len(calls)
         assert not refusing.start()
         assert refusing.status.text() == mtw.APP_BUSY_TEXT
+        assert refusing.button.accessibleDescription() == mtw.APP_BUSY_TEXT
         refusal[0] = ""
         refusing.status.setText("kept")
         assert not refusing.start() and refusing.status.text() == "kept"
@@ -9610,6 +9632,7 @@ def _setup_wizard_recommends_the_engine_for_this_pc():
             assert not page.is_recommended() and not page.recommended_radio.isEnabled()
             assert not page._manual_box.isHidden() and not page.note.isHidden()
             assert page.note.text() == onboarding_engine.FAILED_NOTE
+            assert page.manual_radio.accessibleDescription() == onboarding_engine.FAILED_NOTE
             assert page.rec_summary.text() == onboarding_engine.FAILED_TEXT
             assert "probe exploded" in page.rec_detail.text()
             assert page.validatePage()
@@ -9649,6 +9672,9 @@ def _setup_wizard_recommends_the_engine_for_this_pc():
             assert not page.validatePage()
             assert not page.is_recommended() and not page._manual_box.isHidden()
             assert page.note.text() == onboarding_engine.PENDING_NOTE
+            # The refusal is voiced where focus goes, not left on Next.
+            assert page.manual_radio.accessibleDescription() == onboarding_engine.PENDING_NOTE
+            assert pending.focusWidget() is page.manual_radio, pending.focusWidget()
             assert page.validatePage()
             gate.set()
             page._probe_thread.join(5)

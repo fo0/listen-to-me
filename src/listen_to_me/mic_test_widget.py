@@ -219,13 +219,13 @@ class MicTestWidget(QWidget):
         refusal = self._can_start() if self._can_start is not None else None
         if refusal is not None:
             if refusal:
-                self.status.setText(refusal)
+                self._say(refusal)
             return False
         try:
             device = self._device()
         except Exception as exc:  # surfaced, never a dead button
             log.exception("could not read the device for the microphone test")
-            self.status.setText(f"Microphone test failed: {exc}")
+            self._say(f"Microphone test failed: {exc}")
             return False
         self._gen += 1
         gen = self._gen
@@ -233,13 +233,19 @@ class MicTestWidget(QWidget):
         self._cancel_event = cancel
         self._running = True
         self._cooldown.stop()
-        self.button.setEnabled(False)
+        # Cancel takes the keyboard focus before the button it sat on is
+        # disabled: Qt would move it on past the still-disabled Cancel, and a
+        # keyboard user would have to hunt for the way to stop the test.
+        refocus = self.window().focusWidget() is self.button
         self.cancel_button.setEnabled(True)
+        if refocus:
+            self.cancel_button.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.button.setEnabled(False)
         self.level_bar.setValue(0)
         # Before the status line: a host reacting to `started` (Settings
         # clears its "another test is running" note) must not overwrite it.
         self.started.emit()
-        self.status.setText(RECORDING_TEXT)
+        self._say(RECORDING_TEXT)
 
         signals, run = self._signals, self._run
 
@@ -271,7 +277,7 @@ class MicTestWidget(QWidget):
         self._running = False
         self.cancel_button.setEnabled(False)
         self.level_bar.setValue(0)
-        self.status.setText(CANCELLED_TEXT)
+        self._say(CANCELLED_TEXT)
         if self._cooldown_ms:
             self.button.setEnabled(False)
             self._cooldown.start()
@@ -280,13 +286,31 @@ class MicTestWidget(QWidget):
         self.finished.emit(CANCELLED)
         return True
 
+    def _say(self, text: str) -> None:
+        """Show `text` on the status line and voice it on the test button.
+
+        The verdict is the whole point of the test, but a status label is
+        never read out — focus sits on the button the user pressed (or comes
+        back to it, see _settle). The button's accessible description is the
+        channel that reaches assistive tech, as for the settings window's
+        field statuses. While the clip records, focus is on Cancel (see
+        start), so "speak now" is voiced there too."""
+        self.status.setText(text)
+        self.button.setAccessibleDescription(text)
+        self.cancel_button.setAccessibleDescription(text if self._running else "")
+
     def _end_cooldown(self) -> None:
         if not self._running:
             self.button.setEnabled(True)
 
     def _settle(self) -> None:
         self._running = False
+        # The way back from start(): focus returns to the test button, where
+        # the next run starts, instead of skipping on from a disabled Cancel.
+        refocus = self.window().focusWidget() is self.cancel_button
         self.button.setEnabled(True)
+        if refocus:
+            self.button.setFocus(Qt.FocusReason.OtherFocusReason)
         self.cancel_button.setEnabled(False)
 
     # ------------------------------------------------------------- results
@@ -300,12 +324,12 @@ class MicTestWidget(QWidget):
         if gen != self._gen or not self._running:
             return
         self._settle()
-        self.status.setText(verdict_text(result))
+        self._say(verdict_text(result))
         self.finished.emit(DONE)
 
     def _on_failed(self, gen: int, message: str) -> None:
         if gen != self._gen or not self._running:
             return
         self._settle()
-        self.status.setText(f"Microphone test failed: {message}")
+        self._say(f"Microphone test failed: {message}")
         self.finished.emit(FAILED)
