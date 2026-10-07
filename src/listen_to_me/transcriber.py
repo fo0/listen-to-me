@@ -8,12 +8,26 @@ import threading
 
 from .audio import SAMPLE_RATE
 from .cpuinfo import resolve_cpu_threads
+from .hallucination import segment_drop_reason, strip_foreign_runs
 
 log = logging.getLogger(__name__)
 
 # The live preview only transcribes the most recent part of the recording so
 # each pass stays cheap even for long recordings.
 _PREVIEW_WINDOW_SECONDS = 30
+
+# The temperatures a window that fails faster-whisper's quality gates is
+# re-decoded with (#293). Its default ladder runs to 1.0, and sampling above
+# ~0.5 is where Whisper emits random multilingual tokens — the `結, 那个, 这 果`
+# tail in the issue — while a window no rung passes keeps its best failed
+# attempt, garbage included. Capped here, that attempt is a low-temperature one.
+_TEMPERATURE_FALLBACK = (0.0, 0.2, 0.4)
+
+# When a segment looks hallucinated, faster-whisper skips silent stretches
+# longer than this many seconds around it instead of decoding them (#293).
+# It needs word timestamps — an extra alignment pass per segment — so only
+# the final transcription pays for it, never the previews.
+_HALLUCINATION_SILENCE_S = 2.0
 
 # Substrings that mark the NVIDIA CUDA GPU being unusable — a missing/unloadable
 # library (cuBLAS / cuDNN / the CUDA runtime), a driver mismatch or no device —
@@ -379,9 +393,12 @@ class Transcriber:
             )
         return True
 
-    def _decode_segments(self, audio, *, beam_size: int, condition_on_previous_text: bool = True):
+    def _decode_segments(self, audio, *, beam_size: int, final: bool = False):
         """Run the model on `audio` and return ([(end_seconds, text), …], info),
-        or None when no model is loaded. Caller holds _use_lock."""
+        or None when no model is loaded. Caller holds _use_lock. `final` marks
+        the transcription that reaches the cursor — only it pays for the word
+        timestamps the silence check needs. Every segment passes the #293
+        guards of hallucination.py: dropped whole, or stripped of foreign runs."""
         # Snapshot the model: a concurrent CPU fallback (which holds only _lock,
         # not _use_lock) may null self._model between preview()'s loaded-check and
         # here. Bind it once so we never dereference None mid-decode. Returning
@@ -392,22 +409,59 @@ class Transcriber:
         if model is None:
             return None
         language = self.cfg["language"]
+        configured = None if language in ("", "auto") else language
+        extra = {}
+        if final:
+            extra["word_timestamps"] = True
+            extra["hallucination_silence_threshold"] = _HALLUCINATION_SILENCE_S
         segments, info = model.transcribe(
             audio,
-            language=None if language in ("", "auto") else language,
+            language=configured,
             initial_prompt=self.cfg["initial_prompt"] or None,
             vad_filter=bool(self.cfg["vad_filter"]),
             beam_size=beam_size,
-            condition_on_previous_text=condition_on_previous_text,
+            # Never: a window decoded into garbage would be fed to the next one
+            # as its context and seed the same garbage there (#293). The cost
+            # is that faster-whisper then resets the prompt after every window,
+            # so the initial prompt only conditions the first 30 s of a take.
+            condition_on_previous_text=False,
+            temperature=_TEMPERATURE_FALLBACK,
+            **extra,
         )
-        return [(float(s.end), s.text.strip()) for s in segments], info
+        # The language actually decoded: the configured one, or under "auto"
+        # the detected one — a take detected as German is judged as German.
+        script = configured or getattr(info, "language", None)
+        # Previews repeat every tick: their drops go to debug, not one INFO
+        # line per tick for the same garbage.
+        level = logging.INFO if final else logging.DEBUG
+        kept = []
+        for segment in segments:
+            text = segment.text.strip()
+            temperature = getattr(segment, "temperature", 0.0)
+            avg_logprob = getattr(segment, "avg_logprob", 0.0)
+            reason = segment_drop_reason(
+                text, language=script, temperature=temperature, avg_logprob=avg_logprob
+            )
+            if reason:
+                log.log(
+                    level,
+                    "segment dropped (%s, temperature=%s, avg_logprob=%s): %.60r",
+                    reason,
+                    temperature,
+                    avg_logprob,
+                    text,
+                )
+                continue
+            cleaned = strip_foreign_runs(text, script)
+            if cleaned != text:
+                log.log(level, "foreign-script run stripped from a segment: %.60r", text)
+            kept.append((float(segment.end), cleaned))
+        return kept, info
 
-    def _decode(self, audio, *, beam_size: int, condition_on_previous_text: bool = True):
+    def _decode(self, audio, *, beam_size: int, final: bool = False):
         """Run the model on `audio` and return (text, info), or None when no
         model is loaded. Caller holds _use_lock."""
-        decoded = self._decode_segments(
-            audio, beam_size=beam_size, condition_on_previous_text=condition_on_previous_text
-        )
+        decoded = self._decode_segments(audio, beam_size=beam_size, final=final)
         if decoded is None:
             return None
         segments, info = decoded
@@ -421,7 +475,7 @@ class Transcriber:
         beam_size = max(1, int(self.cfg["beam_size"] or 5))
         try:
             with self._use_lock:
-                decoded = self._decode(audio, beam_size=beam_size)
+                decoded = self._decode(audio, beam_size=beam_size, final=True)
             if decoded is None:
                 raise RuntimeError("Whisper model is not loaded")
             text, info = decoded
@@ -432,7 +486,7 @@ class Transcriber:
             if not self._recover_on_cpu(exc, notify):
                 raise
             with self._use_lock:
-                decoded = self._decode(audio, beam_size=beam_size)
+                decoded = self._decode(audio, beam_size=beam_size, final=True)
             if decoded is None:
                 # `from exc`: without it the traceback reads as if this retry
                 # were an error raised while handling the GPU failure, which
@@ -473,7 +527,7 @@ class Transcriber:
             return None
         try:
             audio = audio[-_PREVIEW_WINDOW_SECONDS * SAMPLE_RATE :]
-            decoded = self._decode(audio, beam_size=1, condition_on_previous_text=False)
+            decoded = self._decode(audio, beam_size=1)
             if decoded is None:
                 return None  # concurrent CPU fallback mid-reload — skip this tick
             text, _info = decoded
@@ -494,9 +548,7 @@ class Transcriber:
         if not self._use_lock.acquire(blocking=False):
             return None
         try:
-            decoded = self._decode_segments(
-                audio, beam_size=1, condition_on_previous_text=False
-            )
+            decoded = self._decode_segments(audio, beam_size=1)
             if decoded is None:
                 return None  # concurrent CPU fallback mid-reload — skip this tick
             segments, _info = decoded

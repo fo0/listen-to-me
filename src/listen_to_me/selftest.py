@@ -4479,6 +4479,313 @@ def _compute_type_resolution():
             sys.modules["ctranslate2"] = previous
 
 
+def _hallucination_script_filter():
+    """Foreign-script garbage inside a Latin-script dictation is removed and
+    the dictation kept (#293): faster-whisper's high-temperature fallback ended
+    a German take in `結, hof, 那个, Share, 这 果, …, �`, and all of it was
+    pasted. The run goes together with the separators around it — the full
+    stop in front included — so no `, ,` is left behind.
+
+    The other half pins what must never be touched: German with umlauts, ß,
+    €, typographic quotes and a dash comes back as the very same object, and
+    so does a text in a non-Latin language, or a mostly non-Latin one under
+    "auto" — that is the speaker's own language, not a hallucination."""
+    import unicodedata
+
+    from listen_to_me.hallucination import foreign_share, script_language, strip_foreign_runs
+
+    assert script_language("de") is True and script_language("EN") is True
+    assert script_language("zh") is False and script_language("ru") is False
+    assert script_language("auto") is None and script_language("") is None
+    assert script_language(None) is None
+
+    german = "Ich habe den Pull Request gemergt und das Deployment läuft."
+    garbage = "結, hof, 那个, Share, 这 果, 这 ,, 压 ,, 这 ,, ,, " + chr(0xFFFD)
+    garbage += " , 这 , ,, ที่นี่ 한국어"  # Thai with its combining vowel signs
+    cleaned = strip_foreign_runs(f"{german} {garbage}", "de")
+    for ch in cleaned:
+        assert not unicodedata.name(ch, "").startswith(("CJK", "THAI", "HANGUL")), cleaned
+    assert chr(0xFFFD) not in cleaned and foreign_share(cleaned) == 0.0, cleaned
+    assert cleaned == german[:-1] + " hof Share", cleaned  # Latin words are not judged
+    assert strip_foreign_runs("Das ist 好 gut.", "de") == "Das ist gut."
+
+    clean = "Die Prüfung läuft, Maß 5 €, „Zitat“ und ‚noch eins‘ – Pull Request deployen."
+    assert strip_foreign_runs(clean, "de") is clean
+    assert foreign_share(clean) == 0.0
+    # Letters Latin text uses although Unicode does not name them LATIN.
+    assert foreign_share("5 µm, 1ª, 2º, Oʻzbekiston") == 0.0
+
+    chinese = "这是一个测试，好的 ok"
+    assert strip_foreign_runs(chinese, "zh") is chinese
+    assert strip_foreign_runs(chinese, "auto") is chinese
+    assert strip_foreign_runs(chinese, None) is chinese
+    assert strip_foreign_runs("Das ist gut 这 果", "auto") == "Das ist gut"  # mostly Latin
+
+    assert foreign_share("") == 0.0 and foreign_share("123 !? €") == 0.0
+    assert foreign_share("这这") == 1.0 and foreign_share("ab这这") == 0.5
+    assert foreign_share(chr(0xFFFD) + " , ,") == 1.0  # a broken token is no letter of ours
+    assert 0.2 < foreign_share(garbage) < 1.0
+
+
+def _hallucination_segment_drop_reason():
+    """Which decoded segments are dropped whole (#293): one largely in a script
+    the configured Latin-script language never uses, and one sampled at a
+    raised temperature that still scored below faster-whisper's own log-prob
+    threshold — the fallback the decoder itself doubted. A poor score at
+    temperature 0 is a hard-to-hear sentence, not a guess, and stays; so does
+    every segment of a non-Latin or unknown language, and one stray ideograph
+    in a real sentence is stripped later rather than costing the sentence."""
+    from listen_to_me.hallucination import segment_drop_reason
+
+    garbage = "这 果, 这 ,, 压 ,, hof"
+    assert segment_drop_reason(garbage, language="de") == "foreign script"
+    assert segment_drop_reason(garbage, language="zh") is None
+    assert segment_drop_reason(garbage, language=None) is None
+    sentence = "Das Deployment läuft seit heute Morgen."
+    assert segment_drop_reason(sentence, language="de") is None
+    assert segment_drop_reason("Das Deployment läuft 好 seit heute.", language="de") is None
+    assert (
+        segment_drop_reason(sentence, language="de", temperature=0.4, avg_logprob=-1.4)
+        == "low-confidence fallback"
+    )
+    assert segment_drop_reason(sentence, language="de", temperature=0.0, avg_logprob=-1.4) is None
+    assert segment_drop_reason(sentence, language="de", temperature=0.4, avg_logprob=-0.3) is None
+    # faster-whisper's Segment.temperature is Optional: None must not raise.
+    assert segment_drop_reason(sentence, language="de", temperature=None, avg_logprob=None) is None
+    assert segment_drop_reason("", language="de") is None
+    assert segment_drop_reason("  ", language="de", temperature=1.0, avg_logprob=-5.0) is None
+
+
+def _whisper_decode_guards():
+    """The faster-whisper decode carries the #293 guards. Every decode passes a
+    temperature ladder capped at 0.4 (the default runs to 1.0, where Whisper
+    samples random multilingual tokens) and never conditions a window on the
+    one before; only the final transcription asks for word timestamps and the
+    silence-hallucination threshold, so previews and live typing stay cheap.
+    A foreign-script segment never reaches the returned text, a doubted
+    fallback is dropped, a stray run inside a kept segment is stripped, and
+    under "auto" the language Whisper detected decides the script check — a
+    take detected as Chinese keeps its Chinese.
+
+    Runs on a stub model set straight into `_model`: no faster_whisper import,
+    no download, and the check asserts it did not import faster_whisper."""
+    from types import SimpleNamespace
+
+    from listen_to_me.config import Config
+    from listen_to_me.transcriber import (
+        _HALLUCINATION_SILENCE_S,
+        _TEMPERATURE_FALLBACK,
+        Transcriber,
+    )
+
+    def segment(end, text, temperature=0.0, avg_logprob=-0.2):
+        return SimpleNamespace(
+            end=end, text=text, temperature=temperature, avg_logprob=avg_logprob
+        )
+
+    class StubModel:
+        def __init__(self, segments, language):
+            self.segments, self.language, self.calls = segments, language, []
+
+        def transcribe(self, audio, **kwargs):
+            self.calls.append(kwargs)
+            return iter(list(self.segments)), SimpleNamespace(language=self.language)
+
+    sentence = " Ich habe den Pull Request gemergt."
+    garbage = " 結, hof, 那个, Share, 这 果, 这 ,, 压 ,, " + chr(0xFFFD) + " ,,"
+    model = StubModel(
+        [
+            segment(2.0, sentence),
+            segment(4.0, garbage, temperature=1.0, avg_logprob=-0.8),
+            segment(5.0, " Und dann noch etwas.", temperature=0.4, avg_logprob=-1.4),
+            segment(6.5, " Das läuft 这 gut."),
+        ],
+        "de",
+    )
+    kept = "Ich habe den Pull Request gemergt. Das läuft gut."
+    imported_before = "faster_whisper" in sys.modules
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        cfg["language"] = "de"
+        t = Transcriber(cfg)
+        t._model, t._key = model, t._current_key()  # "loaded" without a load
+        audio = [0.0] * 16000
+
+        assert t.transcribe(audio) == kept
+        final = model.calls[-1]
+        assert final["temperature"] == _TEMPERATURE_FALLBACK == (0.0, 0.2, 0.4)
+        assert final["condition_on_previous_text"] is False
+        assert final["word_timestamps"] is True
+        assert final["hallucination_silence_threshold"] == _HALLUCINATION_SILENCE_S == 2.0
+        assert final["language"] == "de"
+
+        assert t.preview(audio) == kept
+        assert t.preview_segments(audio) == [
+            (2.0, "Ich habe den Pull Request gemergt."),
+            (6.5, "Das läuft gut."),
+        ]
+        assert len(model.calls) == 3
+        for preview in model.calls[1:]:
+            assert preview["temperature"] == _TEMPERATURE_FALLBACK
+            assert preview["condition_on_previous_text"] is False
+            assert "word_timestamps" not in preview, preview
+            assert "hallucination_silence_threshold" not in preview, preview
+
+        # Under "auto" the detected language decides: German drops the Chinese
+        # segment, Chinese keeps it — the speaker's language is never garbage.
+        cfg["language"] = "auto"
+        model.segments = [segment(2.0, sentence), segment(3.0, " 这是一个测试")]
+        assert t.transcribe(audio) == "Ich habe den Pull Request gemergt."
+        assert model.calls[-1]["language"] is None
+        model.language = "zh"
+        assert t.transcribe(audio) == "Ich habe den Pull Request gemergt. 这是一个测试"
+    assert ("faster_whisper" in sys.modules) == imported_before
+
+
+# A ~70-s German dictation of ~1500 characters (about 21 a second) with a few
+# hesitations in it: what the plausibility check must always let through.
+_PLAIN_GERMAN_DICTATION = (
+    "Also, ich fasse kurz zusammen, was heute im Team besprochen wurde. Äh, äh, äh, äh, wir "
+    "haben zuerst über den Release-Plan für die nächste Woche geredet, weil der Build am Montag "
+    "zweimal fehlgeschlagen ist. Thomas meint, dass die Pipeline zu lange braucht und wir die "
+    "Tests parallel laufen lassen sollten. Danach ging es um den Pull Request für das neue "
+    "Dashboard: Die Kollegen aus dem Vertrieb wünschen sich eine Übersicht über alle offenen "
+    "Verträge, sortiert nach Laufzeit und Kunde. Ich habe vorgeschlagen, dass wir zuerst einen "
+    "einfachen Prototyp bauen und ihn am Donnerstag zeigen. Außerdem müssen wir noch klären, wer "
+    "die Dokumentation übernimmt, denn bisher fühlt sich niemand richtig zuständig. Der Server im "
+    "Rechenzentrum hatte letzte Nacht wieder einen Ausfall von etwa zwanzig Minuten, die Ursache "
+    "ist noch unklar. Bitte schaut euch die Logs an, falls ihr Zeit habt, und schreibt mir eine "
+    "kurze Nachricht. Zum Schluss noch etwas Organisatorisches: Das Sommerfest findet am dritten "
+    "Juli statt, die Anmeldung läuft bis Ende des Monats über das Formular im Intranet. Wer ein "
+    "Gericht mitbringen möchte, trägt sich bitte in die Liste ein, damit wir nicht fünf "
+    "Nudelsalate haben. Ach ja, und die neue Kaffeemaschine in der zweiten Etage funktioniert "
+    "endlich wieder, nachdem der Techniker da war. Ich bin ab morgen für zwei Tage auf einer "
+    "Schulung in München und nur eingeschränkt erreichbar, dringende Fragen bitte an Sabine. Das "
+    "war es von meiner Seite, vielen Dank fürs Zuhören und bis nächste Woche."
+)
+
+
+def _hallucination_implausible_reason():
+    """The transcript-level plausibility check (#293): OpenVINO turned 0.5 s
+    of audio into 1547 characters of "contract-manager, " — its own prompt in
+    a loop — and pasted it. A loop, a verbatim echo of the prompt and more
+    characters than anyone speaks in the audio are each named, loop first so
+    the echo that is also too long is named for its cause.
+
+    Just as pinned is what passes: a normal 70-s German dictation of ~1500
+    characters with "äh, äh, äh, äh" in it, and a short real sentence from a
+    one-second take — every false positive here throws a real dictation
+    away."""
+    from listen_to_me.hallucination import implausible_reason
+
+    prompt = "mergen, ci-radar, contract-manager,"
+    loop = ("contract-manager, " * 90)[:1547]
+    assert len(loop) == 1547
+    for words in (prompt, ""):
+        reason = implausible_reason(loop, 0.5, words)
+        assert reason == "the same words repeat 86 times", reason
+    assert implausible_reason("x y z " * 40, 10.0) == "the same words repeat 40 times"
+
+    assert implausible_reason(prompt, 1.4, prompt) == "it repeats the initial prompt"
+    longer = "Kubernetes, mergen, ci-radar, contract-manager, Pull Request"
+    assert implausible_reason("Mergen. CI-Radar, Contract-Manager", 1.4, longer) == (
+        "it repeats the initial prompt"
+    )
+    assert implausible_reason("ci-radar, mergen", 1.4, longer) is None  # too few words to tell
+
+    dictation = _PLAIN_GERMAN_DICTATION
+    assert 1400 <= len(dictation) <= 1600, len(dictation)
+    assert implausible_reason(dictation, 70.0, prompt) is None
+    assert implausible_reason("Ja, mach ruhig.", 1.0, prompt) is None
+    assert implausible_reason(dictation[:60], 0.5) is None  # the floor for short takes
+    hurried = dictation[:400]
+    assert implausible_reason(hurried, 2.0) == f"{len(hurried)} characters from 2.0 s of audio"
+    assert implausible_reason(hurried, None) is None  # no usable length: not measured
+    assert implausible_reason(hurried, float("nan")) is None
+    assert implausible_reason("", 0.5, prompt) is None
+
+
+def _hallucination_prompt_tail():
+    """The initial prompt is cut to what Whisper actually reads (#293): only
+    its last 223 tokens ever reach the model, so a long term list is handed
+    over as its tail — starting on a whole term, never on the half of one the
+    cut went through. With the model's tokenizer the cut is exact; without it,
+    or when the tokenizer fails, a character estimate stands in, and nothing
+    here may raise: a prompt problem must never cost a transcription."""
+    import re
+
+    from listen_to_me.hallucination import (
+        PROMPT_TOKEN_BUDGET,
+        estimate_prompt_tokens,
+        prompt_exceeds_window,
+        prompt_tail,
+    )
+
+    assert prompt_tail("  mergen, ci-radar \n") == "mergen, ci-radar"
+    assert prompt_tail("") == "" and prompt_tail(None) == ""
+    terms = [f"term{i:03d}" for i in range(400)]
+    prompt = ", ".join(terms) + ","
+    assert prompt_exceeds_window(prompt) and not prompt_exceeds_window("mergen, ci-radar")
+    assert estimate_prompt_tokens("") == 0 and estimate_prompt_tokens(" abcd ") == 2
+
+    tail = prompt_tail(prompt)  # the character estimate
+    assert prompt.endswith(tail) and tail.endswith("term399,"), tail
+    assert tail.split(", ")[0] in terms, tail[:20]
+    assert estimate_prompt_tokens(tail) <= PROMPT_TOKEN_BUDGET, len(tail)
+    # A cut right on a boundary keeps that first term; one a character later
+    # drops the fragment it leaves.
+    assert prompt_tail("x" * 20 + ", abcd, efg", budget=3) == "abcd, efg"
+    assert prompt_tail("x" * 20 + ", zabcd, efg", budget=3) == "efg"
+
+    # A fake whitespace tokenizer that splits every term in two, the way BPE
+    # splits a word: the last 9 tokens start on the second half of term395.
+    vocab = []
+
+    def encode(text):
+        ids = []
+        for piece in re.findall(r"\s*\S{1,4}", text):
+            vocab.append(piece)
+            ids.append(len(vocab) - 1)
+        return ids
+
+    def decode(ids):
+        return "".join(vocab[i] for i in ids)
+
+    assert decode(encode(prompt)) == prompt
+    assert prompt_tail(prompt, budget=9, encode=encode, decode=decode) == (
+        "term396, term397, term398, term399,"
+    )
+    assert prompt_tail("mergen, ci-radar", budget=9, encode=encode, decode=decode) == (
+        "mergen, ci-radar"  # fits by the tokenizer's own count
+    )
+
+    def broken(_text):
+        raise RuntimeError("tokenizer exploded")
+
+    assert prompt_tail(prompt, encode=broken, decode=decode) == tail
+    assert prompt_tail(prompt, encode=encode, decode=lambda ids: None) == tail
+
+
+def _hallucination_speech_bounds():
+    """Where speech starts and ends in a take, from per-frame levels — what
+    trimming the silence Whisper fills with invented text rests on (#293).
+    Plain lists, so the light run covers it: a level counts from 5 % of the
+    loudest frame but never below the floor, so room noise alone has no
+    speech at all. trim_silence hands back the very same audio whenever it
+    has nothing to trim or cannot run (no numpy on the CI runner)."""
+    from listen_to_me.hallucination import speech_bounds, trim_silence
+
+    assert speech_bounds([]) is None
+    assert speech_bounds([0.0, 0.001, 0.002]) is None  # below the floor: no speech
+    assert speech_bounds([0.0, 0.001, 0.2, 0.5, 0.1, 0.0, 0.001]) == (2, 4)
+    assert speech_bounds([0.0005, 0.004, 0.01, 0.0005]) == (1, 2)  # a quiet speaker
+    assert speech_bounds([0.1, 0.5, 0.2], relative=0.5) == (1, 1)
+    assert speech_bounds([0.5]) == (0, 0)
+    assert speech_bounds([0.0, float("nan"), 0.3]) == (2, 2)
+    silent = [0.0] * 1600
+    assert trim_silence(silent, 16000) is silent
+
+
 def _openvino_pipeline_properties():
     """The OpenVINO compile cache is requested for the GPU/NPU only, lives
     under the custom model folder when one is set (the config dir otherwise),
@@ -13070,6 +13377,12 @@ _LIGHT_CHECKS = [
     ("CUDA error detection", _cuda_error_detection),
     ("transcriber CPU fallback", _transcriber_cpu_fallback),
     ("compute type resolution", _compute_type_resolution),
+    ("foreign-script runs are stripped", _hallucination_script_filter),
+    ("segment drop reasons", _hallucination_segment_drop_reason),
+    ("whisper decode carries the hallucination guards", _whisper_decode_guards),
+    ("implausible transcripts are named", _hallucination_implausible_reason),
+    ("prompt tail fits the window", _hallucination_prompt_tail),
+    ("speech bounds", _hallucination_speech_bounds),
     ("openvino pipeline properties", _openvino_pipeline_properties),
     ("openvino backend logic", _openvino_backend_logic),
     ("parakeet backend logic", _parakeet_backend_logic),
