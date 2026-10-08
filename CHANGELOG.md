@@ -308,7 +308,7 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 - **The version can be copied from the settings window.** The footer's version
   and the Updates page's "Installed:" value were plain text that had to be
   typed off the screen for a bug report; both can now be selected with the
-  mouse, and right-click offers Copy.
+  mouse and copied.
 - **A cut-off transcript on the Home page can be read to the end.** The
   recent-transcripts card shows the first 160 characters of each dictation on
   one line, and the rest could only be read by copying it somewhere or opening

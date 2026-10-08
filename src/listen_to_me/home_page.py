@@ -64,6 +64,7 @@ _RECENT_CHARS = 160
 _RECENT_TOOLTIP_CHARS = 1200
 _RECENT_TOOLTIP_LINES = 20
 
+
 def recent_tooltip(raw: str, shown: str) -> str:
     """The tooltip of a Home "Recent transcripts" row, or "" when the row
     already shows the whole transcript.
