@@ -11764,6 +11764,20 @@ def _gui_construction():
             assert url in button.toolTip()
             assert button.accessibleName(), "a footer link has no accessible name"
 
+        # The version — footer and Updates page — can be selected and copied
+        # into a bug report, by mouse only, so neither label joins the Tab chain.
+        from PySide6.QtCore import Qt
+
+        from listen_to_me import __version__ as _app_version
+
+        for label in (window.version_label, window.update_current_label):
+            assert _app_version in label.text(), label.text()
+            flags = label.textInteractionFlags()
+            assert flags & Qt.TextInteractionFlag.TextSelectableByMouse, (
+                f"the version label {label.text()!r} cannot be selected"
+            )
+            assert not flags & Qt.TextInteractionFlag.TextSelectableByKeyboard
+
         opened: list[str] = []
 
         class _FakeBrowser:
@@ -12198,11 +12212,36 @@ def _gui_construction():
             assert _export_module._last_export_dir is None, "a cancelled export moved the folder"
             export_dir = Path(tmp) / "exports"
             export_dir.mkdir()
+            assert window.history_export_status.isHidden(), "an export line before any export"
             _FakeSaveDialog.answer = (str(export_dir / "notes.txt"), "")
             window._export_history()
             assert "A stored transcript" in (export_dir / "notes.txt").read_text(encoding="utf-8")
+            # …and the page says where it went, not only "Exported ✓" for a second.
+            assert not window.history_export_status.isHidden(), "a successful export names nothing"
+            status = window.history_export_status.text()
+            assert status.startswith("Exported 2 transcripts to "), status
+            assert str(export_dir / "notes.txt") in status, status
             window._export_history()  # the next one starts where that one went
             assert Path(_FakeSaveDialog.starts[-1]).parent == export_dir, _FakeSaveDialog.starts
+
+            # A failed export drops that line: it describes an earlier file,
+            # and under the failure warning it would read as this one's result.
+            class _FakeExportBox:
+                warned: list[str] = []
+
+                @classmethod
+                def warning(cls, _parent, _title, text, *_args, **_kwargs):
+                    cls.warned.append(text)
+
+            real_export_box = _export_module.QMessageBox
+            _export_module.QMessageBox = _FakeExportBox
+            try:
+                _FakeSaveDialog.answer = (str(export_dir / "missing" / "notes.txt"), "")
+                window._export_history()
+            finally:
+                _export_module.QMessageBox = real_export_box
+            assert len(_FakeExportBox.warned) == 1, _FakeExportBox.warned
+            assert window.history_export_status.isHidden(), "a failed export kept the old line"
         finally:
             _export_module.QFileDialog = real_dialog
             _export_module._last_export_dir = real_last_dir
@@ -12237,6 +12276,42 @@ def _gui_construction():
         buttons[0].click()  # …and back, on the same button
         assert meeting not in _history_text()
         assert buttons[0].text() == _history_module._HISTORY_MORE_LABEL
+
+        # A Home row cut at _RECENT_CHARS carries the rest in its tooltip —
+        # the meeting is the newest entry, so it is on the page — while a row
+        # that already shows everything gets no tooltip at all.
+        window.home._refresh_recent()
+        recent_labels = [
+            label
+            for label in window.home._recent_frame.findChildren(QLabel)
+            if label.text().startswith(("The meeting went on.", "A stored transcript"))
+        ]
+        meeting_tips = [
+            label.toolTip()
+            for label in recent_labels
+            if label.text().startswith("The meeting went on.")
+        ]
+        assert len(meeting_tips) == 1, meeting_tips
+        assert meeting_tips[0].count("The meeting went on.") > 20, (
+            "the tooltip shows no more than the row"
+        )
+        assert meeting_tips[0].removesuffix("</p>").endswith("…"), (
+            "a capped tooltip does not say it was cut"
+        )
+        short_tips = [
+            label.toolTip()
+            for label in recent_labels
+            if label.text().startswith("A stored transcript")
+        ]
+        assert short_tips and not any(short_tips), short_tips
+        from listen_to_me.home_page import recent_tooltip
+
+        assert recent_tooltip("Short.", "Short.") == ""
+        assert recent_tooltip("", "") == ""
+        # The dictated line breaks survive, and the transcript is never markup.
+        tip = recent_tooltip("<b>one</b>\ntwo & three", "<b>one</b> two & three")
+        assert "&lt;b&gt;one&lt;/b&gt;\ntwo &amp; three" in tip, tip
+        assert "pre-wrap" in tip, tip
 
         # Collapsing is a rendering decision only: the search still matches
         # words the row does not show, and Export/Copy all still carry the
