@@ -16,6 +16,7 @@ one anyway could not stop the recording it is displaying.
 
 from __future__ import annotations
 
+import html
 import logging
 import time
 
@@ -40,6 +41,7 @@ from .choices import (
     source_label,
 )
 from .glyphs import glyph_icon
+from .history import preview_text
 from .keymap import pretty_keys
 from .qtutil import copy_with_feedback, elastic_label, tab_after
 
@@ -56,6 +58,32 @@ _RECENT_LIMIT = 3
 # Hard cap per shown transcript — QLabel has no automatic elide and a huge
 # dictation would blow the card up.
 _RECENT_CHARS = 160
+# How much of a cut transcript its tooltip shows (with its line breaks) —
+# enough to read a dictation to the end, short of a meeting that would fill
+# the screen; "Open history" and Copy still have all of it.
+_RECENT_TOOLTIP_CHARS = 1200
+_RECENT_TOOLTIP_LINES = 20
+
+def recent_tooltip(raw: str, shown: str) -> str:
+    """The tooltip of a Home "Recent transcripts" row, or "" when the row
+    already shows the whole transcript.
+
+    The row is cut at `_RECENT_CHARS` and folded onto one line, and until now
+    the rest could only be read by copying it somewhere or walking to the
+    History page. The tooltip carries the transcript with its line breaks, up
+    to the tooltip caps (`history.preview_text`, the History page's own cut).
+
+    Rich text on purpose, escaped: a plain-text tooltip never wraps, so a long
+    dictation would be one screen-wide line, and the transcript is untrusted
+    input that must never be rendered as markup. ``pre-wrap`` keeps the
+    dictated line breaks and still wraps the long lines.
+    """
+    raw = str(raw or "").strip()
+    if not raw or raw == shown.strip():
+        return ""
+    text, _cut = preview_text(raw, _RECENT_TOOLTIP_CHARS, _RECENT_TOOLTIP_LINES)
+    return f'<p style="white-space:pre-wrap">{html.escape(text)}</p>'
+
 
 _BACKEND_SHORT = {
     "faster-whisper": "faster-whisper",
@@ -657,6 +685,9 @@ class HomePage(QWidget):
         # width — one long URL/token in a transcript would clip every card on
         # the Home page (its scroll area has no horizontal scrollbar).
         elastic_label(text_label)
+        tip = recent_tooltip(raw, shown)
+        if tip:
+            text_label.setToolTip(tip)
         body.addWidget(text_label)
         rh.addLayout(body, 1)
         copy_btn = QPushButton("Copy")

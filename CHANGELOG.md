@@ -309,6 +309,12 @@ unknown` — byte for byte what the old bundled one reports — so the log line
   and the Updates page's "Installed:" value were plain text that had to be
   typed off the screen for a bug report; both can now be selected with the
   mouse, and right-click offers Copy.
+- **A cut-off transcript on the Home page can be read to the end.** The
+  recent-transcripts card shows the first 160 characters of each dictation on
+  one line, and the rest could only be read by copying it somewhere or opening
+  the History page. Hovering the row now shows the transcript with its line
+  breaks (long ones up to about 1,200 characters); a row that already shows
+  everything gets no tooltip.
 - **A mistyped command-line flag is now answered with the one it was meant to
   be.** `listen-to-me --verison` was refused with "unknown option" and a pointer
   to `--help`, leaving the typo to be found by eye; it now adds "Did you mean

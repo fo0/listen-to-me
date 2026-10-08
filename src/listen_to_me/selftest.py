@@ -12277,6 +12277,42 @@ def _gui_construction():
         assert meeting not in _history_text()
         assert buttons[0].text() == _history_module._HISTORY_MORE_LABEL
 
+        # A Home row cut at _RECENT_CHARS carries the rest in its tooltip —
+        # the meeting is the newest entry, so it is on the page — while a row
+        # that already shows everything gets no tooltip at all.
+        window.home._refresh_recent()
+        recent_labels = [
+            label
+            for label in window.home._recent_frame.findChildren(QLabel)
+            if label.text().startswith(("The meeting went on.", "A stored transcript"))
+        ]
+        meeting_tips = [
+            label.toolTip()
+            for label in recent_labels
+            if label.text().startswith("The meeting went on.")
+        ]
+        assert len(meeting_tips) == 1, meeting_tips
+        assert meeting_tips[0].count("The meeting went on.") > 20, (
+            "the tooltip shows no more than the row"
+        )
+        assert meeting_tips[0].removesuffix("</p>").endswith("…"), (
+            "a capped tooltip does not say it was cut"
+        )
+        short_tips = [
+            label.toolTip()
+            for label in recent_labels
+            if label.text().startswith("A stored transcript")
+        ]
+        assert short_tips and not any(short_tips), short_tips
+        from listen_to_me.home_page import recent_tooltip
+
+        assert recent_tooltip("Short.", "Short.") == ""
+        assert recent_tooltip("", "") == ""
+        # The dictated line breaks survive, and the transcript is never markup.
+        tip = recent_tooltip("<b>one</b>\ntwo & three", "<b>one</b> two & three")
+        assert "&lt;b&gt;one&lt;/b&gt;\ntwo &amp; three" in tip, tip
+        assert "pre-wrap" in tip, tip
+
         # Collapsing is a rendering decision only: the search still matches
         # words the row does not show, and Export/Copy all still carry the
         # whole transcript.
