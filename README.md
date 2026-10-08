@@ -310,7 +310,8 @@ Everything it sets (and much more) can be changed later here:
 
 Click the tray icon, or right-click it → **Settings…**
 
-The window footer shows the installed version next to a **GitHub** and a
+The window footer shows the installed version (selectable, so it can be copied
+into a bug report) next to a **GitHub** and a
 **Releases** link — the latter goes straight to the download page, which is
 what you need when a build can't update itself. **Apply** saves and applies
 every change and keeps the window open — `Ctrl+S` does the same from any field

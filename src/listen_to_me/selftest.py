@@ -11764,6 +11764,20 @@ def _gui_construction():
             assert url in button.toolTip()
             assert button.accessibleName(), "a footer link has no accessible name"
 
+        # The version — footer and Updates page — can be selected and copied
+        # into a bug report, by mouse only, so neither label joins the Tab chain.
+        from PySide6.QtCore import Qt
+
+        from listen_to_me import __version__ as _app_version
+
+        for label in (window.version_label, window.update_current_label):
+            assert _app_version in label.text(), label.text()
+            flags = label.textInteractionFlags()
+            assert flags & Qt.TextInteractionFlag.TextSelectableByMouse, (
+                f"the version label {label.text()!r} cannot be selected"
+            )
+            assert not flags & Qt.TextInteractionFlag.TextSelectableByKeyboard
+
         opened: list[str] = []
 
         class _FakeBrowser:

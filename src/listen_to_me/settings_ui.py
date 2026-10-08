@@ -892,9 +892,14 @@ class SettingsWindow(QDialog):
         # Footer with the version and the action buttons.
         footer = QHBoxLayout()
         footer.setContentsMargins(14, 10, 14, 12)
-        version_label = QLabel(f"{APP_NAME} {__version__}")
-        version_label.setProperty("role", "hint")
-        footer.addWidget(version_label)
+        self.version_label = QLabel(f"{APP_NAME} {__version__}")
+        self.version_label.setProperty("role", "hint")
+        # Selectable (mouse only, so the footer's Tab chain is unchanged): the
+        # version is the first thing a bug report asks for, and a plain label
+        # left it to be typed off the screen. The label's own context menu
+        # then offers Copy / Select All.
+        self.version_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        footer.addWidget(self.version_label)
         # A released version string is a good deal longer than the dev one, and
         # without this the two link buttons sit flush against it.
         footer.addSpacing(8)
@@ -4726,6 +4731,10 @@ class SettingsWindow(QDialog):
 
         card, form = self._card("This version")
         self.update_current_label = QLabel(__version__)
+        # Selectable like the footer's version label, for the same bug report.
+        self.update_current_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         form.addRow("Installed:", self.update_current_label)
         self.chk_update_on_start = self._checkbox(
             "Check for updates on startup",

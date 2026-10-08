@@ -301,6 +301,10 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **The version can be copied from the settings window.** The footer's version
+  and the Updates page's "Installed:" value were plain text that had to be
+  typed off the screen for a bug report; both can now be selected with the
+  mouse, and right-click offers Copy.
 - **A mistyped command-line flag is now answered with the one it was meant to
   be.** `listen-to-me --verison` was refused with "unknown option" and a pointer
   to `--help`, leaving the typo to be found by eye; it now adds "Did you mean
