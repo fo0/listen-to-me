@@ -301,6 +301,10 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **History → Export… says where the file went.** A successful export used to
+  be confirmed only by "Exported ✓" flashing on the button for a second. A line
+  below the buttons now reads "Exported 37 transcripts to …" with the full path,
+  selectable for pasting into Explorer; a failed export removes it again.
 - **The version can be copied from the settings window.** The footer's version
   and the Updates page's "Installed:" value were plain text that had to be
   typed off the screen for a bug report; both can now be selected with the

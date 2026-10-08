@@ -12212,11 +12212,36 @@ def _gui_construction():
             assert _export_module._last_export_dir is None, "a cancelled export moved the folder"
             export_dir = Path(tmp) / "exports"
             export_dir.mkdir()
+            assert window.history_export_status.isHidden(), "an export line before any export"
             _FakeSaveDialog.answer = (str(export_dir / "notes.txt"), "")
             window._export_history()
             assert "A stored transcript" in (export_dir / "notes.txt").read_text(encoding="utf-8")
+            # …and the page says where it went, not only "Exported ✓" for a second.
+            assert not window.history_export_status.isHidden(), "a successful export names nothing"
+            status = window.history_export_status.text()
+            assert status.startswith("Exported 2 transcripts to "), status
+            assert str(export_dir / "notes.txt") in status, status
             window._export_history()  # the next one starts where that one went
             assert Path(_FakeSaveDialog.starts[-1]).parent == export_dir, _FakeSaveDialog.starts
+
+            # A failed export drops that line: it describes an earlier file,
+            # and under the failure warning it would read as this one's result.
+            class _FakeExportBox:
+                warned: list[str] = []
+
+                @classmethod
+                def warning(cls, _parent, _title, text, *_args, **_kwargs):
+                    cls.warned.append(text)
+
+            real_export_box = _export_module.QMessageBox
+            _export_module.QMessageBox = _FakeExportBox
+            try:
+                _FakeSaveDialog.answer = (str(export_dir / "missing" / "notes.txt"), "")
+                window._export_history()
+            finally:
+                _export_module.QMessageBox = real_export_box
+            assert len(_FakeExportBox.warned) == 1, _FakeExportBox.warned
+            assert window.history_export_status.isHidden(), "a failed export kept the old line"
         finally:
             _export_module.QFileDialog = real_dialog
             _export_module._last_export_dir = real_last_dir

@@ -2936,6 +2936,14 @@ class SettingsWindow(QDialog):
         self.history_clear_button.clicked.connect(self._clear_history)
         bottom.addWidget(self.history_clear_button)
         layout.addLayout(bottom)
+        # Where the last export went. "Exported ✓" on the button is gone after
+        # a second and never named the file — and the file is the whole point
+        # of an export. Hidden until an export succeeds; selectable, so the
+        # path can be pasted into Explorer or a mail.
+        self.history_export_status = self._hint("", elastic=True, selectable=True)
+        self.history_export_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.history_export_status.hide()
+        layout.addWidget(self.history_export_status)
 
         # Ctrl+F, the key everyone reaches for when they want to find
         # something. The Help page has had it since its find field existed and
@@ -5543,6 +5551,9 @@ class SettingsWindow(QDialog):
                 fh.write(format_entries(entries))
         except Exception as exc:
             log.exception("could not export the transcript history to %s", path)
+            # A line naming an earlier, successful export must not sit under
+            # this failure as if it described it.
+            self.history_export_status.hide()
             QMessageBox.warning(
                 self, APP_NAME, f"Could not write the file:\n{path}\n\n{exc}"
             )
@@ -5552,6 +5563,13 @@ class SettingsWindow(QDialog):
         # could not be written to is the last place the next export should open.
         _last_export_dir = str(Path(path).parent)
         self._flash_button(self.history_export_button, "Exported ✓", "Export…")
+        plural = "s" if len(entries) != 1 else ""
+        # str(Path): the dialog hands back forward slashes on Windows too, and
+        # a path pasted into Explorer should look like the ones it shows.
+        self.history_export_status.setText(
+            f"Exported {len(entries)} transcript{plural} to {Path(path)}"
+        )
+        self.history_export_status.show()
 
     @staticmethod
     def _flash_button(button: QPushButton, message: str, label: str) -> None:
