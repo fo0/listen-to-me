@@ -278,6 +278,13 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Fixed
 
+- **A modifier-only toggle hotkey no longer fires on every shortcut that
+  shares its modifiers.** With `Ctrl+Alt` or `Ctrl+Win` as the hotkey in
+  toggle mode, a take started or stopped as soon as the modifiers went down, so
+  every `Ctrl+Alt+X` or `Ctrl+Win+←` shortcut toggled a recording unnoticed and
+  pasted its transcript at the next press. Such a combination now fires when it
+  is released, and only if no other key went down while it was held. Hold mode
+  is unchanged.
 - **A failing assistant now says what to do.** The Assistant page's "Test
   connection" has translated transport failures into one actionable sentence
   for a while, but the notification after a real dictation still printed the

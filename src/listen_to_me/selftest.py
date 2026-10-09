@@ -4145,6 +4145,30 @@ def _hotkey_default_valid():
     assert Hotkeys.combo_flags("not a combo") == (True, True)  # unparseable → unsafe
 
 
+def _hotkey_modifier_only_toggle():
+    """A modifier-only toggle combo (Ctrl+Alt) fires on its release, and only
+    when no other key went down meanwhile — else every Ctrl+Alt+X shortcut
+    starts or stops a take. Driven through the handlers with stand-in keys:
+    no pynput, which needs a display (canonical() falls back to the key)."""
+    from listen_to_me.hotkeys import Hotkeys
+
+    fired = []
+    hk = Hotkeys(lambda: fired.append(1))
+    hk._combo = {"ctrl", "alt"}
+
+    def keys(*events):
+        for event in events:
+            (hk._tap_press if event[0] == "+" else hk._tap_release)(event[1:])
+        return len(fired)
+
+    assert keys("+ctrl", "+alt", "+alt", "-alt") == 1  # a repeat press is still one
+    assert keys("-ctrl") == 1, "the second release must not fire again"
+    assert keys("+ctrl", "+alt", "+x", "-x", "-alt", "-ctrl") == 1  # Ctrl+Alt+X
+    assert keys("+ctrl", "+x", "-x", "+alt", "-alt", "-ctrl") == 1  # Ctrl+X first
+    assert keys("+x", "+ctrl", "+alt", "-ctrl", "-alt", "-x") == 2  # X held before
+    assert keys("+ctrl", "+alt", "-alt", "+alt", "-alt", "-ctrl") == 4  # Ctrl held, Alt twice
+
+
 def _live_typing_logic():
     """The live-typing agreement policy commits only segments that two
     consecutive passes agree on (and that end before the tail guard), text is
@@ -14212,6 +14236,8 @@ _LIGHT_CHECKS = [
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
     ("no-speech report names its own source", _no_speech_report_names_its_own_source),
     ("recorder events carry their take", _recorder_events_carry_their_take),
+    ("a modifier-only toggle hotkey fires on a clean release",
+     _hotkey_modifier_only_toggle),
     ("hotkeys route to their own source", _hotkeys_route_to_their_own_source),
     ("an unknown source is logged, not answered silently",
      _an_unknown_source_is_logged_not_answered_silently),
