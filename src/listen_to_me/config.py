@@ -80,7 +80,9 @@ Return ONLY the cleaned text — no explanations, no quotes, no markdown fences.
 DEFAULTS: dict = {
     # Global hotkey in pynput format, e.g. "<ctrl>+<alt>+<space>".
     "hotkey": "<ctrl>+<alt>+<space>",
-    # "toggle": press once to start, again to stop.
+    # "toggle": press once to start, again to stop. A modifier-only combo
+    # (e.g. "<ctrl>+<alt>") fires on its release instead, and only if no other
+    # key went down meanwhile (hotkeys.Hotkeys._tap_release).
     # "hold": true push-to-talk — record only while the keys are held down.
     "hotkey_mode": "toggle",
     # Whisper language code ("auto" = detect automatically).
