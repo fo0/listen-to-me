@@ -85,3 +85,20 @@ Apply ONLY the safe class, as one small, reviewable batch:
 - Updates you decided against — or that failed — record with `compat_decide`
   (`project:"fo0/listen-to-me"`, `rejected`/`failed`/`abandoned` + note), so the project
   dashboard shows why.
+
+## 8 · This repo
+
+- Dependabot runs weekly for `pip` and `github-actions` (`.github/dependabot.yml`,
+  `agent_docs/deployment.md`): expect proposals for those two ecosystems only.
+- **There is no lock file here** (CLAUDE.md → Git Conventions): for `compat_check`, take the
+  installed versions from `pip list --format=freeze` when a venv is available, otherwise the
+  declared bounds in `requirements.txt` + `pyproject.toml`.
+- Further available updates: `pip list --outdated`.
+- **review** also covers every package this app is coupled to: PySide6,
+  faster-whisper/ctranslate2, pynput, numpy, huggingface_hub.
+- After bumping, this repo’s only checks are `python -m compileall -q src scripts` plus the
+  offscreen Qt smoke (CLAUDE.md → Commands). There is deliberately no linter/typechecker/test
+  framework here; never add one to get a bump verified.
+- Keep `requirements.txt` and `pyproject.toml` in sync, and check whether the bump needs a
+  `--collect-all` change in `.github/workflows/release.yml` (verified by the built exe’s
+  `--selftest`).
