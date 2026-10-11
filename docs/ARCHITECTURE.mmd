@@ -38,7 +38,9 @@ flowchart TD
         Transcriber("Transcriber — faster-whisper"):::backend
         TranscriberOV("OpenVinoTranscriber — OpenVINO GenAI (Intel GPU/NPU)"):::backend
         TranscriberPK("ParakeetTranscriber — Parakeet TDT via onnx-asr (v3 or the German fine-tune)"):::backend
+        ParakeetModels["parakeet_models — Parakeet model registry: which files a model needs, the pinned download"]:::backend
         Fillers("fillers — is the whole transcript one of the invented silence phrases?"):::backend
+        Hallucination("hallucination — judges invented text: foreign-script segments, repetition loops, prompt echo"):::backend
         Assistant("Assistant — LLM post-process (one profile per source)"):::backend
         Injector("Injector — paste/type at cursor"):::backend
         LiveType("LiveTyper — live typing while recording"):::backend
@@ -110,6 +112,10 @@ flowchart TD
     Recorder -->|"audio frames"| TranscriberOV
     Recorder -->|"audio frames"| TranscriberPK
     App -->|"silent/quiet audio + whole transcript = a listed phrase → drop the take"| Fillers
+    Transcriber -->|"segment_drop_reason / strip_foreign_runs per segment, prompt_tail"| Hallucination
+    TranscriberOV -->|"trim_silence, strip_foreign_runs, prompt_tail"| Hallucination
+    App -->|"implausible_reason → refuse the take (loop, prompt echo, over 30 characters a second from the microphone)"| Hallucination
+    TranscriberPK -->|"MODELS, model files, fetch_pinned"| ParakeetModels
     App -->|"clip_stats verdict (silent/quiet/ok) for a take with no text"| Diag
     Transcriber -->|"text"| Assistant
     Assistant -->|"cleaned text"| Injector
@@ -123,6 +129,7 @@ flowchart TD
     Settings -->|"loopback candidates for the device list"| SysAudio
     Settings -->|"input profiles + list_output_devices() for the two-group picker and its hint"| Recorder
     Settings -->|"phrase-list status while it is edited"| Fillers
+    Settings -->|"prompt_exceeds_window under the prompt field"| Hallucination
     Settings -->|"model download / transcription test / hardware_status() on a worker thread"| Diag
     MicTest -->|"mic_test() on its worker, results via its own signal bridge"| Diag
     OnboardingEngine -->|"hardware_status() once, on a worker thread"| Diag
@@ -131,6 +138,10 @@ flowchart TD
     Settings -->|"Auto-configure: hardware_from_status(probe) → recommend() → confirm → fill the Engine fields (unsaved)"| AutoConfig
     Settings -->|"confirm_message() / describe_changes() for the question"| AutoConfigText
     AutoConfigText -->|"Recommendation"| AutoConfig
+    AutoConfig -->|"DEFAULT_MODEL, V3_LANGUAGES"| ParakeetModels
+    Home -->|"parakeet_model(): name the selected model"| ParakeetModels
+    Tray -->|"parakeet_model(): the selected model's one language"| ParakeetModels
+    Diag -->|"parakeet_model(): name the selected model"| ParakeetModels
     Diag -->|"test clip"| Recorder
     Diag -->|"snapshot transcriber"| Transcriber
     Diag -->|"snapshot transcriber"| TranscriberOV
@@ -184,6 +195,8 @@ flowchart TD
     click Resample "src/listen_to_me/resample.py"
     click PortAudio "src/listen_to_me/portaudio.py"
     click Fillers "src/listen_to_me/fillers.py"
+    click Hallucination "src/listen_to_me/hallucination.py"
+    click ParakeetModels "src/listen_to_me/parakeet_models.py"
     click Transcriber "src/listen_to_me/transcriber.py"
     click TranscriberOV "src/listen_to_me/transcriber_openvino.py"
     click TranscriberPK "src/listen_to_me/transcriber_parakeet.py"
