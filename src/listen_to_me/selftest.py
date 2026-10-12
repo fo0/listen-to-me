@@ -4840,12 +4840,16 @@ def _insecure_ssl_hub_httpx():
         raise AssertionError("factory is only installed, never called here")
 
     hub_http.default_client_factory = default_client_factory
+    # hub 2.x binds httpx2, not httpx (#312): the client package is taken from
+    # the hub's own module, so the fake one has to be found there.
+    hub_http.httpx2 = types.ModuleType("httpx2")
     hub.utils = hub_utils
     hub_utils._http = hub_http
     names = ("huggingface_hub", "huggingface_hub.utils", "huggingface_hub.utils._http")
     saved = {name: sys.modules.get(name) for name in names}
     sys.modules.update({names[0]: hub, names[1]: hub_utils, names[2]: hub_http})
     try:
+        assert netutil._hub_http_module() is hub_http.httpx2
         netutil.apply_insecure_ssl(True)
         netutil.apply_insecure_ssl(False)
     finally:
@@ -14704,17 +14708,32 @@ _LIGHT_CHECKS = [
 ]
 
 def _insecure_hub_client_builds():
-    """The insecure/default httpx clients for huggingface_hub >= 1.0 actually
-    construct against the bundled httpx (catches kwargs drift at release
-    time). Silently skipped when httpx isn't installed (hub < 1.0 setups)."""
+    """The insecure/default clients for huggingface_hub >= 1.0 actually
+    construct against the bundled hub, and are the same client type the hub's
+    own factory builds (catches kwargs drift and an httpx/httpx2 mismatch at
+    release time). Skipped only when the hub has no set_client_factory
+    (< 1.0, requests-based) — never on a missing ``httpx``: hub 2.x no longer
+    installs it, and skipping on that is how #312 got past this check."""
     try:
-        import httpx  # noqa: F401
+        from huggingface_hub import set_client_factory  # noqa: F401
+        from huggingface_hub.utils._http import default_client_factory
     except ImportError:
         return
     from listen_to_me import netutil
 
-    netutil._build_hub_client(verify=False).close()
-    netutil._build_hub_client(verify=True).close()
+    reference = default_client_factory()
+    try:
+        for verify in (False, True):
+            client = netutil._build_hub_client(verify=verify)
+            try:
+                assert type(client) is type(reference), (
+                    f"{type(client).__module__}.{type(client).__name__} is not the hub's "
+                    f"{type(reference).__module__}.{type(reference).__name__}"
+                )
+            finally:
+                client.close()
+    finally:
+        reference.close()
 
 
 def _portaudio_supports_wasapi_loopback():
