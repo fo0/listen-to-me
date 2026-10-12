@@ -21,11 +21,12 @@ to be the binary that actually gets loaded. This module is that half, plus the
 proof of which one won.
 
 **The version string is not that proof — it is identical in both binaries.**
-At the pinned commit (`PORTAUDIO_COMMIT` in `release.yml`) `paVersionMinor` is
-still `7` (`src/common/pa_front.c:94`) and `PA_GIT_REVISION` is still the
-checked-in `unknown`, because upstream's `update_gitrevision.sh` is a manual
-pre-build script that CMake never runs. So `Pa_GetVersionText()` returns
-`"PortAudio V19.7.0-devel, revision unknown"` and `Pa_GetVersion()` returns
+At the pinned commit (`PORTAUDIO_COMMIT` in `desktop-release.yml`)
+`paVersionMinor` is still `7` (`src/common/pa_front.c:94`) and
+`PA_GIT_REVISION` is still the checked-in `unknown`, because upstream's
+`update_gitrevision.sh` is a manual pre-build script that CMake never runs. So
+`Pa_GetVersionText()` returns `"PortAudio V19.7.0-devel, revision unknown"`
+and `Pa_GetVersion()` returns
 `190700` from the DLL we build *and* from the wheel's own (measured on
 `libportaudio64bit.dll` in `sounddevice-0.5.6-py3-none-win_amd64.whl`; all six
 DLLs in that wheel carry the same string). A release log reading
@@ -76,10 +77,10 @@ import sys
 
 log = logging.getLogger(__name__)
 
-# The file name the release build bundles (release.yml `--add-binary`) and the
-# name `find_library("portaudio")` looks for on Windows. Public so the caller
-# that fakes a bundle (selftest) and the pipeline that fills one cannot drift
-# apart on a rename.
+# The file name the release build bundles (desktop-release.yml `--add-binary`)
+# and the name `find_library("portaudio")` looks for on Windows. Public so the
+# caller that fakes a bundle (selftest) and the pipeline that fills one cannot
+# drift apart on a rename.
 DLL_NAME = "portaudio.dll"
 
 # The Windows host API that lists each endpoint exactly once and the only one

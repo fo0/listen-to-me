@@ -4,8 +4,8 @@ Offloaded from `CLAUDE.md` (context budget). CLAUDE.md keeps trigger + pipeline 
 
 ## Trigger & pipeline
 
-- **Trigger:** manual `workflow_dispatch` on `.github/workflows/release.yml`. It builds the Windows one-file exe and publishes a GitHub Release tagged `vYYYY.MM.DD.<run>`. A guard job fails any dispatch from a ref other than `main`.
-- **Verification reuse:** `release.yml` calls the `ci.yml` `check` job via `workflow_call`, so a release can never be built from a red tree.
+- **Trigger:** manual `workflow_dispatch` on `.github/workflows/desktop-release.yml`. It builds the Windows one-file exe and publishes a GitHub Release tagged `vYYYY.MM.DD.<run>`. A guard job fails any dispatch from a ref other than `main`.
+- **Verification reuse:** `desktop-release.yml` calls the `ci.yml` `check` job via `workflow_call`, so a release can never be built from a red tree.
 - **PRs** only run the `ci.yml` `check` job — never a build, never a release.
 - **Distribution:** portable single-file `ListenToMe-<date>-<hhmm>-win64.exe` (UTC timestamp) attached to the Release. The in-app updater (`updater.py`) offers newer releases from the GitHub Releases API.
 - **Environments:** none. There is no server; the "environment" is the user's desktop.
@@ -21,13 +21,13 @@ The agent may push to feature branches and open/update PRs. Merging a PR and dis
 
 **Destructive change sets stay gated** behind an explicit interactive user command — no routine substitutes for one there.
 
-**Accepted risk.** The routine claim arrives as prompt text, which reaches a session from outside the repository, and the agent cannot verify it: a scheduled trigger someone else edited, or an instruction injected through an issue or PR body, can assert routine status and inherit merge rights on a repo whose release workflow runs with `contents: write`. The owner accepted that trade knowingly, for fleet-wide consistency with the fifteen sibling repos and for automation throughput. The mitigations that remain are the two conditions above, the SHA-pinned actions (#22), and the fact that a merge alone publishes nothing — `release.yml` is `workflow_dispatch`-only and guarded to `main`. Full reasoning and alternatives: ADR-0005, superseding ADR-0004 (issue #21).
+**Accepted risk.** The routine claim arrives as prompt text, which reaches a session from outside the repository, and the agent cannot verify it: a scheduled trigger someone else edited, or an instruction injected through an issue or PR body, can assert routine status and inherit merge rights on a repo whose release workflow runs with `contents: write`. The owner accepted that trade knowingly, for fleet-wide consistency with the fifteen sibling repos and for automation throughput. The mitigations that remain are the two conditions above, the SHA-pinned actions (#22), and the fact that a merge alone publishes nothing — `desktop-release.yml` is `workflow_dispatch`-only and guarded to `main`. Full reasoning and alternatives: ADR-0005, superseding ADR-0004 (issue #21).
 
 Merge gate: `.claude/skills/pr/SKILL.md → /pr merge`.
 
 ## GitHub Actions are pinned by commit SHA
 
-Never by tag (#22). A tag can be moved to point at different code, and `release.yml` runs with `contents: write` and publishes the exe the in-app updater hands to users.
+Never by tag (#22). A tag can be moved to point at different code, and `desktop-release.yml` runs with `contents: write` and publishes the exe the in-app updater hands to users.
 
 - Format: `uses: owner/repo@<40-hex-sha> # vX.Y.Z`
 - To bump one, resolve the new SHA first: `git ls-remote --tags https://github.com/<owner>/<repo>`. For an annotated tag take the `^{}` line — that is the commit.
@@ -62,7 +62,7 @@ The last PortAudio release, 19.7.0 (2021), predates loopback support, so this is
   - The `PaWasapi_IsLoopback` export proves `PA_USE_WASAPI` was on, because `cmake/portaudio.def.in` drops every `PaWasapi_*` export without it.
   - Parsing the DLL's own PE import table — the import directory and the delay-load one — proves the static runtime took effect, by finding no import from a redistributable family (`vcruntime140.dll`, `msvcp140.dll`, `msvcr120.dll`, `concrt140.dll`; Windows' own `msvcrt.dll` is not one of them and does not fail the gate). Only the file can answer this, which is why the step reads it.
 - End to end the check is the exe's `--selftest` in the **Smoke test executable** step. That is the only place WASAPI exists at all — the Linux `check` job cannot see any of it.
-- Both live in `release.yml`, which is `workflow_dispatch`-only and guarded to `main`, so **a bump is not verifiable in a PR**: it is verified the first time a release is dispatched after the merge. To check earlier, run the job's `cmake` commands by hand on a Windows machine with Visual Studio 2022 plus CMake and inspect the result with `dumpbin /exports portaudio.dll` and `dumpbin /dependents portaudio.dll` from a Developer Command Prompt.
+- Both live in `desktop-release.yml`, which is `workflow_dispatch`-only and guarded to `main`, so **a bump is not verifiable in a PR**: it is verified the first time a release is dispatched after the merge. To check earlier, run the job's `cmake` commands by hand on a Windows machine with Visual Studio 2022 plus CMake and inspect the result with `dumpbin /exports portaudio.dll` and `dumpbin /dependents portaudio.dll` from a Developer Command Prompt.
 - A DLL that is found but refuses to load costs only the feature, not the app: `sounddevice` wraps the whole `find_library` path in `try: … except OSError` (0.5.6, lines 63-91) and falls back to its own `libportaudio64bit.dll`. That is why the CI gate above loads the DLL itself — the fallback would otherwise hide a broken build until someone looked for a `[Loopback]` device.
 - The version string cannot tell you which DLL got loaded: this master commit still reports `PortAudio V19.7.0-devel` (`paVersionMinor` is still 7 in `src/common/pa_front.c`), exactly what the `sounddevice` wheel's DLL reports. The `PaWasapi_IsLoopback` export and the presence of `[Loopback]` input devices are the discriminators.
 

@@ -1,4 +1,4 @@
-name: Release
+name: Desktop Release
 
 # Manual-only release pipeline: Windows one-file build + GitHub Release.
 # Never triggered by pushes or pull requests, and the guard job refuses

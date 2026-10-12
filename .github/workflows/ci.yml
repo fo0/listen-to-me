@@ -1,7 +1,7 @@
 name: CI
 
 # Fast checks only — no build, no release, no artifacts.
-# Runs on every pull request, and is reused by release.yml via workflow_call.
+# Runs on every pull request, and is reused by desktop-release.yml via workflow_call.
 
 on:
   pull_request:
@@ -12,7 +12,7 @@ permissions:
 
 # One in-flight run per pull request: a second push supersedes the first, and
 # the run it obsoleted has nothing left to report. The fallback is the run id,
-# not the ref, on purpose — a run reached through workflow_call (release.yml)
+# not the ref, on purpose — a run reached through workflow_call (desktop-release.yml)
 # then lands in a group of its own, so a release build can never be cancelled
 # by, or queued behind, another one.
 concurrency:
