@@ -47,6 +47,10 @@ standalone system-tray app that works in _every_ application.
   and a signal too quiet to recognize are named as the device problems they are,
   instead of every case reading "No speech detected." and sending you back to
   repeat the dictation into a muted microphone.
+- **A notification takes you where it points** — click one that names a place
+  ("Settings → Audio", "it is in Settings → History", "see the log file", "tray
+  menu → Help") and that page of the settings window, or the log file, opens.
+  A notification that names nowhere stays a plain message.
 - **A silent take no longer inserts a sentence nobody spoke** — press the
   hotkey, say nothing, press it again, and Whisper answers "Vielen Dank.",
   "Thank you." or a subtitle credit. Those phrases come out of the model, not

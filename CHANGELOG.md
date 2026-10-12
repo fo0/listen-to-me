@@ -14,6 +14,13 @@ changes at a glance.
 
 ### Added
 
+- **Clicking a notification opens the place it names.** Many notifications end
+  on where to act — "check the input device under Settings → Audio", "it is in
+  Settings → History", "see the log file" — and each one was a dead end: read
+  it, then walk the tray menu and the sidebar to the page it named. A click on
+  the notification now opens that page of the settings window, or the log
+  file. A notification that names no place (or another program's settings)
+  still does nothing when clicked.
 - **A running transcription can be kept away from the cursor.** A long
   system-audio take can transcribe for minutes, and by the time it is done the
   user is typing somewhere else — which is where its text was pasted. While a

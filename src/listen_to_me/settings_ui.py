@@ -3202,6 +3202,10 @@ class SettingsWindow(QDialog):
         """Open the Help / Troubleshooting page (used by the tray menu)."""
         self._show_page("Help")
 
+    def show_page(self, title: str) -> None:
+        """Open the page `title` — the one a clicked notification named."""
+        self._show_page(title)
+
     # ------------------------------------------------------ small helpers
 
     def _refresh_autostart_status(self) -> None:

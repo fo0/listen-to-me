@@ -236,6 +236,9 @@ class Tray:
         # Text of a running download; while set it owns the tooltip and
         # the status line (see set_progress).
         self._progress: str | None = None
+        # The notification on screen, for the click on it: Qt's messageClicked
+        # carries no text, and a new message replaces the previous one.
+        self._last_message: str | None = None
 
     def start(self) -> None:
         app = self.app
@@ -411,6 +414,9 @@ class Tray:
         self._icon.setContextMenu(menu)
         # Left click / double click the tray icon: open the main window.
         self._icon.activated.connect(self._on_activated)
+        # A notification that names a place ("Settings → Audio", "see the log
+        # file") opens it when clicked, instead of being a dead end.
+        self._icon.messageClicked.connect(self._on_message_clicked)
         self._icon.show()
         if not QSystemTrayIcon.isSystemTrayAvailable():
             log.warning(
@@ -720,8 +726,14 @@ class Tray:
             return
         try:
             self._icon.showMessage(APP_NAME, message)
+            self._last_message = message
         except Exception:
             log.debug("notification failed", exc_info=True)
+
+    def _on_message_clicked(self) -> None:
+        """A click on the notification: App opens the place it names, if any."""
+        if self._last_message:
+            self.app.post("notification_clicked", self._last_message)
 
     def stop(self) -> None:
         self._stop_retry()

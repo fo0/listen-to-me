@@ -596,6 +596,56 @@ def nothing_to_copy_message(history, history_enabled) -> str:
     return "No transcript in the history yet."
 
 
+# The pages of the main window a notification can name as "Settings → <Page>".
+# Mirrors SettingsWindow's sidebar (the self-test holds the two together); Home
+# is left out, no message sends anybody there.
+NOTIFICATION_PAGES = (
+    "General",
+    "Engine",
+    "Audio",
+    "Overlay",
+    "Integrations",
+    "Assistant",
+    "History",
+    "Updates",
+    "Help",
+)
+
+
+def notification_target(message) -> tuple[str, str] | None:
+    """Where a click on the notification `message` should take the user.
+
+    Many notifications end on a place to act — "Settings → Audio", "it is in
+    Settings → History", "see the log file", "tray menu → Help" — and a
+    notification was a dead end: reading it, then walking the tray menu and the
+    sidebar to the place it named. Returns ("page", title) for a page of the
+    main window, ("log", "") for the log file, or None when the message names
+    nowhere to go (a click then does nothing, as it always did). When a message
+    names several places, the first one wins — that is the one it leads with.
+
+    Only this app's own page titles count: an integration's note may name
+    another program's "Settings → Keybinds", which is no page here. "No log
+    file at …" / "Could not open the log file" are not pointers to it — opening
+    it is what just failed — so only "see the log file" is.
+    """
+    import re
+
+    text = str(message or "")
+    found: list[tuple[int, tuple[str, str]]] = []
+    for match in re.finditer(r"Settings → (\w+)", text):
+        if match.group(1) in NOTIFICATION_PAGES:
+            found.append((match.start(), ("page", match.group(1))))
+    for pattern, target in (
+        (r"tray menu → Check for updates", ("page", "Updates")),
+        (r"tray menu → Help", ("page", "Help")),
+        (r"\bsee the log file\b", ("log", "")),
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            found.append((match.start(), target))
+    return min(found)[1] if found else None
+
+
 def withheld_message(kept: bool, *, done: bool, history_enabled: bool = True) -> str:
     """What "Don't insert this transcript" says — when it is chosen while the
     take is still being transcribed (`done=False`), and once the transcript
@@ -1098,6 +1148,8 @@ class App:
             self._open_config_folder()
         elif kind == "open_log":
             self._open_log_file()
+        elif kind == "notification_clicked":
+            self._follow_notification(payload)
         elif kind == "factory_reset":
             self._factory_reset()
         elif kind == "quit":
@@ -2267,6 +2319,25 @@ class App:
         self._settings_window.show()
         self._settings_window.raise_()
         self._settings_window.activateWindow()
+
+    def _follow_notification(self, message) -> None:
+        """A click on a desktop notification: open the place it names (see
+        notification_target). A message that names nowhere is left alone —
+        opening a window on every click would turn "Recording cancelled." into
+        a window nobody asked for."""
+        target = notification_target(message)
+        if target is None:
+            return
+        kind, page = target
+        if kind == "log":
+            self._open_log_file()
+            return
+        self._open_settings()
+        if self._settings_window is not None:
+            try:
+                self._settings_window.show_page(page)
+            except Exception:
+                log.debug("could not open the %s page", page, exc_info=True)
 
     def _open_updates(self) -> None:
         self._open_settings()

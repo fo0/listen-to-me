@@ -1639,6 +1639,78 @@ def _withheld_transcript_is_not_inserted():
         assert "could not be saved" in failed and "log file" in failed
 
 
+def _notifications_lead_to_the_place_they_name():
+    """A click on a notification opens the place it names, and a notification
+    naming nowhere stays a no-op.
+
+    Driven with the app's real wording wherever a helper produces it, so a
+    reworded message that stops matching shows up here: the no-speech
+    diagnosis names Settings → Audio, a held-back transcript Settings →
+    History, a failed save "see the log file". The pitfalls are pinned too —
+    another program's "Settings → Keyboard Shortcuts" is no page of this app,
+    and "No log file at …" must not reopen the file that just failed to open.
+    `App._follow_notification` is borrowed onto a stub so the routing is under
+    test, not only the matcher. The tray's half (the click posting the
+    message on screen) needs Qt and sits in `_tray_notification_click_is_forwarded`."""
+    from listen_to_me.app import App, notification_target, withheld_message
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+    from listen_to_me.diagnostics import no_speech_message
+
+    def page(title):
+        return ("page", title)
+
+    cases = [
+        (no_speech_message("silent", SOURCE_MIC), page("Audio")),
+        (no_speech_message("silent", SOURCE_SYSTEM), page("Audio")),
+        (withheld_message(True, done=True), page("History")),
+        ("Could not save the settings — see the log file.", ("log", "")),
+        ("Could not move the floating icon. See the log file.", ("log", "")),
+        (
+            "GPU transcription needs the NVIDIA CUDA 12 libraries. Set Device = CPU in "
+            "Settings → Engine, or see the tray menu → Help / Troubleshooting.",
+            page("Engine"),
+        ),
+        ("Update available: v1. Open the tray menu → Check for updates.", page("Updates")),
+        ("Tick Settings → Keyboard Shortcuts → Mute in Zoom.", None),
+        ("No log file at /x/listen-to-me.log — this start could not create one.", None),
+        ("Could not open the log file — it is /x. Use “Open config folder”.", None),
+        ("Recording cancelled.", None),
+        ("", None),
+        (None, None),
+    ]
+    for message, expected in cases:
+        assert notification_target(message) == expected, (message, notification_target(message))
+
+    class _Window:
+        def __init__(self):
+            self.pages: list[str] = []
+
+        def show_page(self, title):
+            self.pages.append(title)
+
+    class _App:
+        _follow_notification = App._follow_notification
+
+        def __init__(self):
+            self._settings_window = None
+            self.opened = self.logs = 0
+
+        def _open_settings(self):
+            self.opened += 1
+            self._settings_window = self._settings_window or _Window()
+
+        def _open_log_file(self):
+            self.logs += 1
+
+    app = _App()
+    app._follow_notification(withheld_message(True, done=True))
+    assert app.opened == 1 and app._settings_window.pages == ["History"]
+    app._follow_notification("Could not save the settings — see the log file.")
+    assert app.logs == 1 and app.opened == 1
+    app._follow_notification("Recording cancelled.")
+    assert app.opened == 1 and app.logs == 1 and app._settings_window.pages == ["History"]
+
+
 def _implausible_take_inserts_nothing():
     """A transcript that cannot have come from its take reaches neither the
     cursor nor the assistant, but stays in the history (#293).
@@ -9178,6 +9250,50 @@ def _tray_click_opens_the_window():
             assert not stub.posts, f"{reason} posted {stub.posts}"
 
 
+def _tray_notification_click_is_forwarded():
+    """Clicking the notification on screen posts its text to App, which opens
+    the place it names (see `_notifications_lead_to_the_place_they_name`).
+    Qt's messageClicked carries no text, so the tray keeps the message it last
+    showed; a notification the user switched off was never shown and must not
+    become the one a click refers to. Every page a notification may name is a
+    real page of the main window — the list in app.py cannot drift from it."""
+    from listen_to_me import tray as tray_module
+    from listen_to_me.app import NOTIFICATION_PAGES
+    from listen_to_me.settings_ui import SettingsWindow
+
+    _ensure_qapp()
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        tray = tray_module.Tray(stub)
+        tray.start()
+        try:
+            tray._on_message_clicked()  # nothing shown yet
+            assert not stub.posts, stub.posts
+            tray.notify("No sound reached the microphone — Settings → Audio.", force=True)
+            tray._on_message_clicked()
+            assert stub.posts == [
+                ("notification_clicked", "No sound reached the microphone — Settings → Audio.")
+            ], stub.posts
+            stub.cfg["notifications"] = False
+            stub.posts.clear()
+            tray.notify("Recording cancelled.")  # switched off: not shown
+            tray._on_message_clicked()
+            assert stub.posts == [
+                ("notification_clicked", "No sound reached the microphone — Settings → Audio.")
+            ], stub.posts
+        finally:
+            tray.stop()
+
+        window = SettingsWindow(stub)
+        try:
+            missing = set(NOTIFICATION_PAGES) - set(window._nav_row)
+            assert not missing, f"no such page in the main window: {sorted(missing)}"
+            window.show_page("History")
+            assert window.stack.currentIndex() == window._history_index
+        finally:
+            window.deleteLater()
+
+
 def _hotkey_pause_is_visible_and_temporary():
     """Pausing the global hotkey stops the listener, says so in the tray status,
     and survives every path that hands the listener back (a saved setting, a
@@ -14417,6 +14533,7 @@ _LIGHT_CHECKS = [
     ("filler take inserts nothing", _filler_take_inserts_nothing),
     ("implausible take inserts nothing", _implausible_take_inserts_nothing),
     ("withheld transcript is not inserted", _withheld_transcript_is_not_inserted),
+    ("notifications lead to the place they name", _notifications_lead_to_the_place_they_name),
     ("the parsers bound the lines they walk", _the_parsers_bound_the_lines_they_walk),
     ("missing microphone falls back", _missing_microphone_falls_back),
     ("loopback device is ranked and resolved", _loopback_device_is_ranked_and_resolved),
@@ -14515,6 +14632,7 @@ _LIGHT_CHECKS = [
     ("overlay lists recent transcripts", _overlay_lists_recent_transcripts),
     ("overlay menu follows the state", _overlay_menu_follows_the_state),
     ("tray names the hotkey", _tray_names_the_hotkey),
+    ("tray notification click is forwarded", _tray_notification_click_is_forwarded),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("transcription is counted", _transcription_is_counted),
     ("too short take explains hold mode", _too_short_take_explains_hold_mode),
