@@ -802,6 +802,10 @@ class App:
         self.qapp = None
         self.overlay = None
         self._settings_window = None
+        # Size, position and maximized state of the last settings window that
+        # was closed (QWidget.saveGeometry), so the next one opens the same
+        # way. Session only — see SettingsWindow.done.
+        self.settings_geometry = None
         self._poll_timer = None
         self._recording_id = 0  # invalidates live-preview workers of old takes
         self._recording_started = 0.0  # monotonic start of the running take

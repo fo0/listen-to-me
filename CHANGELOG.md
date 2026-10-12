@@ -14,6 +14,13 @@ changes at a glance.
 
 ### Added
 
+- **The settings window reopens the way it was left.** Every close destroyed
+  the window, so each open snapped back to 980×720 in the middle of the screen
+  — enlarged to read the History, moved beside the window being dictated into,
+  and back again the next time. It now comes back with the size, position and
+  maximized state it was closed with, for as long as the app runs. Not stored
+  across restarts on purpose: desktop coordinates do not survive a reboot that
+  brings a second monitor up late.
 - **Clicking a notification opens the place it names.** Many notifications end
   on where to act — "check the input device under Settings → Audio", "it is in
   Settings → History", "see the log file" — and each one was a dead end: read

@@ -9260,8 +9260,9 @@ def _tray_notification_click_is_forwarded():
     from listen_to_me import tray as tray_module
     from listen_to_me.app import NOTIFICATION_PAGES
     from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
 
-    _ensure_qapp()
+    apply_theme(_ensure_qapp())
     with tempfile.TemporaryDirectory() as tmp:
         stub = _StubApp(Path(tmp))
         tray = tray_module.Tray(stub)
@@ -9292,6 +9293,42 @@ def _tray_notification_click_is_forwarded():
             assert window.stack.currentIndex() == window._history_index
         finally:
             window.deleteLater()
+
+
+def _settings_window_reopens_as_it_was_left():
+    """Closing the settings window remembers its geometry on the App, and the
+    next window opens with it instead of the 980×720 default — every close
+    destroys the window, so without this each open snapped back. Session only:
+    nothing reaches config.json. A window with nothing remembered keeps the
+    default and the first-show clamp; a remembered one skips the clamp, since
+    its size is the user's own choice.
+
+    The offscreen screen is 800×800, so only the height is compared: Qt fits a
+    restored width to the screen (and the 840 minimum then wins), while a
+    height that fits comes back exactly."""
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        assert getattr(stub, "settings_geometry", None) is None
+        window = SettingsWindow(stub)
+        try:
+            assert not window._screen_clamped and window.height() == 720
+            window.resize(window.width(), 640)
+            window.done(0)  # what Save, Cancel, Esc and the close button end in
+            assert stub.settings_geometry is not None and not stub.settings_geometry.isEmpty()
+        finally:
+            window.deleteLater()
+        reopened = SettingsWindow(stub)
+        try:
+            assert reopened._screen_clamped, "a restored size was clamped like the default"
+            assert reopened.height() == 640, reopened.height()
+        finally:
+            reopened.deleteLater()
+        assert "settings_geometry" not in stub.cfg.data
 
 
 def _hotkey_pause_is_visible_and_temporary():
@@ -14633,6 +14670,7 @@ _LIGHT_CHECKS = [
     ("overlay menu follows the state", _overlay_menu_follows_the_state),
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray notification click is forwarded", _tray_notification_click_is_forwarded),
+    ("settings window reopens as it was left", _settings_window_reopens_as_it_was_left),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("transcription is counted", _transcription_is_counted),
     ("too short take explains hold mode", _too_short_take_explains_hold_mode),

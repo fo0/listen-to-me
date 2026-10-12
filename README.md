@@ -155,7 +155,9 @@ standalone system-tray app that works in _every_ application.
   page's **Start recording** still records.
   Only one instance runs at a time:
   starting the app again simply brings the running instance's settings
-  window to the front.
+  window to the front. That window **reopens the way you left it** — the size
+  you dragged it to, where you put it, maximized if it was — for as long as
+  the app runs; a fresh start opens it at its default size again.
 - **Transcript history** — the transcribed text of each recording is kept
   locally (never the audio) so you can copy it again from **Settings → History**
   if a paste is lost. Searchable (`Ctrl+F` puts the caret straight into the
