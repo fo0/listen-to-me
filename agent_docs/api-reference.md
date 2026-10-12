@@ -40,7 +40,7 @@ The authoritative schema is `DEFAULTS` in `src/listen_to_me/config.py` (deep-mer
 ### Updater — GitHub Releases API (`updater.py`)
 
 - **Endpoint:** GitHub Releases of `fo0/listen-to-me`.
-- **Use:** lists releases newer than the running build with changelogs; on a frozen Windows build, downloads the new `.exe` and swaps it in on restart.
+- **Use:** the startup check notifies about releases newer than the running build; the Updates page lists the release history (newer, installed, older — one request, "Show more" pages through it locally) with changelogs, and on a frozen Windows build downloads a newer `.exe` and swaps it in on restart.
 - **Failure mode:** best-effort — a network/API error is silent (startup check) or surfaced in the Updates page.
 
 ### Model download — Hugging Face Hub (via faster-whisper)

@@ -165,7 +165,7 @@ _HISTORY_LESS_LABEL = "Show less"
 class _UpdateSignals(QObject):
     """Marshals results from updater worker threads back to the Qt main thread."""
 
-    checked = Signal(list)  # list[updater.Release]
+    checked = Signal(list)  # list[updater.Release], every one fetched, newest first
     check_failed = Signal(str)
     progress = Signal(int, int)  # bytes done, total (0 = unknown)
     downloaded = Signal(str)  # path to the downloaded exe
@@ -228,6 +228,14 @@ _CHECKING_LABEL = "Checking…"
 # Why the install button is greyed out. A disabled control with no explanation
 # reads as broken — the same reason the export and test buttons carry one.
 _INSTALL_DISABLED_TIP = "Pick a release from the list above first — run “Check now” if it is empty."
+# The release history also lists the running build and older ones, for their
+# changelogs only: nothing but a newer release is ever installed.
+_INSTALL_RUNNING_TIP = "This is the version you are running."
+_INSTALL_OLDER_TIP = (
+    "This release is older than the one you are running — downgrades are not offered."
+)
+# Appended to the running build's row in the release history.
+_RELEASE_INSTALLED_MARK = "   (installed)"
 
 # History page: the folder the last successful "Export…" wrote to, for the rest
 # of this run — the next export's save dialog opens there (history.
@@ -725,7 +733,14 @@ class SettingsWindow(QDialog):
         self._usig.downloaded.connect(self._on_update_downloaded)
         self._usig.download_failed.connect(self._on_update_download_failed)
         self._usig.download_cancelled.connect(self._on_update_download_cancelled)
-        self._releases_newer: list = []
+        # The release history: every release the last check fetched (newest
+        # first), how many of them are newer than this build — always the
+        # leading ones — the running build's row (None: a dev build, or not in
+        # the list) and how many rows the list shows (see _list_releases).
+        self._releases: list = []
+        self._releases_newer_count = 0
+        self._release_installed_row: int | None = None
+        self._releases_listed = 0
         self._update_busy = False
         self._updates_auto_checked = False
         self._update_download_label = ""  # version named in the progress lines
@@ -4795,14 +4810,26 @@ class SettingsWindow(QDialog):
         layout.addWidget(self.update_status)
 
         self.update_list = QListWidget()
-        self.update_list.setAccessibleName("Available releases")
+        self.update_list.setAccessibleName("Release history")
         self.update_list.setMaximumHeight(text_rows_height(self.update_list, 7))
         self.update_list.currentRowChanged.connect(self._on_release_selected)
         self.update_list.setToolTip(
-            "Newer releases, newest first. Pick one to read its changelog — you can jump "
-            "straight to any of them, skipping the ones in between."
+            "Releases, newest first: the newer ones you can install, then the version you "
+            "are running (marked “installed”) and older ones. Pick one to read its "
+            "changelog — you can jump straight to any newer release, skipping the ones "
+            "in between."
         )
         layout.addWidget(self.update_list)
+
+        more = QHBoxLayout()
+        self.update_more_hint = self._hint("")
+        more.addWidget(self.update_more_hint, 1)
+        self.update_more_button = QPushButton("Show more")
+        self.update_more_button.setAutoDefault(False)
+        self.update_more_button.clicked.connect(self._show_more_releases)
+        more.addWidget(self.update_more_button)
+        layout.addLayout(more)
+        self._sync_release_more()
 
         self.update_changelog = QTextBrowser()
         self.update_changelog.setAccessibleName("Changelog of the selected release")
@@ -4859,7 +4886,7 @@ class SettingsWindow(QDialog):
         self.update_check_button.setEnabled(False)
         self.update_check_button.setText(_CHECKING_LABEL)
         self.update_button.setEnabled(False)
-        self.update_list.clear()
+        self._reset_releases()
         self.update_changelog.clear()
         self.update_status.setText("Checking for updates…")
         include_pre = self.chk_prereleases.isChecked()
@@ -4868,8 +4895,9 @@ class SettingsWindow(QDialog):
             try:
                 from . import updater
 
-                releases = updater.fetch_releases(include_prerelease=include_pre)
-                self._usig.checked.emit(updater.newer_releases(releases))
+                # All of them, not only the newer ones: the page is a release
+                # history, and the running build's own changelog is in it.
+                self._usig.checked.emit(updater.fetch_releases(include_prerelease=include_pre))
             except Exception as exc:  # surfaced in the UI
                 from . import netutil
 
@@ -4877,32 +4905,110 @@ class SettingsWindow(QDialog):
 
         threading.Thread(target=work, name="update-check", daemon=True).start()
 
-    def _on_update_check_done(self, newer: list) -> None:
+    def _on_update_check_done(self, releases: list) -> None:
         from . import updater
 
         self._update_busy = False
         self._end_update_check()
-        self._releases_newer = newer
-        self.update_list.clear()
-        if not newer:
+        self._reset_releases()
+        # Newest first (fetch_releases sorts), so the newer ones lead the list.
+        self._releases = releases
+        newer = len(updater.newer_releases(releases))
+        self._releases_newer_count = newer
+        self._release_installed_row = updater.installed_release_index(releases)
+        if newer:
+            self.update_status.setText(
+                f"{newer} newer release{'s' if newer != 1 else ''} available."
+            )
+        else:
             self.update_status.setText("You're on the latest version.")
+        # Every check starts over at the default window.
+        self._list_releases(updater.release_history_rows(len(releases), newer))
+        if not releases:
             self.update_changelog.clear()
             self._disable_install_button("You're on the latest version — there is nothing to install.")
             return
-        self.update_status.setText(
-            f"{len(newer)} newer release{'s' if len(newer) != 1 else ''} available."
-        )
-        for release in newer:
+        # The latest when there is something to install, else the running
+        # build — so its changelog is on screen straight away.
+        installed = self._release_installed_row
+        self.update_list.setCurrentRow(0 if newer or installed is None else installed)
+
+    def _reset_releases(self) -> None:
+        """Empty the release history — before a check, and before its result."""
+        self._releases = []
+        self._releases_newer_count = 0
+        self._release_installed_row = None
+        self._releases_listed = 0
+        self.update_list.clear()  # selects row -1: clears the changelog, greys the button
+        self._sync_release_more()
+
+    def _list_releases(self, rows: int) -> None:
+        """Grow the release list to its first `rows` releases.
+
+        Appends, never rebuilds: "Show more" must keep the selection — and with
+        it the changelog the user is reading.
+        """
+        from . import updater
+
+        start = self._releases_listed
+        for index in range(start, rows):
+            release = self._releases[index]
             label = f"{release.tag or release.title}   ·   {release.date}"
-            # How big the download is belongs next to the version, not only in
-            # the confirmation — it is the deciding factor on a slow line.
-            size = updater.format_size(release.asset_size)
-            if size:
-                label += f"   ·   {size}"
+            if index < self._releases_newer_count:
+                # How big the download is belongs next to the version, not only
+                # in the confirmation — it is the deciding factor on a slow
+                # line. Only where there is a download: nothing older is offered.
+                size = updater.format_size(release.asset_size)
+                if size:
+                    label += f"   ·   {size}"
             if release.prerelease:
                 label += "   (pre-release)"
+            if index == self._release_installed_row:
+                label += _RELEASE_INSTALLED_MARK
             self.update_list.addItem(label)
-        self.update_list.setCurrentRow(0)  # latest: shows changelog, enables the button
+        self._releases_listed = max(start, rows)
+        if start and rows > start:
+            # Below the fold of a capped list: bring the first new row into
+            # view, or the click looks like it did nothing.
+            self.update_list.scrollToItem(self.update_list.item(start))
+        self._sync_release_more()
+
+    def _sync_release_more(self) -> None:
+        """Say how much of the release history is listed, and offer the rest."""
+        total, listed = len(self._releases), self._releases_listed
+        self.update_more_hint.setVisible(total > 0)
+        if listed >= total:
+            self.update_more_hint.setText(
+                f"Showing all {total} releases." if total != 1 else "Showing 1 release."
+            )
+            self.update_more_button.setEnabled(False)
+            self.update_more_button.setToolTip(
+                "Every release the last check fetched is listed."
+                if total
+                else "Nothing is listed yet — run “Check now”."
+            )
+            return
+        from . import updater
+
+        step = min(updater.RELEASE_HISTORY_STEP, total - listed)
+        self.update_more_hint.setText(f"Showing {listed} of {total} releases.")
+        self.update_more_button.setEnabled(True)
+        self.update_more_button.setToolTip(
+            f"List the next {step} older release{'s' if step != 1 else ''} — from the "
+            "last check, without asking GitHub again."
+        )
+
+    def _show_more_releases(self) -> None:
+        """Append the next older releases from the list the last check fetched."""
+        from . import updater
+
+        self._list_releases(
+            updater.release_history_rows(
+                len(self._releases),
+                self._releases_newer_count,
+                self._releases_listed + updater.RELEASE_HISTORY_STEP,
+            )
+        )
 
     def _on_update_check_failed(self, message: str) -> None:
         self._update_busy = False
@@ -4927,12 +5033,31 @@ class SettingsWindow(QDialog):
         self.update_button.setToolTip(reason)
 
     def _on_release_selected(self, row: int) -> None:
-        if row < 0 or row >= len(self._releases_newer):
+        # Any row shows its changelog — the installed and older ones included.
+        if 0 <= row < len(self._releases):
+            self.update_changelog.setMarkdown(
+                self._releases[row].body or "_No changelog provided._"
+            )
+        else:
             self.update_changelog.clear()
+        self._sync_install_button(row)
+
+    def _sync_install_button(self, row: int) -> None:
+        """Point the install button at the release in `row`, or say why not.
+
+        Only a newer release is offered; the running build and older ones are
+        in the list for their changelogs.
+        """
+        if not 0 <= row < len(self._releases):
             self._disable_install_button(_INSTALL_DISABLED_TIP)
             return
-        release = self._releases_newer[row]
-        self.update_changelog.setMarkdown(release.body or "_No changelog provided._")
+        if row == self._release_installed_row:
+            self._disable_install_button(_INSTALL_RUNNING_TIP)
+            return
+        if row >= self._releases_newer_count:
+            self._disable_install_button(_INSTALL_OLDER_TIP)
+            return
+        release = self._releases[row]
         from . import updater
 
         if updater.can_self_update() and release.asset_url:
@@ -5005,9 +5130,12 @@ class SettingsWindow(QDialog):
 
     def _install_selected_update(self) -> None:
         row = self.update_list.currentRow()
-        if row < 0 or row >= len(self._releases_newer):
+        if not 0 <= row < self._releases_newer_count:
+            # The button is disabled on every other row (_sync_install_button);
+            # a click that got past that anyway must not turn into a downgrade.
+            log.warning("not installing release row %d — only newer releases are offered", row)
             return
-        release = self._releases_newer[row]
+        release = self._releases[row]
         from . import updater
 
         if not (updater.can_self_update() and release.asset_url):
@@ -5195,7 +5323,9 @@ class SettingsWindow(QDialog):
         self.update_cancel_button.setVisible(False)
         self.update_progress.setVisible(False)
         self.update_check_button.setEnabled(True)
-        self.update_button.setEnabled(True)
+        # Back to whatever the selected row offers: the list stays usable
+        # during a download, and an older row picked meanwhile installs nothing.
+        self._sync_install_button(self.update_list.currentRow())
         self.update_status.setText(status)
 
     def _on_update_download_failed(self, message: str) -> None:

@@ -4701,6 +4701,67 @@ def _updater_logic():
                 pass
 
 
+def _updater_release_history_window():
+    """The window the Updates page's release history shows (#314), Qt-free.
+
+    Every newer release is listed, then the installed one, then older ones —
+    at least one step of rows, and never an update hidden behind "Show more".
+    "Show more" grows by one step and stops at what was fetched. The installed
+    row is found by version, and a dev build or a version the list does not
+    carry has none — that build simply gets no marked row.
+    """
+    from listen_to_me import updater
+
+    step = updater.RELEASE_HISTORY_STEP
+    rows = updater.release_history_rows
+    assert step == 10
+
+    # Nothing newer, or a few: one step — newer, installed, older.
+    assert rows(57, 0) == step
+    assert rows(57, 3) == step
+    # More newer than a step: all of them plus the installed one.
+    assert rows(57, 14) == 15
+    assert rows(57, step) == step + 1
+    # Fewer releases than a step: all of them, whatever is newer.
+    assert rows(4, 0) == 4 and rows(4, 2) == 4 and rows(4, 4) == 4
+    assert rows(0, 0) == 0
+
+    # "Show more" asks for the rows listed so far plus one step: it grows by
+    # exactly one step, and the last one only by what is left.
+    listed, seen = rows(57, 0), []
+    while True:
+        grown = rows(57, 0, listed + step)
+        if grown == listed:
+            break
+        seen.append(grown)
+        listed = grown
+    assert seen == [20, 30, 40, 50, 57], seen
+    assert rows(57, 14, rows(57, 14) + step) == 25
+    assert rows(5, 0, rows(5, 0) + step) == 5
+
+    def mk(tag):
+        return updater.Release(
+            tag=tag, name=tag, body="", published_at="2026-01-02T00:00:00Z",
+            html_url="", prerelease=False, asset_url="x", asset_name="a.exe",
+        )
+
+    rels = [mk("v2026.07.19.11"), mk("2026.07.19.7"), mk("v2026.07.19.3")]
+    index = updater.installed_release_index
+    assert index(rels, current=(2026, 7, 19, 11)) == 0
+    # The tag's "v" is not part of the version.
+    assert index(rels, current=updater.parse_version("v2026.07.19.7")) == 1
+    assert index(rels, current=(2026, 7, 19, 3)) == 2
+    # Between two releases, past the newest, a dev build, an empty list: none.
+    assert index(rels, current=(2026, 7, 19, 5)) is None
+    assert index(rels, current=(2026, 8, 1, 1)) is None
+    assert index(rels, current=updater.parse_version("0.0.0.dev0")) is None
+    assert index([], current=(2026, 7, 19, 11)) is None
+    # The installed row is the one right after the newer ones — the row the
+    # window always keeps on screen.
+    current = (2026, 7, 19, 7)
+    assert index(rels, current=current) == len(updater.newer_releases(rels, current=current))
+
+
 def _updater_follows_insecure_ssl_switch():
     """The update path honours the insecure-SSL switch like every other
     connection (ADR-0006, superseding ADR-0002): the releases API call and the
@@ -12287,7 +12348,13 @@ def _gui_construction():
         window._end_update_download("Could not apply update: boom")
         assert window.update_progress.isHidden(), "progress bar survives a failed update"
         assert window.update_cancel_button.isHidden(), "cancel button survives a failed update"
-        assert window.update_check_button.isEnabled() and window.update_button.isEnabled()
+        assert window.update_check_button.isEnabled()
+        # The install button follows the selected row again rather than being
+        # switched on blindly — nothing is listed here, so it says why not.
+        from listen_to_me.settings_ui import _INSTALL_DISABLED_TIP
+
+        assert not window.update_button.isEnabled()
+        assert window.update_button.toolTip() == _INSTALL_DISABLED_TIP
         assert not window._update_busy
         assert "Could not apply update" in window.update_status.text()
 
@@ -14513,6 +14580,172 @@ def _save_refuses_an_assistant_profile_with_no_prompt():
             app.processEvents()
 
 
+def _settings_updates_lists_the_release_history():
+    """The Updates page is a release history, not only a list of updates
+    (#314): newer releases, then the running build — marked, its changelog on
+    screen when nothing is newer — then older ones, ten more per "Show more"
+    from the list already fetched.
+
+    Only newer rows can be installed. The installed and older rows show their
+    changelog but grey the install button out with their own reason, and
+    `_install_selected_update` refuses them too, so no path leads to a
+    downgrade. Driven through the slots with a fake release list — opening the
+    page would start a real check, and the checks never touch the network.
+    `updater.current_version` and `can_self_update` are stood in for, so the
+    run inside the packaged exe (which CAN self-update) sees the same page.
+    """
+    from listen_to_me import updater
+    from listen_to_me.settings_ui import (
+        _INSTALL_OLDER_TIP,
+        _INSTALL_RUNNING_TIP,
+        _RELEASE_INSTALLED_MARK,
+        SettingsWindow,
+    )
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    def mk(day):
+        tag = f"v2026.07.{day:02d}.1"
+        return updater.Release(
+            tag=tag, name=tag, body=f"Changelog of {tag}",
+            published_at=f"2026-07-{day:02d}T00:00:00Z",
+            html_url=f"https://github.com/fo0/listen-to-me/releases/tag/{tag}",
+            prerelease=False, asset_url="https://github.com/fo0/listen-to-me/a.exe",
+            asset_name="a.exe", asset_size=2 * 1024 * 1024,
+        )
+
+    # 30 releases, newest first, as fetch_releases hands them over.
+    releases = [mk(day) for day in range(30, 0, -1)]
+    step = updater.RELEASE_HISTORY_STEP
+    real_current, real_self_update = updater.current_version, updater.can_self_update
+
+    def running(day):
+        updater.current_version = lambda: (2026, 7, day, 1)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        window = SettingsWindow(_StubApp(Path(tmp)))
+        opened: list = []
+        downloads: list = []
+        window._launch_browser = lambda url, what: opened.append(url) or True
+        window._start_update_download = downloads.append
+        lst, button = window.update_list, window.update_button
+        try:
+            updater.can_self_update = lambda: False
+            assert window.update_list.accessibleName() == "Release history"
+            assert not window.update_more_button.isEnabled()
+            assert window.update_more_button.toolTip()
+
+            def labels():
+                return [lst.item(row).text() for row in range(lst.count())]
+
+            def marked():
+                return [i for i, t in enumerate(labels()) if t.endswith(_RELEASE_INSTALLED_MARK)]
+
+            # Three newer: one step of rows, the running build marked after them.
+            running(27)
+            window._on_update_check_done(releases)
+            assert lst.count() == step, lst.count()
+            assert marked() == [3], labels()
+            assert window.update_status.text() == "3 newer releases available."
+            assert window.update_more_hint.text() == f"Showing {step} of 30 releases."
+            assert window.update_more_button.isEnabled()
+            # The latest is preselected and installable.
+            assert lst.currentRow() == 0
+            assert "v2026.07.30.1" in window.update_changelog.toPlainText()
+            assert button.isEnabled() and button.text() == "Open release page"
+            updater.can_self_update = lambda: True
+            window._on_release_selected(0)
+            assert button.isEnabled() and button.text() == "Download && install…"
+            updater.can_self_update = lambda: False
+            # The running build: its changelog, nothing to install.
+            lst.setCurrentRow(3)
+            assert "v2026.07.27.1" in window.update_changelog.toPlainText()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_RUNNING_TIP
+            # An older one: its changelog, and no downgrade — not even past the
+            # greyed-out button.
+            lst.setCurrentRow(5)
+            assert "v2026.07.25.1" in window.update_changelog.toPlainText()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_OLDER_TIP
+            window._install_selected_update()
+            assert not opened and not downloads, (opened, downloads)
+            # A download that ends badly hands the button back to the row the
+            # user is on — an older row stays refused.
+            window._end_update_download("Download failed: boom")
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_OLDER_TIP
+            lst.setCurrentRow(1)
+            window._end_update_download("Download failed: boom")
+            assert button.isEnabled()
+            window._install_selected_update()
+            assert opened == [releases[1].html_url], opened
+            opened.clear()
+
+            # Show more: the next step of older rows, the selection untouched.
+            lst.setCurrentRow(5)
+            window.update_more_button.click()
+            assert lst.count() == 2 * step, lst.count()
+            assert lst.currentRow() == 5
+            assert "v2026.07.25.1" in window.update_changelog.toPlainText()
+            assert window.update_more_hint.text() == f"Showing {2 * step} of 30 releases."
+            assert marked() == [3]
+            window.update_more_button.click()
+            assert lst.count() == 30
+            # Everything listed: no more to show, and the button says so.
+            assert window.update_more_hint.text() == "Showing all 30 releases."
+            assert not window.update_more_button.isEnabled()
+            assert window.update_more_button.toolTip()
+            window._show_more_releases()
+            assert lst.count() == 30
+
+            # Every check starts over at the default window.
+            window._on_update_check_done(releases)
+            assert lst.count() == step and lst.currentRow() == 0
+
+            # Nothing newer: the running build is preselected, changelog shown.
+            running(30)
+            window._on_update_check_done(releases)
+            assert window.update_status.text() == "You're on the latest version."
+            assert lst.count() == step and marked() == [0]
+            assert lst.currentRow() == 0
+            assert "v2026.07.30.1" in window.update_changelog.toPlainText()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_RUNNING_TIP
+
+            # More newer than a step: all of them, plus the running build.
+            running(18)
+            window._on_update_check_done(releases)
+            assert lst.count() == 13 and marked() == [12], labels()
+            assert lst.currentRow() == 0 and button.isEnabled()
+            window.update_more_button.click()
+            assert lst.count() == 23
+
+            # A dev build: everything is newer, nothing is marked.
+            updater.current_version = lambda: updater.parse_version("0.0.0.dev0")
+            window._on_update_check_done(releases)
+            assert lst.count() == 30 and not marked()
+            assert window.update_status.text() == "30 newer releases available."
+            assert not window.update_more_button.isEnabled()
+
+            # Running a build the list does not carry, nothing newer: older
+            # rows only, none marked, the first one shown but not installable.
+            updater.current_version = lambda: (2026, 8, 1, 1)
+            window._on_update_check_done(releases)
+            assert lst.count() == step and not marked()
+            assert lst.currentRow() == 0
+            assert "v2026.07.30.1" in window.update_changelog.toPlainText()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_OLDER_TIP
+
+            # Nothing published at all.
+            window._on_update_check_done([])
+            assert lst.count() == 0 and window.update_more_hint.isHidden()
+            assert not window.update_more_button.isEnabled()
+            assert not button.isEnabled() and "nothing to install" in button.toolTip()
+        finally:
+            updater.current_version, updater.can_self_update = real_current, real_self_update
+            window.deleteLater()
+            app.processEvents()
+
+
 # --------------------------------------------------------------- runners
 
 
@@ -14646,6 +14879,7 @@ _LIGHT_CHECKS = [
     ("autostart entry refresh", _autostart_refresh),
     ("autostart reports a failed registration", _autostart_reporting),
     ("updater version logic", _updater_logic),
+    ("updater release history window", _updater_release_history_window),
     ("updater follows the insecure-SSL switch", _updater_follows_insecure_ssl_switch),
     ("insecure SSL switch", _insecure_ssl_switch),
     ("insecure SSL huggingface httpx API", _insecure_ssl_hub_httpx),
@@ -14723,6 +14957,8 @@ _LIGHT_CHECKS = [
      _system_audio_hint_names_the_outputs_it_cannot_record),
     ("save refuses an assistant profile with no prompt",
      _save_refuses_an_assistant_profile_with_no_prompt),
+    ("settings updates lists the release history",
+     _settings_updates_lists_the_release_history),
     ("Qt UI construction", _gui_construction),
 ]
 

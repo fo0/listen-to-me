@@ -231,6 +231,41 @@ def newer_releases(releases: list[Release], current: tuple[int, ...] | None = No
     return [r for r in releases if r.version > cur]
 
 
+# Settings → Updates lists the release history in windows of this many rows:
+# the first window after a check, and each "Show more" after it.
+RELEASE_HISTORY_STEP = 10
+
+
+def installed_release_index(
+    releases: list[Release], current: tuple[int, ...] | None = None
+) -> int | None:
+    """Where the running build sits in `releases`, or None when it is not there.
+
+    None for a dev build (``0.0.0.dev0`` is no published release) and for a
+    version the fetched list does not carry — a pre-release while pre-releases
+    are filtered out, or one past the API's first page. Matched by parsed
+    version like every other comparison here, so ``v2026.07.19.11`` and
+    ``2026.07.19.11`` are the same release.
+    """
+    cur = current_version() if current is None else current
+    for index, release in enumerate(releases):
+        if release.version == cur:
+            return index
+    return None
+
+
+def release_history_rows(total: int, newer: int, requested: int = RELEASE_HISTORY_STEP) -> int:
+    """How many of `total` releases (newest first) the release history lists.
+
+    `requested` rows — the first window, or on "Show more" the rows listed so
+    far plus one more step — but never fewer than every newer release plus the
+    row after them, which is the installed build whenever the list carries it:
+    no update is ever hidden behind "Show more", and the user always sees where
+    they stand. Capped at `total`.
+    """
+    return max(0, min(total, max(requested, newer + 1)))
+
+
 def _require_trusted_url(url: str) -> None:
     """Defence in depth: only ever download over HTTPS from GitHub hosts.
 
