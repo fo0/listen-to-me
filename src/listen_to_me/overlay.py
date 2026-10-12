@@ -44,9 +44,11 @@ from .keymap import hotkey_label
 # and name the same take identically. A second copy here would be a second
 # thing to keep in step. (tray.py imports nothing from overlay.py — no cycle.)
 from .tray import (
+    _CANCEL_LABEL,
     _RECENT_LIMIT,
     _SYSTEM_START_LABEL,
     _SYSTEM_STOP_LABEL,
+    _apply_cancel_entry,
     format_duration,
     recent_entry_label,
     transcribing_label,
@@ -537,7 +539,9 @@ class Overlay:
             "the microphone, through a loopback device. No hotkey needed for this "
             "entry; the device is picked automatically."
         )
-        self._act_cancel = self._menu.addAction("Cancel recording", lambda: app.post("cancel"))
+        # "Cancel recording" while a take records, "Don't insert this
+        # transcript" while one is transcribed — the tray's entry, same states.
+        self._act_cancel = self._menu.addAction(_CANCEL_LABEL, lambda: app.post("cancel"))
         self._menu.addAction("Copy last transcript", lambda: app.post("copy_last"))
         # …and the ones before it, exactly as in the tray menu. Reaching the
         # second-newest transcript from here meant opening Settings and walking
@@ -1171,8 +1175,8 @@ class Overlay:
 
     def _sync_menu_state(self, state: str | None = None) -> None:
         """Name the toggle entry after what a click on it will do, offer
-        "Cancel recording" only while there is a take to cancel, and show
-        whether the global hotkey is currently paused.
+        the cancel entry only while there is a take to cancel or a transcript
+        to hold back, and show whether the global hotkey is currently paused.
 
         `state` is the transition being applied, for the call inside
         `set_state`. Without it the state is read back from the app, which is
@@ -1200,7 +1204,7 @@ class Overlay:
             # While a take runs the entry above is what ends it; starting the
             # other source would only be refused, so its entry steps aside.
             self._act_system.setVisible(recording_source is None)
-            self._act_cancel.setVisible(state == "recording")
+            _apply_cancel_entry(self._act_cancel, state)
             # Re-read rather than left to the click that toggled it: App
             # refuses to pause during a recording, and the tick has to go back
             # where it was. getattr keeps the self-test's App stub (state-only,

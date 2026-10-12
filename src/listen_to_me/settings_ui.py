@@ -666,6 +666,21 @@ class SettingsWindow(QDialog):
         # Both are desktop-monitor sizes; showEvent brings them down to what
         # the screen actually offers (see _clamp_to_screen).
         self._screen_clamped = False
+        # …unless this window was open before in this session: then it comes
+        # back where the user left it — the size they dragged it to, the spot
+        # they moved it to, maximized if it was. Every close destroys the
+        # window (App._open_settings builds a new one), so without this each
+        # open snapped back to 980×720 in the middle of the screen. Qt moves a
+        # restored geometry back onto a screen that still exists, so a monitor
+        # unplugged in between cannot strand the window; and a size the user
+        # chose is theirs, so the first-show clamp is skipped for it. Session
+        # only on purpose (see done()).
+        remembered = getattr(app, "settings_geometry", None)
+        if remembered is not None:
+            try:
+                self._screen_clamped = bool(self.restoreGeometry(remembered))
+            except Exception:
+                log.debug("could not restore the settings window geometry", exc_info=True)
         # Whether input_combo holds the enumerated devices or only the
         # placeholder (see _load_devices / _selected_input_device).
         self._devices_loaded = False
@@ -3202,6 +3217,10 @@ class SettingsWindow(QDialog):
         """Open the Help / Troubleshooting page (used by the tray menu)."""
         self._show_page("Help")
 
+    def show_page(self, title: str) -> None:
+        """Open the page `title` — the one a clicked notification named."""
+        self._show_page(title)
+
     # ------------------------------------------------------ small helpers
 
     def _refresh_autostart_status(self) -> None:
@@ -4730,6 +4749,14 @@ class SettingsWindow(QDialog):
         # Covers every way the dialog closes: Save, Cancel, Esc and the
         # window's close button.
         self._cancel_diagnostics()
+        # Remembered on the App for the next open (see __init__). Not written
+        # to config.json: desktop coordinates do not survive a reboot that
+        # brings a second monitor up late (MEMORY.md, the floating icon), and
+        # the app runs all day, so the session is where re-opening happens.
+        try:
+            self.app.settings_geometry = self.saveGeometry()
+        except Exception:
+            log.debug("could not remember the settings window geometry", exc_info=True)
         super().done(result)
 
     # ------------------------------------------------------------- updates

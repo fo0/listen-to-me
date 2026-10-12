@@ -1459,6 +1459,258 @@ def _filler_take_inserts_nothing():
         diagnostics_module.clip_stats = real_stats
 
 
+def _withheld_transcript_is_not_inserted():
+    """"Don't insert this transcript" keeps a running transcription's text
+    away from the cursor and puts it in the history instead.
+
+    A long system-audio take can transcribe for minutes, and by the time it is
+    done the user is typing somewhere else — that is where its text would be
+    pasted. The cancel event therefore means "hold the text back" while the
+    state is PROCESSING, and the worker checks the take's own Event right
+    before inserting. `App._handle`, `App._withhold_transcript` and
+    `App._process` are borrowed onto a stub the way
+    `_implausible_take_inserts_nothing` does it, so the wiring is under test:
+    nothing inserted, nothing typed, no preview flash, the text in the history,
+    one forced message naming where it went — and a take nobody held back still
+    reaches the cursor."""
+    import threading
+
+    from listen_to_me.app import (
+        STATE_IDLE,
+        STATE_PROCESSING,
+        STATE_RECORDING,
+        App,
+        withheld_message,
+    )
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+    from listen_to_me.config import Config
+
+    text = "Please send the minutes of the meeting to the whole team."
+
+    class _Transcriber:
+        def ensure_loaded(self, notify=None, progress=None):
+            pass
+
+        def transcribe(self, audio, notify=None, progress=None):
+            return text
+
+    class _Injector:
+        def __init__(self):
+            self.typed: list[str] = []
+            self.copied: list[str] = []
+
+        def clipboard_mode(self):
+            return "always"
+
+        def type_plain_blocking(self, typed):
+            self.typed.append(typed)
+            return ""
+
+        def copy_to_clipboard(self, copied):
+            self.copied.append(copied)
+            return True
+
+    class _History:
+        def __init__(self):
+            self.stored: list[str] = []
+
+        def add(self, entry):
+            self.stored.append(entry)
+
+    class _Live:
+        """A LiveTyper with words still owed to the cursor."""
+
+        committed_text = "Please send"
+        committed_frames = 0
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def hand_over(self):
+            return ("the minutes", True)
+
+    class _App:
+        _handle = App._handle
+        _process = App._process
+        _withhold_transcript = App._withhold_transcript
+
+        def __init__(self, cfg, state=STATE_PROCESSING):
+            self.cfg, self.state = cfg, state
+            self._withhold = None
+            self._withhold_lock = threading.Lock()
+            self.transcriber = _Transcriber()
+            self.injector = _Injector()
+            self.history = _History()
+            self.inserted: list[str] = []
+            self.posts: list[tuple] = []
+            self.messages: list[tuple[str, bool]] = []
+            self.cancelled = 0
+
+        def notify(self, message, force=False):
+            self.messages.append((message, force))
+
+        def post(self, kind, payload=None):
+            self.posts.append((kind, payload))
+
+        def progress(self, *args, **kwargs):
+            pass
+
+        def _insert_transcript(self, inserted):
+            self.inserted.append(inserted)
+
+        def _notify_no_speech(self, audio, source=SOURCE_MIC, verdict=None):
+            raise AssertionError("this take has text")
+
+        def _cancel_recording(self):
+            self.cancelled += 1
+
+    audio = [0.0] * int(4 * SAMPLE_RATE)
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        cfg["history_enabled"] = True
+
+        # Chosen while the take is transcribed: said at once, held back later.
+        for source in (SOURCE_MIC, SOURCE_SYSTEM):
+            app = _App(cfg)
+            withhold = app._withhold = threading.Event()
+            app._handle("cancel", None)
+            assert withhold.is_set() and app.cancelled == 0
+            assert app.messages == [(withheld_message(True, done=False), False)], app.messages
+            assert "Settings → History" in app.messages[0][0]
+            app._process(audio, None, source, withhold)
+            assert app.inserted == [] and app.injector.copied == [], (app.inserted, source)
+            assert app.history.stored == [text]
+            assert not [p for p in app.posts if p[0] == "flash_text"], app.posts
+            assert app.messages[-1] == (withheld_message(True, done=True), True), app.messages
+            assert ("done", None) in app.posts  # the state machine is handed back
+
+        # Nobody held it back: the take reaches the cursor as it always did —
+        # and a click after the worker chose to insert is told it came too
+        # late, never promised a hold-back that cannot happen any more.
+        app = _App(cfg)
+        withhold = app._withhold = threading.Event()
+        app._process(audio, None, SOURCE_MIC, withhold)
+        assert app.inserted == [text] and app.history.stored == [text]
+        assert ("flash_text", text) in app.posts
+        assert app._withhold is None
+        app._withhold_transcript()
+        assert not withhold.is_set()
+        assert app.messages[-1] == ("Too late — the transcript is already being inserted.", False)
+        # …and neither does a take started before the flag existed.
+        app = _App(cfg)
+        app._process(audio, None, SOURCE_MIC)
+        assert app.inserted == [text]
+
+        # Live typing: what is still owed is held back too; what was typed
+        # during the recording is final and stays where it is.
+        app = _App(cfg)
+        withhold = threading.Event()
+        withhold.set()
+        app._process(audio, _Live(), SOURCE_MIC, withhold)
+        assert app.injector.typed == [] and app.injector.copied == [], app.injector.typed
+
+        # During a recording "cancel" still cancels the take; when idle, or
+        # with no take of its own, it holds nothing back and says nothing.
+        app = _App(cfg, state=STATE_RECORDING)
+        app._withhold = threading.Event()
+        app._handle("cancel", None)
+        assert app.cancelled == 1 and not app._withhold.is_set()
+        app = _App(cfg, state=STATE_IDLE)
+        app._withhold = threading.Event()
+        app._withhold_transcript()
+        assert not app._withhold.is_set() and app.messages == []
+
+        # With the history off, holding the text back discards it — and the
+        # messages say so instead of pointing at a page that will not have it.
+        cfg["history_enabled"] = False
+        app = _App(cfg)
+        withhold = app._withhold = threading.Event()
+        app._handle("cancel", None)
+        assert "discarded" in app.messages[0][0] and "History" not in app.messages[0][0]
+        app._process(audio, None, SOURCE_MIC, withhold)
+        assert app.history.stored == [] and app.inserted == []
+        assert "discarded" in app.messages[-1][0], app.messages
+        # A history that is on but could not be written is a failure, named.
+        failed = withheld_message(False, done=True, history_enabled=True)
+        assert "could not be saved" in failed and "log file" in failed
+
+
+def _notifications_lead_to_the_place_they_name():
+    """A click on a notification opens the place it names, and a notification
+    naming nowhere stays a no-op.
+
+    Driven with the app's real wording wherever a helper produces it, so a
+    reworded message that stops matching shows up here: the no-speech
+    diagnosis names Settings → Audio, a held-back transcript Settings →
+    History, a failed save "see the log file". The pitfalls are pinned too —
+    another program's "Settings → Keyboard Shortcuts" is no page of this app,
+    and "No log file at …" must not reopen the file that just failed to open.
+    `App._follow_notification` is borrowed onto a stub so the routing is under
+    test, not only the matcher. The tray's half (the click posting the
+    message on screen) needs Qt and sits in `_tray_notification_click_is_forwarded`."""
+    from listen_to_me.app import App, notification_target, withheld_message
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+    from listen_to_me.diagnostics import no_speech_message
+
+    def page(title):
+        return ("page", title)
+
+    cases = [
+        (no_speech_message("silent", SOURCE_MIC), page("Audio")),
+        (no_speech_message("silent", SOURCE_SYSTEM), page("Audio")),
+        (withheld_message(True, done=True), page("History")),
+        ("Could not save the settings — see the log file.", ("log", "")),
+        ("Could not move the floating icon. See the log file.", ("log", "")),
+        (
+            "GPU transcription needs the NVIDIA CUDA 12 libraries. Set Device = CPU in "
+            "Settings → Engine, or see the tray menu → Help / Troubleshooting.",
+            page("Engine"),
+        ),
+        ("Update available: v1. Open the tray menu → Check for updates.", page("Updates")),
+        ("Tick Settings → Keyboard Shortcuts → Mute in Zoom.", None),
+        ("No log file at /x/listen-to-me.log — this start could not create one.", None),
+        ("Could not open the log file — it is /x. Use “Open config folder”.", None),
+        ("Recording cancelled.", None),
+        ("", None),
+        (None, None),
+    ]
+    for message, expected in cases:
+        assert notification_target(message) == expected, (message, notification_target(message))
+
+    class _Window:
+        def __init__(self):
+            self.pages: list[str] = []
+
+        def show_page(self, title):
+            self.pages.append(title)
+
+    class _App:
+        _follow_notification = App._follow_notification
+
+        def __init__(self):
+            self._settings_window = None
+            self.opened = self.logs = 0
+
+        def _open_settings(self):
+            self.opened += 1
+            self._settings_window = self._settings_window or _Window()
+
+        def _open_log_file(self):
+            self.logs += 1
+
+    app = _App()
+    app._follow_notification(withheld_message(True, done=True))
+    assert app.opened == 1 and app._settings_window.pages == ["History"]
+    app._follow_notification("Could not save the settings — see the log file.")
+    assert app.logs == 1 and app.opened == 1
+    app._follow_notification("Recording cancelled.")
+    assert app.opened == 1 and app.logs == 1 and app._settings_window.pages == ["History"]
+
+
 def _implausible_take_inserts_nothing():
     """A transcript that cannot have come from its take reaches neither the
     cursor nor the assistant, but stays in the history (#293).
@@ -8794,10 +9046,11 @@ def _overlay_menu_follows_the_state():
     """The floating icon's menu says what a click on it will do.
 
     The toggle entry is labelled after the state — the tray's wording, so the
-    two menus can never describe the same app differently — and "Cancel
-    recording" is only offered while a take is running, because App drops a
-    cancel in any other state and a menu entry that does nothing reads as a
-    broken one. The state is re-read when the menu opens, so an entry can
+    two menus can never describe the same app differently — and the cancel
+    entry is only offered while there is something to cancel ("Cancel
+    recording" during a take, "Don't insert this transcript" while it is
+    transcribed), because App drops a cancel when idle and a menu entry that
+    does nothing reads as a broken one. The state is re-read when the menu opens, so an entry can
     never advertise a state the app has already left."""
     _ensure_qapp()
     from PySide6.QtCore import QPoint
@@ -8818,9 +9071,20 @@ def _overlay_menu_follows_the_state():
             assert overlay._act_toggle.text() == "Stop recording (insert text)"
             assert overlay._act_cancel.isVisible()
 
+            assert overlay._act_cancel.text() == "Cancel recording"
+
+            # While the take is transcribed the same entry holds its text back
+            # from the cursor instead — the decode cannot be cancelled, the
+            # insertion can (App._withhold_transcript).
             stub.state = "processing"
             overlay.set_state("processing")
             assert overlay._act_toggle.text() == "Start recording"
+            assert overlay._act_cancel.isVisible()
+            assert overlay._act_cancel.text() == "Don't insert this transcript"
+            assert "History" in overlay._act_cancel.toolTip()
+
+            stub.state = "idle"
+            overlay.set_state("idle")
             assert not overlay._act_cancel.isVisible()
 
             # A state change the overlay never saw (its set_state is fed by
@@ -8984,6 +9248,87 @@ def _tray_click_opens_the_window():
             stub.posts.clear()
             tray._on_activated(reason)
             assert not stub.posts, f"{reason} posted {stub.posts}"
+
+
+def _tray_notification_click_is_forwarded():
+    """Clicking the notification on screen posts its text to App, which opens
+    the place it names (see `_notifications_lead_to_the_place_they_name`).
+    Qt's messageClicked carries no text, so the tray keeps the message it last
+    showed; a notification the user switched off was never shown and must not
+    become the one a click refers to. Every page a notification may name is a
+    real page of the main window — the list in app.py cannot drift from it."""
+    from listen_to_me import tray as tray_module
+    from listen_to_me.app import NOTIFICATION_PAGES
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    apply_theme(_ensure_qapp())
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        tray = tray_module.Tray(stub)
+        tray.start()
+        try:
+            tray._on_message_clicked()  # nothing shown yet
+            assert not stub.posts, stub.posts
+            tray.notify("No sound reached the microphone — Settings → Audio.", force=True)
+            tray._on_message_clicked()
+            assert stub.posts == [
+                ("notification_clicked", "No sound reached the microphone — Settings → Audio.")
+            ], stub.posts
+            stub.cfg["notifications"] = False
+            stub.posts.clear()
+            tray.notify("Recording cancelled.")  # switched off: not shown
+            tray._on_message_clicked()
+            assert stub.posts == [
+                ("notification_clicked", "No sound reached the microphone — Settings → Audio.")
+            ], stub.posts
+        finally:
+            tray.stop()
+
+        window = SettingsWindow(stub)
+        try:
+            missing = set(NOTIFICATION_PAGES) - set(window._nav_row)
+            assert not missing, f"no such page in the main window: {sorted(missing)}"
+            window.show_page("History")
+            assert window.stack.currentIndex() == window._history_index
+        finally:
+            window.deleteLater()
+
+
+def _settings_window_reopens_as_it_was_left():
+    """Closing the settings window remembers its geometry on the App, and the
+    next window opens with it instead of the 980×720 default — every close
+    destroys the window, so without this each open snapped back. Session only:
+    nothing reaches config.json. A window with nothing remembered keeps the
+    default and the first-show clamp; a remembered one skips the clamp, since
+    its size is the user's own choice.
+
+    The offscreen screen is 800×800, so only the height is compared: Qt fits a
+    restored width to the screen (and the 840 minimum then wins), while a
+    height that fits comes back exactly."""
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        assert getattr(stub, "settings_geometry", None) is None
+        window = SettingsWindow(stub)
+        try:
+            assert not window._screen_clamped and window.height() == 720
+            window.resize(window.width(), 640)
+            window.done(0)  # what Save, Cancel, Esc and the close button end in
+            assert stub.settings_geometry is not None and not stub.settings_geometry.isEmpty()
+        finally:
+            window.deleteLater()
+        reopened = SettingsWindow(stub)
+        try:
+            assert reopened._screen_clamped, "a restored size was clamped like the default"
+            assert reopened.height() == 640, reopened.height()
+        finally:
+            reopened.deleteLater()
+        assert "settings_geometry" not in stub.cfg.data
 
 
 def _hotkey_pause_is_visible_and_temporary():
@@ -14224,6 +14569,8 @@ _LIGHT_CHECKS = [
     ("filler phrases report what was skipped", _filler_phrases_report_what_was_skipped),
     ("filler take inserts nothing", _filler_take_inserts_nothing),
     ("implausible take inserts nothing", _implausible_take_inserts_nothing),
+    ("withheld transcript is not inserted", _withheld_transcript_is_not_inserted),
+    ("notifications lead to the place they name", _notifications_lead_to_the_place_they_name),
     ("the parsers bound the lines they walk", _the_parsers_bound_the_lines_they_walk),
     ("missing microphone falls back", _missing_microphone_falls_back),
     ("loopback device is ranked and resolved", _loopback_device_is_ranked_and_resolved),
@@ -14322,6 +14669,8 @@ _LIGHT_CHECKS = [
     ("overlay lists recent transcripts", _overlay_lists_recent_transcripts),
     ("overlay menu follows the state", _overlay_menu_follows_the_state),
     ("tray names the hotkey", _tray_names_the_hotkey),
+    ("tray notification click is forwarded", _tray_notification_click_is_forwarded),
+    ("settings window reopens as it was left", _settings_window_reopens_as_it_was_left),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("transcription is counted", _transcription_is_counted),
     ("too short take explains hold mode", _too_short_take_explains_hold_mode),

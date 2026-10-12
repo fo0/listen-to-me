@@ -14,6 +14,28 @@ changes at a glance.
 
 ### Added
 
+- **The settings window reopens the way it was left.** Every close destroyed
+  the window, so each open snapped back to 980×720 in the middle of the screen
+  — enlarged to read the History, moved beside the window being dictated into,
+  and back again the next time. It now comes back with the size, position and
+  maximized state it was closed with, for as long as the app runs. Not stored
+  across restarts on purpose: desktop coordinates do not survive a reboot that
+  brings a second monitor up late.
+- **Clicking a notification opens the place it names.** Many notifications end
+  on where to act — "check the input device under Settings → Audio", "it is in
+  Settings → History", "see the log file" — and each one was a dead end: read
+  it, then walk the tray menu and the sidebar to the page it named. A click on
+  the notification now opens that page of the settings window, or the log
+  file. A notification that names no place (or another program's settings)
+  still does nothing when clicked.
+- **A running transcription can be kept away from the cursor.** A long
+  system-audio take can transcribe for minutes, and by the time it is done the
+  user is typing somewhere else — which is where its text was pasted. While a
+  take is being transcribed, the cancel entry of the tray menu and of the
+  floating icon's menu now reads **Don't insert this transcript**: the
+  transcription runs to the end, its text goes to Settings → History, and
+  nothing reaches the cursor or the clipboard. With the history switched off
+  the message says the text is discarded.
 - **A tap in hold mode says why nothing was recorded.** Pressing and releasing
   the hotkey the way toggle mode works ends a push-to-talk take after a
   fraction of a second, and "Recording too short — nothing inserted." left

@@ -596,6 +596,86 @@ def nothing_to_copy_message(history, history_enabled) -> str:
     return "No transcript in the history yet."
 
 
+# The pages of the main window a notification can name as "Settings → <Page>".
+# Mirrors SettingsWindow's sidebar (the self-test holds the two together); Home
+# is left out, no message sends anybody there.
+NOTIFICATION_PAGES = (
+    "General",
+    "Engine",
+    "Audio",
+    "Overlay",
+    "Integrations",
+    "Assistant",
+    "History",
+    "Updates",
+    "Help",
+)
+
+
+def notification_target(message) -> tuple[str, str] | None:
+    """Where a click on the notification `message` should take the user.
+
+    Many notifications end on a place to act — "Settings → Audio", "it is in
+    Settings → History", "see the log file", "tray menu → Help" — and a
+    notification was a dead end: reading it, then walking the tray menu and the
+    sidebar to the place it named. Returns ("page", title) for a page of the
+    main window, ("log", "") for the log file, or None when the message names
+    nowhere to go (a click then does nothing, as it always did). When a message
+    names several places, the first one wins — that is the one it leads with.
+
+    Only this app's own page titles count: an integration's note may name
+    another program's "Settings → Keybinds", which is no page here. "No log
+    file at …" / "Could not open the log file" are not pointers to it — opening
+    it is what just failed — so only "see the log file" is.
+    """
+    import re
+
+    text = str(message or "")
+    found: list[tuple[int, tuple[str, str]]] = []
+    for match in re.finditer(r"Settings → (\w+)", text):
+        if match.group(1) in NOTIFICATION_PAGES:
+            found.append((match.start(), ("page", match.group(1))))
+    for pattern, target in (
+        (r"tray menu → Check for updates", ("page", "Updates")),
+        (r"tray menu → Help", ("page", "Help")),
+        (r"\bsee the log file\b", ("log", "")),
+    ):
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            found.append((match.start(), target))
+    return min(found)[1] if found else None
+
+
+def withheld_message(kept: bool, *, done: bool, history_enabled: bool = True) -> str:
+    """What "Don't insert this transcript" says — when it is chosen while the
+    take is still being transcribed (`done=False`), and once the transcript
+    the user held back has arrived (`done=True`).
+
+    `kept` is whether the transcript goes (or went) into the history. With the
+    history switched off, holding it back means it is gone, and the message
+    must say so instead of pointing at a page that will not have it; a history
+    that is on but could not be written is named as the failure it is.
+    """
+    if not done:
+        if kept:
+            return (
+                "The transcript will not be inserted — it will be in Settings → History "
+                "when the transcription is done."
+            )
+        return (
+            "The transcript will not be inserted — the history is off, so it will be "
+            "discarded."
+        )
+    if kept:
+        return "Transcript not inserted, as requested — it is in Settings → History."
+    if history_enabled:
+        return (
+            "Transcript not inserted, as requested — and it could not be saved to the "
+            "history. See the log file."
+        )
+    return "Transcript not inserted, as requested — the history is off, so it was discarded."
+
+
 def assistant_failure_message(exc: BaseException) -> str:
     """What to show when the assistant could not clean up a finished dictation.
 
@@ -722,11 +802,25 @@ class App:
         self.qapp = None
         self.overlay = None
         self._settings_window = None
+        # Size, position and maximized state of the last settings window that
+        # was closed (QWidget.saveGeometry), so the next one opens the same
+        # way. Session only — see SettingsWindow.done.
+        self.settings_geometry = None
         self._poll_timer = None
         self._recording_id = 0  # invalidates live-preview workers of old takes
         self._recording_started = 0.0  # monotonic start of the running take
         self._processing_started = 0.0  # monotonic start of its transcription
         self._length_warned = False  # one max-length heads-up per take
+        # Set by "Don't insert this transcript" while the take that owns it is
+        # transcribed: the model cannot be stopped mid-decode, but its result
+        # can be kept away from the cursor. One Event per take, handed to its
+        # worker, so a flag left over from one take can never hold back the
+        # next one's text.
+        self._withhold: threading.Event | None = None
+        # Makes the worker's "insert or hold back" decision and a click on the
+        # entry one step each, so a click can never be told "will not be
+        # inserted" about a text whose insertion has already begun.
+        self._withhold_lock = threading.Lock()
         # Which source the running take records from, and the length cap that
         # belongs to it: the two sources have separate caps (max_seconds vs.
         # system_audio.max_seconds), so the running take's own cap is
@@ -1011,7 +1105,10 @@ class App:
         elif kind == "reset_overlay_position":
             self._reset_overlay_position()
         elif kind == "cancel":
-            self._cancel_recording()
+            if self.state == STATE_PROCESSING:
+                self._withhold_transcript()
+            else:
+                self._cancel_recording()
         elif kind == "copy_last":
             self._copy_last_transcript()
         elif kind == "copy_text":
@@ -1055,6 +1152,8 @@ class App:
             self._open_config_folder()
         elif kind == "open_log":
             self._open_log_file()
+        elif kind == "notification_clicked":
+            self._follow_notification(payload)
         elif kind == "factory_reset":
             self._factory_reset()
         elif kind == "quit":
@@ -1283,12 +1382,14 @@ class App:
             self.notify(too_short_message(self.cfg, _take_source(self)))
             return
         self._set_state(STATE_PROCESSING)
+        withhold = threading.Event()
+        self._withhold = withhold
         # The source travels with the take, not read from self in the worker:
         # the next take may start while this one is still being transcribed,
         # and the assistant profile belongs to the audio being processed.
         threading.Thread(
             target=self._process,
-            args=(audio, live, _take_source(self)),
+            args=(audio, live, _take_source(self), withhold),
             name="process",
             daemon=True,
         ).start()
@@ -1307,7 +1408,38 @@ class App:
         self._set_state(STATE_IDLE)
         self.notify("Recording cancelled.")
 
-    def _process(self, audio, live=None, source: str = SOURCE_MIC) -> None:
+    def _withhold_transcript(self) -> None:
+        """"Don't insert this transcript": the cancel entry while a take is
+        being transcribed.
+
+        A fifteen-minute system-audio take can transcribe for minutes, and by
+        the time it is done the cursor is wherever the user went in between —
+        the text would be pasted into that window. Decoding cannot be stopped
+        halfway, but the result can be kept away from the cursor: the worker
+        checks this take's Event right before inserting and stores the
+        transcript in the history instead. Main thread only (an event handler).
+        """
+        if self.state != STATE_PROCESSING:
+            return
+        with self._withhold_lock:
+            withhold = self._withhold
+            if withhold is not None:
+                withhold.set()
+        if withhold is None:
+            # The worker has already started inserting (it drops the Event
+            # when it does): saying "will not be inserted" now would be a lie.
+            self.notify("Too late — the transcript is already being inserted.")
+            return
+        log.info("the running transcription will not be inserted (user request)")
+        self.notify(withheld_message(bool(self.cfg["history_enabled"]), done=False))
+
+    def _process(
+        self,
+        audio,
+        live=None,
+        source: str = SOURCE_MIC,
+        withhold: threading.Event | None = None,
+    ) -> None:
         """Worker thread: transcribe, optionally refine, insert at the cursor.
 
         With live typing (`live` is this take's LiveTyper), part of the
@@ -1319,7 +1451,11 @@ class App:
 
         `source` is the take's recording source and only decides which
         assistant profile post-processes the transcript — a dictation wants
-        punctuation, a recorded meeting wants minutes (assistant.profile)."""
+        punctuation, a recorded meeting wants minutes (assistant.profile).
+
+        `withhold` is this take's "Don't insert this transcript" flag (see
+        _withhold_transcript): once set, the transcript is stored in the
+        history and nothing more reaches the cursor or the clipboard."""
         try:
             # The whole take, kept before live typing slices the already
             # committed part off `audio` below: a recording that produced no
@@ -1474,11 +1610,34 @@ class App:
                 text = full_text
             # Record before inserting so the transcript is kept even if the
             # insertion into the target window fails.
+            kept = False
             if self.cfg["history_enabled"]:
                 try:
                     self.history.add(full_text)
+                    kept = True
                 except Exception:
                     log.exception("could not add transcript to history")
+            held = False
+            if withhold is not None:
+                # Read as late as possible: a click that arrives while the
+                # assistant is still rewriting the text must still count. Once
+                # the answer is "insert", the Event is dropped under the same
+                # lock, so a later click is told it came too late.
+                with self._withhold_lock:
+                    held = withhold.is_set()
+                    if not held and self._withhold is withhold:
+                        self._withhold = None
+            if held:
+                # Live typing's remainder is held back too — what was typed
+                # during the recording is final, append-only cannot take it back.
+                log.info("transcript held back by the user (%d chars)", len(full_text))
+                self.notify(
+                    withheld_message(
+                        kept, done=True, history_enabled=bool(self.cfg["history_enabled"])
+                    ),
+                    force=True,
+                )
+                return
             if live is not None:
                 # Flush what live typing still owes: text committed but not yet
                 # typed (a modifier was held), plus the transcript of the rest.
@@ -2164,6 +2323,25 @@ class App:
         self._settings_window.show()
         self._settings_window.raise_()
         self._settings_window.activateWindow()
+
+    def _follow_notification(self, message) -> None:
+        """A click on a desktop notification: open the place it names (see
+        notification_target). A message that names nowhere is left alone —
+        opening a window on every click would turn "Recording cancelled." into
+        a window nobody asked for."""
+        target = notification_target(message)
+        if target is None:
+            return
+        kind, page = target
+        if kind == "log":
+            self._open_log_file()
+            return
+        self._open_settings()
+        if self._settings_window is not None:
+            try:
+                self._settings_window.show_page(page)
+            except Exception:
+                log.debug("could not open the %s page", page, exc_info=True)
 
     def _open_updates(self) -> None:
         self._open_settings()

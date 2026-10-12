@@ -44,6 +44,40 @@ _PAUSED_LABEL = "Hotkey paused — switch it back on in this menu"
 _SYSTEM_START_LABEL = "Record system audio"
 _SYSTEM_STOP_LABEL = "Stop recording system audio (insert text)"
 
+# The cancel entry's two faces. While a take records it discards the take;
+# while one is transcribed the decode cannot be stopped, but its result can be
+# kept away from the cursor — by then the user may well be typing in another
+# window, which is where a long take's text would otherwise be pasted.
+_CANCEL_LABEL = "Cancel recording"
+_WITHHOLD_LABEL = "Don't insert this transcript"
+_WITHHOLD_TOOLTIP = (
+    "The transcription keeps running, but its text will not be inserted at the "
+    "cursor — it goes to Settings → History instead."
+)
+
+
+def cancel_entry(state: str) -> tuple[str, str] | None:
+    """(label, tooltip) of the cancel entry in `state`, or None to hide it.
+
+    Shared by the tray and the floating icon's menu, so the two can never
+    offer the entry in different states or under different names.
+    """
+    if state == "recording":
+        return _CANCEL_LABEL, "Discard the running recording — nothing is inserted."
+    if state == "processing":
+        return _WITHHOLD_LABEL, _WITHHOLD_TOOLTIP
+    return None
+
+
+def _apply_cancel_entry(action, state: str) -> None:
+    """Show, name and describe a menu's cancel entry for `state`."""
+    entry = cancel_entry(state)
+    action.setVisible(entry is not None)
+    if entry is not None:
+        action.setText(entry[0])
+        action.setToolTip(entry[1])
+
+
 # The "Dictation language" submenu's own line, which also names the language in
 # use ("Dictation language: German — Deutsch [de]") — see _sync_language_title.
 _LANGUAGE_TITLE = "Dictation language"
@@ -202,6 +236,9 @@ class Tray:
         # Text of a running download; while set it owns the tooltip and
         # the status line (see set_progress).
         self._progress: str | None = None
+        # The notification on screen, for the click on it: Qt's messageClicked
+        # carries no text, and a new message replaces the previous one.
+        self._last_message: str | None = None
 
     def start(self) -> None:
         app = self.app
@@ -243,7 +280,7 @@ class Tray:
         self._act_system.triggered.connect(lambda: app.post("toggle", SOURCE_SYSTEM))
         menu.addAction(self._act_system)
 
-        self._act_cancel = QAction("Cancel recording", menu)
+        self._act_cancel = QAction(_CANCEL_LABEL, menu)
         self._act_cancel.triggered.connect(lambda: app.post("cancel"))
         self._act_cancel.setVisible(False)
         menu.addAction(self._act_cancel)
@@ -377,6 +414,9 @@ class Tray:
         self._icon.setContextMenu(menu)
         # Left click / double click the tray icon: open the main window.
         self._icon.activated.connect(self._on_activated)
+        # A notification that names a place ("Settings → Audio", "see the log
+        # file") opens it when clicked, instead of being a dead end.
+        self._icon.messageClicked.connect(self._on_message_clicked)
         self._icon.show()
         if not QSystemTrayIcon.isSystemTrayAvailable():
             log.warning(
@@ -617,7 +657,7 @@ class Tray:
             self._act_system.setText(
                 _SYSTEM_STOP_LABEL if recording_source == SOURCE_SYSTEM else _SYSTEM_START_LABEL
             )
-        self._act_cancel.setVisible(state == "recording")
+        _apply_cancel_entry(self._act_cancel, state)
         # Re-read rather than left to the click that toggled it: App refuses to
         # pause during a recording, and the tick must then go back where it was.
         self._act_pause.setChecked(paused)
@@ -686,8 +726,14 @@ class Tray:
             return
         try:
             self._icon.showMessage(APP_NAME, message)
+            self._last_message = message
         except Exception:
             log.debug("notification failed", exc_info=True)
+
+    def _on_message_clicked(self) -> None:
+        """A click on the notification: App opens the place it names, if any."""
+        if self._last_message:
+            self.app.post("notification_clicked", self._last_message)
 
     def stop(self) -> None:
         self._stop_retry()

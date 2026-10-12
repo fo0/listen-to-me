@@ -47,6 +47,10 @@ standalone system-tray app that works in _every_ application.
   and a signal too quiet to recognize are named as the device problems they are,
   instead of every case reading "No speech detected." and sending you back to
   repeat the dictation into a muted microphone.
+- **A notification takes you where it points** — click one that names a place
+  ("Settings → Audio", "it is in Settings → History", "see the log file", "tray
+  menu → Help") and that page of the settings window, or the log file, opens.
+  A notification that names nowhere stays a plain message.
 - **A silent take no longer inserts a sentence nobody spoke** — press the
   hotkey, say nothing, press it again, and Whisper answers "Vielen Dank.",
   "Thank you." or a subtitle credit. Those phrases come out of the model, not
@@ -132,6 +136,11 @@ standalone system-tray app that works in _every_ application.
   counted the same way ("Transcribing for 1:12…") here, on the floating icon
   and on the Home page, so a slow one is never mistaken for a hung app; a
   dictation is done before that and keeps the plain "Transcribing…".
+  Moved on to another window while it runs? **Don't insert this transcript**
+  — the tray's and the floating icon's cancel entry while a take is being
+  transcribed — lets the transcription finish but keeps its text away from
+  the cursor: it goes to **Settings → History** instead of being pasted into
+  whatever you are typing in by then.
   **Record system audio** sits next to
   **Start recording**, so the second source is one click away with or without
   a hotkey of its own, and it names the source it stops
@@ -146,7 +155,9 @@ standalone system-tray app that works in _every_ application.
   page's **Start recording** still records.
   Only one instance runs at a time:
   starting the app again simply brings the running instance's settings
-  window to the front.
+  window to the front. That window **reopens the way you left it** — the size
+  you dragged it to, where you put it, maximized if it was — for as long as
+  the app runs; a fresh start opens it at its default size again.
 - **Transcript history** — the transcribed text of each recording is kept
   locally (never the audio) so you can copy it again from **Settings → History**
   if a paste is lost. Searchable (`Ctrl+F` puts the caret straight into the
