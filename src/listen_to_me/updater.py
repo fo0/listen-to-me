@@ -1,8 +1,9 @@
 """In-app updater driven by GitHub Releases.
 
-Checks the repo's releases, exposes the ones newer than the running build (so
-the user can pick which to jump to) together with their changelogs, and — on a
-frozen Windows build — downloads the new executable and swaps it in on restart.
+Checks the repo's releases — the recent release history with changelogs, and
+which of them are newer than the running build (so the user can pick which to
+jump to) — and, on a frozen Windows build, downloads the new executable and
+swaps it in on restart.
 
 No Qt here: the settings page drives this from a worker thread and marshals the
 results back to the UI.
@@ -45,6 +46,9 @@ _DEFAULT_TIMEOUT = 30.0
 # download_cap). The exe is ~200 MB; a transfer several times that is not a
 # release of this app, whatever the server says.
 _MAX_DOWNLOAD_BYTES = 1024 ** 3
+# Releases asked for per check — the API's largest page. One page is read, so
+# a full one means older releases may exist that the check did not fetch.
+RELEASES_PER_PAGE = 100
 # Headroom over the reported asset size before a transfer is cut off — a proxy
 # that re-encodes the body must not fail a download the size check would have
 # caught anyway (verify_download compares the exact size afterwards).
@@ -190,18 +194,33 @@ def _get(url: str, **kwargs):
 
 
 def fetch_releases(timeout: float = 10.0, include_prerelease: bool = False) -> list[Release]:
-    """All published releases, newest first. Raises on network/HTTP errors, and
-    ``UpdateTrustError`` when the certificate could not be verified."""
+    """The published releases, newest first — the latest ``RELEASES_PER_PAGE``
+    of them. Raises on network/HTTP errors, and ``UpdateTrustError`` when the
+    certificate could not be verified."""
+    return fetch_release_history(timeout, include_prerelease)[0]
+
+
+def fetch_release_history(
+    timeout: float = 10.0, include_prerelease: bool = False
+) -> tuple[list[Release], bool]:
+    """Like :func:`fetch_releases`, plus whether that is the whole history.
+
+    False when the API filled its page: older releases may exist that this
+    one request did not fetch, so "all releases" would overclaim. Counted before
+    drafts and pre-releases are dropped — filtering shortens the list without
+    making it any more complete.
+    """
     url = _API_URL.format(owner_repo=_owner_repo())
     resp = _get(
         url,
         timeout=timeout,
         headers={"Accept": "application/vnd.github+json"},
-        params={"per_page": 100},
+        params={"per_page": RELEASES_PER_PAGE},
     )
     resp.raise_for_status()
+    items = resp.json()
     releases: list[Release] = []
-    for item in resp.json():
+    for item in items:
         if item.get("draft"):
             continue
         if item.get("prerelease") and not include_prerelease:
@@ -222,7 +241,7 @@ def fetch_releases(timeout: float = 10.0, include_prerelease: bool = False) -> l
             )
         )
     releases.sort(key=lambda r: r.version, reverse=True)
-    return releases
+    return releases, len(items) < RELEASES_PER_PAGE
 
 
 def newer_releases(releases: list[Release], current: tuple[int, ...] | None = None) -> list[Release]:

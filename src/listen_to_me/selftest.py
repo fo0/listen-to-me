@@ -4761,6 +4761,36 @@ def _updater_release_history_window():
     current = (2026, 7, 19, 7)
     assert index(rels, current=current) == len(updater.newer_releases(rels, current=current))
 
+    # One request reads one page: a full page means older releases exist, and
+    # the history must not claim to be complete. Counted before pre-releases
+    # are filtered out — a shorter list is not a more complete one.
+    class _Page:
+        def __init__(self, items):
+            self.items = items
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.items
+
+    per_page = updater.RELEASES_PER_PAGE
+    asked: list = []
+    real_get = updater._get
+    try:
+        for count, complete in ((3, True), (per_page - 1, True), (per_page, False)):
+            items = [
+                {"tag_name": f"v1.{n}", "prerelease": n % 2 == 1} for n in range(count)
+            ]
+            updater._get = lambda url, _items=items, **kw: asked.append(kw) or _Page(_items)
+            fetched, whole = updater.fetch_release_history()
+            assert whole is complete, (count, whole)
+            assert len(fetched) == (count + 1) // 2, (count, len(fetched))
+            assert asked[-1]["params"]["per_page"] == per_page
+            assert updater.fetch_releases() == fetched
+    finally:
+        updater._get = real_get
+
 
 def _updater_follows_insecure_ssl_switch():
     """The update path honours the insecure-SSL switch like every other
@@ -14589,19 +14619,39 @@ def _settings_updates_lists_the_release_history():
     Only newer rows can be installed. The installed and older rows show their
     changelog but grey the install button out with their own reason, and
     `_install_selected_update` refuses them too, so no path leads to a
-    downgrade. Driven through the slots with a fake release list — opening the
-    page would start a real check, and the checks never touch the network.
-    `updater.current_version` and `can_self_update` are stood in for, so the
-    run inside the packaged exe (which CAN self-update) sees the same page.
+    downgrade. While a download runs the button belongs to it: picking another
+    row must not confirm a version the running download would not install.
+    A list cut off at the API's page size never claims to be every release.
+
+    Driven through the slots with a fake release list — opening the page would
+    start a real check, and the checks never touch the network. The worker
+    threads are stood in for by one that never starts, and
+    `updater.current_version` and `can_self_update` are too, so the run inside
+    the packaged exe (which CAN self-update) sees the same page.
     """
+    import threading
+    import types
+
+    from listen_to_me import settings_ui as _settings_module
     from listen_to_me import updater
     from listen_to_me.settings_ui import (
+        _INSTALL_BUSY_TIP,
+        _INSTALL_CHECKING_TIP,
         _INSTALL_OLDER_TIP,
         _INSTALL_RUNNING_TIP,
         _RELEASE_INSTALLED_MARK,
         SettingsWindow,
     )
     from listen_to_me.theme import apply_theme
+
+    class _Unstarted:
+        """A worker thread that never runs: no request, nothing to wait on."""
+
+        def __init__(self, target=None, name=None, daemon=None):
+            self.target = target
+
+        def start(self):
+            pass
 
     app = _ensure_qapp()
     apply_theme(app)
@@ -14620,6 +14670,7 @@ def _settings_updates_lists_the_release_history():
     releases = [mk(day) for day in range(30, 0, -1)]
     step = updater.RELEASE_HISTORY_STEP
     real_current, real_self_update = updater.current_version, updater.can_self_update
+    real_threading = _settings_module.threading
 
     def running(day):
         updater.current_version = lambda: (2026, 7, day, 1)
@@ -14632,6 +14683,9 @@ def _settings_updates_lists_the_release_history():
         window._start_update_download = downloads.append
         lst, button = window.update_list, window.update_button
         try:
+            _settings_module.threading = types.SimpleNamespace(
+                Thread=_Unstarted, Event=threading.Event
+            )
             updater.can_self_update = lambda: False
             assert window.update_list.accessibleName() == "Release history"
             assert not window.update_more_button.isEnabled()
@@ -14659,10 +14713,13 @@ def _settings_updates_lists_the_release_history():
             window._on_release_selected(0)
             assert button.isEnabled() and button.text() == "Download && install…"
             updater.can_self_update = lambda: False
-            # The running build: its changelog, nothing to install.
+            # The running build: its changelog, nothing to install — not even
+            # past the greyed-out button.
             lst.setCurrentRow(3)
             assert "v2026.07.27.1" in window.update_changelog.toPlainText()
             assert not button.isEnabled() and button.toolTip() == _INSTALL_RUNNING_TIP
+            window._install_selected_update()
+            assert not opened and not downloads, (opened, downloads)
             # An older one: its changelog, and no downgrade — not even past the
             # greyed-out button.
             lst.setCurrentRow(5)
@@ -14681,6 +14738,21 @@ def _settings_updates_lists_the_release_history():
             assert opened == [releases[1].html_url], opened
             opened.clear()
 
+            # A running download owns the button. Another newer row shows its
+            # changelog, but offers no install: the running download is the
+            # one that would land, not the version just confirmed.
+            SettingsWindow._start_update_download(window, releases[1])
+            assert window._update_busy
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_BUSY_TIP
+            lst.setCurrentRow(2)
+            assert "v2026.07.28.1" in window.update_changelog.toPlainText()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_BUSY_TIP
+            window._install_selected_update()
+            assert not opened and not downloads, (opened, downloads)
+            # Once it ends, the button follows the selected row again.
+            window._end_update_download("Download cancelled — nothing was installed.")
+            assert button.isEnabled() and button.text() == "Open release page"
+
             # Show more: the next step of older rows, the selection untouched.
             lst.setCurrentRow(5)
             window.update_more_button.click()
@@ -14698,9 +14770,23 @@ def _settings_updates_lists_the_release_history():
             window._show_more_releases()
             assert lst.count() == 30
 
-            # Every check starts over at the default window.
+            # A check empties the list and says why the button is out; its
+            # result starts over at the default window.
+            window._check_updates()
+            assert lst.count() == 0 and not window.update_more_button.isEnabled()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_CHECKING_TIP
             window._on_update_check_done(releases)
             assert lst.count() == step and lst.currentRow() == 0
+
+            # GitHub filled its page: older releases exist that were not
+            # fetched, so the list never says it holds all of them.
+            window._on_update_check_done(releases, False)
+            assert window.update_more_hint.text() == f"Showing {step} of the latest 30 releases."
+            window.update_more_button.click()
+            window.update_more_button.click()
+            assert window.update_more_hint.text() == "Showing the latest 30 releases."
+            assert not window.update_more_button.isEnabled()
+            assert "releases page" in window.update_more_button.toolTip()
 
             # Nothing newer: the running build is preselected, changelog shown.
             running(30)
@@ -14742,6 +14828,7 @@ def _settings_updates_lists_the_release_history():
             assert not button.isEnabled() and "nothing to install" in button.toolTip()
         finally:
             updater.current_version, updater.can_self_update = real_current, real_self_update
+            _settings_module.threading = real_threading
             window.deleteLater()
             app.processEvents()
 

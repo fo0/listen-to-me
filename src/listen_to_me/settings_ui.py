@@ -165,7 +165,9 @@ _HISTORY_LESS_LABEL = "Show less"
 class _UpdateSignals(QObject):
     """Marshals results from updater worker threads back to the Qt main thread."""
 
-    checked = Signal(list)  # list[updater.Release], every one fetched, newest first
+    # list[updater.Release], every one fetched, newest first; and whether that
+    # is the whole history (see updater.fetch_release_history)
+    checked = Signal(list, bool)
     check_failed = Signal(str)
     progress = Signal(int, int)  # bytes done, total (0 = unknown)
     downloaded = Signal(str)  # path to the downloaded exe
@@ -234,6 +236,10 @@ _INSTALL_RUNNING_TIP = "This is the version you are running."
 _INSTALL_OLDER_TIP = (
     "This release is older than the one you are running — downgrades are not offered."
 )
+# While a check or a download runs. The list stays usable during a download (to
+# read changelogs), but the download already running is the one that installs.
+_INSTALL_CHECKING_TIP = "Checking for updates — pick a release once the list is in."
+_INSTALL_BUSY_TIP = "A download is running — cancel it to pick a different release."
 # Appended to the running build's row in the release history.
 _RELEASE_INSTALLED_MARK = "   (installed)"
 
@@ -736,8 +742,10 @@ class SettingsWindow(QDialog):
         # The release history: every release the last check fetched (newest
         # first), how many of them are newer than this build — always the
         # leading ones — the running build's row (None: a dev build, or not in
-        # the list) and how many rows the list shows (see _list_releases).
+        # the list), how many rows the list shows (see _list_releases) and
+        # whether the fetch reached the oldest release.
         self._releases: list = []
+        self._releases_complete = True
         self._releases_newer_count = 0
         self._release_installed_row: int | None = None
         self._releases_listed = 0
@@ -4885,8 +4893,8 @@ class SettingsWindow(QDialog):
         # says why, right where they are clicking.
         self.update_check_button.setEnabled(False)
         self.update_check_button.setText(_CHECKING_LABEL)
-        self.update_button.setEnabled(False)
         self._reset_releases()
+        self._disable_install_button(_INSTALL_CHECKING_TIP)
         self.update_changelog.clear()
         self.update_status.setText("Checking for updates…")
         include_pre = self.chk_prereleases.isChecked()
@@ -4897,7 +4905,8 @@ class SettingsWindow(QDialog):
 
                 # All of them, not only the newer ones: the page is a release
                 # history, and the running build's own changelog is in it.
-                self._usig.checked.emit(updater.fetch_releases(include_prerelease=include_pre))
+                releases, complete = updater.fetch_release_history(include_prerelease=include_pre)
+                self._usig.checked.emit(releases, complete)
             except Exception as exc:  # surfaced in the UI
                 from . import netutil
 
@@ -4905,7 +4914,7 @@ class SettingsWindow(QDialog):
 
         threading.Thread(target=work, name="update-check", daemon=True).start()
 
-    def _on_update_check_done(self, releases: list) -> None:
+    def _on_update_check_done(self, releases: list, complete: bool = True) -> None:
         from . import updater
 
         self._update_busy = False
@@ -4913,6 +4922,7 @@ class SettingsWindow(QDialog):
         self._reset_releases()
         # Newest first (fetch_releases sorts), so the newer ones lead the list.
         self._releases = releases
+        self._releases_complete = complete
         newer = len(updater.newer_releases(releases))
         self._releases_newer_count = newer
         self._release_installed_row = updater.installed_release_index(releases)
@@ -4928,14 +4938,15 @@ class SettingsWindow(QDialog):
             self.update_changelog.clear()
             self._disable_install_button("You're on the latest version — there is nothing to install.")
             return
-        # The latest when there is something to install, else the running
-        # build — so its changelog is on screen straight away.
-        installed = self._release_installed_row
-        self.update_list.setCurrentRow(0 if newer or installed is None else installed)
+        # Row 0 is the latest newer release — or, with nothing newer, the
+        # running build (when the list carries it), so its changelog is on
+        # screen straight away.
+        self.update_list.setCurrentRow(0)
 
     def _reset_releases(self) -> None:
         """Empty the release history — before a check, and before its result."""
         self._releases = []
+        self._releases_complete = True
         self._releases_newer_count = 0
         self._release_installed_row = None
         self._releases_listed = 0
@@ -4976,22 +4987,33 @@ class SettingsWindow(QDialog):
     def _sync_release_more(self) -> None:
         """Say how much of the release history is listed, and offer the rest."""
         total, listed = len(self._releases), self._releases_listed
+        # A check reads one page of releases: when GitHub filled it, older ones
+        # may exist, and "all" would claim a history this list may not hold.
+        fetched = f"{total} release{'s' if total != 1 else ''}"
+        if not self._releases_complete:
+            fetched = f"the latest {fetched}"
         self.update_more_hint.setVisible(total > 0)
         if listed >= total:
-            self.update_more_hint.setText(
-                f"Showing all {total} releases." if total != 1 else "Showing 1 release."
-            )
+            if not self._releases_complete or total == 1:
+                self.update_more_hint.setText(f"Showing {fetched}.")
+            else:
+                self.update_more_hint.setText(f"Showing all {fetched}.")
             self.update_more_button.setEnabled(False)
-            self.update_more_button.setToolTip(
-                "Every release the last check fetched is listed."
-                if total
-                else "Nothing is listed yet — run “Check now”."
-            )
+            if not total:
+                tip = "Nothing is listed yet — run “Check now”."
+            elif self._releases_complete:
+                tip = "Every release the last check fetched is listed."
+            else:
+                tip = (
+                    "Everything the check fetched is listed — older releases are on "
+                    "the GitHub releases page."
+                )
+            self.update_more_button.setToolTip(tip)
             return
         from . import updater
 
         step = min(updater.RELEASE_HISTORY_STEP, total - listed)
-        self.update_more_hint.setText(f"Showing {listed} of {total} releases.")
+        self.update_more_hint.setText(f"Showing {listed} of {fetched}.")
         self.update_more_button.setEnabled(True)
         self.update_more_button.setToolTip(
             f"List the next {step} older release{'s' if step != 1 else ''} — from the "
@@ -5050,6 +5072,11 @@ class SettingsWindow(QDialog):
         """
         if not 0 <= row < len(self._releases):
             self._disable_install_button(_INSTALL_DISABLED_TIP)
+            return
+        if self._update_busy:
+            # Only a download gets here: a running check has emptied the list,
+            # so the range check above answers first.
+            self._disable_install_button(_INSTALL_BUSY_TIP)
             return
         if row == self._release_installed_row:
             self._disable_install_button(_INSTALL_RUNNING_TIP)
@@ -5129,6 +5156,12 @@ class SettingsWindow(QDialog):
         self._launch_browser(target, "changelog link")
 
     def _install_selected_update(self) -> None:
+        if self._update_busy:
+            # Disabled meanwhile (_sync_install_button). Past that, confirming a
+            # version here would be a lie: _start_update_download refuses while
+            # busy, and the download already running is the one that installs.
+            log.warning("not starting an update while a check or download is running")
+            return
         row = self.update_list.currentRow()
         if not 0 <= row < self._releases_newer_count:
             # The button is disabled on every other row (_sync_install_button);
@@ -5179,7 +5212,7 @@ class SettingsWindow(QDialog):
         self._update_busy = True
         cancel = threading.Event()
         self._update_cancel_event = cancel
-        self.update_button.setEnabled(False)
+        self._disable_install_button(_INSTALL_BUSY_TIP)
         self.update_check_button.setEnabled(False)
         self.update_cancel_button.setVisible(True)
         self.update_cancel_button.setEnabled(True)
