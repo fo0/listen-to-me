@@ -4825,33 +4825,53 @@ def _insecure_ssl_hub_httpx():
     disabling restores the hub's own default factory. The hub is faked at the
     module boundary — the real package is absent in the light CI env, and the
     v0.x code path silently doing nothing on v1.x is exactly the bug this
-    guards against."""
+    guards against. The client package is whichever one the hub's own module
+    binds — httpx on 1.x, httpx2 on 2.x, httpx2 first should both be bound —
+    and enabling builds one client up front, with verification off (#312)."""
     import types
 
     from listen_to_me import netutil
 
-    calls: list = []
-    hub = types.ModuleType("huggingface_hub")
-    hub.set_client_factory = calls.append
-    hub_utils = types.ModuleType("huggingface_hub.utils")
-    hub_http = types.ModuleType("huggingface_hub.utils._http")
+    built: list = []
+
+    def fake_http_package(name):
+        module = types.ModuleType(name)
+
+        class Client:
+            def __init__(self, **kwargs):
+                built.append((name, kwargs["verify"]))
+
+            def close(self):
+                pass
+
+        module.Client = Client
+        return module
 
     def default_client_factory():
         raise AssertionError("factory is only installed, never called here")
 
-    hub_http.default_client_factory = default_client_factory
-    # hub 2.x binds httpx2, not httpx (#312): the client package is taken from
-    # the hub's own module, so the fake one has to be found there.
-    hub_http.httpx2 = types.ModuleType("httpx2")
-    hub.utils = hub_utils
-    hub_utils._http = hub_http
     names = ("huggingface_hub", "huggingface_hub.utils", "huggingface_hub.utils._http")
     saved = {name: sys.modules.get(name) for name in names}
-    sys.modules.update({names[0]: hub, names[1]: hub_utils, names[2]: hub_http})
     try:
-        assert netutil._hub_http_module() is hub_http.httpx2
-        netutil.apply_insecure_ssl(True)
-        netutil.apply_insecure_ssl(False)
+        for bound, expected in ((("httpx",), "httpx"), (("httpx2",), "httpx2"),
+                                (("httpx", "httpx2"), "httpx2")):
+            calls: list = []
+            built.clear()
+            hub = types.ModuleType("huggingface_hub")
+            hub.set_client_factory = calls.append
+            hub_utils = types.ModuleType("huggingface_hub.utils")
+            hub_http = types.ModuleType("huggingface_hub.utils._http")
+            hub_http.default_client_factory = default_client_factory
+            for name in bound:
+                setattr(hub_http, name, fake_http_package(name))
+            hub.utils = hub_utils
+            hub_utils._http = hub_http
+            sys.modules.update({names[0]: hub, names[1]: hub_utils, names[2]: hub_http})
+            assert netutil._hub_http_module() is getattr(hub_http, expected), bound
+            netutil.apply_insecure_ssl(True)
+            netutil.apply_insecure_ssl(False)
+            assert calls == [netutil._insecure_hub_client, default_client_factory], bound
+            assert built == [(expected, False)], (bound, built)
     finally:
         netutil.apply_insecure_ssl(False)
         for name, module in saved.items():
@@ -4859,7 +4879,6 @@ def _insecure_ssl_hub_httpx():
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
-    assert calls == [netutil._insecure_hub_client, default_client_factory]
 
 
 def _std_stream_stub():
@@ -14711,14 +14730,18 @@ def _insecure_hub_client_builds():
     """The insecure/default clients for huggingface_hub >= 1.0 actually
     construct against the bundled hub, and are the same client type the hub's
     own factory builds (catches kwargs drift and an httpx/httpx2 mismatch at
-    release time). Skipped only when the hub has no set_client_factory
-    (< 1.0, requests-based) — never on a missing ``httpx``: hub 2.x no longer
-    installs it, and skipping on that is how #312 got past this check."""
+    release time). Skipped by version only — hub < 1.0 is requests-based — and
+    said so; an ImportError past that point fails the check: skipping on a
+    missing ``httpx`` is how #312 got through, and hub 2.x installs none."""
     try:
-        from huggingface_hub import set_client_factory  # noqa: F401
-        from huggingface_hub.utils._http import default_client_factory
+        import huggingface_hub
     except ImportError:
-        return
+        return "SKIPPED: huggingface_hub is not installed"
+    version = huggingface_hub.__version__
+    if int(version.split(".")[0]) < 1:
+        return f"SKIPPED: huggingface_hub {version} is requests-based"
+    from huggingface_hub.utils._http import default_client_factory
+
     from listen_to_me import netutil
 
     reference = default_client_factory()

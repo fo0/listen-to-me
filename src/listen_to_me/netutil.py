@@ -94,7 +94,8 @@ def apply_insecure_ssl(enabled: bool) -> None:
     Called at startup and after every settings save, so toggling works without
     a restart. Covers the assistant's and the updater's ``requests`` calls via
     :func:`verify` and the Hugging Face model downloads of both transcription
-    backends via ``huggingface_hub.configure_http_backend``. urllib3's
+    backends via ``set_client_factory`` (hub >= 1.0) /
+    ``configure_http_backend`` (< 1.0). urllib3's
     per-request InsecureRequestWarning is silenced while enabled — the switch
     itself is logged once instead (the update path logs every unverified
     request of its own).
@@ -167,11 +168,13 @@ def _configure_huggingface(enabled: bool) -> None:
         _configure_huggingface_legacy(enabled)
         return
     if enabled:
-        # Resolved now, not when the hub first calls the factory: a missing
-        # package then fails this settings save (logged, downloads keep
-        # verifying) instead of every later model download (#312).
+        # Built once now, not first when the hub calls the factory: a client
+        # that cannot be built then fails this settings save (logged,
+        # downloads keep verifying) instead of every later model download
+        # (#312). RuntimeError, because apply_insecure_ssl reads an
+        # ImportError as "huggingface_hub not installed".
         try:
-            _hub_http_module()
+            _insecure_hub_client().close()
         except ImportError as exc:
             raise RuntimeError(f"no HTTP client package for huggingface_hub: {exc}") from exc
         set_client_factory(_insecure_hub_client)
