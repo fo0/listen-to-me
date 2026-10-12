@@ -24,7 +24,7 @@ Remaining runtime deps (numpy, Pillow, pyperclip, requests) and their bounds: `r
   (`>=`) only. Adding any of them is a dependency + config change requiring user sign-off
   (`MEMORY.md` → _User Preferences_).
 - **The optional STT extras ship in the released exe** even though a plain `pip install -e .` omits them —
-  `release.yml` installs and `--collect-all`s them. That asymmetry is why a locally built exe offers fewer backends
+  `desktop-release.yml` installs and `--collect-all`s them. That asymmetry is why a locally built exe offers fewer backends
   than the published one (`agent_docs/development_notes.md` → _Local Windows build_).
 - **Prettier is fetched via `npx` at a pinned version**, deliberately not a dependency — the repo has no
   `package.json` and should not grow one for a Markdown formatter.

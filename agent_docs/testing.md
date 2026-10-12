@@ -13,7 +13,7 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src \
   python -c "import sys; from listen_to_me.selftest import gui_smoke; sys.exit(gui_smoke())"
 ```
 
-`gui_smoke()` is the dependency-light subset of `selftest.py` that CI can run from source. The full packaging self-test — `python -m listen_to_me --selftest` — needs every runtime dependency installed and is what verifies the built exe in `release.yml`.
+`gui_smoke()` is the dependency-light subset of `selftest.py` that CI can run from source. The full packaging self-test — `python -m listen_to_me --selftest` — needs every runtime dependency installed and is what verifies the built exe in `desktop-release.yml`.
 
 **On a bare Linux container the smoke test fails before it checks anything.** `overlay.py`'s `from PySide6.QtGui import ...` dies with `ImportError: libEGL.so.1: cannot open shared object file` — the Qt libraries link those `.so` files at load time, so it happens on import and `QT_QPA_PLATFORM=offscreen` does not avoid it. Installing PySide6 from pip does not bring them; they are OS packages. That is a **missing system library, not a failing check**: read it as an unrun gate, never as a red one, and never "fix" it by editing code. CI installs them in its own step before the smoke test, `README.md` carries the same `apt-get` line for humans, and the reasoning is ADR-0007. A cloud or routine session always starts from a fresh container, so this is the expected first result there.
 

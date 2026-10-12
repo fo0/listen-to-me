@@ -100,5 +100,5 @@ Apply ONLY the safe class, as one small, reviewable batch:
   offscreen Qt smoke (CLAUDE.md → Commands). There is deliberately no linter/typechecker/test
   framework here; never add one to get a bump verified.
 - Keep `requirements.txt` and `pyproject.toml` in sync, and check whether the bump needs a
-  `--collect-all` change in `.github/workflows/release.yml` (verified by the built exe’s
+  `--collect-all` change in `.github/workflows/desktop-release.yml` (verified by the built exe’s
   `--selftest`).

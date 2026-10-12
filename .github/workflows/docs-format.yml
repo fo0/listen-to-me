@@ -24,8 +24,11 @@ on:
       - "**.md"
 
 concurrency:
-  group: docs-format-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Cancel only a superseded PR run. A push to main gets a group of its own:
+  # a shared group keeps one pending run at most, so a third push would cancel
+  # the queued second.
+  group: docs-format-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least privilege: this job only checks out the repository and runs Prettier.
 permissions:

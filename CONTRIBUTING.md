@@ -80,7 +80,7 @@ drains it. Mutating Qt objects off the main thread crashes the app.
 New runtime dependencies are added only after discussion — they bloat the
 one-file Windows build. Keep `requirements.txt` and `pyproject.toml` in sync
 whenever a dependency changes; a dep with C extensions or data files may also
-need a `--collect-all` entry in `.github/workflows/release.yml`.
+need a `--collect-all` entry in `.github/workflows/desktop-release.yml`.
 
 ## Commits & pull requests
 
@@ -91,8 +91,8 @@ need a `--collect-all` entry in `.github/workflows/release.yml`.
   explaining _why_ for non-trivial changes.
 - Open the pull request against `main`. CI (`ci.yml`) runs the fast check job
   (syntax + offscreen Qt smoke) automatically; the Windows build and GitHub
-  Release live in a separate workflow (`release.yml`) that is dispatched
-  manually and only from `main`.
+  Release live in a separate workflow (`desktop-release.yml`) that is
+  dispatched manually and only from `main`.
 
 ## Reporting bugs
 

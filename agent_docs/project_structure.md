@@ -7,7 +7,7 @@ src/listen_to_me/     # The single application package — flat, no sub-packages
 scripts/              # make_icon.py — generates the .ico PyInstaller bundles
 .github/workflows/    # ci.yml (check job: compileall + Qt smoke, on PR + workflow_call)
                       # docs-format.yml (Prettier-Markdown gate on **.md, PR + push to main)
-                      # release.yml (manual dispatch: Windows exe + GitHub Release, main only)
+                      # desktop-release.yml (manual dispatch: Windows exe + GitHub Release, main only)
                       # branch-cleanup.yml (manual dispatch: deletes merged branches, dry run by default)
 docs/                 # ARCHITECTURE.mmd (+ .svg), adr/, research/
 agent_docs/           # Agent process docs (this file, review, backlog, memory, budget, …)

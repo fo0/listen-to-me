@@ -1092,7 +1092,7 @@ That build ships the **faster-whisper backend only**. The released exe also
 contains the optional OpenVINO and Parakeet backends — selecting one of them in
 a build without them fails with a "needs the optional package" message instead.
 To get those backends too, install their packages (the same versions
-[`release.yml`](.github/workflows/release.yml) installs):
+[`desktop-release.yml`](.github/workflows/desktop-release.yml) installs):
 
 ```bash
 pip install "openvino-genai>=2025.2" "huggingface_hub>=0.23" "onnx-asr[cpu,hub]>=0.12"
@@ -1105,8 +1105,8 @@ and add these four flags to the `pyinstaller` call above:
 --collect-all openvino_tokenizers --collect-all onnx_asr
 ```
 
-**One difference stays either way.** `release.yml` also builds PortAudio from a
-commit-pinned checkout and bundles the result with
+**One difference stays either way.** `desktop-release.yml` also builds
+PortAudio from a commit-pinned checkout and bundles the result with
 `--add-binary "<built portaudio.dll>;."`, which is what gives the released exe a
 `… [Loopback]` input for every output device
 ([ADR-0010](docs/adr/0010-the-windows-release-ships-its-own-portaudio.md)). A
@@ -1117,8 +1117,8 @@ needs "Stereo Mix" or a virtual cable — exactly as
 ## Releases (CI)
 
 A manual _Run workflow_ (`workflow_dispatch`) on
-[`release.yml`](.github/workflows/release.yml) runs the full release pipeline,
-which:
+[`desktop-release.yml`](.github/workflows/desktop-release.yml) runs the full
+release pipeline, which:
 
 1. builds `ListenToMe.exe` with PyInstaller on `windows-latest`,
 2. runs a packaging self-test (`ListenToMe.exe --selftest`),

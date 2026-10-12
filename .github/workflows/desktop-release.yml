@@ -1,4 +1,4 @@
-name: Release
+name: Desktop Release
 
 # Manual-only release pipeline: Windows one-file build + GitHub Release.
 # Never triggered by pushes or pull requests, and the guard job refuses
@@ -13,6 +13,13 @@ on:
 # and releases bought nothing and widened what a compromised step could do.
 permissions:
   contents: read
+
+# One release at a time: a second dispatch queues behind the running one
+# instead of building and publishing a release from an overlapping run.
+# Never cancelled — a half-finished release is worse than a late one.
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
 
 jobs:
   guard:
