@@ -302,7 +302,7 @@ class HomePage(QWidget):
             ("wave", "Model && engine", "Engine", "Choose the speech model, backend and device."),
             ("mic", "Test microphone", "Audio", "Record 3 seconds and check the input level."),
             ("layers", "Overlay && preview", "Overlay", "The floating icon and transcript preview."),
-            ("download", "Check for updates", "Updates", "See and install newer releases."),
+            ("download", "Check for updates", "Updates", "Release history, changelogs, updates."),
             ("help", "Help && tips", "Help", "Troubleshooting and how-tos."),
         ]
         # (button, glyph name) of every code-painted icon, so a live OS

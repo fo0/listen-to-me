@@ -19,7 +19,7 @@ checks that do not depend on the certificate — the HTTPS/GitHub host allowlist
 and the size/sha256 verification — logs every unverified request, and the
 Settings confirmation says so before the download starts.
 
-Qt-free, and ``urllib3``/``huggingface_hub``/``httpx`` are only imported once
+Qt-free, and ``urllib3``/``huggingface_hub``/``httpx(2)`` are only imported once
 the switch is actually enabled, so ``--version`` and the headless smoke test
 stay fast.
 """
@@ -94,7 +94,8 @@ def apply_insecure_ssl(enabled: bool) -> None:
     Called at startup and after every settings save, so toggling works without
     a restart. Covers the assistant's and the updater's ``requests`` calls via
     :func:`verify` and the Hugging Face model downloads of both transcription
-    backends via ``huggingface_hub.configure_http_backend``. urllib3's
+    backends via ``set_client_factory`` (hub >= 1.0) /
+    ``configure_http_backend`` (< 1.0). urllib3's
     per-request InsecureRequestWarning is silenced while enabled — the switch
     itself is logged once instead (the update path logs every unverified
     request of its own).
@@ -155,18 +156,27 @@ def _configure_huggingface(enabled: bool) -> None:
     """Route huggingface_hub (the model downloads of both backends) through
     clients without certificate verification — or back to its default.
 
-    huggingface_hub >= 1.0 is httpx-based and configured via
-    ``set_client_factory``; older versions are requests-based and use
-    ``configure_http_backend``. Both reset the shared session internally, so
-    a toggle takes effect immediately. Raises ImportError only when
-    huggingface_hub is not installed at all.
+    huggingface_hub >= 1.0 is httpx-based (``httpx2`` since 2.0) and
+    configured via ``set_client_factory``; older versions are requests-based
+    and use ``configure_http_backend``. Both reset the shared session
+    internally, so a toggle takes effect immediately. Raises ImportError only
+    when huggingface_hub is not installed at all.
     """
     try:
-        from huggingface_hub import set_client_factory  # >= 1.0 (httpx)
+        from huggingface_hub import set_client_factory  # >= 1.0 (httpx/httpx2)
     except ImportError:
         _configure_huggingface_legacy(enabled)
         return
     if enabled:
+        # Built once now, not first when the hub calls the factory: a client
+        # that cannot be built then fails this settings save (logged,
+        # downloads keep verifying) instead of every later model download
+        # (#312). RuntimeError, because apply_insecure_ssl reads an
+        # ImportError as "huggingface_hub not installed".
+        try:
+            _insecure_hub_client().close()
+        except ImportError as exc:
+            raise RuntimeError(f"no HTTP client package for huggingface_hub: {exc}") from exc
         set_client_factory(_insecure_hub_client)
         return
     try:
@@ -188,13 +198,38 @@ def _default_hub_client():
     return _build_hub_client(verify=True)
 
 
-def _build_hub_client(verify: bool):
-    """An ``httpx.Client`` mirroring huggingface_hub's default factory
-    (redirects on, no timeout, the hub's request event hook when importable)
-    with an explicit ``verify`` — httpx pins the TLS settings at client
-    creation, so toggling always needs a fresh client."""
-    import httpx  # a hard dependency of huggingface_hub >= 1.0
+def _hub_http_module():
+    """The HTTP client package huggingface_hub is built on: ``httpx2`` since
+    hub 2.0, ``httpx`` on 1.x. Hard-coding either one breaks on the other —
+    hub 2.x no longer installs ``httpx`` at all (#312), and a client from the
+    wrong package is not the type the hub's retry and error handling expect.
+    So the hub's own binding wins; importing is only the fallback for when
+    that private module moved."""
+    import types
 
+    try:
+        from huggingface_hub.utils import _http
+    except ImportError:
+        _http = None
+    for name in ("httpx2", "httpx"):
+        module = getattr(_http, name, None)
+        if isinstance(module, types.ModuleType):
+            return module
+    try:
+        import httpx2
+    except ImportError:
+        import httpx
+
+        return httpx
+    return httpx2
+
+
+def _build_hub_client(verify: bool):
+    """A client mirroring huggingface_hub's default factory (redirects on, no
+    timeout, the hub's request event hook when importable) with an explicit
+    ``verify`` — httpx pins the TLS settings at client creation, so toggling
+    always needs a fresh client."""
+    http = _hub_http_module()
     kwargs: dict = {"verify": verify, "follow_redirects": True, "timeout": None}
     try:
         from huggingface_hub.utils._http import hf_request_event_hook
@@ -202,7 +237,7 @@ def _build_hub_client(verify: bool):
         kwargs["event_hooks"] = {"request": [hf_request_event_hook]}
     except ImportError:
         pass
-    return httpx.Client(**kwargs)
+    return http.Client(**kwargs)
 
 
 def _configure_huggingface_legacy(enabled: bool) -> None:

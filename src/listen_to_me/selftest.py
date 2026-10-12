@@ -4701,6 +4701,97 @@ def _updater_logic():
                 pass
 
 
+def _updater_release_history_window():
+    """The window the Updates page's release history shows (#314), Qt-free.
+
+    Every newer release is listed, then the installed one, then older ones —
+    at least one step of rows, and never an update hidden behind "Show more".
+    "Show more" grows by one step and stops at what was fetched. The installed
+    row is found by version, and a dev build or a version the list does not
+    carry has none — that build simply gets no marked row.
+    """
+    from listen_to_me import updater
+
+    step = updater.RELEASE_HISTORY_STEP
+    rows = updater.release_history_rows
+    assert step == 10
+
+    # Nothing newer, or a few: one step — newer, installed, older.
+    assert rows(57, 0) == step
+    assert rows(57, 3) == step
+    # More newer than a step: all of them plus the installed one.
+    assert rows(57, 14) == 15
+    assert rows(57, step) == step + 1
+    # Fewer releases than a step: all of them, whatever is newer.
+    assert rows(4, 0) == 4 and rows(4, 2) == 4 and rows(4, 4) == 4
+    assert rows(0, 0) == 0
+
+    # "Show more" asks for the rows listed so far plus one step: it grows by
+    # exactly one step, and the last one only by what is left.
+    listed, seen = rows(57, 0), []
+    while True:
+        grown = rows(57, 0, listed + step)
+        if grown == listed:
+            break
+        seen.append(grown)
+        listed = grown
+    assert seen == [20, 30, 40, 50, 57], seen
+    assert rows(57, 14, rows(57, 14) + step) == 25
+    assert rows(5, 0, rows(5, 0) + step) == 5
+
+    def mk(tag):
+        return updater.Release(
+            tag=tag, name=tag, body="", published_at="2026-01-02T00:00:00Z",
+            html_url="", prerelease=False, asset_url="x", asset_name="a.exe",
+        )
+
+    rels = [mk("v2026.07.19.11"), mk("2026.07.19.7"), mk("v2026.07.19.3")]
+    index = updater.installed_release_index
+    assert index(rels, current=(2026, 7, 19, 11)) == 0
+    # The tag's "v" is not part of the version.
+    assert index(rels, current=updater.parse_version("v2026.07.19.7")) == 1
+    assert index(rels, current=(2026, 7, 19, 3)) == 2
+    # Between two releases, past the newest, a dev build, an empty list: none.
+    assert index(rels, current=(2026, 7, 19, 5)) is None
+    assert index(rels, current=(2026, 8, 1, 1)) is None
+    assert index(rels, current=updater.parse_version("0.0.0.dev0")) is None
+    assert index([], current=(2026, 7, 19, 11)) is None
+    # The installed row is the one right after the newer ones — the row the
+    # window always keeps on screen.
+    current = (2026, 7, 19, 7)
+    assert index(rels, current=current) == len(updater.newer_releases(rels, current=current))
+
+    # One request reads one page: a full page means older releases exist, and
+    # the history must not claim to be complete. Counted before pre-releases
+    # are filtered out — a shorter list is not a more complete one.
+    class _Page:
+        def __init__(self, items):
+            self.items = items
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.items
+
+    per_page = updater.RELEASES_PER_PAGE
+    asked: list = []
+    real_get = updater._get
+    try:
+        for count, complete in ((3, True), (per_page - 1, True), (per_page, False)):
+            items = [
+                {"tag_name": f"v1.{n}", "prerelease": n % 2 == 1} for n in range(count)
+            ]
+            updater._get = lambda url, _items=items, **kw: asked.append(kw) or _Page(_items)
+            fetched, whole = updater.fetch_release_history()
+            assert whole is complete, (count, whole)
+            assert len(fetched) == (count + 1) // 2, (count, len(fetched))
+            assert asked[-1]["params"]["per_page"] == per_page
+            assert updater.fetch_releases() == fetched
+    finally:
+        updater._get = real_get
+
+
 def _updater_follows_insecure_ssl_switch():
     """The update path honours the insecure-SSL switch like every other
     connection (ADR-0006, superseding ADR-0002): the releases API call and the
@@ -4825,29 +4916,53 @@ def _insecure_ssl_hub_httpx():
     disabling restores the hub's own default factory. The hub is faked at the
     module boundary — the real package is absent in the light CI env, and the
     v0.x code path silently doing nothing on v1.x is exactly the bug this
-    guards against."""
+    guards against. The client package is whichever one the hub's own module
+    binds — httpx on 1.x, httpx2 on 2.x, httpx2 first should both be bound —
+    and enabling builds one client up front, with verification off (#312)."""
     import types
 
     from listen_to_me import netutil
 
-    calls: list = []
-    hub = types.ModuleType("huggingface_hub")
-    hub.set_client_factory = calls.append
-    hub_utils = types.ModuleType("huggingface_hub.utils")
-    hub_http = types.ModuleType("huggingface_hub.utils._http")
+    built: list = []
+
+    def fake_http_package(name):
+        module = types.ModuleType(name)
+
+        class Client:
+            def __init__(self, **kwargs):
+                built.append((name, kwargs["verify"]))
+
+            def close(self):
+                pass
+
+        module.Client = Client
+        return module
 
     def default_client_factory():
         raise AssertionError("factory is only installed, never called here")
 
-    hub_http.default_client_factory = default_client_factory
-    hub.utils = hub_utils
-    hub_utils._http = hub_http
     names = ("huggingface_hub", "huggingface_hub.utils", "huggingface_hub.utils._http")
     saved = {name: sys.modules.get(name) for name in names}
-    sys.modules.update({names[0]: hub, names[1]: hub_utils, names[2]: hub_http})
     try:
-        netutil.apply_insecure_ssl(True)
-        netutil.apply_insecure_ssl(False)
+        for bound, expected in ((("httpx",), "httpx"), (("httpx2",), "httpx2"),
+                                (("httpx", "httpx2"), "httpx2")):
+            calls: list = []
+            built.clear()
+            hub = types.ModuleType("huggingface_hub")
+            hub.set_client_factory = calls.append
+            hub_utils = types.ModuleType("huggingface_hub.utils")
+            hub_http = types.ModuleType("huggingface_hub.utils._http")
+            hub_http.default_client_factory = default_client_factory
+            for name in bound:
+                setattr(hub_http, name, fake_http_package(name))
+            hub.utils = hub_utils
+            hub_utils._http = hub_http
+            sys.modules.update({names[0]: hub, names[1]: hub_utils, names[2]: hub_http})
+            assert netutil._hub_http_module() is getattr(hub_http, expected), bound
+            netutil.apply_insecure_ssl(True)
+            netutil.apply_insecure_ssl(False)
+            assert calls == [netutil._insecure_hub_client, default_client_factory], bound
+            assert built == [(expected, False)], (bound, built)
     finally:
         netutil.apply_insecure_ssl(False)
         for name, module in saved.items():
@@ -4855,7 +4970,6 @@ def _insecure_ssl_hub_httpx():
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = module
-    assert calls == [netutil._insecure_hub_client, default_client_factory]
 
 
 def _std_stream_stub():
@@ -12264,7 +12378,13 @@ def _gui_construction():
         window._end_update_download("Could not apply update: boom")
         assert window.update_progress.isHidden(), "progress bar survives a failed update"
         assert window.update_cancel_button.isHidden(), "cancel button survives a failed update"
-        assert window.update_check_button.isEnabled() and window.update_button.isEnabled()
+        assert window.update_check_button.isEnabled()
+        # The install button follows the selected row again rather than being
+        # switched on blindly — nothing is listed here, so it says why not.
+        from listen_to_me.settings_ui import _INSTALL_DISABLED_TIP
+
+        assert not window.update_button.isEnabled()
+        assert window.update_button.toolTip() == _INSTALL_DISABLED_TIP
         assert not window._update_busy
         assert "Could not apply update" in window.update_status.text()
 
@@ -14490,6 +14610,229 @@ def _save_refuses_an_assistant_profile_with_no_prompt():
             app.processEvents()
 
 
+def _settings_updates_lists_the_release_history():
+    """The Updates page is a release history, not only a list of updates
+    (#314): newer releases, then the running build — marked, its changelog on
+    screen when nothing is newer — then older ones, ten more per "Show more"
+    from the list already fetched.
+
+    Only newer rows can be installed. The installed and older rows show their
+    changelog but grey the install button out with their own reason, and
+    `_install_selected_update` refuses them too, so no path leads to a
+    downgrade. While a download runs the button belongs to it: picking another
+    row must not confirm a version the running download would not install.
+    A list cut off at the API's page size never claims to be every release.
+
+    Driven through the slots with a fake release list — opening the page would
+    start a real check, and the checks never touch the network. The worker
+    threads are stood in for by one that never starts, and
+    `updater.current_version` and `can_self_update` are too, so the run inside
+    the packaged exe (which CAN self-update) sees the same page.
+    """
+    import threading
+    import types
+
+    from listen_to_me import settings_ui as _settings_module
+    from listen_to_me import updater
+    from listen_to_me.settings_ui import (
+        _INSTALL_BUSY_TIP,
+        _INSTALL_CHECKING_TIP,
+        _INSTALL_OLDER_TIP,
+        _INSTALL_RUNNING_TIP,
+        _RELEASE_INSTALLED_MARK,
+        SettingsWindow,
+    )
+    from listen_to_me.theme import apply_theme
+
+    class _Unstarted:
+        """A worker thread that never runs: no request, nothing to wait on."""
+
+        def __init__(self, target=None, name=None, daemon=None):
+            self.target = target
+
+        def start(self):
+            pass
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    def mk(day):
+        tag = f"v2026.07.{day:02d}.1"
+        return updater.Release(
+            tag=tag, name=tag, body=f"Changelog of {tag}",
+            published_at=f"2026-07-{day:02d}T00:00:00Z",
+            html_url=f"https://github.com/fo0/listen-to-me/releases/tag/{tag}",
+            prerelease=False, asset_url="https://github.com/fo0/listen-to-me/a.exe",
+            asset_name="a.exe", asset_size=2 * 1024 * 1024,
+        )
+
+    # 30 releases, newest first, as fetch_releases hands them over.
+    releases = [mk(day) for day in range(30, 0, -1)]
+    step = updater.RELEASE_HISTORY_STEP
+    real_current, real_self_update = updater.current_version, updater.can_self_update
+    real_threading = _settings_module.threading
+
+    def running(day):
+        updater.current_version = lambda: (2026, 7, day, 1)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        window = SettingsWindow(_StubApp(Path(tmp)))
+        opened: list = []
+        downloads: list = []
+        window._launch_browser = lambda url, what: opened.append(url) or True
+        window._start_update_download = downloads.append
+        lst, button = window.update_list, window.update_button
+        try:
+            _settings_module.threading = types.SimpleNamespace(
+                Thread=_Unstarted, Event=threading.Event
+            )
+            updater.can_self_update = lambda: False
+            assert window.update_list.accessibleName() == "Release history"
+            assert not window.update_more_button.isEnabled()
+            assert window.update_more_button.toolTip()
+
+            def labels():
+                return [lst.item(row).text() for row in range(lst.count())]
+
+            def marked():
+                return [i for i, t in enumerate(labels()) if t.endswith(_RELEASE_INSTALLED_MARK)]
+
+            # Three newer: one step of rows, the running build marked after them.
+            running(27)
+            window._on_update_check_done(releases)
+            assert lst.count() == step, lst.count()
+            assert marked() == [3], labels()
+            assert window.update_status.text() == "3 newer releases available."
+            assert window.update_more_hint.text() == f"Showing {step} of 30 releases."
+            assert window.update_more_button.isEnabled()
+            # The latest is preselected and installable.
+            assert lst.currentRow() == 0
+            assert "v2026.07.30.1" in window.update_changelog.toPlainText()
+            assert button.isEnabled() and button.text() == "Open release page"
+            updater.can_self_update = lambda: True
+            window._on_release_selected(0)
+            assert button.isEnabled() and button.text() == "Download && install…"
+            updater.can_self_update = lambda: False
+            # The running build: its changelog, nothing to install — not even
+            # past the greyed-out button.
+            lst.setCurrentRow(3)
+            assert "v2026.07.27.1" in window.update_changelog.toPlainText()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_RUNNING_TIP
+            window._install_selected_update()
+            assert not opened and not downloads, (opened, downloads)
+            # An older one: its changelog, and no downgrade — not even past the
+            # greyed-out button.
+            lst.setCurrentRow(5)
+            assert "v2026.07.25.1" in window.update_changelog.toPlainText()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_OLDER_TIP
+            window._install_selected_update()
+            assert not opened and not downloads, (opened, downloads)
+            # A download that ends badly hands the button back to the row the
+            # user is on — an older row stays refused.
+            window._end_update_download("Download failed: boom")
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_OLDER_TIP
+            lst.setCurrentRow(1)
+            window._end_update_download("Download failed: boom")
+            assert button.isEnabled()
+            window._install_selected_update()
+            assert opened == [releases[1].html_url], opened
+            opened.clear()
+
+            # A running download owns the button. Another newer row shows its
+            # changelog, but offers no install: the running download is the
+            # one that would land, not the version just confirmed.
+            SettingsWindow._start_update_download(window, releases[1])
+            assert window._update_busy
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_BUSY_TIP
+            lst.setCurrentRow(2)
+            assert "v2026.07.28.1" in window.update_changelog.toPlainText()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_BUSY_TIP
+            window._install_selected_update()
+            assert not opened and not downloads, (opened, downloads)
+            # Once it ends, the button follows the selected row again.
+            window._end_update_download("Download cancelled — nothing was installed.")
+            assert button.isEnabled() and button.text() == "Open release page"
+
+            # Show more: the next step of older rows, the selection untouched.
+            lst.setCurrentRow(5)
+            window.update_more_button.click()
+            assert lst.count() == 2 * step, lst.count()
+            assert lst.currentRow() == 5
+            assert "v2026.07.25.1" in window.update_changelog.toPlainText()
+            assert window.update_more_hint.text() == f"Showing {2 * step} of 30 releases."
+            assert marked() == [3]
+            window.update_more_button.click()
+            assert lst.count() == 30
+            # Everything listed: no more to show, and the button says so.
+            assert window.update_more_hint.text() == "Showing all 30 releases."
+            assert not window.update_more_button.isEnabled()
+            assert window.update_more_button.toolTip()
+            window._show_more_releases()
+            assert lst.count() == 30
+
+            # A check empties the list and says why the button is out; its
+            # result starts over at the default window.
+            window._check_updates()
+            assert lst.count() == 0 and not window.update_more_button.isEnabled()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_CHECKING_TIP
+            window._on_update_check_done(releases)
+            assert lst.count() == step and lst.currentRow() == 0
+
+            # GitHub filled its page: older releases exist that were not
+            # fetched, so the list never says it holds all of them.
+            window._on_update_check_done(releases, False)
+            assert window.update_more_hint.text() == f"Showing {step} of the latest 30 releases."
+            window.update_more_button.click()
+            window.update_more_button.click()
+            assert window.update_more_hint.text() == "Showing the latest 30 releases."
+            assert not window.update_more_button.isEnabled()
+            assert "releases page" in window.update_more_button.toolTip()
+
+            # Nothing newer: the running build is preselected, changelog shown.
+            running(30)
+            window._on_update_check_done(releases)
+            assert window.update_status.text() == "You're on the latest version."
+            assert lst.count() == step and marked() == [0]
+            assert lst.currentRow() == 0
+            assert "v2026.07.30.1" in window.update_changelog.toPlainText()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_RUNNING_TIP
+
+            # More newer than a step: all of them, plus the running build.
+            running(18)
+            window._on_update_check_done(releases)
+            assert lst.count() == 13 and marked() == [12], labels()
+            assert lst.currentRow() == 0 and button.isEnabled()
+            window.update_more_button.click()
+            assert lst.count() == 23
+
+            # A dev build: everything is newer, nothing is marked.
+            updater.current_version = lambda: updater.parse_version("0.0.0.dev0")
+            window._on_update_check_done(releases)
+            assert lst.count() == 30 and not marked()
+            assert window.update_status.text() == "30 newer releases available."
+            assert not window.update_more_button.isEnabled()
+
+            # Running a build the list does not carry, nothing newer: older
+            # rows only, none marked, the first one shown but not installable.
+            updater.current_version = lambda: (2026, 8, 1, 1)
+            window._on_update_check_done(releases)
+            assert lst.count() == step and not marked()
+            assert lst.currentRow() == 0
+            assert "v2026.07.30.1" in window.update_changelog.toPlainText()
+            assert not button.isEnabled() and button.toolTip() == _INSTALL_OLDER_TIP
+
+            # Nothing published at all.
+            window._on_update_check_done([])
+            assert lst.count() == 0 and window.update_more_hint.isHidden()
+            assert not window.update_more_button.isEnabled()
+            assert not button.isEnabled() and "nothing to install" in button.toolTip()
+        finally:
+            updater.current_version, updater.can_self_update = real_current, real_self_update
+            _settings_module.threading = real_threading
+            window.deleteLater()
+            app.processEvents()
+
+
 # --------------------------------------------------------------- runners
 
 
@@ -14623,6 +14966,7 @@ _LIGHT_CHECKS = [
     ("autostart entry refresh", _autostart_refresh),
     ("autostart reports a failed registration", _autostart_reporting),
     ("updater version logic", _updater_logic),
+    ("updater release history window", _updater_release_history_window),
     ("updater follows the insecure-SSL switch", _updater_follows_insecure_ssl_switch),
     ("insecure SSL switch", _insecure_ssl_switch),
     ("insecure SSL huggingface httpx API", _insecure_ssl_hub_httpx),
@@ -14700,21 +15044,42 @@ _LIGHT_CHECKS = [
      _system_audio_hint_names_the_outputs_it_cannot_record),
     ("save refuses an assistant profile with no prompt",
      _save_refuses_an_assistant_profile_with_no_prompt),
+    ("settings updates lists the release history",
+     _settings_updates_lists_the_release_history),
     ("Qt UI construction", _gui_construction),
 ]
 
 def _insecure_hub_client_builds():
-    """The insecure/default httpx clients for huggingface_hub >= 1.0 actually
-    construct against the bundled httpx (catches kwargs drift at release
-    time). Silently skipped when httpx isn't installed (hub < 1.0 setups)."""
+    """The insecure/default clients for huggingface_hub >= 1.0 actually
+    construct against the bundled hub, and are the same client type the hub's
+    own factory builds (catches kwargs drift and an httpx/httpx2 mismatch at
+    release time). Skipped by version only — hub < 1.0 is requests-based — and
+    said so; an ImportError past that point fails the check: skipping on a
+    missing ``httpx`` is how #312 got through, and hub 2.x installs none."""
     try:
-        import httpx  # noqa: F401
+        import huggingface_hub
     except ImportError:
-        return
+        return "SKIPPED: huggingface_hub is not installed"
+    version = huggingface_hub.__version__
+    if int(version.split(".")[0]) < 1:
+        return f"SKIPPED: huggingface_hub {version} is requests-based"
+    from huggingface_hub.utils._http import default_client_factory
+
     from listen_to_me import netutil
 
-    netutil._build_hub_client(verify=False).close()
-    netutil._build_hub_client(verify=True).close()
+    reference = default_client_factory()
+    try:
+        for verify in (False, True):
+            client = netutil._build_hub_client(verify=verify)
+            try:
+                assert type(client) is type(reference), (
+                    f"{type(client).__module__}.{type(client).__name__} is not the hub's "
+                    f"{type(reference).__module__}.{type(reference).__name__}"
+                )
+            finally:
+                client.close()
+    finally:
+        reference.close()
 
 
 def _portaudio_supports_wasapi_loopback():
