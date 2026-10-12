@@ -132,6 +132,11 @@ standalone system-tray app that works in _every_ application.
   counted the same way ("Transcribing for 1:12…") here, on the floating icon
   and on the Home page, so a slow one is never mistaken for a hung app; a
   dictation is done before that and keeps the plain "Transcribing…".
+  Moved on to another window while it runs? **Don't insert this transcript**
+  — the tray's and the floating icon's cancel entry while a take is being
+  transcribed — lets the transcription finish but keeps its text away from
+  the cursor: it goes to **Settings → History** instead of being pasted into
+  whatever you are typing in by then.
   **Record system audio** sits next to
   **Start recording**, so the second source is one click away with or without
   a hotkey of its own, and it names the source it stops

@@ -1459,6 +1459,186 @@ def _filler_take_inserts_nothing():
         diagnostics_module.clip_stats = real_stats
 
 
+def _withheld_transcript_is_not_inserted():
+    """"Don't insert this transcript" keeps a running transcription's text
+    away from the cursor and puts it in the history instead.
+
+    A long system-audio take can transcribe for minutes, and by the time it is
+    done the user is typing somewhere else — that is where its text would be
+    pasted. The cancel event therefore means "hold the text back" while the
+    state is PROCESSING, and the worker checks the take's own Event right
+    before inserting. `App._handle`, `App._withhold_transcript` and
+    `App._process` are borrowed onto a stub the way
+    `_implausible_take_inserts_nothing` does it, so the wiring is under test:
+    nothing inserted, nothing typed, no preview flash, the text in the history,
+    one forced message naming where it went — and a take nobody held back still
+    reaches the cursor."""
+    import threading
+
+    from listen_to_me.app import (
+        STATE_IDLE,
+        STATE_PROCESSING,
+        STATE_RECORDING,
+        App,
+        withheld_message,
+    )
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+    from listen_to_me.config import Config
+
+    text = "Please send the minutes of the meeting to the whole team."
+
+    class _Transcriber:
+        def ensure_loaded(self, notify=None, progress=None):
+            pass
+
+        def transcribe(self, audio, notify=None, progress=None):
+            return text
+
+    class _Injector:
+        def __init__(self):
+            self.typed: list[str] = []
+            self.copied: list[str] = []
+
+        def clipboard_mode(self):
+            return "always"
+
+        def type_plain_blocking(self, typed):
+            self.typed.append(typed)
+            return ""
+
+        def copy_to_clipboard(self, copied):
+            self.copied.append(copied)
+            return True
+
+    class _History:
+        def __init__(self):
+            self.stored: list[str] = []
+
+        def add(self, entry):
+            self.stored.append(entry)
+
+    class _Live:
+        """A LiveTyper with words still owed to the cursor."""
+
+        committed_text = "Please send"
+        committed_frames = 0
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def hand_over(self):
+            return ("the minutes", True)
+
+    class _App:
+        _handle = App._handle
+        _process = App._process
+        _withhold_transcript = App._withhold_transcript
+
+        def __init__(self, cfg, state=STATE_PROCESSING):
+            self.cfg, self.state = cfg, state
+            self._withhold = None
+            self._withhold_lock = threading.Lock()
+            self.transcriber = _Transcriber()
+            self.injector = _Injector()
+            self.history = _History()
+            self.inserted: list[str] = []
+            self.posts: list[tuple] = []
+            self.messages: list[tuple[str, bool]] = []
+            self.cancelled = 0
+
+        def notify(self, message, force=False):
+            self.messages.append((message, force))
+
+        def post(self, kind, payload=None):
+            self.posts.append((kind, payload))
+
+        def progress(self, *args, **kwargs):
+            pass
+
+        def _insert_transcript(self, inserted):
+            self.inserted.append(inserted)
+
+        def _notify_no_speech(self, audio, source=SOURCE_MIC, verdict=None):
+            raise AssertionError("this take has text")
+
+        def _cancel_recording(self):
+            self.cancelled += 1
+
+    audio = [0.0] * int(4 * SAMPLE_RATE)
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        cfg["history_enabled"] = True
+
+        # Chosen while the take is transcribed: said at once, held back later.
+        for source in (SOURCE_MIC, SOURCE_SYSTEM):
+            app = _App(cfg)
+            withhold = app._withhold = threading.Event()
+            app._handle("cancel", None)
+            assert withhold.is_set() and app.cancelled == 0
+            assert app.messages == [(withheld_message(True, done=False), False)], app.messages
+            assert "Settings → History" in app.messages[0][0]
+            app._process(audio, None, source, withhold)
+            assert app.inserted == [] and app.injector.copied == [], (app.inserted, source)
+            assert app.history.stored == [text]
+            assert not [p for p in app.posts if p[0] == "flash_text"], app.posts
+            assert app.messages[-1] == (withheld_message(True, done=True), True), app.messages
+            assert ("done", None) in app.posts  # the state machine is handed back
+
+        # Nobody held it back: the take reaches the cursor as it always did —
+        # and a click after the worker chose to insert is told it came too
+        # late, never promised a hold-back that cannot happen any more.
+        app = _App(cfg)
+        withhold = app._withhold = threading.Event()
+        app._process(audio, None, SOURCE_MIC, withhold)
+        assert app.inserted == [text] and app.history.stored == [text]
+        assert ("flash_text", text) in app.posts
+        assert app._withhold is None
+        app._withhold_transcript()
+        assert not withhold.is_set()
+        assert app.messages[-1] == ("Too late — the transcript is already being inserted.", False)
+        # …and neither does a take started before the flag existed.
+        app = _App(cfg)
+        app._process(audio, None, SOURCE_MIC)
+        assert app.inserted == [text]
+
+        # Live typing: what is still owed is held back too; what was typed
+        # during the recording is final and stays where it is.
+        app = _App(cfg)
+        withhold = threading.Event()
+        withhold.set()
+        app._process(audio, _Live(), SOURCE_MIC, withhold)
+        assert app.injector.typed == [] and app.injector.copied == [], app.injector.typed
+
+        # During a recording "cancel" still cancels the take; when idle, or
+        # with no take of its own, it holds nothing back and says nothing.
+        app = _App(cfg, state=STATE_RECORDING)
+        app._withhold = threading.Event()
+        app._handle("cancel", None)
+        assert app.cancelled == 1 and not app._withhold.is_set()
+        app = _App(cfg, state=STATE_IDLE)
+        app._withhold = threading.Event()
+        app._withhold_transcript()
+        assert not app._withhold.is_set() and app.messages == []
+
+        # With the history off, holding the text back discards it — and the
+        # messages say so instead of pointing at a page that will not have it.
+        cfg["history_enabled"] = False
+        app = _App(cfg)
+        withhold = app._withhold = threading.Event()
+        app._handle("cancel", None)
+        assert "discarded" in app.messages[0][0] and "History" not in app.messages[0][0]
+        app._process(audio, None, SOURCE_MIC, withhold)
+        assert app.history.stored == [] and app.inserted == []
+        assert "discarded" in app.messages[-1][0], app.messages
+        # A history that is on but could not be written is a failure, named.
+        failed = withheld_message(False, done=True, history_enabled=True)
+        assert "could not be saved" in failed and "log file" in failed
+
+
 def _implausible_take_inserts_nothing():
     """A transcript that cannot have come from its take reaches neither the
     cursor nor the assistant, but stays in the history (#293).
@@ -8794,10 +8974,11 @@ def _overlay_menu_follows_the_state():
     """The floating icon's menu says what a click on it will do.
 
     The toggle entry is labelled after the state — the tray's wording, so the
-    two menus can never describe the same app differently — and "Cancel
-    recording" is only offered while a take is running, because App drops a
-    cancel in any other state and a menu entry that does nothing reads as a
-    broken one. The state is re-read when the menu opens, so an entry can
+    two menus can never describe the same app differently — and the cancel
+    entry is only offered while there is something to cancel ("Cancel
+    recording" during a take, "Don't insert this transcript" while it is
+    transcribed), because App drops a cancel when idle and a menu entry that
+    does nothing reads as a broken one. The state is re-read when the menu opens, so an entry can
     never advertise a state the app has already left."""
     _ensure_qapp()
     from PySide6.QtCore import QPoint
@@ -8818,9 +8999,20 @@ def _overlay_menu_follows_the_state():
             assert overlay._act_toggle.text() == "Stop recording (insert text)"
             assert overlay._act_cancel.isVisible()
 
+            assert overlay._act_cancel.text() == "Cancel recording"
+
+            # While the take is transcribed the same entry holds its text back
+            # from the cursor instead — the decode cannot be cancelled, the
+            # insertion can (App._withhold_transcript).
             stub.state = "processing"
             overlay.set_state("processing")
             assert overlay._act_toggle.text() == "Start recording"
+            assert overlay._act_cancel.isVisible()
+            assert overlay._act_cancel.text() == "Don't insert this transcript"
+            assert "History" in overlay._act_cancel.toolTip()
+
+            stub.state = "idle"
+            overlay.set_state("idle")
             assert not overlay._act_cancel.isVisible()
 
             # A state change the overlay never saw (its set_state is fed by
@@ -14224,6 +14416,7 @@ _LIGHT_CHECKS = [
     ("filler phrases report what was skipped", _filler_phrases_report_what_was_skipped),
     ("filler take inserts nothing", _filler_take_inserts_nothing),
     ("implausible take inserts nothing", _implausible_take_inserts_nothing),
+    ("withheld transcript is not inserted", _withheld_transcript_is_not_inserted),
     ("the parsers bound the lines they walk", _the_parsers_bound_the_lines_they_walk),
     ("missing microphone falls back", _missing_microphone_falls_back),
     ("loopback device is ranked and resolved", _loopback_device_is_ranked_and_resolved),

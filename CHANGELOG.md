@@ -14,6 +14,14 @@ changes at a glance.
 
 ### Added
 
+- **A running transcription can be kept away from the cursor.** A long
+  system-audio take can transcribe for minutes, and by the time it is done the
+  user is typing somewhere else — which is where its text was pasted. While a
+  take is being transcribed, the cancel entry of the tray menu and of the
+  floating icon's menu now reads **Don't insert this transcript**: the
+  transcription runs to the end, its text goes to Settings → History, and
+  nothing reaches the cursor or the clipboard. With the history switched off
+  the message says the text is discarded.
 - **A tap in hold mode says why nothing was recorded.** Pressing and releasing
   the hotkey the way toggle mode works ends a push-to-talk take after a
   fraction of a second, and "Recording too short — nothing inserted." left
