@@ -7656,9 +7656,44 @@ def _download_progress_logic():
     assert progress_text("", None) == ""
 
     # Local-only and non-raising whether or not huggingface_hub is installed
-    # here. hub_repo_size is deliberately NOT exercised: it is one HTTP request,
-    # and the checks stay offline and free.
+    # here. hub_repo_size never reaches the network in this check: a fake
+    # huggingface_hub stands in for it and records the request.
     hub_cache_dir("OpenVINO/whisper-small-int8-ov")
+
+    # The size lookup runs before the download starts, and model_info has no
+    # timeout of its own: an unbounded request would hold the model load on a
+    # stalled connection. A failing lookup costs the percentage only.
+    import types
+
+    from listen_to_me.progress import hub_repo_size
+
+    calls: list = []
+
+    class _FakeApi:
+        def model_info(self, repo, **kwargs):
+            calls.append(kwargs)
+            if repo == "fails/lookup":
+                raise TimeoutError("read timed out")
+            big = types.SimpleNamespace(rfilename="model.bin", size=2 * 1024 * 1024)
+            return types.SimpleNamespace(siblings=[big])
+
+    saved_hub = sys.modules.get("huggingface_hub")
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.HfApi = _FakeApi
+    sys.modules["huggingface_hub"] = fake_hub
+    try:
+        assert hub_repo_size("some/repo", revision="abc") == 2 * 1024 * 1024
+        assert hub_repo_size("fails/lookup") is None
+    finally:
+        if saved_hub is None:
+            sys.modules.pop("huggingface_hub", None)
+        else:
+            sys.modules["huggingface_hub"] = saved_hub
+    assert len(calls) == 2, calls
+    for kwargs in calls:
+        timeout = kwargs.get("timeout")
+        assert timeout is not None and 0 < timeout <= 60, kwargs
+    assert calls[0]["revision"] == "abc", calls
 
     # The repo a preset downloads from — an explicit id passes through, and
     # anything unresolvable costs the download its progress display, nothing else.

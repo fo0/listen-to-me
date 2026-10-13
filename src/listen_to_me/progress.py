@@ -45,6 +45,13 @@ _POLL_SECONDS = 0.7
 # metadata lookup returned something unusable rather than a real model.
 _MIN_TOTAL_BYTES = 1024 * 1024
 
+# Cap on the metadata request in hub_repo_size, in seconds. HfApi.model_info
+# defaults to no timeout at all, and the size is read before the download
+# starts: a stalled connection would hold the model load forever, while
+# huggingface_hub bounds its own download requests (HF_HUB_DOWNLOAD_TIMEOUT /
+# HF_HUB_ETAG_TIMEOUT, 10 s each). The same 10 s here.
+_METADATA_TIMEOUT_S = 10.0
+
 
 def format_size(num_bytes: int | None) -> str:
     """A byte count for the UI ("198.4 MB", "512 KB").
@@ -118,13 +125,16 @@ def hub_repo_size(
     ones on main.
 
     One extra HTTP request, and only on a download that is about to move
-    hundreds of megabytes anyway. Never raises: no metadata simply means no
-    percentage.
+    hundreds of megabytes anyway — bounded by _METADATA_TIMEOUT_S, so a
+    stalled lookup costs the percentage, never the download. Never raises: no
+    metadata simply means no percentage.
     """
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi().model_info(repo, revision=revision, files_metadata=True)
+        info = HfApi().model_info(
+            repo, revision=revision, files_metadata=True, timeout=_METADATA_TIMEOUT_S
+        )
         total = 0
         for sibling in info.siblings or ():
             name = str(getattr(sibling, "rfilename", ""))
