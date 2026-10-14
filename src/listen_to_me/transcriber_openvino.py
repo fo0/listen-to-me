@@ -60,9 +60,6 @@ _SOT_TOKENS = 4
 # Takes shorter than this get no initial prompt (#293): all four echo takes
 # were 0.5–2.7 s — too little audio to outweigh a prompt, so the decoder read
 # the prompt back instead — while a vocabulary hint matters for real speech.
-# Judged on the recorded length, before the silence trim, because that is
-# what the echo evidence measured: a 3.5-s take with 2.2 s of speech decodes
-# as ~2.9 s and would otherwise lose the prompt its single term needs.
 _MIN_PROMPT_SECONDS = 3.0
 
 
@@ -464,7 +461,6 @@ class OpenVinoTranscriber:
         pipe = self._pipe
         if pipe is None:
             return None
-        recorded = len(audio) / SAMPLE_RATE  # before the trim: the prompt rule
         if final:
             before = len(audio)
             audio = trim_silence(audio, SAMPLE_RATE)
@@ -480,10 +476,10 @@ class OpenVinoTranscriber:
         prompt, prompt_tokens = self._prompt_tail(pipe, self.cfg["initial_prompt"])
         prompted = ""
         if prompt and hasattr(config, "initial_prompt"):
-            if recorded >= _MIN_PROMPT_SECONDS:
+            if seconds >= _MIN_PROMPT_SECONDS:
                 config.initial_prompt = prompted = prompt
             else:
-                log.debug("initial prompt skipped for a %.1f-s take", recorded)
+                log.debug("initial prompt skipped for a %.1f-s take", seconds)
         if final:
             self.last_prompt = prompted
         if hasattr(config, "max_new_tokens"):
