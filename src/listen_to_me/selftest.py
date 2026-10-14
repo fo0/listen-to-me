@@ -13489,6 +13489,33 @@ def _gui_construction():
         finally:
             _autostart.describe = real_describe
 
+        # The hotkey test names the keys to press as key caps, like the tray
+        # and the key picker — not as the pynput token the field holds.
+        from listen_to_me import settings_ui as _hotkey_test_module
+
+        class _SilentHotkeys(_hotkey_test_module.Hotkeys):
+            # No pynput in the smoke job: validate and the listener are stubs.
+            validate = staticmethod(lambda combo: True)
+
+            def register(self, combo, mode="toggle"):
+                pass
+
+            def stop(self):
+                pass
+
+        real_hotkeys = _hotkey_test_module.Hotkeys
+        typed = window.hotkey_edit.text()
+        _hotkey_test_module.Hotkeys = _SilentHotkeys
+        try:
+            window.hotkey_edit.setText("<ctrl>+<alt>+m")
+            window._test_hotkey()
+            prompt = window.hotkey_test_status.text()
+            assert prompt == "Press Ctrl+Alt+M now…", prompt
+            window._finish_hotkey_test("done")
+        finally:
+            _hotkey_test_module.Hotkeys = real_hotkeys
+            window.hotkey_edit.setText(typed)
+
         from PySide6.QtWidgets import QWidgetItem
 
         long_path = (

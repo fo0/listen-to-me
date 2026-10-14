@@ -4400,7 +4400,10 @@ class SettingsWindow(QDialog):
         self._hotkey_test_gen += 1
         generation = self._hotkey_test_gen
         self.hotkey_test_button.setEnabled(False)
-        self.hotkey_test_status.setText(f"Press {combo} now…")
+        # Key caps ("Ctrl+Alt+Space"), as every other surface names a hotkey —
+        # the field holds the pynput token, and "Press <ctrl>+<alt>+<space>"
+        # reads as an instruction to type angle brackets.
+        self.hotkey_test_status.setText(f"Press {hotkey_label(combo) or 'the hotkey'} now…")
         QTimer.singleShot(
             _HOTKEY_TEST_TIMEOUT_MS, lambda: self._hotkey_test_timeout(generation)
         )
