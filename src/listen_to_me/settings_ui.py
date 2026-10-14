@@ -5034,6 +5034,7 @@ class SettingsWindow(QDialog):
         """Append the next older releases from the list the last check fetched."""
         from . import updater
 
+        refocus = self.focusWidget() is self.update_more_button
         self._list_releases(
             updater.release_history_rows(
                 len(self._releases),
@@ -5041,6 +5042,12 @@ class SettingsWindow(QDialog):
                 self._releases_listed + updater.RELEASE_HISTORY_STEP,
             )
         )
+        if refocus and not self.update_more_button.isEnabled():
+            # The last step greys the button out, and Qt moves keyboard focus
+            # on to whatever follows it in the Tab chain. The rows just listed
+            # are where the user was heading, so focus goes to the list — its
+            # current row, the changelog on screen, stays selected.
+            self.update_list.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _on_update_check_failed(self, message: str) -> None:
         self._update_busy = False

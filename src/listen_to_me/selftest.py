@@ -14805,8 +14805,15 @@ def _settings_updates_lists_the_release_history():
             assert "v2026.07.25.1" in window.update_changelog.toPlainText()
             assert window.update_more_hint.text() == f"Showing {2 * step} of 30 releases."
             assert marked() == [3]
+            # The last step greys the button out: keyboard focus goes to the
+            # list the rows went into, not to whatever follows in Tab order.
+            window.show()
+            window.update_more_button.setFocus()
+            assert window.focusWidget() is window.update_more_button, window.focusWidget()
             window.update_more_button.click()
             assert lst.count() == 30
+            assert window.focusWidget() is lst, window.focusWidget()
+            assert lst.currentRow() == 5, "focus moved the selection"
             # Everything listed: no more to show, and the button says so.
             assert window.update_more_hint.text() == "Showing all 30 releases."
             assert not window.update_more_button.isEnabled()
