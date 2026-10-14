@@ -5423,7 +5423,7 @@ class SettingsWindow(QDialog):
         query = self.history_filter_edit.text().strip()
         if not stored:
             self._set_history_export([], query)
-            self.history_count_label.setText("")
+            self._set_history_count("")
             # "No transcripts yet" promises the list will fill up — which is a
             # lie once history is switched off. Say which of the two empty
             # states this is, and where to change it.
@@ -5439,7 +5439,7 @@ class SettingsWindow(QDialog):
         # scrolling concern, an export that silently stopped at 300 of 5000
         # transcripts would be a data-loss trap.
         self._set_history_export(entries, query)
-        self.history_count_label.setText(
+        self._set_history_count(
             f"{len(entries)} of {len(stored)} match"
             if query
             else f"{len(stored)} transcript{'s' if len(stored) != 1 else ''}"
@@ -5496,7 +5496,7 @@ class SettingsWindow(QDialog):
         a log that is already one entry per re-render.
         """
         self._set_history_export([], self.history_filter_edit.text().strip())
-        self.history_count_label.setText("")
+        self._set_history_count("")
         self.history_clear_button.setEnabled(True)
         self.history_clear_button.setToolTip(
             "Start a new, empty history. The unreadable file is replaced — copy "
@@ -5649,6 +5649,14 @@ class SettingsWindow(QDialog):
     def _copy_history(self, text: str, button: QPushButton) -> None:
         # Reports a failed clipboard write on the button — see copy_with_feedback.
         copy_with_feedback(text, button)
+
+    def _set_history_count(self, text: str) -> None:
+        """Show how many transcripts the search matches and voice it on the
+        search field. The list filters as the user types, focus stays in the
+        field, and the count beside it is never read out — so a screen reader
+        user could not tell whether a term matched anything."""
+        self.history_count_label.setText(text)
+        self.history_filter_edit.setAccessibleDescription(text)
 
     def _set_history_export(self, entries: list[dict], query: str) -> None:
         """Remember what an export would write and label both buttons after it.

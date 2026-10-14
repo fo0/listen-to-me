@@ -10350,6 +10350,7 @@ def _surfaces_name_an_unreadable_history():
             assert "No transcripts yet" not in shown, shown
             assert str(stub.history.path) in shown, shown
             assert window.history_count_label.text() == ""
+            assert window.history_filter_edit.accessibleDescription() == "", "stale count voiced"
             assert window.history_clear_button.isEnabled(), "no way back from a broken file"
             assert "new, empty history" in window.history_clear_button.toolTip()
             assert not window.history_export_button.isEnabled()
@@ -12664,6 +12665,10 @@ def _gui_construction():
         assert "corrupt timestamp" in _history_text()
         assert "A stored transcript" not in _history_text()
         assert "1 of 2" in window.history_count_label.text()
+        # Voiced on the field the user is typing in, not only on the label.
+        assert window.history_filter_edit.accessibleDescription() == (
+            window.history_count_label.text()
+        )
         window.history_filter_edit.setText("nothing-matches-this")
         window._refresh_history()
         # "matches", not "contains": a term can now match the row's date as
