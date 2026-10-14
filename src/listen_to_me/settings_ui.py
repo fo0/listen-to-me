@@ -3269,6 +3269,10 @@ class SettingsWindow(QDialog):
         _healthy, text = autostart.describe(self.chk_autostart.isChecked())
         self.autostart_status.setText(text)
         self.autostart_status.setVisible(bool(text))
+        # A sibling label is not announced with the checkbox it describes, and
+        # this one carries what the checkbox alone cannot show: an entry
+        # Windows switched off, or one pointing at a program file that moved.
+        self.chk_autostart.setAccessibleDescription(text)
         try:
             stored = autostart.stored_command()
         except Exception:

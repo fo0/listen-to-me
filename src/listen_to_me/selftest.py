@@ -13473,6 +13473,22 @@ def _gui_construction():
         # page past its viewport. Every label whose text is composed from a
         # probe, a path or an exception must therefore stay elastic — what the
         # layout really asks for is the widget item's minimum, so measure that.
+        # The autostart line under "Start with the system" is voiced on the
+        # checkbox: a sibling label is never announced with it, and a stale or
+        # switched-off entry is invisible on the checkbox alone.
+        from . import autostart as _autostart
+
+        real_describe = _autostart.describe
+        try:
+            _autostart.describe = lambda desired: (False, "⚠ The registered entry is stale.")
+            window._refresh_autostart_status()
+            assert window.chk_autostart.accessibleDescription() == "⚠ The registered entry is stale."
+            _autostart.describe = lambda desired: (True, "")
+            window._refresh_autostart_status()
+            assert window.chk_autostart.accessibleDescription() == "", "stale status voiced"
+        finally:
+            _autostart.describe = real_describe
+
         from PySide6.QtWidgets import QWidgetItem
 
         long_path = (
