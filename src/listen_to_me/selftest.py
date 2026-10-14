@@ -10200,10 +10200,13 @@ def _help_page_find():
             # A term that is genuinely absent is the one case that says so.
             window.help_find_edit.setText("Zzzz-nope")
             assert window.help_find_status.text() == "Not found"
+            # Voiced where focus is, not only shown on a label nobody reads out.
+            assert window.help_find_edit.accessibleDescription() == "Not found"
 
             # Clearing the field drops the stale verdict and the highlight.
             window.help_find_edit.setText("")
             assert window.help_find_status.text() == ""
+            assert window.help_find_edit.accessibleDescription() == ""
             assert not window._help_browser.textCursor().hasSelection()
             assert not window.help_find_next.isEnabled()
 
@@ -10219,6 +10222,7 @@ def _help_page_find():
             assert window.help_find_status.text() == "Not found"
             window._render_help()
             assert window.help_find_status.text() == ""
+            assert window.help_find_edit.accessibleDescription() == ""
 
             # F3 / Shift+F3 step through the matches from anywhere on the page.
             # Enter does it too, but only while the caret is still in the find
@@ -10346,6 +10350,7 @@ def _surfaces_name_an_unreadable_history():
             assert "No transcripts yet" not in shown, shown
             assert str(stub.history.path) in shown, shown
             assert window.history_count_label.text() == ""
+            assert window.history_filter_edit.accessibleDescription() == "", "stale count voiced"
             assert window.history_clear_button.isEnabled(), "no way back from a broken file"
             assert "new, empty history" in window.history_clear_button.toolTip()
             assert not window.history_export_button.isEnabled()
@@ -12660,6 +12665,10 @@ def _gui_construction():
         assert "corrupt timestamp" in _history_text()
         assert "A stored transcript" not in _history_text()
         assert "1 of 2" in window.history_count_label.text()
+        # Voiced on the field the user is typing in, not only on the label.
+        assert window.history_filter_edit.accessibleDescription() == (
+            window.history_count_label.text()
+        )
         window.history_filter_edit.setText("nothing-matches-this")
         window._refresh_history()
         # "matches", not "contains": a term can now match the row's date as
@@ -13464,6 +13473,49 @@ def _gui_construction():
         # page past its viewport. Every label whose text is composed from a
         # probe, a path or an exception must therefore stay elastic — what the
         # layout really asks for is the widget item's minimum, so measure that.
+        # The autostart line under "Start with the system" is voiced on the
+        # checkbox: a sibling label is never announced with it, and a stale or
+        # switched-off entry is invisible on the checkbox alone.
+        from . import autostart as _autostart
+
+        real_describe = _autostart.describe
+        try:
+            _autostart.describe = lambda desired: (False, "⚠ The registered entry is stale.")
+            window._refresh_autostart_status()
+            assert window.chk_autostart.accessibleDescription() == "⚠ The registered entry is stale."
+            _autostart.describe = lambda desired: (True, "")
+            window._refresh_autostart_status()
+            assert window.chk_autostart.accessibleDescription() == "", "stale status voiced"
+        finally:
+            _autostart.describe = real_describe
+
+        # The hotkey test names the keys to press as key caps, like the tray
+        # and the key picker — not as the pynput token the field holds.
+        from listen_to_me import settings_ui as _hotkey_test_module
+
+        class _SilentHotkeys(_hotkey_test_module.Hotkeys):
+            # No pynput in the smoke job: validate and the listener are stubs.
+            validate = staticmethod(lambda combo: True)
+
+            def register(self, combo, mode="toggle"):
+                pass
+
+            def stop(self):
+                pass
+
+        real_hotkeys = _hotkey_test_module.Hotkeys
+        typed = window.hotkey_edit.text()
+        _hotkey_test_module.Hotkeys = _SilentHotkeys
+        try:
+            window.hotkey_edit.setText("<ctrl>+<alt>+m")
+            window._test_hotkey()
+            prompt = window.hotkey_test_status.text()
+            assert prompt == "Press Ctrl+Alt+M now…", prompt
+            window._finish_hotkey_test("done")
+        finally:
+            _hotkey_test_module.Hotkeys = real_hotkeys
+            window.hotkey_edit.setText(typed)
+
         from PySide6.QtWidgets import QWidgetItem
 
         long_path = (
@@ -14796,8 +14848,15 @@ def _settings_updates_lists_the_release_history():
             assert "v2026.07.25.1" in window.update_changelog.toPlainText()
             assert window.update_more_hint.text() == f"Showing {2 * step} of 30 releases."
             assert marked() == [3]
+            # The last step greys the button out: keyboard focus goes to the
+            # list the rows went into, not to whatever follows in Tab order.
+            window.show()
+            window.update_more_button.setFocus()
+            assert window.focusWidget() is window.update_more_button, window.focusWidget()
             window.update_more_button.click()
             assert lst.count() == 30
+            assert window.focusWidget() is lst, window.focusWidget()
+            assert lst.currentRow() == 5, "focus moved the selection"
             # Everything listed: no more to show, and the button says so.
             assert window.update_more_hint.text() == "Showing all 30 releases."
             assert not window.update_more_button.isEnabled()

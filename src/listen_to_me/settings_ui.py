@@ -3142,7 +3142,7 @@ class SettingsWindow(QDialog):
         scrolled past the only occurrence.
         """
         self._set_help_find_enabled(text.strip())
-        self.help_find_status.setText("")
+        self._set_help_find_status("")
         if not text.strip():
             # Drop the highlight of the term that was just deleted.
             cursor = self._help_browser.textCursor()
@@ -3161,20 +3161,31 @@ class SettingsWindow(QDialog):
         """
         term = self.help_find_edit.text().strip()
         if not term:
-            self.help_find_status.setText("")
+            self._set_help_find_status("")
             return
         flags = QTextDocument.FindFlag.FindBackward if backwards else QTextDocument.FindFlag(0)
         if from_start:
             self._move_help_cursor(to_end=backwards)
         if self._help_browser.find(term, flags):
-            self.help_find_status.setText("")
+            self._set_help_find_status("")
             return
         # Nothing left in this direction — try again from the other end.
         self._move_help_cursor(to_end=backwards)
         if self._help_browser.find(term, flags):
-            self.help_find_status.setText("Wrapped around")
+            self._set_help_find_status("Wrapped around")
             return
-        self.help_find_status.setText("Not found")
+        self._set_help_find_status("Not found")
+
+    def _set_help_find_status(self, text: str) -> None:
+        """Show the find outcome beside the field and voice it on the field.
+
+        Focus stays in the find field while the user types and presses Enter,
+        and a sibling label is never read out — "Not found" would reach no
+        screen reader. The field's accessible description is the channel the
+        window already uses for a field's status (see the replacements box).
+        """
+        self.help_find_status.setText(text)
+        self.help_find_edit.setAccessibleDescription(text)
 
     def _move_help_cursor(self, *, to_end: bool) -> None:
         """Park the browser's cursor at one end of the document, selection
@@ -3195,9 +3206,8 @@ class SettingsWindow(QDialog):
         # setHtml replaces the document, so any match highlighted in the old
         # one is gone — a stale "Not found"/"Wrapped around" beside an empty
         # selection would describe a search that no longer exists.
-        status = getattr(self, "help_find_status", None)
-        if status is not None:
-            status.setText("")
+        if getattr(self, "help_find_status", None) is not None:
+            self._set_help_find_status("")
 
     def _on_color_scheme_changed(self, *_args) -> None:
         """The OS switched between light and dark: repaint everything this
@@ -3259,6 +3269,10 @@ class SettingsWindow(QDialog):
         _healthy, text = autostart.describe(self.chk_autostart.isChecked())
         self.autostart_status.setText(text)
         self.autostart_status.setVisible(bool(text))
+        # A sibling label is not announced with the checkbox it describes, and
+        # this one carries what the checkbox alone cannot show: an entry
+        # Windows switched off, or one pointing at a program file that moved.
+        self.chk_autostart.setAccessibleDescription(text)
         try:
             stored = autostart.stored_command()
         except Exception:
@@ -4386,7 +4400,10 @@ class SettingsWindow(QDialog):
         self._hotkey_test_gen += 1
         generation = self._hotkey_test_gen
         self.hotkey_test_button.setEnabled(False)
-        self.hotkey_test_status.setText(f"Press {combo} now…")
+        # Key caps ("Ctrl+Alt+Space"), as every other surface names a hotkey —
+        # the field holds the pynput token, and "Press <ctrl>+<alt>+<space>"
+        # reads as an instruction to type angle brackets.
+        self.hotkey_test_status.setText(f"Press {hotkey_label(combo) or 'the hotkey'} now…")
         QTimer.singleShot(
             _HOTKEY_TEST_TIMEOUT_MS, lambda: self._hotkey_test_timeout(generation)
         )
@@ -5024,6 +5041,7 @@ class SettingsWindow(QDialog):
         """Append the next older releases from the list the last check fetched."""
         from . import updater
 
+        refocus = self.focusWidget() is self.update_more_button
         self._list_releases(
             updater.release_history_rows(
                 len(self._releases),
@@ -5031,6 +5049,12 @@ class SettingsWindow(QDialog):
                 self._releases_listed + updater.RELEASE_HISTORY_STEP,
             )
         )
+        if refocus and not self.update_more_button.isEnabled():
+            # The last step greys the button out, and Qt moves keyboard focus
+            # on to whatever follows it in the Tab chain. The rows just listed
+            # are where the user was heading, so focus goes to the list — its
+            # current row, the changelog on screen, stays selected.
+            self.update_list.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _on_update_check_failed(self, message: str) -> None:
         self._update_busy = False
@@ -5413,7 +5437,7 @@ class SettingsWindow(QDialog):
         query = self.history_filter_edit.text().strip()
         if not stored:
             self._set_history_export([], query)
-            self.history_count_label.setText("")
+            self._set_history_count("")
             # "No transcripts yet" promises the list will fill up — which is a
             # lie once history is switched off. Say which of the two empty
             # states this is, and where to change it.
@@ -5429,7 +5453,7 @@ class SettingsWindow(QDialog):
         # scrolling concern, an export that silently stopped at 300 of 5000
         # transcripts would be a data-loss trap.
         self._set_history_export(entries, query)
-        self.history_count_label.setText(
+        self._set_history_count(
             f"{len(entries)} of {len(stored)} match"
             if query
             else f"{len(stored)} transcript{'s' if len(stored) != 1 else ''}"
@@ -5486,7 +5510,7 @@ class SettingsWindow(QDialog):
         a log that is already one entry per re-render.
         """
         self._set_history_export([], self.history_filter_edit.text().strip())
-        self.history_count_label.setText("")
+        self._set_history_count("")
         self.history_clear_button.setEnabled(True)
         self.history_clear_button.setToolTip(
             "Start a new, empty history. The unreadable file is replaced — copy "
@@ -5639,6 +5663,14 @@ class SettingsWindow(QDialog):
     def _copy_history(self, text: str, button: QPushButton) -> None:
         # Reports a failed clipboard write on the button — see copy_with_feedback.
         copy_with_feedback(text, button)
+
+    def _set_history_count(self, text: str) -> None:
+        """Show how many transcripts the search matches and voice it on the
+        search field. The list filters as the user types, focus stays in the
+        field, and the count beside it is never read out — so a screen reader
+        user could not tell whether a term matched anything."""
+        self.history_count_label.setText(text)
+        self.history_filter_edit.setAccessibleDescription(text)
 
     def _set_history_export(self, entries: list[dict], query: str) -> None:
         """Remember what an export would write and label both buttons after it.
