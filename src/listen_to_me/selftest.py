@@ -10200,10 +10200,13 @@ def _help_page_find():
             # A term that is genuinely absent is the one case that says so.
             window.help_find_edit.setText("Zzzz-nope")
             assert window.help_find_status.text() == "Not found"
+            # Voiced where focus is, not only shown on a label nobody reads out.
+            assert window.help_find_edit.accessibleDescription() == "Not found"
 
             # Clearing the field drops the stale verdict and the highlight.
             window.help_find_edit.setText("")
             assert window.help_find_status.text() == ""
+            assert window.help_find_edit.accessibleDescription() == ""
             assert not window._help_browser.textCursor().hasSelection()
             assert not window.help_find_next.isEnabled()
 
@@ -10219,6 +10222,7 @@ def _help_page_find():
             assert window.help_find_status.text() == "Not found"
             window._render_help()
             assert window.help_find_status.text() == ""
+            assert window.help_find_edit.accessibleDescription() == ""
 
             # F3 / Shift+F3 step through the matches from anywhere on the page.
             # Enter does it too, but only while the caret is still in the find

@@ -3142,7 +3142,7 @@ class SettingsWindow(QDialog):
         scrolled past the only occurrence.
         """
         self._set_help_find_enabled(text.strip())
-        self.help_find_status.setText("")
+        self._set_help_find_status("")
         if not text.strip():
             # Drop the highlight of the term that was just deleted.
             cursor = self._help_browser.textCursor()
@@ -3161,20 +3161,31 @@ class SettingsWindow(QDialog):
         """
         term = self.help_find_edit.text().strip()
         if not term:
-            self.help_find_status.setText("")
+            self._set_help_find_status("")
             return
         flags = QTextDocument.FindFlag.FindBackward if backwards else QTextDocument.FindFlag(0)
         if from_start:
             self._move_help_cursor(to_end=backwards)
         if self._help_browser.find(term, flags):
-            self.help_find_status.setText("")
+            self._set_help_find_status("")
             return
         # Nothing left in this direction — try again from the other end.
         self._move_help_cursor(to_end=backwards)
         if self._help_browser.find(term, flags):
-            self.help_find_status.setText("Wrapped around")
+            self._set_help_find_status("Wrapped around")
             return
-        self.help_find_status.setText("Not found")
+        self._set_help_find_status("Not found")
+
+    def _set_help_find_status(self, text: str) -> None:
+        """Show the find outcome beside the field and voice it on the field.
+
+        Focus stays in the find field while the user types and presses Enter,
+        and a sibling label is never read out — "Not found" would reach no
+        screen reader. The field's accessible description is the channel the
+        window already uses for a field's status (see the replacements box).
+        """
+        self.help_find_status.setText(text)
+        self.help_find_edit.setAccessibleDescription(text)
 
     def _move_help_cursor(self, *, to_end: bool) -> None:
         """Park the browser's cursor at one end of the document, selection
@@ -3195,9 +3206,8 @@ class SettingsWindow(QDialog):
         # setHtml replaces the document, so any match highlighted in the old
         # one is gone — a stale "Not found"/"Wrapped around" beside an empty
         # selection would describe a search that no longer exists.
-        status = getattr(self, "help_find_status", None)
-        if status is not None:
-            status.setText("")
+        if getattr(self, "help_find_status", None) is not None:
+            self._set_help_find_status("")
 
     def _on_color_scheme_changed(self, *_args) -> None:
         """The OS switched between light and dark: repaint everything this
