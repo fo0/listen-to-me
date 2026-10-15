@@ -3080,7 +3080,8 @@ class SettingsWindow(QDialog):
         self.help_find_edit.setToolTip(
             "Jump to the next place these words appear. Enter finds the next "
             "match, the arrows step through them, and the search wraps around "
-            "at the end of the page. Esc clears the field."
+            "at the end of the page; the line beside the buttons says which "
+            "match is selected and how many there are. Esc clears the field."
         )
         # Typing restarts from the top, so the first match is reached while
         # still typing; Enter and the arrows step on from wherever that landed.
