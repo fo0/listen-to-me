@@ -12863,6 +12863,22 @@ def _gui_construction():
             if label.text().startswith("A stored transcript")
         ]
         assert short_tips and not any(short_tips), short_tips
+        # The same rest reaches a screen reader, which announces the label's
+        # text (the cut row) and never a tooltip: plain text, the tooltip's
+        # caps, and nothing on a row that already shows everything.
+        meeting_desc = [
+            label.accessibleDescription()
+            for label in recent_labels
+            if label.text().startswith("The meeting went on.")
+        ]
+        assert meeting_desc[0].count("The meeting went on.") > 20, meeting_desc
+        assert meeting_desc[0].endswith("…"), "a capped description does not say it was cut"
+        assert "<" not in meeting_desc[0], "the description carries markup"
+        assert not any(
+            label.accessibleDescription()
+            for label in recent_labels
+            if label.text().startswith("A stored transcript")
+        )
         from listen_to_me.home_page import recent_tooltip
 
         assert recent_tooltip("Short.", "Short.") == ""

@@ -689,6 +689,15 @@ class HomePage(QWidget):
         tip = recent_tooltip(raw, shown)
         if tip:
             text_label.setToolTip(tip)
+            # The tooltip only exists for a pointer: a screen reader announces
+            # the label's text — the cut row — and never reads a tooltip, so
+            # the rest of the transcript was out of its reach. Same text and
+            # caps as the tooltip, as plain text (an accessible description is
+            # never rendered as markup).
+            full, _cut = preview_text(
+                raw.strip(), _RECENT_TOOLTIP_CHARS, _RECENT_TOOLTIP_LINES
+            )
+            text_label.setAccessibleDescription(full)
         body.addWidget(text_label)
         rh.addLayout(body, 1)
         copy_btn = QPushButton("Copy")

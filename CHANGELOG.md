@@ -330,6 +330,10 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **A screen reader reaches the rest of a cut-off Home transcript.** The
+  Home page's recent rows carry the whole transcript in their tooltip, which a
+  screen reader never reads; the same text is now the row's accessible
+  description.
 - **Find in help counts its matches.** A hit on the Help page said nothing
   about how many more there were, so learning whether a term occurs once or
   forty times meant pressing Next until "Wrapped around". The line beside the
