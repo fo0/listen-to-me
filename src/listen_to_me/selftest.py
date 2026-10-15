@@ -14542,6 +14542,66 @@ def _assistant_destination_names_where_a_recording_goes():
             assert "“" not in text, (blind, text)  # no host to quote
 
 
+def _assistant_api_key_can_be_shown():
+    """The Assistant page's API key can be revealed to check what was pasted,
+    and is masked again as soon as the page is left.
+
+    Behind the dots a key with a stray space, or one from the wrong account,
+    looks exactly like the right one; the first sign used to be a 401 from the
+    connection test. The reveal must not outlive the visit: this window gets
+    screenshotted for bug reports, and a key left in clear text on a page
+    nobody is looking at is one the next screenshot carries."""
+    from PySide6.QtWidgets import QLineEdit
+
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    masked = QLineEdit.EchoMode.Password
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        stub.cfg["assistant"]["api_key"] = "sk-test-123"
+        window = SettingsWindow(stub)
+        try:
+            edit, button = window.a_key_edit, window.a_key_show_button
+            # Masked by default, and the toggle says what it would do.
+            assert edit.echoMode() == masked
+            assert not button.isChecked()
+            assert button.text() == "Show", button.text()
+            assert button.accessibleName() == "Show the API key"
+            assert edit.accessibleName() == "API key"
+            # Not the dialog's default button: Enter in the key field still
+            # reaches Save, never this toggle.
+            assert not button.autoDefault()
+
+            window._show_page("Assistant")
+            button.click()
+            assert edit.echoMode() == QLineEdit.EchoMode.Normal
+            assert button.isChecked()
+            assert button.text() == "Hide", button.text()
+            assert button.accessibleName() == "Hide the API key"
+            button.click()
+            assert edit.echoMode() == masked
+            assert button.text() == "Show"
+
+            # Leaving the page masks it again and resets the toggle with it, so
+            # the two can never disagree.
+            button.click()
+            assert edit.echoMode() == QLineEdit.EchoMode.Normal
+            window._show_page("Home")
+            assert edit.echoMode() == masked
+            assert not button.isChecked()
+            assert button.text() == "Show"
+
+            # The reveal changes how the key is drawn, never what is saved.
+            assert window._collect()["assistant"]["api_key"] == "sk-test-123"
+        finally:
+            window.deleteLater()
+            app.processEvents()
+
+
 def _save_refuses_an_assistant_profile_with_no_prompt():
     """Save refuses an enabled assistant profile that cannot produce a
     request, names the profile it means, and puts the caret in the field the
@@ -15029,6 +15089,7 @@ _LIGHT_CHECKS = [
     ("assistant profiles follow the source", _assistant_profiles_follow_the_source),
     ("assistant destination names where a recording goes",
      _assistant_destination_names_where_a_recording_goes),
+    ("assistant API key can be shown", _assistant_api_key_can_be_shown),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),

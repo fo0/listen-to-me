@@ -330,6 +330,11 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **The assistant's API key can be shown to check what was pasted.** The key
+  field on Settings → Assistant was masked with no way to look, so a stray
+  space or a key from the wrong account only surfaced as a 401 from the
+  connection test. A **Show** button beside it reveals the key; it is masked
+  again as soon as you leave the page.
 - **History → Export… says where the file went.** A successful export used to
   be confirmed only by "Exported ✓" flashing on the button for a second. A line
   below the buttons now reads "Exported 37 transcripts to …" with the full path,

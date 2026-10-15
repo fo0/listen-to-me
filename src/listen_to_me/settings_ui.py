@@ -258,6 +258,10 @@ _A_TESTING_LABEL = "Testing…"
 # Status line under the button while nothing runs — the same promise the
 # Engine page's diagnostics make.
 _A_TEST_IDLE = "Uses the values entered above — no Save needed."
+# The API key's reveal toggle, both labels — the button is pinned to the
+# wider one so it does not move under the cursor when it flips.
+_A_KEY_SHOW_LABEL = "Show"
+_A_KEY_HIDE_LABEL = "Hide"
 # One constant because the flash restores this label after "Reset ✓" — spelled
 # out in two places, the two would drift apart. Carries the "…" for the same
 # reason the other destructive buttons do: it asks first, whenever the prompt
@@ -2572,10 +2576,29 @@ class SettingsWindow(QDialog):
         self.a_model_edit = QLineEdit(acfg["model"])
         self.a_model_edit.setToolTip("Model name as the endpoint knows it, e.g. llama3.2, qwen2.5:14b or gpt-4o-mini.")
         form.addRow("Model:", self.a_model_edit)
+        key_row = QWidget()
+        kh = QHBoxLayout(key_row)
+        kh.setContentsMargins(0, 0, 0, 0)
+        kh.setSpacing(8)
         self.a_key_edit = QLineEdit(acfg["api_key"])
         self.a_key_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.a_key_edit.setToolTip("Only needed for hosted services. Local Ollama/LM Studio usually run without a key.")
-        form.addRow("API key (optional):", self.a_key_edit)
+        # The form row's label buddies the row widget, not this field.
+        self.a_key_edit.setAccessibleName("API key")
+        kh.addWidget(self.a_key_edit, 1)
+        # A pasted key could only be checked by pasting it again: a stray
+        # space or a key from the wrong account looks exactly like the right
+        # one behind the dots, and the first sign was a 401 from the test.
+        # Masked again whenever the page is left (see _on_page_changed) — this
+        # window gets screenshotted for bug reports.
+        self.a_key_show_button = QPushButton(_A_KEY_SHOW_LABEL)
+        self.a_key_show_button.setCheckable(True)
+        self.a_key_show_button.setAutoDefault(False)
+        self._pin_width(self.a_key_show_button, _A_KEY_SHOW_LABEL, _A_KEY_HIDE_LABEL)
+        self.a_key_show_button.toggled.connect(self._set_api_key_shown)
+        kh.addWidget(self.a_key_show_button)
+        form.addRow("API key (optional):", key_row)
+        self._set_api_key_shown(False)
         self.a_temp_spin = QDoubleSpinBox()
         self.a_temp_spin.setRange(0.0, 2.0)
         self.a_temp_spin.setSingleStep(0.1)
@@ -2770,6 +2793,30 @@ class SettingsWindow(QDialog):
         # visible at the call site.
         reset.clicked.connect(lambda: self._reset_prompt(edit, default, reset))
         return edit, reset
+
+    def _set_api_key_shown(self, shown: bool) -> None:
+        """Show the API key in clear text or mask it again, and keep the
+        toggle's label, check state, tooltip and accessible name in step.
+
+        Called by the toggle itself and by every page change, so the key never
+        stays readable on a page nobody is looking at.
+        """
+        button = self.a_key_show_button
+        if button.isChecked() != shown:
+            button.blockSignals(True)
+            button.setChecked(shown)
+            button.blockSignals(False)
+        self.a_key_edit.setEchoMode(
+            QLineEdit.EchoMode.Normal if shown else QLineEdit.EchoMode.Password
+        )
+        button.setText(_A_KEY_HIDE_LABEL if shown else _A_KEY_SHOW_LABEL)
+        button.setAccessibleName("Hide the API key" if shown else "Show the API key")
+        button.setToolTip(
+            "Mask the key again."
+            if shown
+            else "Show the key in clear text to check what was pasted — it is "
+            "masked again when you leave this page."
+        )
 
     def _refresh_assistant_destination(self, *_args) -> None:
         """Re-render the System audio card's "sent to …" line.
@@ -3293,6 +3340,8 @@ class SettingsWindow(QDialog):
         if index is None:
             return  # a section header, not a page
         self.stack.setCurrentIndex(index)
+        # A revealed API key does not outlive the visit to the Assistant page.
+        self._set_api_key_shown(False)
         # Home always re-reads config + history — cheap, and it may have gone
         # stale while the user edited other pages or dictated.
         if index == self._home_index:
