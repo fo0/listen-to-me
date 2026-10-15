@@ -10150,6 +10150,12 @@ def _escape_clears_a_search_field():
         field.deleteLater()
 
 
+def _help_find_found(status: str) -> bool:
+    """Whether a Help find status reports a hit ("Match 2 of 5", possibly
+    after "Wrapped around — ") rather than "Not found" or nothing at all."""
+    return status.startswith(("Match ", "Wrapped around — match "))
+
+
 def _help_page_find():
     """The Help page can be searched, and the search wraps around.
 
@@ -10178,9 +10184,29 @@ def _help_page_find():
             # match however far the reader had already scrolled.
             window.help_find_edit.setText("proxy")
             assert window.help_find_next.isEnabled()
-            assert window.help_find_status.text() == "", window.help_find_status.text()
+            # …and says where that hit sits among all of them, so a term that
+            # occurs once reads differently from one that occurs forty times
+            # without stepping through to "Wrapped around" to find out.
+            status = window.help_find_status.text()
+            assert status.startswith("Match 1 of "), status
+            total = int(status.rsplit(" ", 1)[1])
+            assert total > 1, status  # "proxy" is in more than one topic
+            # Counted with the find Next uses, so the total is exactly the
+            # number of steps before the search comes round again.
+            plain = window._help_browser.toPlainText().casefold()
+            assert total == plain.count("proxy"), (total, plain.count("proxy"))
+            assert window.help_find_edit.accessibleDescription() == status
             selected = window._help_browser.textCursor().selectedText()
             assert selected.casefold() == "proxy", selected
+            window._find_in_help()
+            assert window.help_find_status.text() == f"Match 2 of {total}"
+            window._find_in_help(backwards=True)
+            assert window.help_find_status.text() == f"Match 1 of {total}"
+            window._find_in_help(backwards=True)
+            assert window.help_find_status.text() == (
+                f"Wrapped around — match {total} of {total}"
+            ), window.help_find_status.text()
+            window._move_help_cursor(to_end=False)
 
             # Stepping on eventually runs out of matches and starts over —
             # never "Not found" for a term the document contains.
@@ -10188,12 +10214,12 @@ def _help_page_find():
             for _ in range(20):
                 window._find_in_help()
                 seen.add(window.help_find_status.text())
-            assert "Wrapped around" in seen, seen
+            assert any(text.startswith("Wrapped around — match 1 of ") for text in seen), seen
             assert "Not found" not in seen, seen
 
             # Backwards steps too, and wraps the same way.
             window._find_in_help(backwards=True)
-            assert window.help_find_status.text() in ("", "Wrapped around")
+            assert _help_find_found(window.help_find_status.text())
             selected = window._help_browser.textCursor().selectedText()
             assert selected.casefold() == "proxy", selected
 
@@ -10248,9 +10274,9 @@ def _help_page_find():
             # direction it is stepped in.
             window.help_find_edit.setText("OpenVINO")
             window._step_help_find(backwards=False)
-            assert window.help_find_status.text() in ("", "Wrapped around")
+            assert _help_find_found(window.help_find_status.text())
             window._step_help_find(backwards=True)
-            assert window.help_find_status.text() in ("", "Wrapped around")
+            assert _help_find_found(window.help_find_status.text())
 
             # With nothing to look for, the key lands the caret in the find
             # field rather than doing nothing at all — a keystroke that is

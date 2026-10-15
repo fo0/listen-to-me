@@ -330,6 +330,11 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **Find in help counts its matches.** A hit on the Help page said nothing
+  about how many more there were, so learning whether a term occurs once or
+  forty times meant pressing Next until "Wrapped around". The line beside the
+  find field now reads "Match 2 of 5" (and "Wrapped around — match 1 of 5"),
+  and a screen reader hears the same on the field.
 - **The assistant's API key can be shown to check what was pasted.** The key
   field on Settings → Assistant was masked with no way to look, so a stray
   space or a key from the wrong account only surfaced as a 401 from the

@@ -3214,14 +3214,39 @@ class SettingsWindow(QDialog):
         if from_start:
             self._move_help_cursor(to_end=backwards)
         if self._help_browser.find(term, flags):
-            self._set_help_find_status("")
+            self._set_help_find_status(self._help_match_text(term))
             return
         # Nothing left in this direction — try again from the other end.
         self._move_help_cursor(to_end=backwards)
         if self._help_browser.find(term, flags):
-            self._set_help_find_status("Wrapped around")
+            self._set_help_find_status(f"Wrapped around — {self._help_match_text(term).lower()}")
             return
         self._set_help_find_status("Not found")
+
+    def _help_match_text(self, term: str) -> str:
+        """Where the selected match sits among all of them: "Match 2 of 5".
+
+        A hit on its own said nothing about how many more there were — a reader
+        had to keep pressing Next until "Wrapped around" to learn that a term
+        occurs once, or forty times. Counted with the document's own find and
+        the browser's default flags, so it is exactly the set Next and Previous
+        step through (case ignored, same overlaps). Falls back to the bare
+        total should the selection ever not be one of them.
+        """
+        document = self._help_browser.document()
+        current = self._help_browser.textCursor().selectionStart()
+        cursor = QTextCursor(document)
+        total = position = 0
+        while True:
+            cursor = document.find(term, cursor)
+            if cursor.isNull():
+                break
+            total += 1
+            if cursor.selectionStart() == current:
+                position = total
+        if position:
+            return f"Match {position} of {total}"
+        return f"{total} match{'es' if total != 1 else ''}"
 
     def _set_help_find_status(self, text: str) -> None:
         """Show the find outcome beside the field and voice it on the field.
