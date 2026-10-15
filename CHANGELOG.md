@@ -330,6 +330,20 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **A screen reader reaches the rest of a cut-off Home transcript.** The
+  Home page's recent rows carry the whole transcript in their tooltip, which a
+  screen reader never reads; the same text is now the row's accessible
+  description.
+- **Find in help counts its matches.** A hit on the Help page said nothing
+  about how many more there were, so learning whether a term occurs once or
+  forty times meant pressing Next until "Wrapped around". The line beside the
+  find field now reads "Match 2 of 5" (and "Wrapped around — match 1 of 5"),
+  and a screen reader hears the same on the field.
+- **The assistant's API key can be shown to check what was pasted.** The key
+  field on Settings → Assistant was masked with no way to look, so a stray
+  space or a key from the wrong account only surfaced as a 401 from the
+  connection test. A **Show** button beside it reveals the key; it is masked
+  again as soon as you leave the page.
 - **History → Export… says where the file went.** A successful export used to
   be confirmed only by "Exported ✓" flashing on the button for a second. A line
   below the buttons now reads "Exported 37 transcripts to …" with the full path,

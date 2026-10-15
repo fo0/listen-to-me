@@ -10150,6 +10150,12 @@ def _escape_clears_a_search_field():
         field.deleteLater()
 
 
+def _help_find_found(status: str) -> bool:
+    """Whether a Help find status reports a hit ("Match 2 of 5", possibly
+    after "Wrapped around — ") rather than "Not found" or nothing at all."""
+    return status.startswith(("Match ", "Wrapped around — match "))
+
+
 def _help_page_find():
     """The Help page can be searched, and the search wraps around.
 
@@ -10178,9 +10184,29 @@ def _help_page_find():
             # match however far the reader had already scrolled.
             window.help_find_edit.setText("proxy")
             assert window.help_find_next.isEnabled()
-            assert window.help_find_status.text() == "", window.help_find_status.text()
+            # …and says where that hit sits among all of them, so a term that
+            # occurs once reads differently from one that occurs forty times
+            # without stepping through to "Wrapped around" to find out.
+            status = window.help_find_status.text()
+            assert status.startswith("Match 1 of "), status
+            total = int(status.rsplit(" ", 1)[1])
+            assert total > 1, status  # "proxy" is in more than one topic
+            # Counted with the find Next uses, so the total is exactly the
+            # number of steps before the search comes round again.
+            plain = window._help_browser.toPlainText().casefold()
+            assert total == plain.count("proxy"), (total, plain.count("proxy"))
+            assert window.help_find_edit.accessibleDescription() == status
             selected = window._help_browser.textCursor().selectedText()
             assert selected.casefold() == "proxy", selected
+            window._find_in_help()
+            assert window.help_find_status.text() == f"Match 2 of {total}"
+            window._find_in_help(backwards=True)
+            assert window.help_find_status.text() == f"Match 1 of {total}"
+            window._find_in_help(backwards=True)
+            assert window.help_find_status.text() == (
+                f"Wrapped around — match {total} of {total}"
+            ), window.help_find_status.text()
+            window._move_help_cursor(to_end=False)
 
             # Stepping on eventually runs out of matches and starts over —
             # never "Not found" for a term the document contains.
@@ -10188,12 +10214,12 @@ def _help_page_find():
             for _ in range(20):
                 window._find_in_help()
                 seen.add(window.help_find_status.text())
-            assert "Wrapped around" in seen, seen
+            assert any(text.startswith("Wrapped around — match 1 of ") for text in seen), seen
             assert "Not found" not in seen, seen
 
             # Backwards steps too, and wraps the same way.
             window._find_in_help(backwards=True)
-            assert window.help_find_status.text() in ("", "Wrapped around")
+            assert _help_find_found(window.help_find_status.text())
             selected = window._help_browser.textCursor().selectedText()
             assert selected.casefold() == "proxy", selected
 
@@ -10248,9 +10274,9 @@ def _help_page_find():
             # direction it is stepped in.
             window.help_find_edit.setText("OpenVINO")
             window._step_help_find(backwards=False)
-            assert window.help_find_status.text() in ("", "Wrapped around")
+            assert _help_find_found(window.help_find_status.text())
             window._step_help_find(backwards=True)
-            assert window.help_find_status.text() in ("", "Wrapped around")
+            assert _help_find_found(window.help_find_status.text())
 
             # With nothing to look for, the key lands the caret in the find
             # field rather than doing nothing at all — a keystroke that is
@@ -12837,6 +12863,22 @@ def _gui_construction():
             if label.text().startswith("A stored transcript")
         ]
         assert short_tips and not any(short_tips), short_tips
+        # The same rest reaches a screen reader, which announces the label's
+        # text (the cut row) and never a tooltip: plain text, the tooltip's
+        # caps, and nothing on a row that already shows everything.
+        meeting_desc = [
+            label.accessibleDescription()
+            for label in recent_labels
+            if label.text().startswith("The meeting went on.")
+        ]
+        assert meeting_desc[0].count("The meeting went on.") > 20, meeting_desc
+        assert meeting_desc[0].endswith("…"), "a capped description does not say it was cut"
+        assert "<" not in meeting_desc[0], "the description carries markup"
+        assert not any(
+            label.accessibleDescription()
+            for label in recent_labels
+            if label.text().startswith("A stored transcript")
+        )
         from listen_to_me.home_page import recent_tooltip
 
         assert recent_tooltip("Short.", "Short.") == ""
@@ -14542,6 +14584,66 @@ def _assistant_destination_names_where_a_recording_goes():
             assert "“" not in text, (blind, text)  # no host to quote
 
 
+def _assistant_api_key_can_be_shown():
+    """The Assistant page's API key can be revealed to check what was pasted,
+    and is masked again as soon as the page is left.
+
+    Behind the dots a key with a stray space, or one from the wrong account,
+    looks exactly like the right one; the first sign used to be a 401 from the
+    connection test. The reveal must not outlive the visit: this window gets
+    screenshotted for bug reports, and a key left in clear text on a page
+    nobody is looking at is one the next screenshot carries."""
+    from PySide6.QtWidgets import QLineEdit
+
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    masked = QLineEdit.EchoMode.Password
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        stub.cfg["assistant"]["api_key"] = "sk-test-123"
+        window = SettingsWindow(stub)
+        try:
+            edit, button = window.a_key_edit, window.a_key_show_button
+            # Masked by default, and the toggle says what it would do.
+            assert edit.echoMode() == masked
+            assert not button.isChecked()
+            assert button.text() == "Show", button.text()
+            assert button.accessibleName() == "Show the API key"
+            assert edit.accessibleName() == "API key"
+            # Not the dialog's default button: Enter in the key field still
+            # reaches Save, never this toggle.
+            assert not button.autoDefault()
+
+            window._show_page("Assistant")
+            button.click()
+            assert edit.echoMode() == QLineEdit.EchoMode.Normal
+            assert button.isChecked()
+            assert button.text() == "Hide", button.text()
+            assert button.accessibleName() == "Hide the API key"
+            button.click()
+            assert edit.echoMode() == masked
+            assert button.text() == "Show"
+
+            # Leaving the page masks it again and resets the toggle with it, so
+            # the two can never disagree.
+            button.click()
+            assert edit.echoMode() == QLineEdit.EchoMode.Normal
+            window._show_page("Home")
+            assert edit.echoMode() == masked
+            assert not button.isChecked()
+            assert button.text() == "Show"
+
+            # The reveal changes how the key is drawn, never what is saved.
+            assert window._collect()["assistant"]["api_key"] == "sk-test-123"
+        finally:
+            window.deleteLater()
+            app.processEvents()
+
+
 def _save_refuses_an_assistant_profile_with_no_prompt():
     """Save refuses an enabled assistant profile that cannot produce a
     request, names the profile it means, and puts the caret in the field the
@@ -15029,6 +15131,7 @@ _LIGHT_CHECKS = [
     ("assistant profiles follow the source", _assistant_profiles_follow_the_source),
     ("assistant destination names where a recording goes",
      _assistant_destination_names_where_a_recording_goes),
+    ("assistant API key can be shown", _assistant_api_key_can_be_shown),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),
