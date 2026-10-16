@@ -6,7 +6,8 @@ the version reasoning.
 | Component         | Technology                                                                                 | Version                                |
 | ----------------- | ------------------------------------------------------------------------------------------ | -------------------------------------- |
 | Language          | Python                                                                                     | >=3.10 (CI + dev on 3.11/3.12)         |
-| GUI Framework     | PySide6 (Qt 6)                                                                             | >=6.11.2                               |
+| GUI Framework     | PySide6 (Qt 6)                                                                             | >=6.12.0                               |
+| Icons             | Pillow (tray/app icons drawn in code, `.ico` for the exe)                                  | >=12.3.0                               |
 | Speech-to-text    | faster-whisper (CTranslate2); optional `[openvino]` / `[parakeet]` extras, both in the exe | >=1.2.1                                |
 | Audio · hotkeys   | sounddevice (PortAudio) · pynput                                                           | >=0.5.6 / >=1.8.2                      |
 | Build · packaging | setuptools (`pyproject.toml`) · PyInstaller one-file (CI)                                  | >=84.0.0                               |
@@ -14,7 +15,8 @@ the version reasoning.
 | Test Framework    | none configured                                                                            | CI: `compileall` + Qt offscreen smoke  |
 | Linter/Formatter  | none for Python; Prettier (via npx) for Markdown only                                      | de-facto black-style, line length ~100 |
 
-Remaining runtime deps (numpy, Pillow, pyperclip, requests) and their bounds: `requirements.txt`.
+Remaining runtime deps (numpy, pyperclip, requests) and their bounds: `requirements.txt`. The PySide6 and Pillow floors are
+mirrored by hand in `ci.yml`'s smoke-test install step — re-sync it on every bump of either.
 
 ## Notes
 

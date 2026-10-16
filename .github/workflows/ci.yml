@@ -55,7 +55,7 @@ jobs:
           # the manifests (versioning-strategy: increase) and cannot see this
           # string, so re-sync it when a PySide6 or Pillow bump lands — the gate
           # must not keep certifying a version the project no longer declares.
-          pip install "PySide6>=6.11.2" "Pillow>=10.0"
+          pip install "PySide6>=6.12.0" "Pillow>=12.3.0"
       - name: Qt UI smoke test (offscreen)
         env:
           QT_QPA_PLATFORM: offscreen
