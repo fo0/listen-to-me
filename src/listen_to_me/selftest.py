@@ -7057,6 +7057,13 @@ def _engine_recommendation_matrix():
     weak = {"physical_cores": 4, "performance_cores": 4, "avx2": True, "x86": True}
     cpu_turbo = dict(fw_cpu, model="large-v3-turbo")
     cpu_small = dict(fw_cpu, model="small")
+    intel_npu = {
+        "openvino": True,
+        "intel_gpu": True,
+        "gpu_name": "Intel UHD Graphics 770",
+        "npu": True,
+        "npu_name": "Intel AI Boost",
+    }
 
     # (hardware, language, expected values)
     matrix = [
@@ -7090,6 +7097,11 @@ def _engine_recommendation_matrix():
         (Hardware(physical_cores=10, avx2=False, x86=False), "ja", cpu_turbo),
         (Hardware(physical_cores=8), "ja", cpu_turbo),
         (Hardware(physical_cores=7, avx2=True, x86=True), "ja", cpu_small),
+        # An Intel GPU without Arc and an NPU are no Auto rule: the same
+        # answer as without them.
+        (Hardware(**intel_npu, **weak), "ja", cpu_small),
+        (Hardware(**intel_npu, **strong), "de", dict(fw_cpu, model=german_turbo)),
+        (Hardware(parakeet=True, **intel_npu, **strong), "de", pk_de),
         # Nothing known at all: the setup that runs everywhere.
         (Hardware(), "de", cpu_small),
         (Hardware(), "auto", cpu_small),
@@ -7265,7 +7277,7 @@ def _engine_recommendation_targets():
     # Missing devices: the reason, never a setup on another class.
     missing = [
         (Hardware(), "gpu", "OpenVINO, the engine for Intel graphics, is not installed"),
-        (Hardware(), "npu", "The NPU is driven by OpenVINO, which is not installed."),
+        (Hardware(), "npu", "An NPU can only be used through OpenVINO, which is not installed."),
         (Hardware(openvino=True), "gpu", "OpenVINO reports no GPU"),
         (Hardware(openvino=True), "npu", "OpenVINO reports no NPU"),
         (Hardware(openvino=True, cuda=True, parakeet=True, **arc, **strong), "npu",
@@ -7286,8 +7298,8 @@ def _engine_recommendation_targets():
             raise AssertionError(f"recommended {rec.values} for a missing {target}")
         for always in ("auto", "cpu"):
             assert unavailable_reason(hardware, always) == "", (hardware, always)
-    assert unavailable_text("npu", "OpenVINO reports no NPU — check the Intel NPU driver.") == (
-        "Cannot optimize for the NPU: OpenVINO reports no NPU — check the Intel NPU driver. "
+    assert unavailable_text("npu", "OpenVINO reports no NPU.") == (
+        "Cannot optimize for the NPU: OpenVINO reports no NPU. "
         "Choose another option under “Optimize for”."
     )
 
@@ -11003,7 +11015,7 @@ def _settings_engine_auto_configures_for_this_pc():
             items = [target.itemText(row) for row in range(target.count())]
             assert items == ["Auto (recommended)", "CPU", "GPU", "NPU"], items
             assert target.currentData() == "auto" and stub.cfg["autoconfig_target"] == "auto"
-            assert "changes no setting" in target.toolTip(), target.toolTip()
+            assert "changes no engine setting" in target.toolTip(), target.toolTip()
 
             def pick(value: str) -> None:
                 target.setCurrentIndex(target.findData(value))

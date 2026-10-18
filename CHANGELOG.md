@@ -14,9 +14,9 @@ changes at a glance.
 
 ### Added
 
-- **Auto-configure can optimize for the CPU, the GPU or the NPU.** "Auto-
-  configure for this PC" always recommended one setup in its fixed order, and
-  never an Intel NPU. An **Optimize for** dropdown beside it now keeps the
+- **Auto-configure can optimize for the CPU, the GPU or the NPU.**
+  "Auto-configure for this PC" always recommended one setup in its fixed order,
+  and never an Intel NPU. An **Optimize for** dropdown beside it now keeps the
   recommendation on one device class: **CPU** (Parakeet or faster-whisper on
   the processor, even with a graphics card there), **GPU** (NVIDIA through
   CUDA first, else the Intel graphics through OpenVINO — a smaller model on

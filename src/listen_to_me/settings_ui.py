@@ -1729,7 +1729,7 @@ class SettingsWindow(QDialog):
         self.autoconfig_target_combo.setToolTip(
             "Which part of this PC Auto-configure tunes the engine for. Auto picks the "
             "most accurate setup that runs well; CPU, GPU or NPU keeps the engine on that "
-            "device. Choosing one changes no setting — press Auto-configure for this PC."
+            "device. Choosing one changes no engine setting — press Auto-configure for this PC."
         )
         elastic_combo(self.autoconfig_target_combo)
         th.addWidget(self.autoconfig_target_combo, 1)

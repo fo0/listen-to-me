@@ -134,8 +134,8 @@ def unavailable_reason(hardware: Hardware, target) -> str:
         )
     if target == NPU and not (hardware.openvino and hardware.npu):
         if not hardware.openvino:
-            return "The NPU is driven by OpenVINO, which is not installed."
-        return "OpenVINO reports no NPU — check the Intel NPU driver."
+            return "An NPU can only be used through OpenVINO, which is not installed."
+        return "OpenVINO reports no NPU — this PC has none, or its driver is missing."
     return ""
 
 
@@ -377,8 +377,8 @@ def _on_npu(hardware: Hardware, code: str) -> Recommendation:
         "npu",
         hardware.npu_name or "Intel NPU",
         "You chose the NPU",
-        "a conservative start that NPUs run reliably; a larger model can be picked by "
-        "hand afterwards.",
+        "a conservative start: a larger model takes much longer to prepare for an NPU "
+        "on its first load, and can be picked by hand afterwards.",
         code,
     )
 

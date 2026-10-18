@@ -106,8 +106,8 @@ of device: <b>CPU</b> (the processor, even with a graphics card there),
 <b>GPU</b> (an NVIDIA card first, else the Intel graphics through OpenVINO
 &mdash; a smaller model on graphics that are not an Arc) or <b>NPU</b> (the
 Intel NPU through OpenVINO, starting with the small model). <b>Auto
-(recommended)</b> is the order above. Choosing one changes no setting by
-itself.</li>
+(recommended)</b> is the order above. Choosing one changes no engine setting
+by itself.</li>
 <li>A GPU or NPU no installed engine can use is greyed out, with the reason
 below the list &mdash; for example OpenVINO not installed, or no NPU driver.
 Auto-configure then says why it cannot recommend for it instead of picking
