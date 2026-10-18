@@ -538,7 +538,7 @@ choices.
 | Model                                            | Size            | Notes                                                                                                    |
 | ------------------------------------------------ | --------------- | -------------------------------------------------------------------------------------------------------- |
 | `tiny` / `base`                                  | ~75–140 MB      | fastest, okay for short commands                                                                         |
-| `small` _(default)_                              | ~460 MB         | good balance for dictation                                                                               |
+| `small` _(default)_                              | ~490 MB         | good balance for dictation                                                                               |
 | `medium`                                         | ~1.5 GB         | noticeably better, slower on CPU                                                                         |
 | `large-v3` / `large-v3-turbo`                    | ~3 GB / ~1.6 GB | best quality; turbo is much faster                                                                       |
 | `jimmymeister/whisper-large-v3-turbo-german-ct2` | ~1.6 GB         | **German only** — turbo fine-tuned on German speech: noticeably better German accuracy at the same speed |
