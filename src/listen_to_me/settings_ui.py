@@ -50,15 +50,26 @@ from PySide6.QtWidgets import (
 from . import APP_NAME, RELEASES_URL, REPO_URL, __version__
 from .assistant import config_problem as assistant_config_problem
 from .assistant import profile as assistant_profile
-from .autoconfig import Recommendation, changes, hardware_from_status, recommend
+from .autoconfig import (
+    TARGETS,
+    Recommendation,
+    TargetUnavailable,
+    changes,
+    normalize_target,
+    recommend,
+    unavailable_reason,
+)
+from .autoconfig_hardware import hardware_from_status
 from .autoconfig_text import (
     FIELD_LABELS,
     already_set_up_text,
     confirm_message,
     model_downloaded,
     shown_value,
+    unavailable_text,
 )
 from .choices import (
+    AUTOCONFIG_TARGETS,
     BACKENDS,
     CLIPBOARD_COPY_MODES,
     COMPUTE_TYPES,
@@ -924,10 +935,12 @@ class SettingsWindow(QDialog):
         # The auto-configure line describes the fields as the button left
         # them ("already set up", "filled in"), so an edit by hand retires it.
         # _apply_recommendation writes its line after its own edits.
+        # So does another target: the line answered the one before.
         for combo in (
             self.backend_combo, self.model_combo, self.language_combo,
             self.device_combo, self.compute_combo, self.ov_device_combo,
             self.ov_precision_combo, self.pk_model_combo, self.pk_quant_combo,
+            self.autoconfig_target_combo,
         ):
             combo.currentIndexChanged.connect(self._clear_autoconfig_status)
 
@@ -1699,17 +1712,46 @@ class SettingsWindow(QDialog):
         )
         self.hw_refresh_button.clicked.connect(self._refresh_hw_status)
         sh.addWidget(self.hw_refresh_button)
+        sh.addStretch(1)
+        sform.addRow("", status_row)
+        # "Optimize for:" and the button it steers, on one row. Choosing a
+        # target changes no engine field; the next recommendation reads it.
+        target_row = QWidget()
+        th = QHBoxLayout(target_row)
+        th.setContentsMargins(0, 0, 0, 0)
+        self.autoconfig_target_combo = QComboBox()
+        for value, label in AUTOCONFIG_TARGETS:
+            self.autoconfig_target_combo.addItem(label, value)
+        # Normalized: a hand-edited value shows the target it will act as.
+        self.autoconfig_target_combo.setCurrentIndex(
+            self.autoconfig_target_combo.findData(normalize_target(self.cfg["autoconfig_target"]))
+        )
+        self.autoconfig_target_combo.setToolTip(
+            "Which part of this PC Auto-configure tunes the engine for. Auto picks the "
+            "most accurate setup that runs well; CPU, GPU or NPU keeps the engine on that "
+            "device. Choosing one changes no setting — press Auto-configure for this PC."
+        )
+        elastic_combo(self.autoconfig_target_combo)
+        th.addWidget(self.autoconfig_target_combo, 1)
         self.autoconfig_button = QPushButton("Auto-configure for this PC")
         self.autoconfig_button.setAutoDefault(False)
         self.autoconfig_button.setToolTip(
-            "Pick the most accurate engine setup that still runs well on this PC, "
-            "for the spoken language selected above. Shows what would change and "
-            "asks first — nothing is saved until you press Apply or Save."
+            "Pick the most accurate engine setup that still runs well on this PC — on "
+            "the device chosen under Optimize for — for the spoken language selected "
+            "above. Shows what would change and asks first — nothing is saved until "
+            "you press Apply or Save."
         )
         self.autoconfig_button.clicked.connect(self._auto_configure)
-        sh.addWidget(self.autoconfig_button)
-        sh.addStretch(1)
-        sform.addRow("", status_row)
+        th.addWidget(self.autoconfig_button)
+        th.addStretch(1)
+        target_label = QLabel("Optimize for:")
+        target_label.setBuddy(self.autoconfig_target_combo)
+        sform.addRow(target_label, target_row)
+        # Why a greyed-out target is unavailable, from the last probe; the
+        # row is hidden while every target is available (or nothing probed).
+        self.autoconfig_target_hint = self._hint("", elastic=True)
+        sform.addRow("", self.autoconfig_target_hint)
+        sform.setRowVisible(self.autoconfig_target_hint, False)
         # What the button found or filled in. Composed from the recommendation
         # at runtime, hence elastic, and selectable for the "Could not set"
         # failure; its row is hidden while it is empty.
@@ -4594,6 +4636,7 @@ class SettingsWindow(QDialog):
         self.hw_ov_label.setText(self._format_openvino_status(result["openvino"]))
         self.hw_model_label.setText(self._format_model_status(result["model"]))
         self._refresh_runtime_status()
+        self._refresh_autoconfig_targets(result)
         if self._autoconfig_pending:
             self._autoconfig_pending = False
             self._offer_recommendation(result)
@@ -4752,13 +4795,20 @@ class SettingsWindow(QDialog):
         self._set_autoconfig_status("Checking this PC…")
         self._refresh_hw_status()  # returns at once while a probe is running
 
-    def _offer_recommendation(self, status: dict) -> Recommendation:
-        """Recommend for `status` (a hardware_status result) and the language
-        selected in this window — not the saved one — and compare with the
-        values entered here. Nothing to change says so on the status line;
-        otherwise `_confirm_autoconfig` asks before the fields are filled in.
-        Returns the recommendation."""
-        rec = recommend(hardware_from_status(status), self._selected_language())
+    def _offer_recommendation(self, status: dict) -> Recommendation | None:
+        """Recommend for `status` (a hardware_status result), the language
+        selected in this window — not the saved one — and the target under
+        "Optimize for:", and compare with the values entered here. Nothing to
+        change says so on the status line; otherwise `_confirm_autoconfig`
+        asks before the fields are filled in. A target this PC has no device
+        for says why on the status line and recommends nothing — never a
+        setup on another device. Returns the recommendation, None for that."""
+        target = self._selected_autoconfig_target()
+        try:
+            rec = recommend(hardware_from_status(status), self._selected_language(), target)
+        except TargetUnavailable as exc:
+            self._set_autoconfig_status(unavailable_text(target, str(exc)))
+            return None
         changed = changes(rec, self._collect())
         if not changed:
             self._set_autoconfig_status(already_set_up_text(rec))
@@ -4849,6 +4899,33 @@ class SettingsWindow(QDialog):
             return False
         combo.setCurrentIndex(row)
         return True
+
+    def _selected_autoconfig_target(self) -> str:
+        return normalize_target(self.autoconfig_target_combo.currentData())
+
+    def _refresh_autoconfig_targets(self, status: dict) -> None:
+        """Grey out the targets the probe `status` found no device for, each
+        with its reason as the item's tooltip and on the line below. CPU and
+        Auto are always available. A greyed-out target stays selected if it
+        was: switching it to another device class is the user's call, and
+        Auto-configure then says why it cannot recommend."""
+        hardware = hardware_from_status(status)
+        model = self.autoconfig_target_combo.model()
+        lines = []
+        for value in TARGETS:
+            row = self.autoconfig_target_combo.findData(value)
+            reason = unavailable_reason(hardware, value)
+            model.item(row).setEnabled(not reason)
+            self.autoconfig_target_combo.setItemData(
+                row, reason or None, Qt.ItemDataRole.ToolTipRole
+            )
+            if reason:
+                label = self.autoconfig_target_combo.itemText(row)
+                lines.append(f"{label} is not available: {reason}")
+        text = "\n".join(lines)
+        self.autoconfig_target_hint.setText(text)
+        self._hw_form.setRowVisible(self.autoconfig_target_hint, bool(text))
+        self.autoconfig_target_combo.setAccessibleDescription(text)
 
     def _clear_autoconfig_status(self, *_args) -> None:
         self._set_autoconfig_status("")
@@ -6339,6 +6416,7 @@ class SettingsWindow(QDialog):
             "openvino_precision": choice_value(OPENVINO_PRECISIONS, self.ov_precision_combo.currentText()),
             "parakeet_quantization": choice_value(PARAKEET_QUANTIZATIONS, self.pk_quant_combo.currentText()),
             "parakeet_model": choice_value(PARAKEET_MODELS, self.pk_model_combo.currentText()),
+            "autoconfig_target": self._selected_autoconfig_target(),
             "vad_filter": self.chk_vad.isChecked(),
             "history_enabled": self.chk_history_enabled.isChecked(),
             "history_max": int(self.history_max_spin.value()),

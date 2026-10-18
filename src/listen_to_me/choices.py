@@ -136,6 +136,15 @@ BACKENDS = [
 ]
 OPENVINO_DEVICES = ["auto", "cpu", "gpu", "npu"]
 
+# (config value, label) for "Optimize for:" beside Auto-configure — the device
+# class the recommendation is for (autoconfig.recommend's `target`).
+AUTOCONFIG_TARGETS = [
+    ("auto", "Auto (recommended)"),
+    ("cpu", "CPU"),
+    ("gpu", "GPU"),
+    ("npu", "NPU"),
+]
+
 # (config value, note in parentheses), MODEL_CHOICES' shape — these dropdowns
 # pick a download too. OpenVINO converts whichever preset is selected, so only
 # the ratio holds; the Parakeet models share one 0.6B architecture (see

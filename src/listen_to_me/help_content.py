@@ -101,12 +101,24 @@ computer, for the <b>spoken language</b> selected on that page.</p>
 (when it is installed and understands your language), then an Intel Arc
 graphics card through OpenVINO, and otherwise the processor &mdash; with a
 smaller model on a weaker one.</li>
+<li><b>Optimize for</b> beside the button keeps the recommendation on one kind
+of device: <b>CPU</b> (the processor, even with a graphics card there),
+<b>GPU</b> (an NVIDIA card first, else the Intel graphics through OpenVINO
+&mdash; a smaller model on graphics that are not an Arc) or <b>NPU</b> (the
+Intel NPU through OpenVINO, starting with the small model). <b>Auto
+(recommended)</b> is the order above. Choosing one changes no setting by
+itself.</li>
+<li>A GPU or NPU no installed engine can use is greyed out, with the reason
+below the list &mdash; for example OpenVINO not installed, or no NPU driver.
+Auto-configure then says why it cannot recommend for it instead of picking
+another device.</li>
 <li>Before anything changes it shows what it recommends, why, roughly how much
 it downloads, and every field it would change &mdash; and asks first.</li>
 <li><b>Use these settings</b> only fills in the fields: nothing is saved until
 you press <b>Apply</b> or <b>Save</b>, and the spoken language is never
 changed.</li>
-<li>The setup wizard of the first launch makes the same recommendation:
+<li>The setup wizard of the first launch makes the same recommendation as
+<b>Auto</b>:
 <b>Recommended for this PC</b> is preselected on its engine page, and
 <b>Choose manually</b> shows the individual fields instead.</li>
 </ul>

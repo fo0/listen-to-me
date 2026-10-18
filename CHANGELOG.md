@@ -14,6 +14,18 @@ changes at a glance.
 
 ### Added
 
+- **Auto-configure can optimize for the CPU, the GPU or the NPU.** "Auto-
+  configure for this PC" always recommended one setup in its fixed order, and
+  never an Intel NPU. An **Optimize for** dropdown beside it now keeps the
+  recommendation on one device class: **CPU** (Parakeet or faster-whisper on
+  the processor, even with a graphics card there), **GPU** (NVIDIA through
+  CUDA first, else the Intel graphics through OpenVINO — a smaller model on
+  graphics that are not an Arc) or **NPU** (OpenVINO on the Intel NPU, int8,
+  starting with the small model). **Auto (recommended)** is the default and
+  recommends exactly what it did before. A GPU or NPU no installed engine
+  reports is greyed out with the reason, and is never swapped for another
+  device behind the user's back. The choice is saved as `autoconfig_target`;
+  the setup wizard keeps using Auto. (#336)
 - **The settings window reopens the way it was left.** Every close destroyed
   the window, so each open snapped back to 980×720 in the middle of the screen
   — enlarged to read the History, moved beside the window being dictated into,

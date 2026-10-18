@@ -1,8 +1,9 @@
 """Engine auto-configuration: the best engine setup this machine can run.
 
-`hardware_from_status` reads the dict `diagnostics.hardware_status` builds on
-a worker thread into a `Hardware`; `recommend` turns that and the dictation
-language into a `Recommendation` — the config keys to set, plus the sentences
+`autoconfig_hardware.hardware_from_status` reads the dict
+`diagnostics.hardware_status` builds on a worker thread into a `Hardware`;
+`recommend` turns that, the dictation language and the device class to
+optimize for into a `Recommendation` — the config keys to set, plus the sentences
 that explain the choice to someone who has never heard of CUDA. `changes`
 compares it with a config; `autoconfig_text` words what applying it would
 change. The Settings window and the first-run wizard show and apply it; this
@@ -25,6 +26,21 @@ Quality first, in this order:
    else small — a large model on a weaker processor takes longer to
    transcribe than the dictation took to speak.
 
+That is the "auto" target. "Optimize for:" beside the button picks a device
+class instead, and the recommendation then stays on it — never one on another
+class, and never a model the backend cannot run:
+
+- "cpu" → rules 2 and 4 alone: Parakeet or faster-whisper on the processor,
+  whatever graphics card or NPU is there.
+- "gpu" → an NVIDIA GPU as in rule 1, else the Intel GPU OpenVINO runs as
+  "gpu": an Arc as in rule 3, any other Intel GPU with the small model.
+- "npu" → OpenVINO on the NPU at int8 with Whisper's small model, a
+  conservative start.
+
+A GPU or NPU is only an option when an installed backend reports it;
+`unavailable_reason` says why one is not, and `recommend` raises
+`TargetUnavailable` rather than answer for another class.
+
 The recommendation never names `language`: that is the user's choice and the
 input here, never an output.
 
@@ -34,11 +50,12 @@ table is checked headless (selftest "engine recommendation matrix").
 
 from __future__ import annotations
 
-import logging
 import re
 from dataclasses import dataclass
 
+from .autoconfig_hardware import Hardware
 from .choices import (
+    AUTOCONFIG_TARGETS,
     GERMAN_TURBO_CT2,
     LANGUAGES,
     MODEL_CHOICES,
@@ -46,8 +63,6 @@ from .choices import (
 )
 from .parakeet_models import DEFAULT_MODEL as PARAKEET_V3
 from .parakeet_models import V3_LANGUAGES
-
-log = logging.getLogger(__name__)
 
 PARAKEET_GERMAN = "parakeet-primeline-de"
 TURBO = "large-v3-turbo"
@@ -58,39 +73,16 @@ SMALL = "small"
 LARGE_MODEL_MIN_CORES = 8
 
 _NO_CUDA = "No usable NVIDIA graphics card found"
+# The lead of a CPU recommendation the user asked for: a GPU may well be
+# there, so it must not say there is none.
+_CPU_CHOSEN = "You chose the CPU"
 
-# An OpenVINO GPU whose name says Arc: the discrete A/B-series cards and the
-# integrated graphics of Core Ultra ("Intel(R) Arc(TM) Graphics").
-_ARC = re.compile(r"\barc\b", re.IGNORECASE)
-_TRADEMARKS = re.compile(r"\((?:r|tm|c)\)|[®™]", re.IGNORECASE)
-_CLOCK = re.compile(r"\s+(?:cpu\s+)?@\s*[\d.]+\s*[gm]hz\s*$", re.IGNORECASE)
-_GPU_TAG = re.compile(r"\s*\([di]gpu\)\s*$", re.IGNORECASE)
-_NAME_MAX = 64
+# The device classes "Optimize for:" offers (choices.AUTOCONFIG_TARGETS).
+AUTO, CPU, GPU, NPU = "auto", "cpu", "gpu", "npu"
+TARGETS = tuple(value for value, _label in AUTOCONFIG_TARGETS)
 
 # The "~1.6 GB" / "~490 MB" inside a choice note.
 _SIZE = re.compile(r"~\s*(\d+(?:\.\d+)?)\s*(MB|GB)\b", re.IGNORECASE)
-
-
-@dataclass(frozen=True)
-class Hardware:
-    """What the recommendation weighs.
-
-    The defaults are the conservative answers — no GPU, no optional backend,
-    core count unknown (0) — which a missing or broken probe falls back to:
-    they recommend faster-whisper's small model on the CPU, the setup that
-    runs wherever the app runs.
-    """
-
-    cuda: bool = False  # an NVIDIA GPU CTranslate2 can use
-    openvino: bool = False  # the OpenVINO backend is installed
-    arc_gpu: bool = False  # OpenVINO's "GPU" (GPU.0) is an Intel Arc
-    gpu_name: str = ""  # that GPU, shortened ("Intel Arc A770 Graphics")
-    parakeet: bool = False  # the Parakeet backend (onnx-asr + ONNX Runtime) is installed
-    physical_cores: int = 0  # 0 = unknown
-    performance_cores: int = 0  # 0 = unknown
-    avx2: bool | None = None  # None = unknown
-    x86: bool | None = None  # None = unknown
-    cpu_name: str = ""  # shortened ("Intel Core i7-1265U"), "" = unknown
 
 
 @dataclass(frozen=True)
@@ -105,94 +97,46 @@ class Recommendation:
     download: str  # approximate first-use download: "~0.7 GB"
 
 
-# ---------------------------------------------------------------- hardware
+# --------------------------------------------------------------- targets
 
 
-def _section(status: dict, key: str) -> dict:
-    value = status.get(key)
-    return value if isinstance(value, dict) else {}
+class TargetUnavailable(ValueError):
+    """An explicit target this machine has no usable device for. The message
+    is `unavailable_reason`'s sentence, written for the user."""
 
 
-def _count(value) -> int:
-    """A core count from the probe, 0 (unknown) for anything that is not a
-    positive whole number — a bool is no count."""
-    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-        return value
-    return 0
+def normalize_target(target) -> str:
+    """`target` as one of TARGETS, lowercased — "auto" for anything else (a
+    hand-edited config value, None)."""
+    code = str(target or "").strip().lower()
+    return code if code in TARGETS else AUTO
 
 
-def _flag(value) -> bool | None:
-    return value if isinstance(value, bool) else None
+def _gpu_usable(hardware: Hardware) -> bool:
+    return hardware.cuda or (hardware.openvino and (hardware.intel_gpu or hardware.arc_gpu))
 
 
-def short_name(name) -> str:
-    """A hardware name without trademark marks, clock speed and the
-    (dGPU)/(iGPU) tag — "Intel(R) Core(TM) i7-8650U CPU @ 1.90GHz" reads
-    "Intel Core i7-8650U". "" for anything that is not a string."""
-    if not isinstance(name, str):
-        return ""
-    text = _GPU_TAG.sub("", _CLOCK.sub("", _TRADEMARKS.sub("", name)))
-    return " ".join(text.split())[:_NAME_MAX].strip()
-
-
-def _arc_gpu_name(devices) -> str | None:
-    """The shortened name of the GPU ``openvino_device = "gpu"`` runs on, when
-    that GPU is an Intel Arc; None otherwise.
-
-    "gpu" becomes OpenVINO's "GPU", an alias for GPU.0 — listed as "GPU"
-    when it is the only one, else "GPU.0", and always the integrated GPU
-    when there is one. An Arc card enumerated behind a UHD/Iris iGPU (GPU.1)
-    is out of the config's reach, and recommending "gpu" for it would run
-    the iGPU while the reason names the card.
-    """
-    if not isinstance(devices, list):
-        return None
-    for device in devices:
-        if not isinstance(device, dict):
-            continue
-        if str(device.get("device") or "").upper() not in ("GPU", "GPU.0"):
-            continue
-        name = device.get("name")
-        if isinstance(name, str) and _ARC.search(name):
-            return short_name(name) or "Intel Arc graphics"
-        return None
-    return None
-
-
-def hardware_from_status(status) -> Hardware:
-    """The `Hardware` a `diagnostics.hardware_status()` dict describes.
-
-    Reads the "cuda", "openvino", "parakeet" and "cpu" sections. Never
-    raises: a section that is missing, not a dict, or holds a value of the
-    wrong type contributes the conservative default for what it would have
-    said — so an old or broken probe can only make the recommendation
-    lighter, never point it at hardware that is not there.
-    """
-    if not isinstance(status, dict):
-        return Hardware()
-    cuda = _section(status, "cuda")
-    openvino = _section(status, "openvino")
-    cpu = _section(status, "cpu")
-    ov_installed = openvino.get("installed") is True
-    arc = _arc_gpu_name(openvino.get("devices")) if ov_installed else None
-    physical = _count(cpu.get("physical_cores"))
-    performance = _count(cpu.get("performance_cores"))
-    if physical and performance > physical:
-        performance = physical
-    hardware = Hardware(
-        cuda=cuda.get("available") is True,
-        openvino=ov_installed,
-        arc_gpu=arc is not None,
-        gpu_name=arc or "",
-        parakeet=_section(status, "parakeet").get("installed") is True,
-        physical_cores=physical,
-        performance_cores=performance,
-        avx2=_flag(cpu.get("avx2")),
-        x86=_flag(cpu.get("x86")),
-        cpu_name=short_name(cpu.get("name")),
-    )
-    log.debug("hardware for the engine recommendation: %s", hardware)
-    return hardware
+def unavailable_reason(hardware: Hardware, target) -> str:
+    """Why the recommendation cannot optimize for `target` on `hardware`, in
+    one sentence for the user; "" when it can. Auto and the CPU always can;
+    a GPU needs CTranslate2 to reach an NVIDIA card or OpenVINO to list a
+    GPU, an NPU needs OpenVINO to list one — a device no installed backend
+    drives is no option."""
+    target = normalize_target(target)
+    if target == GPU and not _gpu_usable(hardware):
+        if not hardware.openvino:
+            return (
+                "No NVIDIA graphics card usable through CUDA was found, and OpenVINO, the "
+                "engine for Intel graphics, is not installed."
+            )
+        return (
+            "No NVIDIA graphics card usable through CUDA was found, and OpenVINO reports no GPU."
+        )
+    if target == NPU and not (hardware.openvino and hardware.npu):
+        if not hardware.openvino:
+            return "The NPU is driven by OpenVINO, which is not installed."
+        return "OpenVINO reports no NPU — check the Intel NPU driver."
+    return ""
 
 
 # ------------------------------------------------------------- recommend
@@ -267,9 +211,9 @@ def _whisper_gpu(code: str) -> Recommendation:
     )
 
 
-def _parakeet(code: str) -> Recommendation:
+def _parakeet(code: str, lead: str = _NO_CUDA) -> Recommendation:
     others = len(V3_LANGUAGES) - 1
-    start = f"{_NO_CUDA}, so the fast Parakeet engine runs on your processor"
+    start = f"{lead}, so the fast Parakeet engine runs on your processor"
     if code == "de":
         model, detail = PARAKEET_GERMAN, "German model"
         reason = f"{start} — with the model fine-tuned for German."
@@ -306,12 +250,14 @@ def _not_parakeet(hardware: Hardware, code: str) -> str:
     return ""
 
 
-def _openvino_arc(hardware: Hardware, code: str) -> Recommendation:
+def _openvino_arc(hardware: Hardware, code: str, lead: str = "") -> Recommendation:
+    """`lead` says why not an engine further up; "" lets the auto rules
+    word it (an installed Parakeet passed over, if any)."""
     # Even for German: the German fine-tune exists only as a CTranslate2
     # conversion (choices.openvino_supports_model).
     model = TURBO
     gpu = hardware.gpu_name or "Intel Arc graphics"
-    lead = _not_parakeet(hardware, code)
+    lead = lead or _not_parakeet(hardware, code)
     lead = f"{lead}, so your" if lead else "Your"
     reason = (
         f"{lead} {gpu} runs Whisper's large turbo model through OpenVINO — much faster than "
@@ -334,7 +280,28 @@ def _openvino_arc(hardware: Hardware, code: str) -> Recommendation:
     )
 
 
-def _whisper_cpu(hardware: Hardware, code: str) -> Recommendation:
+def _openvino_small(device: str, name: str, lead: str, why: str, code: str) -> Recommendation:
+    """OpenVINO with Whisper's small model at int8 on `device` ("gpu" /
+    "npu") — the conservative setup for an Intel GPU without Arc and the
+    starting profile for an NPU. `name` is that device as the user knows it;
+    `lead` and `why` frame the reason."""
+    reason = f"{lead}, so your {name} runs Whisper's small model through OpenVINO — {why}"
+    if code == "de":
+        reason += " The German fine-tune has no OpenVINO version."
+    return Recommendation(
+        values={
+            "backend": "openvino",
+            "model": SMALL,
+            "openvino_device": device,
+            "openvino_precision": "int8",
+        },
+        reason=reason,
+        summary=f"OpenVINO · {SMALL} · Intel {device.upper()}",
+        download=_note_size(MODEL_CHOICES, SMALL, factor=0.5),
+    )
+
+
+def _whisper_cpu(hardware: Hardware, code: str, lead: str = _NO_CUDA) -> Recommendation:
     german = code == "de"
     # AVX2 only counts on x86, where CTranslate2's fast kernels need it; an
     # ARM CPU has none and runs its own.
@@ -346,7 +313,7 @@ def _whisper_cpu(hardware: Hardware, code: str) -> Recommendation:
     # Two sentences: what rules out the faster engines, then what the
     # processor can carry.
     passed_over = _not_parakeet(hardware, code)
-    found = f"{_NO_CUDA}, and {passed_over}." if passed_over else f"{_NO_CUDA}."
+    found = f"{lead}, and {passed_over}." if passed_over else f"{lead}."
     counted = f"{cores} {'core' if cores == 1 else 'cores'}"
     processor = "Your processor"
     if cores:
@@ -380,11 +347,63 @@ def _whisper_cpu(hardware: Hardware, code: str) -> Recommendation:
     )
 
 
-def recommend(hardware: Hardware, language) -> Recommendation:
+def _on_cpu(hardware: Hardware, code: str) -> Recommendation:
+    """Target "cpu": the auto rules for the processor, any GPU or NPU left
+    out — and a reason that says it was the user's choice, not that no
+    graphics card is there."""
+    if hardware.parakeet and _parakeet_speaks(code):
+        return _parakeet(code, lead=_CPU_CHOSEN)
+    return _whisper_cpu(hardware, code, lead=_CPU_CHOSEN)
+
+
+def _on_gpu(hardware: Hardware, code: str) -> Recommendation:
+    """Target "gpu": NVIDIA first, else the Intel GPU OpenVINO runs as
+    "gpu" — an Arc with the large turbo, any other with the small model."""
+    if hardware.cuda:
+        return _whisper_gpu(code)
+    if hardware.arc_gpu:
+        return _openvino_arc(hardware, code, lead=_NO_CUDA)
+    return _openvino_small(
+        "gpu",
+        hardware.gpu_name or "Intel graphics",
+        _NO_CUDA,
+        "a conservative choice: larger models need an Intel Arc to run quickly.",
+        code,
+    )
+
+
+def _on_npu(hardware: Hardware, code: str) -> Recommendation:
+    return _openvino_small(
+        "npu",
+        hardware.npu_name or "Intel NPU",
+        "You chose the NPU",
+        "a conservative start that NPUs run reliably; a larger model can be picked by "
+        "hand afterwards.",
+        code,
+    )
+
+
+def recommend(hardware: Hardware, language, target=AUTO) -> Recommendation:
     """The best engine setup for `hardware` and the dictation `language` (a
-    language code; "" or "auto" = auto-detection). The rules and their order
-    are the module docstring's. Never returns `language` among the values."""
+    language code; "" or "auto" = auto-detection). Never returns `language`
+    among the values.
+
+    `target` is the device class to optimize for (TARGETS): "auto" runs the
+    rules in the order of the module docstring; "cpu", "gpu" and "npu" pick
+    the best setup on that class and never one on another. An explicit
+    target this machine has no device for raises TargetUnavailable — ask
+    `unavailable_reason` first; an unknown target counts as "auto"."""
     code = _language_code(language)
+    target = normalize_target(target)
+    missing = unavailable_reason(hardware, target)
+    if missing:
+        raise TargetUnavailable(missing)
+    if target == CPU:
+        return _on_cpu(hardware, code)
+    if target == GPU:
+        return _on_gpu(hardware, code)
+    if target == NPU:
+        return _on_npu(hardware, code)
     if hardware.cuda:
         return _whisper_gpu(code)
     if hardware.parakeet and _parakeet_speaks(code):
