@@ -123,6 +123,12 @@ DEFAULTS: dict = {
     # An unknown value runs the default with a log line — see
     # parakeet_models.MODELS / parakeet_model().
     "parakeet_model": "parakeet-tdt-0.6b-v3",
+    # Which device class Settings → Engine → "Auto-configure for this PC"
+    # optimizes for ("Optimize for:"): auto (the full recommendation order) /
+    # cpu / gpu / npu. Steers the next recommendation only — the engine keys
+    # above change when one is accepted and saved. An unknown value counts as
+    # auto (autoconfig.normalize_target); the setup wizard always uses auto.
+    "autoconfig_target": "auto",
     # sounddevice input device index, null = system default.
     "input_device": None,
     # Hard cap for a single recording.

@@ -12,7 +12,8 @@ flowchart TD
         Config[("config.json (DEFAULTS)")]:::database
         Net["netutil — insecure-SSL switch (corporate proxy)"]:::infra
         CpuInfo["cpuinfo — cores, AVX2, CPU name (ctypes, sysfs, registry — never a subprocess)"]:::infra
-        AutoConfig["autoconfig — engine recommendation: Hardware + language → config values + reason"]:::backend
+        AutoConfig["autoconfig — engine recommendation: Hardware + language + target (auto/cpu/gpu/npu) → config values + reason"]:::backend
+        AutoConfigHardware["autoconfig_hardware — reads the hardware_status() dict into Hardware: CUDA, Intel GPU/Arc, NPU, Parakeet, CPU"]:::backend
         AutoConfigText["autoconfig_text — words a recommendation: change lines, download sentence, the confirmation"]:::backend
     end
 
@@ -135,7 +136,10 @@ flowchart TD
     OnboardingEngine -->|"hardware_status() once, on a worker thread"| Diag
     OnboardingEngine -->|"recommend() for the language of the page before"| AutoConfig
     OnboardingEngine -->|"download_line() / model_downloaded()"| AutoConfigText
-    Settings -->|"Auto-configure: hardware_from_status(probe) → recommend() → confirm → fill the Engine fields (unsaved)"| AutoConfig
+    Settings -->|"Auto-configure: recommend(hardware, language, Optimize for) → confirm → fill the Engine fields (unsaved)"| AutoConfig
+    Settings -->|"hardware_from_status(probe): the recommendation's input, greys out a target without a device"| AutoConfigHardware
+    OnboardingEngine -->|"hardware_from_status(probe)"| AutoConfigHardware
+    AutoConfig -->|"Hardware"| AutoConfigHardware
     Settings -->|"confirm_message() / describe_changes() for the question"| AutoConfigText
     AutoConfigText -->|"Recommendation"| AutoConfig
     AutoConfig -->|"DEFAULT_MODEL, V3_LANGUAGES"| ParakeetModels
@@ -211,6 +215,7 @@ flowchart TD
     click CpuInfo "src/listen_to_me/cpuinfo.py"
     click AutoConfig "src/listen_to_me/autoconfig.py"
     click AutoConfigText "src/listen_to_me/autoconfig_text.py"
+    click AutoConfigHardware "src/listen_to_me/autoconfig_hardware.py"
     click Diag "src/listen_to_me/diagnostics.py"
     click Progress "src/listen_to_me/progress.py"
 

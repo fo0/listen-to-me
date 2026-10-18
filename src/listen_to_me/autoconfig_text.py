@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from .autoconfig import Recommendation
 from .choices import (
+    AUTOCONFIG_TARGETS,
     OPENVINO_PRECISIONS,
     PARAKEET_MODELS,
     PARAKEET_QUANTIZATIONS,
@@ -117,6 +118,17 @@ def download_line(recommendation: Recommendation, downloaded: bool = False) -> s
         return "The model is downloaded once, on first use."
     size = recommendation.download.lstrip("~")
     return f"The model (about {size}) is downloaded once, on first use."
+
+
+def unavailable_text(target: str, reason: str) -> str:
+    """The status line when "Optimize for:" names a device class this PC
+    has none of — `reason` is autoconfig.unavailable_reason's sentence.
+    Nothing is recommended instead: another class is the user's call."""
+    label = dict(AUTOCONFIG_TARGETS).get(target, target)
+    return (
+        f"Cannot optimize for the {label}: {reason} Choose another option under "
+        "“Optimize for”."
+    )
 
 
 def already_set_up_text(recommendation: Recommendation) -> str:

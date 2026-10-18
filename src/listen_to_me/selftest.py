@@ -6942,7 +6942,8 @@ def _hardware_probes():
     without an OpenVINO conversion as an error. The whole status dict reads
     into the recommender's Hardware on this machine."""
     from listen_to_me import cpuinfo
-    from listen_to_me.autoconfig import Hardware, hardware_from_status, recommend
+    from listen_to_me.autoconfig import recommend
+    from listen_to_me.autoconfig_hardware import Hardware, hardware_from_status
     from listen_to_me.diagnostics import (
         hardware_status,
         model_cache_status,
@@ -7034,13 +7035,8 @@ def _engine_recommendation_matrix():
     reads, `language` is never among them, and the text a user reads is
     there, with the download size read out of the choice notes."""
     from listen_to_me import choices
-    from listen_to_me.autoconfig import (
-        Hardware,
-        Recommendation,
-        changes,
-        differs,
-        recommend,
-    )
+    from listen_to_me.autoconfig import changes, differs, recommend
+    from listen_to_me.autoconfig_hardware import Hardware
     from listen_to_me.config import DEFAULTS, Config
     from listen_to_me.parakeet_models import MODELS, V3_LANGUAGES
 
@@ -7061,6 +7057,13 @@ def _engine_recommendation_matrix():
     weak = {"physical_cores": 4, "performance_cores": 4, "avx2": True, "x86": True}
     cpu_turbo = dict(fw_cpu, model="large-v3-turbo")
     cpu_small = dict(fw_cpu, model="small")
+    intel_npu = {
+        "openvino": True,
+        "intel_gpu": True,
+        "gpu_name": "Intel UHD Graphics 770",
+        "npu": True,
+        "npu_name": "Intel AI Boost",
+    }
 
     # (hardware, language, expected values)
     matrix = [
@@ -7094,44 +7097,24 @@ def _engine_recommendation_matrix():
         (Hardware(physical_cores=10, avx2=False, x86=False), "ja", cpu_turbo),
         (Hardware(physical_cores=8), "ja", cpu_turbo),
         (Hardware(physical_cores=7, avx2=True, x86=True), "ja", cpu_small),
+        # An Intel GPU without Arc and an NPU are no Auto rule: the same
+        # answer as without them.
+        (Hardware(**intel_npu, **weak), "ja", cpu_small),
+        (Hardware(**intel_npu, **strong), "de", dict(fw_cpu, model=german_turbo)),
+        (Hardware(parakeet=True, **intel_npu, **strong), "de", pk_de),
         # Nothing known at all: the setup that runs everywhere.
         (Hardware(), "de", cpu_small),
         (Hardware(), "auto", cpu_small),
     ]
-    backend_keys = {
-        "faster-whisper": {"backend", "model", "device", "compute_type"},
-        "openvino": {"backend", "model", "openvino_device", "openvino_precision"},
-        "parakeet": {"backend", "parakeet_model", "parakeet_quantization", "device"},
-    }
-
-    def values_of(pairs):
-        return {value for value, _note in pairs}
-
-    members = {
-        "backend": values_of(choices.BACKENDS),
-        "model": values_of(choices.MODEL_CHOICES),
-        "device": set(choices.DEVICES),
-        "compute_type": set(choices.COMPUTE_TYPES),
-        "openvino_device": set(choices.OPENVINO_DEVICES),
-        "openvino_precision": values_of(choices.OPENVINO_PRECISIONS),
-        "parakeet_model": values_of(choices.PARAKEET_MODELS) & set(MODELS),
-        "parakeet_quantization": values_of(choices.PARAKEET_QUANTIZATIONS),
-    }
     for hardware, language, expected in matrix:
         case = (hardware, language)
         rec = recommend(hardware, language)
-        assert isinstance(rec, Recommendation), case
+        _check_recommendation(rec, case)
         assert rec.values == expected, (case, rec.values)
-        assert "language" not in rec.values, case
-        assert set(rec.values) == backend_keys[rec.values["backend"]], (case, rec.values)
-        for key, value in rec.values.items():
-            assert key in DEFAULTS, (case, key)  # a renamed config key
-            assert value in members[key], (case, key, value)
-        if rec.values["backend"] == "openvino":
-            assert choices.openvino_supports_model(rec.values["model"]), case
-        assert rec.reason.strip() and rec.summary.strip(), case
-        assert rec.reason.endswith("."), (case, rec.reason)
-        assert rec.download.startswith("~") and rec.download.endswith("B"), (case, rec.download)
+        # "Optimize for: Auto" is this very rule table — and so is a target
+        # a hand-edited config spells oddly or does not know.
+        for target in ("auto", " AUTO ", None, "", "tpu", 3):
+            assert recommend(hardware, language, target) == rec, (case, target)
     assert MODELS["parakeet-primeline-de"].language == "de"
     assert len(V3_LANGUAGES) == 25 and "de" in V3_LANGUAGES and "ja" not in V3_LANGUAGES
 
@@ -7167,6 +7150,225 @@ def _engine_recommendation_matrix():
         assert cfg["language"] == DEFAULTS["language"]
 
 
+def _engine_recommendation_targets():
+    """"Optimize for:" (#336): an explicit CPU, GPU or NPU target gets the
+    best setup on exactly that device class and never one on another — the
+    CPU target even with a graphics card there (without claiming there is
+    none), the GPU target even where the auto rules prefer Parakeet on the
+    CPU (NVIDIA first, else the Intel GPU OpenVINO runs as "gpu", an Arc
+    with the turbo, any other with small), the NPU target even with a GPU
+    there (OpenVINO, "npu", int8, small). Only a model the backend runs — no
+    German turbo on OpenVINO — and never the language. A target without a
+    device, from a missing or a broken probe alike, raises
+    TargetUnavailable with the reason the dropdown shows, and recommends
+    nothing. Old configs read "auto"."""
+    from listen_to_me import choices
+    from listen_to_me.autoconfig import (
+        TARGETS,
+        TargetUnavailable,
+        normalize_target,
+        recommend,
+        unavailable_reason,
+    )
+    from listen_to_me.autoconfig_hardware import Hardware, hardware_from_status
+    from listen_to_me.autoconfig_text import unavailable_text
+    from listen_to_me.config import DEFAULTS, Config
+
+    assert TARGETS == ("auto", "cpu", "gpu", "npu")
+    assert [label for _value, label in choices.AUTOCONFIG_TARGETS] == [
+        "Auto (recommended)",
+        "CPU",
+        "GPU",
+        "NPU",
+    ]
+    assert DEFAULTS["autoconfig_target"] == "auto"
+    for raw, expected in (
+        ("GPU ", "gpu"),
+        ("npu", "npu"),
+        (None, "auto"),
+        ("tpu", "auto"),
+        (3, "auto"),
+    ):
+        assert normalize_target(raw) == expected, (raw, normalize_target(raw))
+
+    def device_class(values: dict) -> str:
+        if values["backend"] == "openvino":
+            return values["openvino_device"]
+        return "gpu" if values["device"] == "cuda" else values["device"]
+
+    strong = {"physical_cores": 8, "performance_cores": 8, "avx2": True, "x86": True}
+    weak = {"physical_cores": 4, "performance_cores": 4, "avx2": True, "x86": True}
+    # OpenVINO's devices; a Hardware with any of them has openvino=True.
+    npu = {"npu": True, "npu_name": "Intel AI Boost"}
+    arc = {"intel_gpu": True, "arc_gpu": True, "gpu_name": "Intel Arc A770 Graphics"}
+    uhd = {"intel_gpu": True, "gpu_name": "Intel UHD Graphics 770"}
+    # The acceptance machine: a CPU, an NVIDIA GPU and an Intel NPU.
+    full = Hardware(openvino=True, cuda=True, parakeet=True, **npu, **strong)
+    fw = {"backend": "faster-whisper", "compute_type": "auto"}
+    ov_small = {"backend": "openvino", "model": "small", "openvino_precision": "int8"}
+    pk = {"backend": "parakeet", "parakeet_quantization": "int8", "device": "cpu"}
+    cases = [
+        # (hardware, language, target, expected values)
+        (full, "de", "cpu", dict(pk, parakeet_model="parakeet-primeline-de")),
+        (full, "en", "cpu", dict(pk, parakeet_model="parakeet-tdt-0.6b-v3")),
+        (full, "ja", "cpu", dict(fw, model="large-v3-turbo", device="cpu")),
+        (Hardware(openvino=True, cuda=True, **npu, **strong), "de", "cpu",
+         dict(fw, model=choices.GERMAN_TURBO_CT2, device="cpu")),
+        (Hardware(openvino=True, cuda=True, **arc, **weak), "en", "cpu",
+         dict(fw, model="small", device="cpu")),
+        (full, "de", "gpu", dict(fw, model=choices.GERMAN_TURBO_CT2, device="cuda")),
+        (full, "auto", "gpu", dict(fw, model="large-v3-turbo", device="cuda")),
+        (full, "de", "npu", dict(ov_small, openvino_device="npu")),
+        (full, "auto", "npu", dict(ov_small, openvino_device="npu")),
+        # Auto prefers Parakeet on the CPU here; GPU still means the GPU.
+        (Hardware(openvino=True, parakeet=True, **arc, **strong), "de", "gpu",
+         dict(ov_small, model="large-v3-turbo", openvino_device="gpu")),
+        (Hardware(openvino=True, parakeet=True, **uhd, **strong), "de", "gpu",
+         dict(ov_small, openvino_device="gpu")),
+        (Hardware(openvino=True, **uhd), "en", "gpu", dict(ov_small, openvino_device="gpu")),
+        # The NPU with an Arc GPU beside it, and with NVIDIA too.
+        (Hardware(openvino=True, parakeet=True, **arc, **npu, **strong), "en", "npu",
+         dict(ov_small, openvino_device="npu")),
+        (Hardware(openvino=True, cuda=True, **arc, **npu), "ja", "npu",
+         dict(ov_small, openvino_device="npu")),
+        # The CPU target needs nothing at all.
+        (Hardware(), "de", "cpu", dict(fw, model="small", device="cpu")),
+    ]
+    for hardware, language, target, expected in cases:
+        case = (hardware, language, target)
+        assert unavailable_reason(hardware, target) == "", case
+        rec = recommend(hardware, language, target)
+        _check_recommendation(rec, case)
+        assert rec.values == expected, (case, rec.values)
+        assert device_class(rec.values) == target, (case, rec.values)
+        assert recommend(hardware, language, target.upper()) == rec, case
+
+    # The acceptance machine: Auto as before, each target its own class.
+    assert recommend(full, "de") == recommend(Hardware(cuda=True), "de")
+    assert {device_class(recommend(full, "de", t).values) for t in ("cpu", "gpu", "npu")} == {
+        "cpu", "gpu", "npu"
+    }
+
+    # The reasons say what was chosen, and nothing that is not so.
+    for language in ("de", "ja", "auto"):
+        reason = recommend(full, language, "cpu").reason
+        assert reason.startswith("You chose the CPU"), reason
+        assert "NVIDIA" not in reason, reason
+    assert recommend(full, "ja", "cpu").reason.startswith(
+        "You chose the CPU, and Parakeet does not understand Japanese."
+    )
+    assert recommend(Hardware(), "en", "cpu").reason.startswith("You chose the CPU. "), "lead"
+    npu_rec = recommend(full, "de", "npu")
+    assert npu_rec.reason.startswith("You chose the NPU, so your Intel AI Boost"), npu_rec.reason
+    assert "German fine-tune has no OpenVINO version" in npu_rec.reason, npu_rec.reason
+    assert npu_rec.summary == "OpenVINO · small · Intel NPU", npu_rec.summary
+    assert npu_rec.download == "~245 MB", npu_rec.download  # int8: half of fp16
+    assert "Intel NPU" in recommend(Hardware(openvino=True, npu=True), "en", "npu").reason
+    uhd_rec = recommend(Hardware(openvino=True, **uhd), "de", "gpu")
+    assert "your Intel UHD Graphics 770 runs Whisper's small model" in uhd_rec.reason, uhd_rec
+    assert uhd_rec.summary == "OpenVINO · small · Intel GPU", uhd_rec.summary
+    arc_rec = recommend(Hardware(openvino=True, parakeet=True, **arc), "de", "gpu")
+    assert arc_rec.reason.startswith(
+        "No usable NVIDIA graphics card found, so your Intel Arc A770 Graphics"
+    ), arc_rec.reason
+    assert "Parakeet" not in arc_rec.reason, arc_rec.reason
+    assert recommend(full, "de", "gpu").reason == recommend(Hardware(cuda=True), "de").reason
+
+    # Missing devices: the reason, never a setup on another class.
+    missing = [
+        (Hardware(), "gpu", "OpenVINO, the engine for Intel graphics, is not installed"),
+        (Hardware(), "npu", "An NPU can only be used through OpenVINO, which is not installed."),
+        (Hardware(openvino=True), "gpu", "OpenVINO reports no GPU"),
+        (Hardware(openvino=True), "npu", "OpenVINO reports no NPU"),
+        (Hardware(openvino=True, cuda=True, parakeet=True, **arc, **strong), "npu",
+         "OpenVINO reports no NPU"),
+        (Hardware(openvino=True, parakeet=True, **npu, **strong), "gpu", "OpenVINO reports no GPU"),
+        # A GPU or NPU only counts through an installed backend.
+        (Hardware(intel_gpu=True, gpu_name="Intel UHD Graphics"), "gpu", "is not installed"),
+        (Hardware(npu=True), "npu", "which is not installed"),
+    ]
+    for hardware, target, words in missing:
+        reason = unavailable_reason(hardware, target)
+        assert words in reason and reason.endswith("."), (hardware, target, reason)
+        try:
+            rec = recommend(hardware, "de", target)
+        except TargetUnavailable as exc:
+            assert str(exc) == reason, (str(exc), reason)
+        else:
+            raise AssertionError(f"recommended {rec.values} for a missing {target}")
+        for always in ("auto", "cpu"):
+            assert unavailable_reason(hardware, always) == "", (hardware, always)
+    assert unavailable_text("npu", "OpenVINO reports no NPU.") == (
+        "Cannot optimize for the NPU: OpenVINO reports no NPU. "
+        "Choose another option under “Optimize for”."
+    )
+
+    # A broken probe reads as no GPU and no NPU — never as one.
+    for broken in (
+        None,
+        {},
+        {"cuda": "yes", "openvino": [True]},
+        {
+            "cuda": {"available": "true"},
+            "openvino": {"installed": "yes", "devices": [{"device": "NPU"}]},
+        },
+        {"openvino": {"installed": True, "devices": "GPU NPU", "error": "boom"}},
+        {"openvino": {"installed": True, "devices": [None, 3, {"device": 7}], "error": None}},
+    ):
+        hardware = hardware_from_status(broken)
+        assert unavailable_reason(hardware, "gpu") and unavailable_reason(hardware, "npu"), broken
+        assert device_class(recommend(hardware, "de", "cpu").values) == "cpu", broken
+
+    # An old config without the key reads "auto"; a stored target survives.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.json"
+        path.write_text('{"backend": "openvino", "openvino_device": "npu"}', encoding="utf-8")
+        assert Config(path=path)["autoconfig_target"] == "auto"
+        path.write_text('{"autoconfig_target": "npu"}', encoding="utf-8")
+        assert Config(path=path)["autoconfig_target"] == "npu"
+
+
+def _check_recommendation(rec, case) -> None:
+    """What every recommendation must be, whatever it picked: exactly the
+    keys its backend reads, each value a member of the dropdown it lands in —
+    a renamed preset breaks this check, not the user's engine — never the
+    language, only a model the backend can run, and the text a user reads."""
+    from listen_to_me import choices
+    from listen_to_me.autoconfig import Recommendation
+    from listen_to_me.config import DEFAULTS
+    from listen_to_me.parakeet_models import MODELS
+
+    def values_of(pairs):
+        return {value for value, _note in pairs}
+
+    backend_keys = {
+        "faster-whisper": {"backend", "model", "device", "compute_type"},
+        "openvino": {"backend", "model", "openvino_device", "openvino_precision"},
+        "parakeet": {"backend", "parakeet_model", "parakeet_quantization", "device"},
+    }
+    members = {
+        "backend": values_of(choices.BACKENDS),
+        "model": values_of(choices.MODEL_CHOICES),
+        "device": set(choices.DEVICES),
+        "compute_type": set(choices.COMPUTE_TYPES),
+        "openvino_device": set(choices.OPENVINO_DEVICES),
+        "openvino_precision": values_of(choices.OPENVINO_PRECISIONS),
+        "parakeet_model": values_of(choices.PARAKEET_MODELS) & set(MODELS),
+        "parakeet_quantization": values_of(choices.PARAKEET_QUANTIZATIONS),
+    }
+    assert isinstance(rec, Recommendation), case
+    assert "language" not in rec.values, case
+    assert set(rec.values) == backend_keys[rec.values["backend"]], (case, rec.values)
+    for key, value in rec.values.items():
+        assert key in DEFAULTS, (case, key)  # a renamed config key
+        assert value in members[key], (case, key, value)
+    if rec.values["backend"] == "openvino":
+        assert choices.openvino_supports_model(rec.values["model"]), case
+    assert rec.reason.strip() and rec.summary.strip(), case
+    assert rec.reason.endswith("."), (case, rec.reason)
+    assert rec.download.startswith("~") and rec.download.endswith("B"), (case, rec.download)
+
+
 def _engine_recommendation_reads_the_probe():
     """`hardware_from_status` turns a `hardware_status()` dict into the
     recommender's Hardware: CUDA, OpenVINO and an Arc GPU only where
@@ -7177,7 +7379,8 @@ def _engine_recommendation_reads_the_probe():
     never invents hardware — and the CPU probes themselves answer with a
     bool or None. The /proc/cpuinfo parser reads only the first processor."""
     from listen_to_me import cpuinfo
-    from listen_to_me.autoconfig import Hardware, hardware_from_status, recommend, short_name
+    from listen_to_me.autoconfig import recommend
+    from listen_to_me.autoconfig_hardware import Hardware, hardware_from_status, short_name
 
     status = {
         "cuda": {"available": False, "count": 0, "error": "no ctranslate2"},
@@ -7206,8 +7409,11 @@ def _engine_recommendation_reads_the_probe():
     assert hardware_from_status(status) == Hardware(
         cuda=False,
         openvino=True,
+        intel_gpu=True,
         arc_gpu=True,
         gpu_name="Intel Arc Graphics",  # GPU.0, what "gpu" runs on
+        npu=True,
+        npu_name="Intel AI Boost",
         parakeet=True,
         physical_cores=16,
         performance_cores=6,
@@ -7229,28 +7435,49 @@ def _engine_recommendation_reads_the_probe():
         {"device": "GPU.0", "name": "Intel(R) UHD Graphics 770 (iGPU)"},
         {"device": "GPU.1", "name": "Intel(R) Arc(TM) A770 Graphics (dGPU)"},
     )
-    assert hardware_from_status(behind_igpu).arc_gpu is False
-    assert hardware_from_status(behind_igpu).gpu_name == ""
-    for name, expected in (
-        ("Intel(R) Arc(TM) A770 Graphics (dGPU)", "Intel Arc A770 Graphics"),
-        ("Intel(R) Arc(TM) 140V GPU (16GB) (iGPU)", "Intel Arc 140V GPU (16GB)"),
-        ("Intel(R) Arc(TM) Graphics (iGPU)", "Intel Arc Graphics"),
-        ("Intel(R) Iris(R) Xe Graphics (iGPU)", ""),
-        ("Intel(R) UHD Graphics", ""),
+    # The GPU "gpu" does reach is still a GPU — the iGPU, by its own name.
+    igpu = hardware_from_status(behind_igpu)
+    assert (igpu.intel_gpu, igpu.arc_gpu, igpu.gpu_name) == (
+        True,
+        False,
+        "Intel UHD Graphics 770",
+    ), igpu
+    for name, shown, arc in (
+        ("Intel(R) Arc(TM) A770 Graphics (dGPU)", "Intel Arc A770 Graphics", True),
+        ("Intel(R) Arc(TM) 140V GPU (16GB) (iGPU)", "Intel Arc 140V GPU (16GB)", True),
+        ("Intel(R) Arc(TM) Graphics (iGPU)", "Intel Arc Graphics", True),
+        ("Intel(R) Iris(R) Xe Graphics (iGPU)", "Intel Iris Xe Graphics", False),
+        ("Intel(R) UHD Graphics", "Intel UHD Graphics", False),
+        ("", "Intel graphics", False),  # a driver that reports no name
     ):
         only = hardware_from_status(gpus(*cpu_npu, {"device": "GPU", "name": name}))
-        assert (only.arc_gpu, only.gpu_name) == (bool(expected), expected), (name, only)
-    no_arc = gpus(*cpu_npu)
-    assert hardware_from_status(no_arc).arc_gpu is False
-    assert hardware_from_status(no_arc).gpu_name == ""
+        assert (only.intel_gpu, only.arc_gpu, only.gpu_name) == (True, arc, shown), (name, only)
+    no_gpu = hardware_from_status(gpus(*cpu_npu))
+    assert (no_gpu.intel_gpu, no_gpu.arc_gpu, no_gpu.gpu_name) == (False, False, ""), no_gpu
+    assert (no_gpu.npu, no_gpu.npu_name) == (True, "Intel AI Boost"), no_gpu
+    # The NPU: OpenVINO's "NPU" (or "NPU.<n>"), by name or as "Intel NPU".
+    for device, name in (("NPU", ""), ("NPU.0", None), ("npu", "Intel(R) AI Boost")):
+        only_npu = hardware_from_status(gpus({"device": device, "name": name}))
+        assert only_npu.npu and not only_npu.intel_gpu, (device, only_npu)
+        assert only_npu.npu_name == ("Intel AI Boost" if name else "Intel NPU"), only_npu
+    no_npu = hardware_from_status(gpus(status["openvino"]["devices"][0]))
+    assert (no_npu.npu, no_npu.npu_name, no_npu.intel_gpu) == (False, "", False), no_npu
     arc_named_cpu = dict(
         status,
         openvino={"installed": True, "devices": [{"device": "CPU", "name": "Intel Arc"}]},
     )
     assert hardware_from_status(arc_named_cpu).arc_gpu is False
+    assert hardware_from_status(arc_named_cpu).intel_gpu is False
+    # Listed devices without OpenVINO installed drive nothing.
     not_installed = dict(status, openvino=dict(status["openvino"], installed=False))
-    assert hardware_from_status(not_installed).arc_gpu is False
-    assert hardware_from_status(not_installed).openvino is False
+    assert hardware_from_status(not_installed) == Hardware(
+        parakeet=True,
+        physical_cores=16,
+        performance_cores=6,
+        avx2=True,
+        x86=True,
+        cpu_name="Intel Core Ultra 7 155H",
+    ), hardware_from_status(not_installed)
 
     # Missing, malformed, failed: the conservative defaults, never an error.
     conservative = Hardware()
@@ -7258,7 +7485,7 @@ def _engine_recommendation_reads_the_probe():
         assert hardware_from_status(broken) == conservative, broken
     mangled = {
         "cuda": {"available": "true", "count": "1"},
-        "openvino": {"installed": True, "devices": "GPU"},
+        "openvino": {"installed": True, "devices": "GPU NPU"},
         "parakeet": {"installed": 1},
         "cpu": {
             "physical_cores": "8",
@@ -10583,18 +10810,25 @@ def _settings_engine_auto_configures_for_this_pc():
     says so; a value no dropdown lists is reported, never added. Pressed
     without a probe result, the probe runs on its worker thread (never here)
     and the flow continues when it lands; pressed again, that result is
-    reused instead of probing twice."""
+    reused instead of probing twice.
+
+    "Optimize for:" (#336) sits beside the button, Auto by default: the
+    probe greys out a GPU or NPU it found no device for and says why; a
+    target alone changes no field; a target without a device recommends
+    nothing and says so; CPU, GPU and NPU each fill in a setup on exactly
+    that device, the language untouched. The target is saved by Apply like
+    any other field, discarded by closing without it, and read back — a
+    hand-edited spelling normalized — when the window opens again."""
+    import json
     import threading
     import time
 
+    from PySide6.QtCore import Qt
+
     from listen_to_me import diagnostics
-    from listen_to_me.autoconfig import (
-        Recommendation,
-        changes,
-        hardware_from_status,
-        recommend,
-    )
-    from listen_to_me.autoconfig_text import describe_changes, model_downloaded
+    from listen_to_me.autoconfig import Recommendation, changes, recommend, unavailable_reason
+    from listen_to_me.autoconfig_hardware import hardware_from_status
+    from listen_to_me.autoconfig_text import describe_changes, model_downloaded, unavailable_text
     from listen_to_me.choices import (
         GERMAN_TURBO_CT2,
         PARAKEET_MODELS,
@@ -10773,8 +11007,104 @@ def _settings_engine_auto_configures_for_this_pc():
             assert model_downloaded(pk, other) is False
             assert model_downloaded(pk, status(cuda=False)) is False  # no snapshot
 
+            # "Optimize for:" beside the button, Auto until chosen otherwise.
+            target = window.autoconfig_target_combo
+            assert target.parentWidget() is button.parentWidget()
+            label = window._hw_form.labelForField(button.parentWidget())
+            assert label.text() == "Optimize for:" and label.buddy() is target
+            items = [target.itemText(row) for row in range(target.count())]
+            assert items == ["Auto (recommended)", "CPU", "GPU", "NPU"], items
+            assert target.currentData() == "auto" and stub.cfg["autoconfig_target"] == "auto"
+            assert "changes no engine setting" in target.toolTip(), target.toolTip()
+
+            def pick(value: str) -> None:
+                target.setCurrentIndex(target.findData(value))
+
+            def enabled(value: str) -> bool:
+                return target.model().item(target.findData(value)).isEnabled()
+
+            def engine_fields() -> dict:
+                values = window._collect()
+                del values["autoconfig_target"]
+                return values
+
+            # The probe greys out what it did not find and says why.
+            window.language_combo.setCurrentText(language_label("de"))
+            bare = status(cuda=False)  # no NVIDIA GPU, no OpenVINO
+            window._on_hw_done(window._hw_gen, bare)
+            assert [enabled(v) for v in ("auto", "cpu", "gpu", "npu")] == [True, True, False, False]
+            reasons = {v: unavailable_reason(hardware_from_status(bare), v) for v in ("gpu", "npu")}
+            for value, reason in reasons.items():
+                row = target.findData(value)
+                assert reason and target.itemData(row, Qt.ItemDataRole.ToolTipRole) == reason
+            hint = window.autoconfig_target_hint.text()
+            assert window._hw_form.isRowVisible(window.autoconfig_target_hint), hint
+            assert hint == (
+                f"GPU is not available: {reasons['gpu']}\nNPU is not available: {reasons['npu']}"
+            ), hint
+            assert target.accessibleDescription() == hint
+
+            # A target alone changes nothing; one without a device asks
+            # nothing, says why and fills in nothing.
+            before = engine_fields()
+            window._set_autoconfig_status("stale")
+            pick("npu")
+            assert engine_fields() == before, "choosing a target changed an engine field"
+            assert window.autoconfig_status.text() == "", "the stale line survived"
+            asked.clear()
+            assert window._offer_recommendation(bare) is None
+            assert not asked and engine_fields() == before, asked
+            assert window.autoconfig_status.text() == unavailable_text("npu", reasons["npu"])
+
+            # CPU, NVIDIA GPU and Intel NPU: each target its own device.
+            full = dict(
+                status(cuda=True),
+                openvino={
+                    "installed": True,
+                    "devices": [{"device": "NPU", "name": "Intel(R) AI Boost"}],
+                    "error": None,
+                },
+            )
+            window._on_hw_done(window._hw_gen, full)
+            assert all(enabled(v) for v in ("auto", "cpu", "gpu", "npu"))
+            assert not window._hw_form.isRowVisible(window.autoconfig_target_hint)
+            assert target.itemData(target.findData("npu"), Qt.ItemDataRole.ToolTipRole) is None
+            answer[0] = True
+            for value, expected in (
+                ("cpu", {"backend": "parakeet", "device": "cpu",
+                         "parakeet_model": "parakeet-primeline-de"}),
+                ("gpu", {"backend": "faster-whisper", "device": "cuda",
+                         "model": GERMAN_TURBO_CT2}),
+                ("npu", {"backend": "openvino", "openvino_device": "npu", "model": "small",
+                         "openvino_precision": "int8"}),
+            ):
+                pick(value)
+                asked.clear()
+                rec = window._offer_recommendation(full)
+                assert rec == recommend(hardware_from_status(full), "de", value), value
+                assert asked, value
+                if value == "cpu":
+                    assert "NVIDIA" not in asked[0][1], asked[0][1]
+                collected = window._collect()
+                assert {k: collected[k] for k in expected} == expected, (value, collected)
+                assert collected["language"] == "de" and collected["autoconfig_target"] == value
+            assert window.ov_device_combo.currentText() == "npu"
+            # Auto on the same PC: what it always recommended.
+            pick("auto")
+            assert window._offer_recommendation(full) == recommend(hardware_from_status(full), "de")
+            assert window._selected_backend() == "faster-whisper"
+            assert window.device_combo.currentText() == "cuda"
+            # Declined: nothing moves.
+            pick("npu")
+            answer[0] = False
+            before = engine_fields()
+            window._offer_recommendation(full)
+            assert engine_fields() == before
+            assert stub.cfg["autoconfig_target"] == "auto", "a target was saved before Apply"
+
             # The button: no result yet → the probe runs on its worker
             # thread, the button waits disabled, the question follows.
+            pick("auto")
             on_worker: list = []
             real_probe = diagnostics.hardware_status
 
@@ -10804,6 +11134,40 @@ def _settings_engine_auto_configures_for_this_pc():
                 diagnostics.hardware_status = real_probe
         finally:
             window.force_close()
+
+        # Saved with Apply like any field (validation needs pynput, which
+        # the light run lacks — the target is not what it checks) …
+        window = SettingsWindow(stub)
+        try:
+            window._validate = lambda values: True
+            window.autoconfig_target_combo.setCurrentIndex(
+                window.autoconfig_target_combo.findData("cpu")
+            )
+            assert window._collect() != window._saved_snapshot, "a new target is no edit"
+            assert window._apply_values() and stub.cfg["autoconfig_target"] == "cpu"
+            stored = json.loads(stub.cfg.path.read_text(encoding="utf-8"))
+            assert stored["autoconfig_target"] == "cpu", stored
+        finally:
+            window.force_close()
+        # … read back on the next open, discarded by closing without Apply …
+        window = SettingsWindow(stub)
+        try:
+            assert window.autoconfig_target_combo.currentData() == "cpu"
+            window.autoconfig_target_combo.setCurrentIndex(
+                window.autoconfig_target_combo.findData("gpu")
+            )
+        finally:
+            window.force_close()
+        assert stub.cfg["autoconfig_target"] == "cpu"
+        # … and a hand-edited spelling shows the target it acts as.
+        for stored, shown in ((" GPU", "gpu"), ("tpu", "auto")):
+            stub.cfg["autoconfig_target"] = stored
+            window = SettingsWindow(stub)
+            try:
+                assert window.autoconfig_target_combo.currentData() == shown, stored
+                assert window._collect()["autoconfig_target"] == shown, stored
+            finally:
+                window.force_close()
 
 
 def _process_events_until(app, condition, seconds: float = 5.0) -> bool:
@@ -11179,6 +11543,9 @@ def _setup_wizard_recommends_the_engine_for_this_pc():
                 probed.append((threading.current_thread() is not threading.main_thread(), snapshot))
                 return status()
 
+            # Settings' "Optimize for:" is not the wizard's: it always runs
+            # the auto rules (an NPU target would raise here — no NPU).
+            cfg["autoconfig_target"] = "npu"
             wizard = OnboardingWizard(cfg, app=stub, probe=probe)
             wizards.append(wizard)
             engine = wizard.engine_page
@@ -11209,6 +11576,7 @@ def _setup_wizard_recommends_the_engine_for_this_pc():
             assert (cfg["backend"], cfg["parakeet_model"]) == ("parakeet", "parakeet-primeline-de")
             assert (cfg["parakeet_quantization"], cfg["device"]) == ("int8", "cpu")
             assert cfg["language"] == "de"
+            assert cfg["autoconfig_target"] == "npu", "the wizard rewrote the target"
             # The manual fields, untouched, follow the recommendation.
             assert engine.backend_combo.currentText() == backend_label("parakeet")
             german = choice_label(PARAKEET_MODELS, "parakeet-primeline-de")
@@ -15190,6 +15558,7 @@ _LIGHT_CHECKS = [
     ("hardware/status probes", _hardware_probes),
     ("engine recommendation matrix", _engine_recommendation_matrix),
     ("engine recommendation reads the probe", _engine_recommendation_reads_the_probe),
+    ("engine recommendation optimizes for the chosen device", _engine_recommendation_targets),
     ("help content renders", _help_content_renders),
     ("help page find", _help_page_find),
     ("escape clears a search field", _escape_clears_a_search_field),

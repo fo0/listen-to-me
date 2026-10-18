@@ -182,8 +182,9 @@ def model_cache_status(snapshot: dict) -> dict:
 def hardware_status(snapshot: dict) -> dict:
     """Everything the Settings status card shows, in one worker-thread call:
     CUDA availability, OpenVINO install/devices and the model cache state —
-    plus the CPU and whether the Parakeet backend is installed, which with
-    the first two is what ``autoconfig.hardware_from_status`` reads."""
+    plus the CPU and whether the Parakeet backend is installed. All but the
+    model cache state is what ``autoconfig_hardware.hardware_from_status``
+    reads."""
     return {
         "cuda": probe_cuda(),
         "openvino": probe_openvino(),

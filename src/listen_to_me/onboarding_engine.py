@@ -42,7 +42,8 @@ from PySide6.QtWidgets import (
     QWizardPage,
 )
 
-from .autoconfig import Recommendation, hardware_from_status, recommend
+from .autoconfig import Recommendation, recommend
+from .autoconfig_hardware import hardware_from_status
 from .autoconfig_text import download_line, model_downloaded
 from .choices import (
     BACKENDS,
@@ -309,6 +310,8 @@ class EnginePage(QWizardPage):
         probe answered (or when it failed)."""
         if self._hardware is None:
             return None
+        # No "Optimize for:" here: the wizard always runs the auto rules,
+        # whatever autoconfig_target says.
         return recommend(self._hardware, self._language())
 
     def is_recommended(self) -> bool:
