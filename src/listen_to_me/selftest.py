@@ -11435,6 +11435,21 @@ def _settings_audio_tests_the_microphone_through_the_widget():
             window._set_diag_busy(False)
             assert window.mic_status.text() == "Microphone works ✓ — peak level 40 %."
 
+            # Keyboard focus follows the transcription test the way it follows
+            # the microphone test: its start button hands it to Cancel and gets
+            # it back when the test ends — Qt alone would move it on past
+            # whichever of the two is disabled.
+            window._status_probed = True  # no hardware probe on opening Engine
+            window.show()
+            window._show_page("Engine")
+            window.tx_test_button.setFocus()
+            window._begin_diag("tx")
+            assert window.focusWidget() is window.diag_cancel_button, window.focusWidget()
+            window._set_diag_busy(False)
+            assert window.focusWidget() is window.tx_test_button, window.focusWidget()
+            window._show_page("Audio")
+            window.hide()
+
             # Not while the app records — a press still queued counts.
             stub.queued_state = "recording"
             window.mic_test_button.click()
@@ -12939,7 +12954,14 @@ def _gui_construction():
         window.a_test_button.setText(_A_TESTING_LABEL)
         window.a_test_cancel_button.setEnabled(True)
         stale = window._assistant_gen
+        # Cancel gives the keyboard focus back to Test connection instead of
+        # letting Qt move it on to an unrelated control as Cancel disables.
+        window.show()
+        window._show_page("Assistant")
+        window.a_test_cancel_button.setFocus()
         window._cancel_assistant_test()
+        assert window.focusWidget() is window.a_test_button, window.focusWidget()
+        window.hide()
         assert not window._assistant_busy
         assert window.a_test_button.isEnabled()
         assert not window.a_test_cancel_button.isEnabled()
