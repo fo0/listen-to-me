@@ -2212,7 +2212,7 @@ class SettingsWindow(QDialog):
         self.mic_cancel_button = self.mic_test.cancel_button
         self.mic_level_bar = self.mic_test.level_bar
         self.mic_status = self.mic_test.status
-        form.addRow("", self.mic_test)
+        self.mic_test.add_to_form(form)
         layout.addWidget(card)
 
         # Everything the second recording source needs, in one card: its
