@@ -196,7 +196,7 @@ class OnboardingWizard(QWizard):
         )
         self.mic_test.started.connect(self._on_mic_test_started)
         self.mic_test.finished.connect(self._on_mic_test_finished)
-        form.addRow("", self.mic_test)
+        self.mic_test.add_to_form(form)
         self._load_devices()
         return page
 

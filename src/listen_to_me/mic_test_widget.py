@@ -20,7 +20,8 @@ recording loop polls. What differs between the hosts is injected:
 
 `started` and `finished(outcome)` let the host fold the test into its own
 rules — Settings runs one diagnostic at a time and pauses the global hotkey
-while one records; the wizard pauses the hotkey too.
+while one records; the wizard pauses the hotkey too. Both hosts place it with
+`add_to_form`, so its "Level:" label lines up with the form's other labels.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ import threading
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -182,9 +184,9 @@ class MicTestWidget(QWidget):
         buttons.addStretch(1)
         layout.addLayout(buttons)
 
-        level_row = QHBoxLayout()
+        self._level_row = level_row = QHBoxLayout()
         level_row.setContentsMargins(0, 0, 0, 0)
-        level_label = QLabel("Level:")
+        self.level_label = level_label = QLabel("Level:")
         level_row.addWidget(level_label)
         self.level_bar = QProgressBar()
         self.level_bar.setRange(0, 100)
@@ -205,6 +207,22 @@ class MicTestWidget(QWidget):
         self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         elastic_label(self.status)
         layout.addWidget(self.status)
+
+    def add_to_form(self, form: QFormLayout) -> None:
+        """Lay the test out as three rows of the host's form.
+
+        Inline, the "Level:" label sits in the field column — the one row
+        label out of line with the form around it. Here it moves into the
+        form's label column beside the bar, while the buttons (this widget)
+        and the status line take the field column. The widget still owns the
+        worker, the signals and the cancel state; only the layout changes."""
+        self._level_row.removeWidget(self.level_label)
+        self._level_row.removeWidget(self.level_bar)
+        self.layout().removeItem(self._level_row)
+        self.layout().removeWidget(self.status)
+        form.addRow("", self)
+        form.addRow(self.level_label, self.level_bar)
+        form.addRow("", self.status)
 
     # -------------------------------------------------------------- control
 

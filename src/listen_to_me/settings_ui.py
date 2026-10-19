@@ -2212,7 +2212,7 @@ class SettingsWindow(QDialog):
         self.mic_cancel_button = self.mic_test.cancel_button
         self.mic_level_bar = self.mic_test.level_bar
         self.mic_status = self.mic_test.status
-        form.addRow("", self.mic_test)
+        self.mic_test.add_to_form(form)
         layout.addWidget(card)
 
         # Everything the second recording source needs, in one card: its
@@ -4055,9 +4055,15 @@ class SettingsWindow(QDialog):
         self._assistant_busy = True
         self._assistant_gen += 1
         gen = self._assistant_gen
+        # Cancel takes the keyboard focus before the button it sat on is
+        # disabled, as in the microphone test: Qt would move it on to an
+        # unrelated control past the still-disabled Cancel.
+        refocus = self.window().focusWidget() is self.a_test_button
+        self.a_test_cancel_button.setEnabled(True)
+        if refocus:
+            self.a_test_cancel_button.setFocus(Qt.FocusReason.OtherFocusReason)
         self.a_test_button.setEnabled(False)
         self.a_test_button.setText(_A_TESTING_LABEL)
-        self.a_test_cancel_button.setEnabled(True)
         # Frozen with the button, like every other busy control in this window.
         # The running test is unaffected either way — the source was read above
         # — but a combo left live invites changing it mid-wait and then reading
@@ -4129,8 +4135,11 @@ class SettingsWindow(QDialog):
     def _end_assistant_test(self) -> None:
         """Hand the button back to the user (all three outcomes)."""
         self._assistant_busy = False
+        refocus = self.window().focusWidget() is self.a_test_cancel_button
         self.a_test_button.setEnabled(True)
         self.a_test_button.setText(_A_TEST_LABEL)
+        if refocus:
+            self.a_test_button.setFocus(Qt.FocusReason.OtherFocusReason)
         self.a_test_cancel_button.setEnabled(False)
         self.a_test_source_combo.setEnabled(True)
 
@@ -4191,6 +4200,7 @@ class SettingsWindow(QDialog):
     def _set_diag_busy(self, busy: bool, kind: str | None = None) -> None:
         # One diagnostic at a time: they share the recorder/model, and two
         # concurrent tests would interleave their status output anyway.
+        ended = self._diag_kind
         self._diag_busy = busy
         self._diag_kind = kind if busy else None
         if not busy:
@@ -4198,10 +4208,23 @@ class SettingsWindow(QDialog):
             # through here, so the icon's download display is dropped in one
             # place instead of in six handlers that would drift apart.
             self._report_progress(None, 0, 0)
+        # Keyboard focus follows the run, as in the microphone test: Cancel is
+        # enabled before the start button it takes the focus from is disabled,
+        # and that button is enabled again before Cancel gives the focus back —
+        # Qt alone moves it on past whichever of the two is disabled.
+        starts = {"model": self.model_download_button, "tx": self.tx_test_button}
+        focused = self.window().focusWidget()
+        cancel_active = busy and kind in starts
+        if cancel_active:
+            self.diag_cancel_button.setEnabled(True)
+            if focused is starts[kind]:
+                self.diag_cancel_button.setFocus(Qt.FocusReason.OtherFocusReason)
         for button in (self.model_download_button, self.tx_test_button, self.mic_test_button):
             button.setEnabled(not busy)
+        if not busy and ended in starts and focused is self.diag_cancel_button:
+            starts[ended].setFocus(Qt.FocusReason.OtherFocusReason)
         # Only the Cancel button next to the running diagnostic is active.
-        self.diag_cancel_button.setEnabled(busy and kind in ("model", "tx"))
+        self.diag_cancel_button.setEnabled(cancel_active)
         self.mic_cancel_button.setEnabled(busy and kind == "mic")
         # Only the tests that record own the microphone; a model download can
         # run for minutes and must not take dictation away for that long.
