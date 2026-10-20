@@ -4170,6 +4170,33 @@ def _activation_port_is_exclusive():
         holder.release()
 
 
+def _activation_socket_failure_degrades():
+    """A socket that cannot even be created degrades the "show yourself" ping
+    like a taken port does — start_server answers None instead of raising out
+    of App startup, which calls it unguarded."""
+    import socket
+    import types
+
+    from listen_to_me import singleinstance
+
+    def no_socket(*_args, **_kwargs):
+        raise OSError(24, "Too many open files")
+
+    # Swapped on the module's own reference only — the real socket module
+    # stays untouched for every other thread of this process.
+    fake = types.SimpleNamespace(
+        AF_INET=socket.AF_INET, SOCK_STREAM=socket.SOCK_STREAM, socket=no_socket
+    )
+    holder = singleinstance.SingleInstance(0)
+    singleinstance.socket = fake
+    try:
+        assert holder.start_server(lambda: None) is None
+        assert holder._server is None
+    finally:
+        singleinstance.socket = socket
+        holder.release()
+
+
 def _activation_handshake_has_a_deadline():
     """A peer that dribbles bytes cannot hold the activation channel open.
 
@@ -15546,6 +15573,7 @@ _LIGHT_CHECKS = [
     ("recorder counts dropped buffers", _recorder_counts_dropped_buffers),
     ("single-instance guard", _single_instance_guard),
     ("activation port is exclusive", _activation_port_is_exclusive),
+    ("activation socket failure degrades", _activation_socket_failure_degrades),
     ("activation handshake has a deadline", _activation_handshake_has_a_deadline),
     ("live typing logic", _live_typing_logic),
     ("icon render", _icon_render),
