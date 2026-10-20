@@ -120,8 +120,19 @@ class SingleInstance:
 
         `on_activate` runs on the accept thread — pass something thread-safe
         (e.g. ``lambda: app.post("activate")``). Returns the bound port, or
-        None when the port is unavailable (the guard itself still holds)."""
-        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        None when the port or a socket is unavailable (the guard itself still
+        holds)."""
+        try:
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        except OSError as exc:
+            # No socket at all (descriptor limit, a blocked Winsock): the same
+            # degraded ping as a taken port — never an exception out of startup.
+            log.warning(
+                "cannot create the activation socket (%s) — a second launch "
+                "cannot bring this instance to the front",
+                exc,
+            )
+            return None
         _set_address_reuse(server)
         try:
             server.bind(("127.0.0.1", self._port))
