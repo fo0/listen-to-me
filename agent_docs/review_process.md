@@ -238,7 +238,7 @@ Only commit when:
 - [ ] All P0/P1 findings are fixed (or explicitly deferred with reasoning)
 - [ ] Deferred findings are logged in BACKLOG.md
 - [ ] Learnings/context captured in MEMORY.md or SCRATCHPAD.md (if applicable)
-- [ ] Documentation updated if needed (CLAUDE.md / README.md / config table)
+- [ ] Documentation updated if needed (CLAUDE.md / README.md / docs/guide/ / config table)
 - [ ] Commit message follows project's Git Conventions (imperative subject)
 - [ ] UI review done (if UI changed)
 

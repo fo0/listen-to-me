@@ -73,7 +73,7 @@ Python >=3.10 (CI 3.12) · PySide6 (Qt 6) · faster-whisper (+ optional OpenVINO
 
 ## Project Overview
 
-**Listen To Me** is a push-to-talk voice-typing tray app: a hotkey records, a Whisper model transcribes **locally**, the text lands at the cursor of the focused field. A second hotkey records **what the computer plays**, via a loopback input device (ADR-0009/0010). Windows-first. Features: `README.md`.
+**Listen To Me** is a push-to-talk voice-typing tray app: a hotkey records, a Whisper model transcribes **locally**, the text lands at the cursor of the focused field. A second hotkey records **what the computer plays**, via a loopback input device (ADR-0009/0010). Windows-first. Features: `docs/guide/`.
 
 ## Project Structure
 
@@ -140,7 +140,7 @@ ADRs in `docs/adr/`: grep them before contradicting one; reverse one only by sup
 
 ## Documentation Rules
 
-After a code change, update only what it changed: `README.md` · `BACKLOG.md` · `MEMORY.md` / `SCRATCHPAD.md` · `docs/ARCHITECTURE.mmd` · `docs/adr/` · `config.py DEFAULTS` (also Settings UI + README). **`CLAUDE.md` gets a line only when how-to-work changes** — a command, a top-level directory, a repo-wide convention; the rest lives in `agent_docs/`.
+After a code change, update only what it changed: `docs/guide/` (detail; `README.md` stays short) · `BACKLOG.md` · `MEMORY.md` / `SCRATCHPAD.md` · `docs/ARCHITECTURE.mmd` · `docs/adr/` · `config.py DEFAULTS` (also Settings UI + `settings.md`). **`CLAUDE.md` gets a line only when how-to-work changes** — a command, a top-level directory, a repo-wide convention; the rest lives in `agent_docs/`.
 
 ### Context budget
 

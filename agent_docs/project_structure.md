@@ -9,7 +9,7 @@ scripts/              # make_icon.py — generates the .ico PyInstaller bundles
                       # docs-format.yml (Prettier-Markdown gate on **.md, PR + push to main)
                       # desktop-release.yml (manual dispatch: Windows exe + GitHub Release, main only)
                       # branch-cleanup.yml (manual dispatch: deletes merged branches, dry run by default)
-docs/                 # ARCHITECTURE.mmd (+ .svg), adr/, research/
+docs/                 # ARCHITECTURE.mmd (+ .svg), adr/, research/, guide/ (user docs)
 agent_docs/           # Agent process docs (this file, review, backlog, memory, budget, …)
 .claude/skills/       # done, pr, basic-review, basic-sec-review, rollback, ci, stuck, beacon,
                       # scheduler, orca
