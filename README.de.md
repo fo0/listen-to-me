@@ -6,13 +6,15 @@ Hotkey drücken, sprechen, nochmal drücken: Der Text wird von einem lokalen
 fokussierten Feldes eingefügt.
 
 > Dies ist eine deutschsprachige Kurzanleitung. Die vollständige Dokumentation
-> (Funktionen, Einstellungen, Fehlerbehebung, Build) steht im englischen
-> [README.md](README.md).
+> (Funktionen, Einstellungen, Fehlerbehebung, Build) steht auf Englisch unter
+> [docs/guide/](docs/guide/features.md), der Einstieg im [README.md](README.md).
 
 ## Schnellstart
 
-1. `ListenToMe-<datum>-<hhmm>-win64.exe` aus den [Releases](https://github.com/fo0/listen-to-me/releases)
-   herunterladen und starten — die App liegt danach im System-Tray.
+1. `ListenToMe-<datum>-<hhmm>-win64.exe` aus den [Releases](https://github.com/fo0/listen-to-me/releases/latest)
+   herunterladen und starten — die App liegt danach im System-Tray. Beim ersten
+   Start fragt ein kurzer Einrichtungsassistent Hotkey, Sprache, Engine und
+   Mikrofon ab.
 2. Cursor in ein beliebiges Textfeld setzen, `Strg+Alt+Leertaste` drücken,
    sprechen, nochmal drücken → der Text wird lokal transkribiert und an der
    Cursorposition eingefügt.
@@ -27,43 +29,18 @@ fokussierten Feldes eingefügt.
    (Push-to-Mute) oder **„Stummschaltung umschalten"** vergeben und in Listen To
    Me dieselbe Kombination samt passendem Modus eintragen — so wird dein Diktat
    nicht in den Voice-Call übertragen und danach automatisch wieder aktiviert.
-6. Schon aktiv: der Filter für stille Aufnahmen, unter **Engine →
-   Silent takes (invented phrases)**. Wer den Hotkey drückt, nichts sagt und
-   wieder drückt, bekommt sonst einen Satz eingefügt, den niemand gesprochen
-   hat: „Vielen Dank.", „Thank you.", „Untertitelung des ZDF, 2020". Das kommt
-   aus dem Whisper-Modell, nicht aus der App — Whisper ist auf untertitelten
-   Videos trainiert, und eine Passage ohne Sprache trägt dort meist den
-   Schlusssatz des Clips. Verworfen wird ein Transkript nur, wenn die Aufnahme
-   selbst **still oder zu leise** war und der Text **ausschließlich** aus einer
-   Phrase der Liste besteht; dann wird es wie eine Aufnahme ohne Sprache
-   gemeldet. Ein wirklich gesprochenes „Vielen Dank." bleibt also erhalten,
-   „Vielen Dank für die Datei" ebenfalls. 18 Phrasen (deutsch und englisch)
-   sind voreingestellt, die Liste ist frei editierbar und der Filter ganz
-   abschaltbar.
-7. Optional: unter **Audio → System Audio** einen zweiten Hotkey setzen — der
-   nimmt auf, was der Rechner **abspielt** (Telefonat, Meeting, Video), mit der
-   gleichen Bedienung wie das Diktat und mit eigenem Gerät, eigener Maximallänge
-   (900 s) und eigenem Assistant-Profil. Auf der heruntergeladenen `.exe` ist
-   dafür **nichts mehr einzurichten**: sie bringt ein eigenes PortAudio mit
-   WASAPI loopback mit, deshalb erscheint **jedes Ausgabegerät** zusätzlich als
-   aufnehmbares Input-Device („… [Loopback]") und „Stereomix" ist nicht mehr
-   nötig — auch ein USB-Headset ohne Stereomix lässt sich so aufnehmen. Die
-   Geräteliste benennt jetzt in einer eigenen Gruppe das **Ausgabegerät**, das
-   eine Zeile aufnimmt, statt nur Mikrofone unter der Überschrift „System
-   audio" zu zeigen; „Automatic" wählt das passende. Aus dem Quellcode
-   gestartet (`pip install -e .`) fehlt diese DLL, dort gilt weiterhin: unter
-   Windows „Stereomix" im Windows-Sound-Dialog im Tab _Aufnahme_ → Rechtsklick
-   → _Deaktivierte Geräte anzeigen_ einblenden und danach aktivieren, oder ein
-   virtuelles Audiokabel wie VB-CABLE installieren. Unter Linux genügt die
-   Quelle „Monitor of …", unter macOS ein virtuelles Ausgabegerät wie BlackHole.
-   Fehlt so ein Gerät, verweigert die App die Aufnahme und zeigt genau diesen
-   Hinweis — sie greift absichtlich **nicht** auf das Standard-Mikrofon zurück,
-   das den Raum statt den Ton des Rechners aufnehmen würde.
-8. Optional: unter **Overlay → Show the transcript at** festlegen, wo der
-   Transkript-Text erscheint — am **floating icon** oder am **Mauszeiger**, dem
-   die Bubble dann beim Sprechen folgt (gedacht für Diktate in ein Fenster auf
-   einem anderen Monitor). Die Variante am Mauszeiger funktioniert auch mit
-   komplett **ausgeschaltetem floating icon** und nimmt keine Klicks weg.
+6. Schon aktiv: Ein Filter verwirft bei **stillen Aufnahmen** Sätze, die
+   Whisper erfindet („Vielen Dank.", „Untertitelung des ZDF, 2020"). Echt
+   Gesprochenes bleibt erhalten; die Liste ist unter **Engine → Silent takes**
+   editierbar. [Details →](docs/guide/settings.md#silent-takes-and-invented-phrases)
+7. Optional: unter **Audio → System audio** einen zweiten Hotkey setzen, der
+   aufnimmt, was der Rechner **abspielt** (Telefonat, Meeting, Video). Die
+   heruntergeladene `.exe` braucht dafür keine Einrichtung, aus dem Quellcode
+   gestartet ist „Stereomix" oder ein virtuelles Audiokabel nötig.
+   [Details →](docs/guide/system-audio.md)
+8. Optional: unter **Overlay → Show the transcript at** den Text am
+   **Mauszeiger** statt am floating icon anzeigen, praktisch beim Diktieren auf
+   einem zweiten Monitor. Funktioniert auch mit ausgeschaltetem floating icon.
 
 ## Lizenz
 

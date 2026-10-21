@@ -34,7 +34,7 @@ Classify:
 
 - **Commands section** → identify the automated checks, in the canonical order stated there (this project: Prettier for Markdown, then `compileall` + Qt offscreen smoke; no Python lint/format/typecheck)
 - **Git Conventions** → commit format (imperative subject), branch rules, merge strategy
-- **Documentation Rules** → verify affected docs (CLAUDE.md, README.md, MEMORY.md, SCRATCHPAD.md, BACKLOG.md, config table) are up to date
+- **Documentation Rules** → verify affected docs (CLAUDE.md, README.md, docs/guide/, MEMORY.md, SCRATCHPAD.md, BACKLOG.md, config table) are up to date
 
 ### 3. Auto-format (write mode)
 
