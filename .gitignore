@@ -35,3 +35,5 @@ config.json
 
 # Claude Code personal settings (local permission rules) — never commit
 .claude/settings.local.json
+# Claude Code per-user project instructions — never commit
+CLAUDE.local.md
