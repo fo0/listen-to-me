@@ -3,6 +3,8 @@ name: beacon
 description: Dependency health check + update proposal through the beacon compatibility server. Trigger: /beacon, "check dependencies", "dependency updates", "update deps", or a scheduled/autonomous maintenance run. Starts from beacon-tracked Dependabot proposals when the project is GitHub-connected. Interactive sessions only PROPOSE updates; autonomous runs apply ONLY safe same-major (minor/patch) updates that beacon does not flag.
 ---
 
+<!-- beacon-skill-version: 19dea27489ec -->
+
 # beacon — check the stack, propose updates, apply only what is safe
 
 Goal: use the beacon MCP tools (`compat_*`) to (1) pick up the Dependabot proposals beacon
@@ -12,14 +14,27 @@ them; ONLY the safe subset when running autonomously.
 
 ## 1 · Verify identity (every run)
 
-- Call `compat_whoami` and confirm it agrees with this repo ("fo0/listen-to-me", i.e.
-  `git remote get-url origin`). Exactly two results are OK:
+- Call `compat_whoami` with `skill_version` = the version on this file’s
+  `beacon-skill-version` line (just below the frontmatter), and confirm it agrees with
+  this repo ("fo0/listen-to-me", i.e. `git remote get-url origin`). Exactly two results are OK:
   - `project: "fo0/listen-to-me"` — a token bound to THIS project; or
   - `declares_project: true` — the shared master/onboarding token, bound to no project:
     then every call below MUST carry `project:"fo0/listen-to-me"` (`repo:` on report/observe),
     which is what attributes the run. This skill already passes it everywhere.
 - Any other `project` → STOP and tell the user to re-onboard via beacon’s /onboard page;
   never write under another project’s token.
+- Then read `skill.status` in the same answer — whether THIS file is still current:
+  - `outdated` → call `compat_skill` with `project:"fo0/listen-to-me"`, then:
+    - replace everything above a `## 8 · This repo` section with its `content`
+      verbatim and keep that section verbatim after it (if this file has one);
+    - commit that refresh on its own — only this file, its own commit. Unattended: on the
+      run’s own branch, inside its PR; a run that would open no PR opens one for this
+      file alone (never straight to main). Interactive: propose that one-file commit to
+      the user and keep it out of other work;
+    - tell the user (unattended: note it in the run’s summary or PR), then continue with
+      the NEW file’s instructions, not these.
+  - `current` → continue. `unknown` → `skill_version` did not arrive; call again with it.
+  - No `skill` block at all (an older beacon) → continue as before.
 
 ## 2 · Start from tracked proposals (GitHub-connected projects)
 
