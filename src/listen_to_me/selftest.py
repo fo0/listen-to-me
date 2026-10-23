@@ -11474,6 +11474,17 @@ def _settings_audio_tests_the_microphone_through_the_widget():
             assert window.focusWidget() is window.diag_cancel_button, window.focusWidget()
             window._set_diag_busy(False)
             assert window.focusWidget() is window.tx_test_button, window.focusWidget()
+            # A Cancel hands it back too, and the cool-down that then disables
+            # the start button returns it once the button is enabled again.
+            engine = window._diag
+            window._begin_diag("tx")
+            window._cancel_diagnostic()
+            assert not window.tx_test_button.isEnabled()
+            assert window.focusWidget() is not window.tx_test_button
+            window._diag_cooldown_timer.stop()
+            window._end_diag_cooldown()
+            assert window.focusWidget() is window.tx_test_button, window.focusWidget()
+            window._diag = engine
             window._show_page("Audio")
             window.hide()
 

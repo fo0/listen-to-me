@@ -924,6 +924,8 @@ class SettingsWindow(QDialog):
         self._diag_cooldown_timer.setSingleShot(True)
         self._diag_cooldown_timer.setInterval(_DIAG_COOLDOWN_MS)
         self._diag_cooldown_timer.timeout.connect(self._end_diag_cooldown)
+        # (start button, where Qt moved the focus) while a cool-down holds it.
+        self._cooldown_refocus: tuple[QWidget, QWidget | None] | None = None
         # currentTextChanged (not currentIndexChanged): the custom-model dialog
         # can rename the selected custom item in place without an index change.
         self.model_combo.currentTextChanged.connect(self._on_status_inputs_changed)
@@ -4302,16 +4304,29 @@ class SettingsWindow(QDialog):
         up to a poll tick to release its input stream (restarting instantly
         would briefly open a second one on the same device), and a model
         download keeps running, so an immediate retry would start a second
-        snapshot_download of the same repo in parallel."""
-        for button in (self.model_download_button, self.tx_test_button, self.mic_test_button):
+        snapshot_download of the same repo in parallel.
+
+        A Cancel hands the focus back to its start button, which this then
+        disables, so Qt moves it on; the end of the cool-down returns it."""
+        starts = (self.model_download_button, self.tx_test_button, self.mic_test_button)
+        focused = self.window().focusWidget()
+        for button in starts:
             button.setEnabled(False)
+        self._cooldown_refocus = (
+            (focused, self.window().focusWidget()) if focused in starts else None
+        )
         self._diag_cooldown_timer.start()
 
     def _end_diag_cooldown(self) -> None:
+        refocus, self._cooldown_refocus = self._cooldown_refocus, None
         if self._diag_busy:
             return  # a new diagnostic owns the buttons now
         for button in (self.model_download_button, self.tx_test_button, self.mic_test_button):
             button.setEnabled(True)
+        # Only while the focus still sits where Qt put it: a user who moved on
+        # during the cool-down keeps their place.
+        if refocus is not None and self.window().focusWidget() is refocus[1]:
+            refocus[0].setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _on_diag_status(self, gen: int, message: str) -> None:
         if gen != self._diag_gen:
