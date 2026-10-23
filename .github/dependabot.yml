@@ -67,3 +67,15 @@ updates:
         update-types:
           - "minor"
           - "patch"
+
+      # Security updates get a group of their own: the version-update group
+      # above never applies to them, so without this each security fix would
+      # arrive as a separate pull request. Majors stay outside it on purpose, so
+      # a security fix that crosses a major still arrives alone and attributable.
+      python-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
