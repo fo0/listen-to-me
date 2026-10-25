@@ -813,6 +813,8 @@ class SettingsWindow(QDialog):
         # Hardware/model status probe (Engine page status card).
         self._hw_gen = 0
         self._hw_busy = False
+        # (pressed button, where Qt moved the focus) while a probe disables it.
+        self._hw_refocus: tuple[QWidget, QWidget | None] | None = None
         self._status_probed = False  # first probe runs when the page is opened
         # The last probe result of this window (None before the first), which
         # "Auto-configure for this PC" reuses — the hardware does not change
@@ -4627,8 +4629,7 @@ class SettingsWindow(QDialog):
         self._hw_busy = True
         self._hw_gen += 1
         gen = self._hw_gen
-        self.hw_refresh_button.setEnabled(False)
-        self.autoconfig_button.setEnabled(False)
+        self._set_hw_buttons_enabled(False)
         for label in (self.hw_cuda_label, self.hw_ov_label, self.hw_model_label):
             label.setText("Checking…")
         snapshot = self._diag_snapshot()
@@ -4648,6 +4649,27 @@ class SettingsWindow(QDialog):
 
         threading.Thread(target=work, name="diag-hw", daemon=True).start()
 
+    def _set_hw_buttons_enabled(self, enabled: bool) -> None:
+        """Enable or disable the status card's two buttons around a probe.
+
+        Neither has a Cancel to hand the focus to, so disabling the one just
+        pressed lets Qt move the focus on; note where, and the next enable
+        returns it — only while it still sits there, so a user who moved on
+        meanwhile keeps their place (as _end_diag_cooldown does)."""
+        buttons = (self.hw_refresh_button, self.autoconfig_button)
+        if not enabled:
+            focused = self.window().focusWidget()
+            for button in buttons:
+                button.setEnabled(False)
+            if focused in buttons:
+                self._hw_refocus = (focused, self.window().focusWidget())
+            return
+        refocus, self._hw_refocus = self._hw_refocus, None
+        for button in buttons:
+            button.setEnabled(True)
+        if refocus is not None and self.window().focusWidget() is refocus[1]:
+            refocus[0].setFocus(Qt.FocusReason.OtherFocusReason)
+
     def _on_status_inputs_changed(self, *_args) -> None:
         # Debounced: typing in the model-folder field triggers one probe, not
         # one per keystroke. Nothing happens until the card was first probed.
@@ -4664,8 +4686,7 @@ class SettingsWindow(QDialog):
         if gen != self._hw_gen:
             return
         self._hw_busy = False
-        self.hw_refresh_button.setEnabled(True)
-        self.autoconfig_button.setEnabled(True)
+        self._set_hw_buttons_enabled(True)
         self._hw_last = result
         # A result from before the backend was recorded (or a synthetic one)
         # falls back to the current selection.
@@ -4829,7 +4850,7 @@ class SettingsWindow(QDialog):
             self._offer_recommendation(self._hw_last)
             return
         self._autoconfig_pending = True
-        self.autoconfig_button.setEnabled(False)
+        self._set_hw_buttons_enabled(False)
         self._set_autoconfig_status("Checking this PC…")
         self._refresh_hw_status()  # returns at once while a probe is running
 
