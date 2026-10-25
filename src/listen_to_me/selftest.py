@@ -13915,6 +13915,27 @@ def _gui_construction():
         window._on_hw_done(2, probe)
         assert window.hw_cuda_label.text().startswith("✗") and not window._hw_busy
 
+        # Neither status-card button has a Cancel to take the focus while the
+        # probe runs, so the one pressed gets it back when the result lands —
+        # Qt alone would leave it on whichever control came next. A probe is
+        # marked running so "Auto-configure" awaits it instead of starting one.
+        window._status_probed = True  # no hardware probe on opening Engine
+        window.show()
+        window._show_page("Engine")
+        window.autoconfig_button.setFocus()
+        window._hw_gen = 3
+        window._hw_busy = True
+        window._auto_configure()
+        assert not window.autoconfig_button.isEnabled()
+        assert window.focusWidget() is not window.autoconfig_button, window.focusWidget()
+        window._autoconfig_pending = False  # the recommendation has checks of its own
+        window._on_hw_done(3, probe)
+        assert window.hw_refresh_button.isEnabled() and window.autoconfig_button.isEnabled()
+        assert window.focusWidget() is window.autoconfig_button, window.focusWidget()
+        window._set_autoconfig_status("")
+        window._show_page("General")
+        window.hide()
+
         # "Running on": the device + precision the loaded model really uses,
         # read off the app's transcriber on the main thread — nothing to show
         # before the first load, afterwards the resolved pair, flagged when the
