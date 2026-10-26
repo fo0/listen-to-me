@@ -10,7 +10,7 @@ Skills (`.claude/skills/<name>/SKILL.md`): `done` · `pr` · `basic-review` · `
 
 ## Output Languages
 
-Chat to the user: their language (default German) — skill report shapes fix the structure, not the language — technical terms English and never translated („2 Bugs gefixt"). **Everything else English** — code, comments, log output, UI strings (inline literals, no i18n), commits (imperative, **not** Conventional Commits — see _Git Conventions_), PRs, issues, every generated file. Terms: `agent_docs/coding_conventions.md → Never-translate term list`.
+Chat to the user: their language (default German) — skill report shapes fix the structure, not the language — technical terms English and never translated. **Everything else English** — code, comments, log output, UI strings (inline literals, no i18n), commits (imperative, **not** Conventional Commits — see _Git Conventions_), PRs, issues, every generated file. Terms: `agent_docs/coding_conventions.md → Never-translate term list`.
 
 ## Performance / Modes
 
@@ -18,11 +18,11 @@ Model: the session's, never pinned. Plan mode for non-trivial strategy only. Ref
 
 ## Caveman Mode — chat compression (default `full`)
 
-Chat, status and confirmations only — **never** files, code, commits, PR bodies, issue comments. At `full`: drop filler, pleasantries, hedging and articles; fragments are fine for status lines. Shorten by selection, not compression: cut what would not change the reader's next move; no abbreviations, arrow chains or invented shorthand in any mode; code and error strings verbatim. Never compressed: the closing summary, security warnings, irreversible-action confirmations, the _Handoff Prompt_. `caveman lite|full|ultra` switches (`lite` keeps full sentences, `ultra` goes telegraphic), `stop caveman` turns it off for the session. Full wording: `agent_docs/autonomy.md → Caveman Mode`.
+Chat, status and confirmations only — **never** files, code, commits, PR bodies, issue comments. At `full`: drop filler, pleasantries, hedging and articles; fragments are fine for status lines. Shorten by selection, not compression: cut what would not change the reader's next move; no abbreviations, arrow chains or invented shorthand in any mode; code and error strings verbatim. Never compressed: the closing summary, security warnings, irreversible-action confirmations, the _Handoff Prompt_. `caveman lite|full|ultra` switches, `stop caveman` turns it off for the session. Full wording: `agent_docs/autonomy.md → Caveman Mode`.
 
 ## Chat Layout — lists to scan, links to click
 
-Status and summaries: one fact per line, `**Label:** value` (state, branch, target, PR, run, next step); a table once several items share those fields; prose only for reasoning — the closing summary still opens with its outcome sentence. Anything with a URL is a link named by what it is — `[#42 Fix login](url)`, the run, the deploy — never a bare URL or bare `#42`, never a URL no tool returned. Before a multi-step stretch, list the steps ahead; promise to report back only with a wake armed (background task, PR subscription). Full wording: `agent_docs/autonomy.md → Chat Layout`.
+Status and summaries: one fact per line, `**Label:** value` (state, branch, target, PR, run, next step); a table once several items share those fields; prose only for reasoning — the closing summary still opens with its outcome sentence. Anything with a URL is a link named by what it is — `[#42 Fix login](url)`, the run, the deploy — never a bare URL or bare `#42`, never a URL no tool returned. Before a multi-step stretch, list the steps ahead; promise to report back only with a wake armed (background task, PR subscription). A reply that asks the user anything ends with every question again in one numbered table — the question in one line, your recommendation, why (best practice or experience) — and only a _Handoff Prompt_ block below it. Full wording: `agent_docs/autonomy.md → Chat Layout`.
 
 ## Autonomy
 
@@ -120,7 +120,7 @@ The app reads **none of its own** — settings live in `config.json` (`config.py
 
 ## Deployment
 
-**Trigger:** manual `workflow_dispatch` on `desktop-release.yml` → Windows one-file exe + GitHub Release, guarded to `main`. **Agent scope:** branches and PRs; a merge **and a release dispatch** each need an explicit user command or an owner-authorized routine — non-destructive change set, verification green; destructive change sets stay gated (`.claude/skills/pr/SKILL.md → /pr merge`, ADR-0005). Rollback: `rollback` skill; detail: `agent_docs/deployment.md`.
+**Trigger:** manual `workflow_dispatch` on `desktop-release.yml` → Windows one-file exe + GitHub Release, guarded to `main`. **Agent scope:** branches and PRs; a merge **and a release dispatch** each need an explicit user command or an owner-authorized routine — non-destructive change set, verification green; destructive change sets stay gated (`/pr merge`, ADR-0005). Detail: `agent_docs/deployment.md`.
 
 ## API / Interfaces
 
@@ -144,6 +144,6 @@ After a code change, update only what it changed: `docs/guide/` (detail; `README
 
 ### Context budget
 
-`CLAUDE.md` loads every turn: **12k** target, offload at **14k**, hard 16k. `MEMORY.md` / `SCRATCHPAD.md` load at session start: 8k / 4k target, offload at 16k / 8k. Over → **move** content out and leave a one-line pointer, never delete to fit — ladder: `agent_docs/context_budget.md`. The Tier-1 guard flags it after any Edit/Write; act in the same session.
+`CLAUDE.md` loads every turn: **12k** target, offload at **14k**, hard 16k. `MEMORY.md` / `SCRATCHPAD.md` load at session start: 8k / 4k target, offload at 16k / 8k. Over → **move** content out and leave a one-line pointer, never delete to fit — ladder: `agent_docs/context_budget.md`.
 
-<!-- Generated by claude-code-optimizer v1.61.0 -->
+<!-- Generated by claude-code-optimizer v1.69.0 -->

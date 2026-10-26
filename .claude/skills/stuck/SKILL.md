@@ -84,12 +84,17 @@ D) defer to BACKLOG and move on
 
 What would you like?
 
+| # | Question | Recommendation | Why |
+|---|---|---|---|
+| 1 | Which option? | <letter> | <best practice or experience behind it> |
+
 <one single-line handoff prompt for the option you recommend — CLAUDE.md → _Handoff Prompt_>
 ```
 
 Then **stop**. Do NOT take a 4th attempt without user input. The handoff prompt is part of the escalation, not a
 replacement for the options: the options above are the menu, and the block below them is the **one** — a single
-line, one command, no second block beside it — that you would pick, ready to send.
+line, one command, no second block beside it — that you would pick, ready to send. The table between them is
+the question with your pick and its reason (CLAUDE.md → _Chat Layout_), headers in the chat language.
 
 ### 4b. Unattended run — same snapshot, no question
 
