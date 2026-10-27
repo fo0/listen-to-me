@@ -134,6 +134,30 @@ class FailedTakes:
         self.max_takes = max(1, int(max_takes))
         self.max_bytes = max(1, int(max_bytes))
         self._lock = threading.Lock()
+        # The take a retry is transcribing right now (see `pin`), or None.
+        self._pinned: str | None = None
+
+    def pin(self, take_id) -> dict | None:
+        """Look the take up and keep it from the purge and the caps until
+        `unpin` (`App._retry_take`); its entry, or None when it is not kept.
+        A take retried at the end of its week would otherwise expire mid-retry
+        (every History listing purges, and so does the hourly purge) and its
+        finished transcript be discarded as deleted. Delete… and Clear still
+        remove it — the user's word, not the purge's. One step under the lock,
+        so no purge runs between lookup and pin."""
+        if valid_id(take_id) is None:
+            return None
+        with self._lock:
+            takes, _expired = self._current(time.time())
+            entry = next((take for take in takes if take["id"] == take_id), None)
+            if entry is not None:
+                self._pinned = take_id
+        return None if entry is None else self._listed(entry)
+
+    def unpin(self) -> None:
+        """The retry is over: the purge may take the take once it expired."""
+        with self._lock:
+            self._pinned = None
 
     def keep(self, audio, source, error, timestamp: float | None = None) -> dict | None:
         """Store a failed take; its listed entry, or None (logged) when it
@@ -160,13 +184,17 @@ class FailedTakes:
             with self._lock:
                 takes, _expired = self._current(now)
                 # Room for this one, the oldest first. The new take itself is
-                # always kept, however large: it is the one just lost.
-                older = sorted(takes, key=lambda take: take["time"])
-                sizes = {take["id"]: self._size(take["id"]) for take in older}
-                total = len(pcm) + sum(sizes.values())
-                while older and (len(older) >= self.max_takes or total > self.max_bytes):
-                    old = older.pop(0)
+                # always kept, however large: it is the one just lost — and
+                # so is a pinned one, which a retry is reading right now.
+                sizes = {take["id"]: self._size(take["id"]) for take in takes}
+                total, count = len(pcm) + sum(sizes.values()), len(takes)
+                for old in sorted(takes, key=lambda take: take["time"]):
+                    if count < self.max_takes and total <= self.max_bytes:
+                        break
+                    if old["id"] == self._pinned:
+                        continue
                     total -= sizes[old["id"]]
+                    count -= 1
                     self._delete(old["id"])
                 os.replace(tmp, self._path(take_id, "wav"))
                 tmp = None
@@ -308,20 +336,31 @@ class FailedTakes:
         names: dict[str, set[str]] = {"wav": set(), "json": set()}
         for path in self.directory.iterdir():
             match = _TAKE_FILE.fullmatch(path.name)
-            if match is not None:  # anything else is not ours, and left alone
+            # Anything else is not ours, and left alone — a directory under a
+            # take's name included: it is no take file, and counting it would
+            # keep its wav unpurgeable (skipped as unreadable on every round).
+            if match is not None and not path.is_dir():
                 names[match.group(2)].add(match.group(1))
         takes, removed = [], 0
         for take_id in names["json"]:
+            pinned = take_id == self._pinned
             try:
                 entry = self._read(take_id, now) if take_id in names["wav"] else None
             except OSError:
                 # Not corruption: a virus scanner, an indexer or a backup
                 # holding the file (typically at logon, when the startup
                 # purge runs). Skipped this round — deleting it would destroy
-                # the only copy over a lock that is gone a second later.
-                log.warning("skipping the kept recording %s for now", take_id, exc_info=True)
+                # the only copy over a lock that is gone a second later. But
+                # one that is never readable (an ACL that denies it) still
+                # ages out, by its files' own time, or it would be kept past
+                # its 7 days, unlisted, for good.
+                if not pinned and self._aged_out(take_id, now):
+                    log.warning("dropping the kept recording %s — unreadable, expired", take_id)
+                    removed += int(self._delete(take_id))
+                else:
+                    log.warning("skipping the kept recording %s for now", take_id, exc_info=True)
                 continue
-            if entry is not None and entry["time"] + self.retention_s > now:
+            if entry is not None and (pinned or entry["time"] + self.retention_s > now):
                 takes.append(entry)
                 continue
             if entry is None:
@@ -337,6 +376,17 @@ class FailedTakes:
                 log.debug("could not remove the orphaned %s", wav, exc_info=True)
         sweep_stale_tmp(self.directory)
         return takes, removed
+
+    def _aged_out(self, take_id: str, now: float) -> bool:
+        """Whether a take whose metadata cannot be read is past its retention
+        by the time of its wav (written with the take), else of its json.
+        False when neither can be told — nothing is deleted on a guess."""
+        for suffix in ("wav", "json"):
+            try:
+                return self._path(take_id, suffix).stat().st_mtime + self.retention_s <= now
+            except OSError:
+                continue
+        return False
 
     def _read(self, take_id: str, now: float) -> dict | None:
         """One take's metadata, normalized; None when it is corrupt. An

@@ -235,6 +235,17 @@ def purge_when_due(app, now: float | None = None) -> None:
     start_purge(store)
 
 
+def end_retry(app) -> None:
+    """The worker's "done": no take is being retried any more. Clears
+    `retrying_take` (before the state change, whose History re-render reads
+    it) and unpins the take, so the purge may take it once it has expired
+    (`FailedTakes.pin`). getattr: `App._handle` is borrowed by stubs too."""
+    app.retrying_take = None
+    store = getattr(app, "failed_takes", None)
+    if store is not None:
+        store.unpin()
+
+
 def refresh_history_page(app) -> None:
     """Have an open settings window re-render its History page (or mark it
     stale) — for a retry refused before any state change, whose button

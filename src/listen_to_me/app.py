@@ -37,6 +37,7 @@ from .config import Config, clamp_setting, config_dir, failed_takes_dir, log_pat
 from .failed_takes import FailedTakes, start_purge
 from .failed_takes_flow import (
     PURGE_INTERVAL_S,
+    end_retry,
     finish_retry,
     implausible_retry,
     no_speech,
@@ -1171,8 +1172,7 @@ class App:
                 )
                 self._finish_recording()
         elif kind == "done":
-            # Before the state change: its History re-render reads it.
-            self.retrying_take = None
+            end_retry(self)  # before the state change: its re-render reads it
             self._set_state(STATE_IDLE)
         elif kind == "retry_take":
             self._retry_take(payload)
@@ -1498,7 +1498,9 @@ class App:
             refresh_history_page(self)  # the button already reads "Retrying…"
             return
         try:
-            entry = next((t for t in self.failed_takes.entries() if t["id"] == take_id), None)
+            # Looked up and pinned in one step: the purge must not take the
+            # take while it is retried (FailedTakes.pin); "done" unpins it.
+            entry = self.failed_takes.pin(take_id)
         except Exception:
             log.exception("could not read the recordings kept for a retry")
             self.notify(RETRY_UNREADABLE, force=True)

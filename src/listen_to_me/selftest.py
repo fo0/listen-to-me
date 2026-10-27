@@ -812,6 +812,24 @@ def _failed_takes_are_kept_for_a_retry():
             }, "the oldest take was not the one dropped"
             assert store.remove(older[1]["id"]) is True
             assert store.remove(older[1]["id"]) is False  # already gone: no silent success
+            # A pinned take — one a retry is transcribing — outlives its
+            # expiry and the caps until it is unpinned; Delete… still works.
+            pinned = store.keep(audio, SOURCE_MIC, "pinned", timestamp=now - 600)
+            assert store.pin(pinned["id"])["id"] == pinned["id"]
+            assert store.pin("f" * 32) is None and store.pin("../x") is None
+            assert store._pinned == pinned["id"], "a failed pin replaced the real one"
+            assert pinned["id"] in {e["id"] for e in store.entries()}
+            assert store.purge_expired(now=now + 8 * 86400) >= 1  # the others went
+            assert store.exists(pinned["id"]), "the purge took the take being retried"
+            single = FailedTakes(folder, max_takes=1)
+            single._pinned = pinned["id"]
+            newest = single.keep(audio, SOURCE_MIC, "newest")
+            assert store.exists(pinned["id"]) and single.exists(newest["id"])
+            store.unpin()
+            assert store.purge_expired(now=now + 8 * 86400) == 2
+            assert store.entries() == []
+            older = [store.keep(audio, SOURCE_MIC, "x", timestamp=now - 60 * n) for n in (3, 2, 1)]
+            assert store.remove(older[1]["id"]) is True
             # The byte cap: one second is 32 kB of audio, so two fit and a third
             # pushes the oldest out.
             capped = FailedTakes(root / "capped", max_bytes=70_000)
@@ -884,6 +902,25 @@ def _failed_takes_are_kept_for_a_retry():
                 del store_module.open
             assert (folder / f"{good['id']}.wav").exists(), "a locked take was deleted"
             assert [e["id"] for e in store.entries()] == [good["id"]]
+            # …but one that can never be opened still ages out, by its files'
+            # own time: an ACL that denies it must not keep it past 7 days.
+            denied = store.keep(audio, SOURCE_MIC, "denied")
+            for half in ("wav", "json"):
+                os.utime(folder / f"{denied['id']}.{half}", (now - 8 * 86400,) * 2)
+            store_module.open = _locked
+            try:
+                store.entries()
+            finally:
+                del store_module.open
+            assert not (folder / f"{denied['id']}.wav").exists(), "an unreadable take never expired"
+            # A directory under a take's name is no take file: its wav is an
+            # orphan, removed once it is old enough, and the directory is left.
+            (folder / f"{'9' * 32}.json").mkdir()
+            (folder / f"{'9' * 32}.wav").write_bytes(b"RIFF")
+            os.utime(folder / f"{'9' * 32}.wav", (now - 7200, now - 7200))
+            assert [e["id"] for e in store.entries()] == [good["id"]]
+            assert not (folder / f"{'9' * 32}.wav").exists()
+            (folder / f"{'9' * 32}.json").rmdir()
             # A "[[[[…" json overflows the decoder's recursion: corrupt, dropped
             # — and the rest of the store keeps working (retention included).
             deep = "c" * 32
@@ -920,7 +957,14 @@ def _failed_takes_are_kept_for_a_retry():
         else:
             sys.modules["numpy"] = blocked
 
-    # The wording, and where a click on each notification leads.
+    # The wording, and where a click on each notification leads — the
+    # retention named from the one constant, in the in-app help as well.
+    from listen_to_me.failed_takes_text import RETENTION_DAYS
+    from listen_to_me.help_content import HELP_TOPICS
+
+    cuda = next(topic for topic in HELP_TOPICS if topic["id"] == "cuda")
+    assert f"kept for {RETENTION_DAYS}&nbsp;days" in cuda["body"]
+    assert f"kept for {RETENTION_DAYS} days" in KEPT_NOTE
     when = time.mktime((2026, 10, 27, 14, 3, 0, 0, 0, -1))
     take = {"source": SOURCE_SYSTEM, "seconds": 42.4, "time": when, "expires": when + 7 * 86400}
     assert describe(take) == "System audio · 0:42 · kept until 2026-11-03", describe(take)
@@ -2365,6 +2409,28 @@ def _failed_take_is_kept_and_retried():
             del app.history.add
         assert app.transcriber.answer not in [e["text"] for e in app.history.entries()]
         assert app.messages[-1] == (RETRY_DELETED, True)
+
+        # --- expired while it is retried: the purge must not take it --------
+        # A take at the end of its week, retried as a long transcription,
+        # while the History search re-renders (each listing purges) or the
+        # hourly purge fires: its finished transcript must still be stored.
+        take = app.failed_takes.keep(audio, SOURCE_MIC, "boom")
+        entered, release = threading.Event(), threading.Event()
+        app.transcriber.gate = (entered, release)
+        app.transcriber.answer = "Words retried at the very end of their week."
+        app.posts.clear()
+        app._retry_take(take["id"])
+        try:
+            assert entered.wait(10), "the retry never started"
+            app.failed_takes.purge_expired(now=time.time() + 8 * 86400)
+            assert app.failed_takes.exists(take["id"]), "the purge took the take being retried"
+        finally:
+            release.set()
+            finish(app)
+            app.transcriber.gate = None
+        assert app.messages[-1] == (RETRY_DONE, True), app.messages[-1]
+        assert app.transcriber.answer in [e["text"] for e in app.history.entries()]
+        assert app.failed_takes._pinned is None, '"done" left the take pinned'
 
         # --- refused unless idle, and a take that is gone --------------------
         app.state = STATE_RECORDING

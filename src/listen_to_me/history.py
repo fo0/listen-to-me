@@ -396,9 +396,10 @@ class TranscriptHistory:
         self._lock = threading.Lock()
 
     def add(self, text: str, timestamp: float | None = None, *, strict: bool = False) -> bool:
-        """Append a transcript; True when it was written, False when blank
-        text or an exact consecutive duplicate (e.g. the same take retried)
-        was ignored.
+        """Append a transcript; False when blank text or an exact consecutive
+        duplicate (e.g. the same take retried) was ignored, True otherwise —
+        which only with `strict` means the file was written: the lenient
+        default answers True after a write that failed and was logged.
 
         An explicit `timestamp` older than the newest entry is inserted where
         it belongs in time instead: a failed take retried from Settings →

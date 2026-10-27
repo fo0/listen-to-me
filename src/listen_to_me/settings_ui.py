@@ -114,6 +114,7 @@ from .config import (
     open_path,
 )
 from .diagnostics import DiagnosticsEngine, model_cache_status
+from .failed_takes_text import RETENTION_DAYS
 from .fillers import describe_filler_phrases
 from .glyphs import glyph_icon
 from .hallucination import (
@@ -2981,8 +2982,8 @@ class SettingsWindow(QDialog):
             self.cfg["history_enabled"],
             "Store the transcribed text locally so you can copy it again here. Audio is "
             "never stored — except a recording whose transcription failed, which is kept "
-            "for 7 days so it can be retried here. Turn off to stop storing new entries "
-            "(failed recordings included); existing entries stay until cleared.",
+            f"for {RETENTION_DAYS} days so it can be retried here. Turn off to stop storing "
+            "new entries (failed recordings included); existing entries stay until cleared.",
         )
         form.addRow("", self.chk_history_enabled)
         self.history_max_spin = QSpinBox()
