@@ -372,7 +372,7 @@ def _later(stored, wanted: float) -> bool:
     `add` stops at it rather than carrying a retried take past it."""
     try:
         return float(stored) > wanted
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # a 400-digit int overflows float()
         return False
 
 
@@ -385,7 +385,7 @@ def _same_time(stored, wanted) -> bool:
     a strict comparison would refuse to match the very row the user clicked."""
     try:
         return abs(float(stored) - float(wanted)) < 1e-6
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return False
 
 
@@ -395,9 +395,10 @@ class TranscriptHistory:
         self.max_entries = max(1, int(max_entries))
         self._lock = threading.Lock()
 
-    def add(self, text: str, timestamp: float | None = None) -> None:
-        """Append a transcript. Blank text and exact consecutive duplicates
-        (e.g. the same take retried) are ignored.
+    def add(self, text: str, timestamp: float | None = None, *, strict: bool = False) -> bool:
+        """Append a transcript; True when it was written, False when blank
+        text or an exact consecutive duplicate (e.g. the same take retried)
+        was ignored.
 
         An explicit `timestamp` older than the newest entry is inserted where
         it belongs in time instead: a failed take retried from Settings →
@@ -412,10 +413,15 @@ class TranscriptHistory:
         file could not be read: see there. The caller in `app._process`
         already logs it, and the transcript itself is unaffected, so a broken
         history file costs the record of the dictation, never the dictation.
+
+        A failed *write* is only logged — unless `strict`, which re-raises it
+        like `remove` and `clear` do. A retried take passes it: its kept
+        audio is deleted once the transcript is in the history, so a write
+        that failed in silence would delete the only copy of those words.
         """
         text = (text or "").strip()
         if not text:
-            return
+            return False
         entry = {"time": time.time() if timestamp is None else float(timestamp), "text": text}
         with self._lock:
             entries = self._load()
@@ -424,14 +430,15 @@ class TranscriptHistory:
                 while index and _later(entries[index - 1].get("time"), entry["time"]):
                     index -= 1
             if index and entries[index - 1].get("text") == text:
-                return
+                return False
             entries.insert(index, entry)
             excess = len(entries) - self.max_entries
             if excess > 0:
                 # The default path always appends, so for it this is the
                 # plain "drop the oldest" it has always been.
                 entries = [entry] + entries[excess + 1 :] if index < excess else entries[excess:]
-            self._save(entries)
+            self._save(entries, strict=strict)
+        return True
 
     def entries(self) -> list[dict]:
         """All stored transcripts, newest first.
@@ -555,7 +562,7 @@ class TranscriptHistory:
         """Write `entries`; a failure is logged, and re-raised with `strict`.
 
         `add` runs on the recording worker and must never cost the dictation,
-        so it stays lenient. The two deletes are user actions whose whole
+        so it stays lenient (but see its `strict`). The two deletes are user actions whose whole
         point is the write, so they report it."""
         try:
             atomic_write_json(self.path, entries)

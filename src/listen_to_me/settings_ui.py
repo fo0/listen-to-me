@@ -5665,8 +5665,8 @@ class SettingsWindow(QDialog):
         try:
             stored = self.app.history.entries()
         except HistoryUnavailable as exc:
-            self._render_unreadable_history(exc)
-            self._insert_history_rows(1, failed[:_HISTORY_RENDER_LIMIT])
+            self._render_unreadable_history(exc, failed=bool(failed))
+            self._insert_history_rows(1, failed)
             return False
         # Deleting nothing is not a destructive action worth offering.
         self.history_clear_button.setEnabled(bool(stored or failed))
@@ -5721,13 +5721,24 @@ class SettingsWindow(QDialog):
                 "to see all of them again."
             ))
             return True
-        shown = entries[:_HISTORY_RENDER_LIMIT]
+        # The cap is a scrolling concern for the transcripts (up to 5000). A
+        # failed take (at most 50) is always rendered: a notification sends
+        # the user here to retry it, and a row below the cap could not be
+        # reached at all.
+        shown, rendered, transcripts = [], 0, 0
+        for entry in entries:
+            if not entry.get("failed"):
+                transcripts += 1
+                if rendered >= _HISTORY_RENDER_LIMIT:
+                    continue
+                rendered += 1
+            shown.append(entry)
         insert_at = 0
-        if len(entries) > len(shown):
+        if transcripts > rendered:
             note = self._hint(
-                f"Showing the {len(shown)} most recent of {len(entries)} matching transcripts."
+                f"Showing the {rendered} most recent of {transcripts} matching transcripts."
                 if query
-                else f"Showing the {len(shown)} most recent of {len(entries)} transcripts."
+                else f"Showing the {rendered} most recent of {transcripts} transcripts."
             )
             self._history_layout.insertWidget(insert_at, note)
             insert_at += 1
@@ -5865,7 +5876,7 @@ class SettingsWindow(QDialog):
         button.setEnabled(False)
         self.app.post("retry_take", take_id)
 
-    def _render_unreadable_history(self, problem: Exception) -> None:
+    def _render_unreadable_history(self, problem: Exception, *, failed: bool = False) -> None:
         """The History page for a history file that could not be read.
 
         The page used to show "No transcripts yet — the text of your next
@@ -5889,6 +5900,10 @@ class SettingsWindow(QDialog):
         writes the failure with its traceback, and this runs again for every
         keystroke in the search field above — a second line here would double
         a log that is already one entry per re-render.
+
+        `failed`: failed recordings kept for a retry are listed below the note
+        (they live in their own store, #363), so the note must not claim that
+        nothing is listed.
         """
         self._set_history_export([], self.history_filter_edit.text().strip())
         self._set_history_count("")
@@ -5900,9 +5915,14 @@ class SettingsWindow(QDialog):
         # Elastic and selectable: the sentence carries a file path, which is an
         # unbreakable word that would otherwise widen the page — and a path the
         # user cannot select is a path they cannot paste into the file manager.
+        listed = (
+            "No transcript is listed and none is stored until it can be read again "
+            "(the failed recordings below are kept separately)"
+            if failed
+            else "Nothing is listed and nothing is stored until it can be read again"
+        )
         self._history_layout.insertWidget(0, self._hint(
-            f"The transcript history could not be read ({problem}). Nothing is "
-            "listed and nothing is stored until it can be read again — your "
+            f"The transcript history could not be read ({problem}). {listed} — your "
             "transcripts are still in that file, untouched, so open it in a text "
             "editor if you need them. “Clear history…” below starts a new, empty "
             "one. The log file has the details.",
@@ -6301,6 +6321,19 @@ class SettingsWindow(QDialog):
         if confirm != QMessageBox.StandardButton.Yes:
             return
         cleared = takes_cleared = True
+        # The failed takes first, and whatever the listing above said: one
+        # that could not be listed (and so was not counted) still holds audio,
+        # and "Clear" promises it is gone. First, because a retry running now
+        # checks its take right before and after storing its transcript —
+        # removing the take before the history is what keeps that transcript
+        # from landing in the history this click just emptied.
+        store = getattr(self.app, "failed_takes", None)
+        if store is not None:
+            try:
+                store.clear()
+            except Exception:
+                log.exception("could not delete the recordings kept for a retry")
+                takes_cleared = False
         if count != 0:
             try:
                 self.app.history.clear()
@@ -6308,12 +6341,6 @@ class SettingsWindow(QDialog):
                 # Logged by the store. The list keeps every transcript, which
                 # without a word reads as a click that never registered.
                 cleared = False
-        if failed:
-            try:
-                self.app.failed_takes.clear()
-            except Exception:
-                log.exception("could not delete the recordings kept for a retry")
-                takes_cleared = False
         self._refresh_history()
         if not cleared:
             QMessageBox.warning(

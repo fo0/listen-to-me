@@ -52,7 +52,7 @@ flowchart TD
 
     subgraph "Persistence"
         History[("history.json — text only")]:::database
-        FailedTakes[("failed-takes/ — audio of failed takes, 7 days, for a retry")]:::database
+        FailedTakes[("failed-takes/ (machine-local) — audio of failed takes, 7 days, for a retry")]:::database
         Autostart["autostart — start with OS"]:::infra
         Updater("Updater — GitHub Releases"):::backend
     end
@@ -170,7 +170,7 @@ flowchart TD
     Progress -->|"post progress (%)"| Events
     Updater -->|"post progress (%)"| Events
     App -->|"record text"| History
-    App -->|"keep a failed take / retry it (failed_takes_flow)"| FailedTakes
+    App -->|"keep a failed take / retry it / hourly purge (failed_takes_flow)"| FailedTakes
     Settings -->|"History page: list, Retry, Delete…"| FailedTakes
     App --> Autostart
 

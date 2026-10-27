@@ -164,7 +164,7 @@ Everything Listen To Me does, in detail. The short version is in the
   — nothing is inserted at the cursor; with the history switched off it goes to
   the clipboard instead. A retry that works deletes the audio, as do the row's
   **Delete…** and **Clear history**; one that fails again keeps the row with
-  the new error. Nothing is kept while the history is off. Searchable (`Ctrl+F` puts the caret straight into the
+  the new error. Nothing is kept while the history is off, and the audio stays on this computer — out of roaming profiles and backups (the folder for each platform is named in [settings.md](settings.md)). Searchable (`Ctrl+F` puts the caret straight into the
   search field, `Esc` clears it again without closing the window) by word
   **or by date** — a term made of digits, `-` and `:`
   such as `2026-09-05` or `14:` also matches the date and time each row shows,

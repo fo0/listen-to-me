@@ -29,7 +29,13 @@ RETRY_BUSY = "Finish the current recording first, then retry it."
 RETRY_GONE = "That recording is no longer kept — it expired or was deleted."
 RETRY_UNREADABLE = "Could not read the recordings kept for a retry — see the log file."
 RETRY_NO_SPEECH_ERROR = "No speech was recognized when it was retried."
-RETRY_NO_SPEECH = "The retry recognized no speech in the recording. " + STAYS_NOTE
+RETRY_NO_SPEECH = "The retry recognized no speech in the recording."
+# Delete… or "Clear history…" removed the take while it was being retried.
+RETRY_DELETED = (
+    "The recording was deleted while it was being retried, so nothing of it was stored."
+)
+# "Don't insert this transcript" during a retry, which never inserts anything.
+RETRY_WITHHOLD = "Nothing to hold back — a retried recording is never inserted at the cursor."
 
 
 def with_note(message: str, note: str) -> str:

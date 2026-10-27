@@ -7,20 +7,23 @@ minutes, but the words were said once, and asking for them again is the one
 thing a dictation tool must not do. So the audio is kept here, and Settings →
 History lists it with a Retry button (wording: `failed_takes_text`).
 
-Apart from history.json on purpose: every reader of `TranscriptHistory.entries()`
+Apart from history.json on purpose — and not in the config folder at all, see
+`config.failed_takes_dir` for why: every reader of `TranscriptHistory.entries()`
 (tray and floating-icon menus, Home's recent rows, `latest()`, Export, Copy
 all, add()'s duplicate check) assumes an entry has text, and an older build
 drops text-less entries and would then rewrite the file without them.
 
 This is audio of what the user said, so it is bounded on every side: only
 while the history is on (the caller checks — history off promises nothing is
-stored); `RETENTION_DAYS` days, purged at startup, on every write and every
-listing; at most `max_takes` and `max_bytes` of audio (an hour-long take is
-115 MB); a directory only this user can reach, files 0600.
+stored); `RETENTION_DAYS` days, purged at startup, hourly while the app runs,
+on every write and every listing; at most `max_takes` and `max_bytes` of audio
+(an hour-long take is 115 MB); a directory only this user can reach, files
+0600. A file that cannot be *read* right now is skipped, never deleted — only
+corruption drops a take.
 
-One take is ``<id>.wav`` (16 kHz mono 16-bit PCM) plus ``<id>.json`` (its
-metadata), id a uuid4 hex. The json is written last, so it commits the take.
-The directory is hand-editable: only names matching `_TAKE_FILE` count, an id
+One take is ``<id>.wav`` (16 kHz mono 16-bit PCM, `failed_takes_wav`) plus
+``<id>.json`` (its metadata), id a uuid4 hex. The json is written last, so it
+commits the take. The directory is hand-editable: only names matching `_TAKE_FILE` count, an id
 comes from a file name (never a json value) and is re-validated before a path
 is built from it, and every json field is normalized before it reaches a
 QLabel. Qt-free and numpy-optional, so the self-test runs it on the CI runner,
@@ -34,15 +37,12 @@ import logging
 import math
 import os
 import re
-import sys
-import tempfile
 import threading
 import time
 import uuid
-import wave
-from array import array
 from pathlib import Path
 
+from . import failed_takes_wav as wav
 from .audio import SAMPLE_RATE
 from .choices import SOURCE_MIC, known_source
 from .config import atomic_write_json, sweep_stale_tmp
@@ -50,7 +50,6 @@ from .failed_takes_text import RETENTION_DAYS
 
 log = logging.getLogger(__name__)
 
-DIRECTORY_NAME = "failed-takes"  # beside history.json
 MAX_TAKES = 50
 MAX_BYTES = 1 << 30  # a broken model for a week of fifteen-minute meetings
 
@@ -59,7 +58,6 @@ _TAKE_FILE = re.compile(r"([0-9a-f]{32})\.(wav|json)")
 _TAKE_ID = re.compile(r"[0-9a-f]{32}")
 _ERROR_CHARS = 500
 _JSON_MAX_BYTES = 64 * 1024  # a take's metadata is ~200 bytes
-_MAX_SECONDS = 2 * 3600  # the longest cap a take can have is an hour
 _ORPHAN_AGE_S = 3600.0  # the gate config.sweep_stale_tmp uses
 _CLOCK_SKEW_S = 86400.0
 
@@ -94,40 +92,6 @@ def _own_dir(path: Path, *, create: bool) -> bool:
     return True
 
 
-def _pcm16(audio) -> bytes:
-    """Float samples as little-endian 16-bit PCM, clipped to [-1, 1] first —
-    a sample outside it would wrap around to its opposite in int16."""
-    try:
-        import numpy as np
-    except ImportError:
-        np = None
-    if np is not None:
-        samples = np.asarray(audio, dtype=np.float32).reshape(-1)
-        samples = np.nan_to_num(samples, nan=0.0, posinf=1.0, neginf=-1.0)
-        return (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
-    clipped = (max(-1.0, min(1.0, x if x == x else 0.0)) for x in map(float, audio))
-    pcm = array("h", (int(x * 32767.0) for x in clipped))
-    if sys.byteorder != "little":
-        pcm.byteswap()
-    return pcm.tobytes()
-
-
-def _samples(pcm: bytes):
-    """16-bit PCM back as float32 samples: a numpy array (what the
-    transcribers take), or an ``array("f")`` where numpy is missing."""
-    try:
-        import numpy as np
-    except ImportError:
-        np = None
-    if np is not None:
-        return (np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32767.0).astype(np.float32)
-    values = array("h")
-    values.frombytes(pcm[: len(pcm) // 2 * 2])
-    if sys.byteorder != "little":
-        values.byteswap()
-    return array("f", (value / 32767.0 for value in values))
-
-
 def _clock(value, fallback: float, now: float) -> float:
     """A stored take time as an epoch float. Unusable — or further ahead than
     a clock correction explains — reads as `fallback`: a hand-edited time a
@@ -146,7 +110,7 @@ def _seconds(value) -> float:
         seconds = float(value)
     except (TypeError, ValueError, OverflowError):
         return 0.0
-    return seconds if math.isfinite(seconds) and 0 <= seconds <= _MAX_SECONDS else 0.0
+    return seconds if math.isfinite(seconds) and 0 <= seconds <= wav.MAX_SECONDS else 0.0
 
 
 def _error_text(value) -> str:
@@ -178,7 +142,7 @@ class FailedTakes:
         now = time.time()
         tmp: Path | None = None
         try:
-            pcm = _pcm16(audio)
+            pcm = wav.pcm16(audio)
             if not pcm:
                 raise ValueError("the recording holds no audio")
             entry = {
@@ -191,17 +155,8 @@ class FailedTakes:
             _own_dir(self.directory, create=True)
             # Written outside the lock — a long take is tens of megabytes, and
             # the History page lists under that lock on the main thread. The
-            # temp name never matches _TAKE_FILE; mkstemp makes it 0600.
-            fd, name = tempfile.mkstemp(dir=self.directory, prefix=f"{take_id}.", suffix=".tmp")
-            tmp = Path(name)
-            with os.fdopen(fd, "wb") as fh:
-                with wave.open(fh, "wb") as writer:  # leaves `fh` open
-                    writer.setnchannels(1)
-                    writer.setsampwidth(2)
-                    writer.setframerate(SAMPLE_RATE)
-                    writer.writeframes(pcm)
-                fh.flush()
-                os.fsync(fh.fileno())
+            # temp name never matches _TAKE_FILE.
+            tmp = wav.write_temp(self.directory, f"{take_id}.", pcm)
             with self._lock:
                 takes, _expired = self._current(now)
                 # Room for this one, the oldest first. The new take itself is
@@ -242,6 +197,20 @@ class FailedTakes:
     def count(self) -> int:
         return len(self.entries())
 
+    def exists(self, take_id) -> bool:
+        """Whether the take is still kept — asked by a retry right before it
+        stores the transcript, since Delete… or "Clear history…" may have run
+        while the audio was being transcribed. True when that cannot be told
+        (a file there but not readable right now): a transcript of a recording
+        that does exist must not be thrown away over a lock."""
+        take_id = valid_id(take_id)
+        if take_id is None:
+            return False
+        try:
+            return self._path(take_id, "json").exists() and self._path(take_id, "wav").exists()
+        except OSError:
+            return True
+
     def load_audio(self, take_id):
         """The take's audio as float32 samples at `SAMPLE_RATE`. ValueError
         for an id this store could not have made — it never becomes a path."""
@@ -253,16 +222,7 @@ class FailedTakes:
         # in place, and an hour of audio is a long read to hold listings up for.
         if not _own_dir(self.directory, create=False):
             raise FileNotFoundError(f"{path} does not exist")
-        if path.is_symlink():
-            raise OSError(f"{path} is a symlink — refusing to read it")
-        with wave.open(str(path), "rb") as reader:
-            shape = (reader.getnchannels(), reader.getsampwidth(), reader.getframerate())
-            if shape != (1, 2, SAMPLE_RATE):
-                raise ValueError(f"{path.name} is not a 16 kHz mono 16-bit recording")
-            if reader.getnframes() > _MAX_SECONDS * SAMPLE_RATE:
-                raise ValueError(f"{path.name} is longer than any recording this app makes")
-            pcm = reader.readframes(reader.getnframes())
-        return _samples(pcm)
+        return wav.read(path)
 
     def update_error(self, take_id, error) -> bool:
         """Replace a take's error after a retry that failed as well. False —
@@ -352,7 +312,15 @@ class FailedTakes:
                 names[match.group(2)].add(match.group(1))
         takes, removed = [], 0
         for take_id in names["json"]:
-            entry = self._read(take_id, now) if take_id in names["wav"] else None
+            try:
+                entry = self._read(take_id, now) if take_id in names["wav"] else None
+            except OSError:
+                # Not corruption: a virus scanner, an indexer or a backup
+                # holding the file (typically at logon, when the startup
+                # purge runs). Skipped this round — deleting it would destroy
+                # the only copy over a lock that is gone a second later.
+                log.warning("skipping the kept recording %s for now", take_id, exc_info=True)
+                continue
             if entry is not None and entry["time"] + self.retention_s > now:
                 takes.append(entry)
                 continue
@@ -371,16 +339,20 @@ class FailedTakes:
         return takes, removed
 
     def _read(self, take_id: str, now: float) -> dict | None:
-        """One take's metadata, normalized; None when it cannot be used."""
+        """One take's metadata, normalized; None when it is corrupt. An
+        OSError is passed on: a file that cannot be opened right now is not
+        a broken one (see `_current`)."""
         path = self._path(take_id, "json")
-        try:
-            if path.is_symlink() or path.stat().st_size > _JSON_MAX_BYTES:
-                return None
-            with open(path, encoding="utf-8") as fh:
-                data = json.load(fh)
-            mtime = min(path.stat().st_mtime, now)
-        except (OSError, ValueError):  # includes UnicodeDecodeError, JSONDecodeError
+        if path.is_symlink() or path.stat().st_size > _JSON_MAX_BYTES:
             return None
+        with open(path, encoding="utf-8") as fh:
+            try:
+                data = json.load(fh)
+            # ValueError covers UnicodeDecodeError and JSONDecodeError; a
+            # hand-made "[[[[…" overflows the decoder's recursion instead.
+            except (ValueError, RecursionError):
+                return None
+        mtime = min(path.stat().st_mtime, now)
         if not isinstance(data, dict):
             return None
         return {

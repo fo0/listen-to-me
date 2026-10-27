@@ -33,19 +33,19 @@ from .choices import (
     resolve_input_device,
     source_label,
 )
-from .config import Config, clamp_setting, config_dir, log_path
-from .failed_takes import DIRECTORY_NAME as FAILED_TAKES_DIR
+from .config import Config, clamp_setting, config_dir, failed_takes_dir, log_path
 from .failed_takes import FailedTakes, start_purge
 from .failed_takes_flow import (
+    PURGE_INTERVAL_S,
     finish_retry,
-    history_stamp,
     implausible_retry,
     no_speech,
+    purge_when_due,
     refresh_history_page,
     report_failure,
     retry_failed,
 )
-from .failed_takes_text import RETRY_BUSY, RETRY_GONE, RETRY_UNREADABLE
+from .failed_takes_text import RETRY_BUSY, RETRY_GONE, RETRY_UNREADABLE, RETRY_WITHHOLD
 from .fillers import EMPTY_TRANSCRIPT, is_filler
 from .hallucination import implausible_reason
 from .history import TranscriptHistory
@@ -76,8 +76,10 @@ _LENGTH_WARNING_SECONDS = 30
 _PROCESSING_CLOCK_AFTER_S = 5
 
 
-def still_transcribing_message(elapsed) -> str:
-    """The answer to a hotkey press while the previous take is transcribed.
+def still_transcribing_message(elapsed, retrying: bool = False) -> str:
+    """The answer to a hotkey press while the previous take is transcribed —
+    or, `retrying`, a failed recording retried from Settings → History (#363),
+    which is no "previous recording" of the hotkey just pressed.
 
     Names how long that has taken once it is long enough to be counted on
     screen (`_PROCESSING_CLOCK_AFTER_S`): someone pressing the hotkey a second
@@ -93,11 +95,21 @@ def still_transcribing_message(elapsed) -> str:
         seconds = float(elapsed)
     except (TypeError, ValueError, OverflowError):
         seconds = 0.0
-    if not (math.isfinite(seconds) and seconds >= _PROCESSING_CLOCK_AFTER_S):
-        return "Still transcribing the previous recording…"
-    return (
-        f"Still transcribing the previous recording ({format_duration(seconds)} so far)…"
+    what = (
+        "Still retrying a failed recording from Settings → History"
+        if retrying
+        else "Still transcribing the previous recording"
     )
+    if not (math.isfinite(seconds) and seconds >= _PROCESSING_CLOCK_AFTER_S):
+        return f"{what}…"
+    return f"{what} ({format_duration(seconds)} so far)…"
+
+
+def _still_busy_message(app) -> str:
+    """`still_transcribing_message` for the app's running transcription. A
+    module function for the reason `_take_source` is one."""
+    retrying = bool(getattr(app, "retrying_take", None))
+    return still_transcribing_message(app._processing_elapsed(), retrying=retrying)
 
 
 def length_warning_message(
@@ -793,10 +805,12 @@ class App:
             max_entries=clamp_setting("history_max", self.cfg["history_max"], 10, 5000),
         )
         # The audio of takes whose transcription failed, kept for a retry from
-        # Settings → History (#363) — beside history.json, never inside it
-        # (see failed_takes.py). Expired ones are purged off the startup path.
-        self.failed_takes = FailedTakes(self.cfg.path.parent / FAILED_TAKES_DIR)
+        # Settings → History (#363) — machine-local, never in the roaming
+        # config folder (see config.failed_takes_dir). Expired ones are purged
+        # off the startup path now and hourly from _poll (purge_when_due).
+        self.failed_takes = FailedTakes(failed_takes_dir())
         start_purge(self.failed_takes)
+        self._next_purge = time.monotonic() + PURGE_INTERVAL_S
         # The id of the kept take being transcribed again, or None — read by
         # the History page to label that row's button (see _retry_take).
         self.retrying_take: str | None = None
@@ -970,6 +984,7 @@ class App:
             pass
         self._check_length_warning()
         self._tick_recording_clock()
+        purge_when_due(self)
         if self.overlay is not None:
             # Rides this timer for the same reason the two calls above do: the
             # alternative is a second timer that would have to be started and
@@ -1077,7 +1092,7 @@ class App:
                 else:
                     self._finish_recording()
             else:
-                self.notify(still_transcribing_message(self._processing_elapsed()))
+                self.notify(_still_busy_message(self))
         elif kind == "hotkey_press":
             source = event_source(payload)
             # That source's own mode: the two hotkeys are configured
@@ -1092,7 +1107,7 @@ class App:
                 elif self.state == STATE_PROCESSING:
                     # Same feedback as the toggle branch: the user is already
                     # speaking into a dead mic — silence here loses dictation.
-                    self.notify(still_transcribing_message(self._processing_elapsed()))
+                    self.notify(_still_busy_message(self))
             else:
                 self._handle("toggle", source)
         elif kind == "hotkey_release":
@@ -1447,6 +1462,13 @@ class App:
         """
         if self.state != STATE_PROCESSING:
             return
+        if getattr(self, "retrying_take", None):
+            # A retried recording (#363) never reaches the cursor, so there is
+            # nothing to hold back — and "it will be in Settings → History" or
+            # "it will be discarded" would both be guesses about a transcript
+            # whose way out (history or clipboard) the worker decides.
+            self.notify(RETRY_WITHHOLD)
+            return
         with self._withhold_lock:
             withhold = self._withhold
             if withhold is not None:
@@ -1468,12 +1490,8 @@ class App:
         as a transcription after a recording does — and the worker's "done"
         brings the app, and the History page `_set_state` re-renders, back.
         The audio is read by the worker, not here: an hour-long take is a
-        long read to freeze the window for.
-
-        `_withhold` gets this take's own Event, so the tray's "Don't insert
-        this transcript" stays truthful ("will not be inserted" — nothing of
-        a retry ever is) instead of answering "too late" about a text that
-        is never inserted at all.
+        long read to freeze the window for. The tray's "Don't insert this
+        transcript" answers a retry on its own (`_withhold_transcript`).
         """
         if self.state != STATE_IDLE:
             self.notify(RETRY_BUSY, force=True)
@@ -1492,7 +1510,6 @@ class App:
             return
         log.info("retrying the transcription of the kept recording %s", entry["id"])
         self.retrying_take = entry["id"]
-        self._withhold = threading.Event()
         self._set_state(STATE_PROCESSING)
         threading.Thread(
             target=self._process,
@@ -1651,6 +1668,12 @@ class App:
                         "transcript not inserted — %s (%d chars from %.1fs)",
                         reason, len(full_text), seconds,
                     )
+                    if retry is not None:
+                        implausible_retry(
+                            self, retry, reason,
+                            apply_replacements(full_text, self.cfg["replacements"]),
+                        )
+                        return
                     kept = False
                     if self.cfg["history_enabled"]:
                         try:
@@ -1660,15 +1683,11 @@ class App:
                             self.history.add(
                                 apply_replacements(full_text, self.cfg["replacements"])
                                 if live is None
-                                else full_text,
-                                **history_stamp(retry),
+                                else full_text
                             )
                             kept = True
                         except Exception:
                             log.exception("could not add transcript to history")
-                    if retry is not None:
-                        implausible_retry(self, retry, reason, kept)
-                        return
                     where = "It is in Settings → History." if kept else "It was discarded."
                     self.notify(
                         "Transcript not inserted — it looks like a recognition error "
