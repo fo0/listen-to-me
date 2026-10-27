@@ -929,7 +929,11 @@ def _failed_takes_are_kept_for_a_retry():
             assert [e["id"] for e in store.entries()] == [good["id"]]
             assert not (folder / f"{deep}.json").exists() and not (folder / f"{deep}.wav").exists()
             assert store.keep(audio, SOURCE_MIC, "still works") is not None
+            # Clear leaves such a directory alone instead of failing on it and
+            # reporting audio that is not there.
+            (folder / f"{'9' * 32}.json").mkdir()
             assert store.clear() == 5
+            (folder / f"{'9' * 32}.json").rmdir()
             assert sorted(path.name for path in folder.iterdir()) == sorted(junk)
 
             if os.name == "posix":
@@ -2065,6 +2069,7 @@ def _failed_take_is_kept_and_retried():
     from listen_to_me.config import Config
     from listen_to_me.failed_takes import FailedTakes
     from listen_to_me.failed_takes_text import (
+        EXPIRED_NOTE,
         KEPT_NOTE,
         NOT_KEPT_NOTE,
         RETRY_BUSY,
@@ -2431,6 +2436,28 @@ def _failed_take_is_kept_and_retried():
         assert app.messages[-1] == (RETRY_DONE, True), app.messages[-1]
         assert app.transcriber.answer in [e["text"] for e in app.history.entries()]
         assert app.failed_takes._pinned is None, '"done" left the take pinned'
+
+        # --- expired while it is retried, and the retry fails again ----------
+        # The pin held it for this retry only: "it stays" would be undone by
+        # the next listing, so the take goes now and the message says so.
+        take = app.failed_takes.keep(audio, SOURCE_MIC, "boom")
+        app.transcriber.answer = RuntimeError("still broken")
+        real_time = flow_module.time
+
+        class _WeekLater:
+            @staticmethod
+            def time():
+                return real_time.time() + 8 * 86400
+
+        flow_module.time = _WeekLater
+        try:
+            retry(app, take["id"])
+        finally:
+            flow_module.time = real_time
+        assert app.messages[-1] == (
+            with_note("Retry failed: still broken", EXPIRED_NOTE), True
+        ), app.messages[-1]
+        assert not app.failed_takes.exists(take["id"]), "an expired take was kept on"
 
         # --- refused unless idle, and a take that is gone --------------------
         app.state = STATE_RECORDING

@@ -24,6 +24,7 @@ import time
 
 from .failed_takes import start_purge
 from .failed_takes_text import (
+    EXPIRED_NOTE,
     KEPT_NOTE,
     NOT_KEPT_NOTE,
     RETRY_DELETED,
@@ -89,8 +90,17 @@ def _keep_row(app, retry: dict, error: str, message: str) -> None:
     and the notification says it stays only when that is true. Delete… or
     "Clear history…" may have removed it while it was being transcribed (an
     update_error that fails for another reason leaves it there, hence the
-    second question)."""
+    second question). A take whose retention ran out while it was retried
+    is not kept on: the pin held it for this retry only (`FailedTakes.pin`),
+    and saying it stays would be undone by the very next listing."""
     store = app.failed_takes
+    if retry.get("expires", float("inf")) <= time.time():
+        try:
+            store.remove(retry["id"])
+        except Exception:
+            log.exception("could not delete the expired recording %s", retry["id"])
+        app.notify(with_note(message, EXPIRED_NOTE), force=True)
+        return
     if store.update_error(retry["id"], error) or store.exists(retry["id"]):
         app.notify(with_note(message, STAYS_NOTE), force=True)
     else:

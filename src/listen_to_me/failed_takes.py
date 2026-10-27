@@ -294,7 +294,9 @@ class FailedTakes:
             if not _own_dir(self.directory, create=False):
                 return 0
             for path in self.directory.iterdir():
-                if not _TAKE_FILE.fullmatch(path.name):
+                # A directory under a take's name is no take file (see
+                # _current) — unlinking it would fail and report audio kept.
+                if not _TAKE_FILE.fullmatch(path.name) or path.is_dir():
                     continue
                 try:
                     path.unlink()

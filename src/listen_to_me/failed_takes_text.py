@@ -34,6 +34,9 @@ RETRY_NO_SPEECH = "The retry recognized no speech in the recording."
 RETRY_DELETED = (
     "The recording was deleted while it was being retried, so nothing of it was stored."
 )
+# A retry that failed after its take's retention ran out: the pin kept it for
+# the retry only, and the next listing purges it.
+EXPIRED_NOTE = f"Its {RETENTION_DAYS} days are over, so the recording is deleted now."
 # "Don't insert this transcript" during a retry, which never inserts anything.
 RETRY_WITHHOLD = "Nothing to hold back — a retried recording is never inserted at the cursor."
 
