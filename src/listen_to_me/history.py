@@ -2,8 +2,11 @@
 
 Keeps the most recent transcripts in a small JSON file next to the config so a
 transcript can be recovered from Settings → History if a paste is lost. Only the
-text is stored — never the audio. Thread-safe: the recording worker appends
-while the settings window reads/clears on the main thread.
+text is stored here — never the audio. The one exception lives in its own
+store: the audio of a take whose transcription failed is kept for 7 days so it
+can be retried from the same page (`failed_takes.py`, #363). Thread-safe: the
+recording worker appends while the settings window reads/clears on the main
+thread.
 
 A file that exists but cannot be read is its own answer (`HistoryUnavailable`),
 never an empty list: see that class for what the difference costs.
@@ -294,7 +297,7 @@ def export_start_path(
     return filename
 
 
-def clear_prompt(count: int | None, filtered: bool = False) -> str:
+def clear_prompt(count: int | None, filtered: bool = False, failed: int = 0) -> str:
     """The question Settings → History → "Clear history…" asks before it
     deletes anything.
 
@@ -312,8 +315,36 @@ def clear_prompt(count: int | None, filtered: bool = False) -> str:
     so instead of leaving the user to infer it. An unreadable file lists no
     rows at all, so there the note would explain nothing and is left out.
 
+    `failed` is how many failed recordings are kept for a retry
+    (`failed_takes.py`). Clear deletes their audio as well, and audio is the
+    one thing this page holds that has no transcript anywhere — so the prompt
+    names them, and asks about them alone when no transcript is stored.
+
     Qt-free, so the wording is checkable on a headless runner.
     """
+    try:
+        failed = max(0, int(failed))
+    except (TypeError, ValueError, OverflowError):
+        failed = 0
+    if count == 0 and failed:
+        if failed == 1:
+            head = "Delete the failed recording kept for a retry?"
+            body = (
+                "Its audio is deleted, so it can no longer be retried, and this cannot "
+                "be undone."
+            )
+        else:
+            head = f"Delete the {failed} failed recordings kept for a retry?"
+            body = (
+                "Their audio is deleted, so they can no longer be retried, and this "
+                "cannot be undone."
+            )
+        if filtered:
+            body += (
+                "\n\nThe search field only narrows the list on this page — this "
+                "deletes every one of them, not just the ones listed."
+            )
+        return f"{head}\n\n{body}"
     if count is None:
         head = "Delete the entire transcript history?"
         body = "Every stored transcript is removed and this cannot be undone."
@@ -323,12 +354,26 @@ def clear_prompt(count: int | None, filtered: bool = False) -> str:
     else:
         head = f"Delete all {count} stored transcripts?"
         body = "Every one of them is removed from the history and this cannot be undone."
+    if failed == 1:
+        body += "\n\nThe audio of the failed recording kept for a retry is deleted too."
+    elif failed:
+        body += f"\n\nThe audio of the {failed} failed recordings kept for a retry is deleted too."
     if filtered and count is not None:
         body += (
             "\n\nThe search field only narrows the list on this page — this "
             "deletes every stored transcript, not just the ones listed."
         )
     return f"{head}\n\n{body}"
+
+
+def _later(stored, wanted: float) -> bool:
+    """Whether a stored timestamp is later than `wanted`. A value that is no
+    number (untrusted input, see `_same_time`) is not later — the walk in
+    `add` stops at it rather than carrying a retried take past it."""
+    try:
+        return float(stored) > wanted
+    except (TypeError, ValueError):
+        return False
 
 
 def _same_time(stored, wanted) -> bool:
@@ -354,6 +399,15 @@ class TranscriptHistory:
         """Append a transcript. Blank text and exact consecutive duplicates
         (e.g. the same take retried) are ignored.
 
+        An explicit `timestamp` older than the newest entry is inserted where
+        it belongs in time instead: a failed take retried from Settings →
+        History (#363) was recorded days ago, and appended it would sit on top
+        of the list — and top every "recent transcripts" menu — with an old
+        stamp. The duplicate check then compares the entry just before that
+        position, which is the same one the default path compares. Such an
+        entry is never the one the `max_entries` cap trims away: the user
+        asked for exactly this transcript, so the oldest other one goes.
+
         Raises `HistoryUnavailable` — and writes nothing — when the stored
         file could not be read: see there. The caller in `app._process`
         already logs it, and the transcript itself is unaffected, so a broken
@@ -365,11 +419,18 @@ class TranscriptHistory:
         entry = {"time": time.time() if timestamp is None else float(timestamp), "text": text}
         with self._lock:
             entries = self._load()
-            if entries and entries[-1].get("text") == text:
+            index = len(entries)
+            if timestamp is not None:
+                while index and _later(entries[index - 1].get("time"), entry["time"]):
+                    index -= 1
+            if index and entries[index - 1].get("text") == text:
                 return
-            entries.append(entry)
-            if len(entries) > self.max_entries:
-                entries = entries[-self.max_entries :]
+            entries.insert(index, entry)
+            excess = len(entries) - self.max_entries
+            if excess > 0:
+                # The default path always appends, so for it this is the
+                # plain "drop the oldest" it has always been.
+                entries = [entry] + entries[excess + 1 :] if index < excess else entries[excess:]
             self._save(entries)
 
     def entries(self) -> list[dict]:

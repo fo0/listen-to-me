@@ -153,8 +153,18 @@ Everything Listen To Me does, in detail. The short version is in the
   you dragged it to, where you put it, maximized if it was — for as long as
   the app runs; a fresh start opens it at its default size again.
 - **Transcript history** — the transcribed text of each recording is kept
-  locally (never the audio) so you can copy it again from **Settings → History**
-  if a paste is lost. Searchable (`Ctrl+F` puts the caret straight into the
+  locally so you can copy it again from **Settings → History** if a paste is
+  lost. Audio is never stored, with one exception: when the transcription of a
+  recording **fails** (a model that will not load, a GPU library error, a
+  crashed backend), its audio is kept for **7 days** and the History page lists
+  it as a _Transcription failed_ row with the error, the source, its length and
+  the date it is kept until. **Retry** transcribes it again with the current
+  engine settings (filler filter, assistant profile and replacement rules
+  included) and adds the transcript to the history at the time it was recorded
+  — nothing is inserted at the cursor; with the history switched off it goes to
+  the clipboard instead. A retry that works deletes the audio, as do the row's
+  **Delete…** and **Clear history**; one that fails again keeps the row with
+  the new error. Nothing is kept while the history is off. Searchable (`Ctrl+F` puts the caret straight into the
   search field, `Esc` clears it again without closing the window) by word
   **or by date** — a term made of digits, `-` and `:`
   such as `2026-09-05` or `14:` also matches the date and time each row shows,

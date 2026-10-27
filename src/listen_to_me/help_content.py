@@ -35,6 +35,10 @@ to make CPU the permanent choice, or to run on the GPU on purpose.</p>
 set it to <b>CPU</b>. No CUDA required. It is a bit slower but reliable; for the
 small models the difference is minor.</p>
 
+<p><b>The recording that failed is not lost.</b> While the history is on, its
+audio is kept for 7&nbsp;days: once the device is fixed, press <b>Retry</b> on
+its row in <b>Settings → History</b> to transcribe it again.</p>
+
 <p><b>Use the GPU (NVIDIA graphics cards only).</b> You need a recent NVIDIA
 driver plus the CUDA&nbsp;12 runtime library <b>cuBLAS</b>. Either install the
 CUDA Toolkit, or place the required DLLs next to <code>ListenToMe-*.exe</code>

@@ -361,6 +361,11 @@ _PRESET_LABELS = frozenset(model_label(model) for model, _ in MODEL_CHOICES)
 # histories, so only the most recent are shown (with a note about the rest).
 _HISTORY_RENDER_LIMIT = 300
 
+# A failed row's Retry button, and what it reads while that take is being
+# transcribed again (#363) — both labels are compared in the self-test.
+_RETRY_LABEL = "Retry"
+_RETRYING_LABEL = "Retrying…"
+
 
 def _loopback_output_name(candidate: dict) -> str | None:
     """The OUTPUT device a loopback candidate records, read out of its own
@@ -1141,22 +1146,31 @@ class SettingsWindow(QDialog):
         on the Qt main thread)."""
         try:
             self.home.set_state(state)
+            # A failed row's Retry is only offered from idle; this flips the
+            # buttons on screen without rebuilding every row on each take.
+            self._sync_retry_buttons()
             if state == "idle":
                 # …and it loaded the model if this was the first take, so the
                 # Engine page's "Running on" line has an answer now. Cheap
                 # (a property read), so only the on-screen case bothers.
                 if self.isVisible() and self.stack.currentIndex() == self._engine_index:
                     self._refresh_runtime_status()
-                # A finished dictation may have added a transcript. If the
-                # History page is on screen right now, re-render it live;
-                # otherwise just mark it stale so its next visit re-renders
-                # instead of showing the pre-dictation list.
-                if self.isVisible() and self.stack.currentIndex() == self._history_index:
-                    self._refresh_history()
-                else:
-                    self._history_rendered = False
+                # A finished dictation may have added a transcript (and a
+                # failed one a row to retry).
+                self.history_changed()
         except Exception:
             log.debug("could not update the Home state", exc_info=True)
+
+    def history_changed(self) -> None:
+        """The stored transcripts or failed takes changed: re-render the
+        History page if it is on screen right now, otherwise mark it stale so
+        its next visit re-renders instead of showing the old list. Called on
+        the Qt main thread (by `set_app_state`, and by App for a retry it
+        refused before any state change)."""
+        if self.isVisible() and self.stack.currentIndex() == self._history_index:
+            self._refresh_history()
+        else:
+            self._history_rendered = False
 
     def set_app_elapsed(self, seconds) -> None:
         """Put the running take's clock into the Home hero (called by
@@ -2965,8 +2979,10 @@ class SettingsWindow(QDialog):
         self.chk_history_enabled = self._checkbox(
             "Keep a history of transcribed text",
             self.cfg["history_enabled"],
-            "Store the transcribed text (never the audio) locally so you can copy it again here. "
-            "Turn off to stop recording new entries; existing entries stay until cleared.",
+            "Store the transcribed text locally so you can copy it again here. Audio is "
+            "never stored — except a recording whose transcription failed, which is kept "
+            "for 7 days so it can be retried here. Turn off to stop storing new entries "
+            "(failed recordings included); existing entries stay until cleared.",
         )
         form.addRow("", self.chk_history_enabled)
         self.history_max_spin = QSpinBox()
@@ -3029,6 +3045,12 @@ class SettingsWindow(QDialog):
         self._history_layout.addStretch(1)
         self._history_scroll.setWidget(self._history_inner)
         self._history_rendered = False
+        # (Retry button, Delete… button, take id, row name) per rendered
+        # failed row, so a state change can flip them (_sync_retry_buttons).
+        self._retry_buttons: list[tuple[QPushButton, QPushButton, str, str]] = []
+        # Whether listing the failed takes has failed and been logged — the
+        # page re-renders on every keystroke in the search field.
+        self._failed_takes_logged = False
         layout.addWidget(self._history_scroll, 1)
 
         bottom = QHBoxLayout()
@@ -5618,6 +5640,7 @@ class SettingsWindow(QDialog):
                 widget.hide()
                 widget.setParent(None)
                 widget.deleteLater()
+        self._retry_buttons = []
 
     def _on_history_filter_changed(self, *_args) -> None:
         """Re-render debounced: rebuilding up to 300 transcript rows on every
@@ -5627,26 +5650,39 @@ class SettingsWindow(QDialog):
 
     def _refresh_history(self) -> bool:
         """Re-render the list; False when the history file could not be
-        read (the page then says so), True otherwise."""
+        read (the page then says so), True otherwise.
+
+        Failed takes kept for a retry (#363) are listed among the
+        transcripts, newest first — they come from their own store, so an
+        unreadable history.json still lists them under its note."""
+        from .failed_takes_text import merge_newest_first
         from .history import HistoryUnavailable, filter_entries
 
         self._history_rendered = True
         self._history_filter_timer.stop()  # a pending re-render is this one
         self._clear_history_rows()
+        failed = self._failed_take_entries()
         try:
             stored = self.app.history.entries()
         except HistoryUnavailable as exc:
             self._render_unreadable_history(exc)
+            self._insert_history_rows(1, failed[:_HISTORY_RENDER_LIMIT])
             return False
         # Deleting nothing is not a destructive action worth offering.
-        self.history_clear_button.setEnabled(bool(stored))
-        self.history_clear_button.setToolTip(
-            "Permanently delete every stored transcript."
-            if stored
-            else "Nothing to delete — no transcripts are stored."
-        )
+        self.history_clear_button.setEnabled(bool(stored or failed))
+        if failed:
+            self.history_clear_button.setToolTip(
+                "Permanently delete every stored transcript and every failed "
+                "recording kept for a retry."
+            )
+        else:
+            self.history_clear_button.setToolTip(
+                "Permanently delete every stored transcript."
+                if stored
+                else "Nothing to delete — no transcripts are stored."
+            )
         query = self.history_filter_edit.text().strip()
-        if not stored:
+        if not stored and not failed:
             self._set_history_export([], query)
             self._set_history_count("")
             # "No transcripts yet" promises the list will fill up — which is a
@@ -5659,16 +5695,23 @@ class SettingsWindow(QDialog):
                 "“Keep a history of transcribed text” above to collect them."
             ))
             return True
-        entries = filter_entries(stored, query)
+        listed = merge_newest_first(stored, failed) if failed else stored
+        # A failed take has no text, so only a date-like term (or an
+        # exclusion) can match it — which is what its row shows.
+        entries = filter_entries(listed, query)
         # Every match, not just the rendered ones: the render limit is a
         # scrolling concern, an export that silently stopped at 300 of 5000
-        # transcripts would be a data-loss trap.
-        self._set_history_export(entries, query)
-        self._set_history_count(
-            f"{len(entries)} of {len(stored)} match"
-            if query
-            else f"{len(stored)} transcript{'s' if len(stored) != 1 else ''}"
-        )
+        # transcripts would be a data-loss trap. Transcripts only — a failed
+        # take has no text to export.
+        self._set_history_export([e for e in entries if not e.get("failed")], query)
+        if query:
+            count = f"{len(entries)} of {len(listed)} match"
+        else:
+            count = f"{len(stored)} transcript{'s' if len(stored) != 1 else ''}"
+            if failed:
+                takes = f"{len(failed)} failed recording{'s' if len(failed) != 1 else ''}"
+                count = f"{count} · {takes}" if stored else takes
+        self._set_history_count(count)
         if not entries:
             # A filtered-to-empty list must not look like an empty history —
             # name the search term and how to get back to the full list.
@@ -5688,12 +5731,139 @@ class SettingsWindow(QDialog):
             )
             self._history_layout.insertWidget(insert_at, note)
             insert_at += 1
-        for entry in shown:
-            self._history_layout.insertWidget(insert_at, self._history_row(entry))
+        self._insert_history_rows(insert_at, shown)
+        return True
+
+    def _insert_history_rows(self, insert_at: int, entries: list[dict]) -> None:
+        """Insert a row per entry — a transcript's or a failed take's."""
+        for entry in entries:
+            if entry.get("failed"):
+                row = self._failed_take_row(entry)
+            else:
+                row = self._history_row(entry)
+            self._history_layout.insertWidget(insert_at, row)
             insert_at += 1
         # Rebuilt rows join the end of the window's Tab chain, behind Save.
         tab_after(self._history_scroll, self._history_inner)
-        return True
+
+    def _failed_take_entries(self) -> list[dict]:
+        """The failed takes kept for a retry, newest first, each marked
+        "failed" — none when the store cannot be listed (logged once, not on
+        every keystroke): the transcripts must still render."""
+        store = getattr(self.app, "failed_takes", None)
+        if store is None:
+            return []
+        try:
+            takes = store.entries()
+        except Exception:
+            if not self._failed_takes_logged:
+                log.exception("could not list the recordings kept for a retry")
+                self._failed_takes_logged = True
+            return []
+        self._failed_takes_logged = False
+        return [{**take, "failed": True} for take in takes]
+
+    def _failed_take_row(self, entry: dict) -> QWidget:
+        """A failed take on the History page: its stamp and a visible
+        "Transcription failed", Retry and Delete…, the error, and what was
+        recorded until when. str() everywhere: the store normalizes its
+        entries, but they come from a hand-editable directory."""
+        from .failed_takes_text import describe
+        from .history import entry_timestamp
+
+        take_id = str(entry.get("id", ""))
+        stamp = entry_timestamp(entry)
+        which = f"from {stamp}" if stamp else "in this row"
+        row = QGroupBox()
+        rv = QVBoxLayout(row)
+        rv.setContentsMargins(10, 6, 10, 8)
+        rv.setSpacing(2)
+
+        header = QHBoxLayout()
+        stamp_label = QLabel(stamp)
+        stamp_label.setProperty("role", "hint")
+        header.addWidget(stamp_label)
+        # Text, not only a colour: the row has no transcript, and this is
+        # what says why.
+        status = QLabel("Transcription failed")
+        status.setProperty("role", "error")
+        header.addWidget(status)
+        header.addStretch(1)
+        retry_btn = QPushButton(_RETRY_LABEL)
+        retry_btn.setAutoDefault(False)
+        retry_btn.clicked.connect(
+            lambda _checked=False, t=take_id, b=retry_btn: self._retry_failed_take(t, b)
+        )
+        header.addWidget(retry_btn)
+        delete_btn = QPushButton("Delete…")
+        delete_btn.setProperty("destructive", True)
+        # Named per row, like a transcript row's buttons (see _history_row).
+        delete_btn.setAccessibleName(f"Delete the failed recording {which}")
+        delete_btn.setToolTip(
+            "Permanently delete this recording's audio. It can no longer be retried."
+        )
+        delete_btn.clicked.connect(lambda _checked=False, e=entry: self._delete_failed_take(e))
+        header.addWidget(delete_btn)
+        rv.addLayout(header)
+        self._retry_buttons.append((retry_btn, delete_btn, take_id, which))
+        self._label_retry_button(retry_btn, delete_btn, take_id, which)
+
+        # Plain text and elastic: an exception message is arbitrary text, and
+        # often carries a path — an unbreakable word that widens the page.
+        error = QLabel(str(entry.get("error") or "") or "No error message was recorded.")
+        error.setTextFormat(Qt.TextFormat.PlainText)
+        error.setWordWrap(True)
+        error.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        elastic_label(error)
+        rv.addWidget(error)
+        rv.addWidget(self._hint(describe(entry), elastic=True))
+        return row
+
+    def _label_retry_button(
+        self, retry_btn: QPushButton, delete_btn: QPushButton, take_id: str, which: str
+    ) -> None:
+        """Set a failed row's Retry for the app's state: "Retrying…" on the
+        take being transcribed again, disabled with the reason while anything
+        else records or transcribes (App refuses a retry then), enabled from
+        idle. Delete… is off only on the take being retried."""
+        retrying = take_id and getattr(self.app, "retrying_take", None) == take_id
+        idle = getattr(self.app, "state", "idle") == "idle"
+        retry_btn.setAccessibleName(f"Retry the failed recording {which}")
+        delete_btn.setEnabled(not retrying)
+        if retrying:
+            retry_btn.setText(_RETRYING_LABEL)
+            retry_btn.setEnabled(False)
+            retry_btn.setToolTip("This recording is being transcribed again.")
+        elif not idle:
+            retry_btn.setText(_RETRY_LABEL)
+            retry_btn.setEnabled(False)
+            retry_btn.setToolTip(
+                "Available once the current recording or transcription is finished."
+            )
+        else:
+            retry_btn.setText(_RETRY_LABEL)
+            retry_btn.setEnabled(True)
+            retry_btn.setToolTip(
+                "Transcribe this recording again with the current engine settings. "
+                "The transcript is added to the history at the time it was "
+                "recorded — nothing is inserted at the cursor."
+            )
+
+    def _sync_retry_buttons(self) -> None:
+        """Relabel every rendered failed row's buttons for the app's state."""
+        for retry_btn, delete_btn, take_id, which in list(self._retry_buttons):
+            try:
+                self._label_retry_button(retry_btn, delete_btn, take_id, which)
+            except RuntimeError:
+                pass  # a row deleted since the last render
+
+    def _retry_failed_take(self, take_id: str, button: QPushButton) -> None:
+        """Retry: ask App to transcribe the kept audio again. The button says
+        so at once — App only picks the event up on its next poll, and a
+        second click in between would queue a second retry."""
+        button.setText(_RETRYING_LABEL)
+        button.setEnabled(False)
+        self.app.post("retry_take", take_id)
 
     def _render_unreadable_history(self, problem: Exception) -> None:
         """The History page for a history file that could not be read.
@@ -6072,6 +6242,39 @@ class SettingsWindow(QDialog):
                 "That transcript is no longer in the history — the list has been refreshed.",
             )
 
+    def _delete_failed_take(self, entry: dict) -> None:
+        """Delete one failed take's kept audio, confirmed like a transcript's
+        Delete…: it is the only copy of what was said. A delete that failed
+        or found nothing is said, never left to look like it worked."""
+        from .failed_takes_text import delete_prompt
+
+        confirm = QMessageBox.question(
+            self, APP_NAME,
+            delete_prompt(entry),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        removed = failed = False
+        try:
+            removed = self.app.failed_takes.remove(entry.get("id"))
+        except Exception:
+            log.exception("could not delete the kept recording")
+            failed = True
+        self._refresh_history()
+        if failed:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "The recording could not be deleted — its file could not be removed. "
+                "See the log file.",
+            )
+        elif not removed:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "That recording is no longer kept — the list has been refreshed.",
+            )
+
     def _clear_history(self) -> None:
         from .history import HistoryUnavailable, clear_prompt
 
@@ -6083,32 +6286,46 @@ class SettingsWindow(QDialog):
             # delete" is not an answer this may give — and clearing is exactly
             # what repairs such a file (see _render_unreadable_history).
             count = None
-        if count == 0:
+        failed = len(self._failed_take_entries())
+        if count == 0 and not failed:
             return
         # The count is the whole history, read from the file — not the rows on
         # screen, which a search term may have narrowed (clear_prompt says so).
         filtered = bool(self.history_filter_edit.text().strip())
         confirm = QMessageBox.question(
             self, APP_NAME,
-            clear_prompt(count, filtered),
+            clear_prompt(count, filtered, failed=failed),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
-        cleared = True
-        try:
-            self.app.history.clear()
-        except Exception:
-            # Logged by the store. The list keeps every transcript, which
-            # without a word reads as a click that never registered.
-            cleared = False
+        cleared = takes_cleared = True
+        if count != 0:
+            try:
+                self.app.history.clear()
+            except Exception:
+                # Logged by the store. The list keeps every transcript, which
+                # without a word reads as a click that never registered.
+                cleared = False
+        if failed:
+            try:
+                self.app.failed_takes.clear()
+            except Exception:
+                log.exception("could not delete the recordings kept for a retry")
+                takes_cleared = False
         self._refresh_history()
         if not cleared:
             QMessageBox.warning(
                 self, APP_NAME,
                 "The history could not be cleared — its file could not be written. "
                 "See the log file.",
+            )
+        if not takes_cleared:
+            QMessageBox.warning(
+                self, APP_NAME,
+                "Not every failed recording could be deleted — some of their audio "
+                "is still kept. See the log file.",
             )
 
     # --------------------------------------------------- selection readers

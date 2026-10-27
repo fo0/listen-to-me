@@ -34,6 +34,18 @@ from .choices import (
     source_label,
 )
 from .config import Config, clamp_setting, config_dir, log_path
+from .failed_takes import DIRECTORY_NAME as FAILED_TAKES_DIR
+from .failed_takes import FailedTakes, start_purge
+from .failed_takes_flow import (
+    finish_retry,
+    history_stamp,
+    implausible_retry,
+    no_speech,
+    refresh_history_page,
+    report_failure,
+    retry_failed,
+)
+from .failed_takes_text import RETRY_BUSY, RETRY_GONE, RETRY_UNREADABLE
 from .fillers import EMPTY_TRANSCRIPT, is_filler
 from .hallucination import implausible_reason
 from .history import TranscriptHistory
@@ -42,7 +54,7 @@ from .injector import Injector, ModifierHeldError, sanitize_typed_text
 from .integrations import MuteIntegrations
 from .livetype import LiveTyper
 from .system_audio import resolve_loopback_device, system_audio_help
-from .transcriber import _PREVIEW_WINDOW_SECONDS, create_transcriber, is_cuda_library_error
+from .transcriber import _PREVIEW_WINDOW_SECONDS, create_transcriber
 
 log = logging.getLogger(__name__)
 
@@ -676,7 +688,7 @@ def withheld_message(kept: bool, *, done: bool, history_enabled: bool = True) ->
     return "Transcript not inserted, as requested — the history is off, so it was discarded."
 
 
-def assistant_failure_message(exc: BaseException) -> str:
+def assistant_failure_message(exc: BaseException, inserted: bool = True) -> str:
     """What to show when the assistant could not clean up a finished dictation.
 
     The Assistant page's "Test connection" has translated transport failures
@@ -693,7 +705,8 @@ def assistant_failure_message(exc: BaseException) -> str:
     describe_error only rewrites the transport failures.
 
     Always closes on where the text went: the transcript is never lost to an
-    assistant failure, it is inserted unrefined.
+    assistant failure, it is inserted unrefined — or, for a retried take
+    (`inserted=False`, nothing of it reaches the cursor), stored unrefined.
     """
     reason = str(netutil.describe_error(exc)).strip()
     # The translated sentences end in a full stop; a passed-through exception
@@ -701,7 +714,8 @@ def assistant_failure_message(exc: BaseException) -> str:
     # next sentence.
     if reason and reason[-1] not in ".!?":
         reason += "."
-    return f"Assistant failed: {reason} Inserting the raw transcript."
+    where = "Inserting the raw transcript." if inserted else "Keeping the raw transcript."
+    return f"Assistant failed: {reason} {where}"
 
 
 def apply_replacements(text: str, spec: str) -> str:
@@ -778,6 +792,14 @@ class App:
             self.cfg.path.parent / "history.json",
             max_entries=clamp_setting("history_max", self.cfg["history_max"], 10, 5000),
         )
+        # The audio of takes whose transcription failed, kept for a retry from
+        # Settings → History (#363) — beside history.json, never inside it
+        # (see failed_takes.py). Expired ones are purged off the startup path.
+        self.failed_takes = FailedTakes(self.cfg.path.parent / FAILED_TAKES_DIR)
+        start_purge(self.failed_takes)
+        # The id of the kept take being transcribed again, or None — read by
+        # the History page to label that row's button (see _retry_take).
+        self.retrying_take: str | None = None
         # Both listeners name their source in the payload — the handler could
         # default a missing one to the microphone, but an event that says which
         # source it belongs to is what keeps a system-audio press from ever
@@ -1134,7 +1156,11 @@ class App:
                 )
                 self._finish_recording()
         elif kind == "done":
+            # Before the state change: its History re-render reads it.
+            self.retrying_take = None
             self._set_state(STATE_IDLE)
+        elif kind == "retry_take":
+            self._retry_take(payload)
         elif kind == "notify":
             message, force = payload if isinstance(payload, tuple) else (payload, False)
             self.tray.notify(str(message), force=bool(force))
@@ -1433,12 +1459,57 @@ class App:
         log.info("the running transcription will not be inserted (user request)")
         self.notify(withheld_message(bool(self.cfg["history_enabled"]), done=False))
 
+    def _retry_take(self, take_id) -> None:
+        """Settings → History → Retry: transcribe a failed take's kept audio
+        again (#363). Main thread (an event handler).
+
+        Only from idle: the take runs through `_process` like a finished
+        recording, so it holds PROCESSING — which blocks a new take exactly
+        as a transcription after a recording does — and the worker's "done"
+        brings the app, and the History page `_set_state` re-renders, back.
+        The audio is read by the worker, not here: an hour-long take is a
+        long read to freeze the window for.
+
+        `_withhold` gets this take's own Event, so the tray's "Don't insert
+        this transcript" stays truthful ("will not be inserted" — nothing of
+        a retry ever is) instead of answering "too late" about a text that
+        is never inserted at all.
+        """
+        if self.state != STATE_IDLE:
+            self.notify(RETRY_BUSY, force=True)
+            refresh_history_page(self)  # the button already reads "Retrying…"
+            return
+        try:
+            entry = next((t for t in self.failed_takes.entries() if t["id"] == take_id), None)
+        except Exception:
+            log.exception("could not read the recordings kept for a retry")
+            self.notify(RETRY_UNREADABLE, force=True)
+            refresh_history_page(self)
+            return
+        if entry is None:
+            self.notify(RETRY_GONE, force=True)
+            refresh_history_page(self)
+            return
+        log.info("retrying the transcription of the kept recording %s", entry["id"])
+        self.retrying_take = entry["id"]
+        self._withhold = threading.Event()
+        self._set_state(STATE_PROCESSING)
+        threading.Thread(
+            target=self._process,
+            args=(None, None, entry["source"]),
+            kwargs={"retry": entry},
+            name="retry",
+            daemon=True,
+        ).start()
+
     def _process(
         self,
         audio,
         live=None,
         source: str = SOURCE_MIC,
         withhold: threading.Event | None = None,
+        *,
+        retry: dict | None = None,
     ) -> None:
         """Worker thread: transcribe, optionally refine, insert at the cursor.
 
@@ -1455,13 +1526,26 @@ class App:
 
         `withhold` is this take's "Don't insert this transcript" flag (see
         _withhold_transcript): once set, the transcript is stored in the
-        history and nothing more reaches the cursor or the clipboard."""
+        history and nothing more reaches the cursor or the clipboard.
+
+        `retry` is the entry of a failed take kept for a retry (#363, see
+        `_retry_take`): `audio` is None then and read from the store here.
+        Its transcript goes through every step a take's does — filler filter,
+        implausibility check, the assistant profile of its source,
+        replacement rules — but never to the cursor (`failed_takes_flow.finish_retry`)."""
+        # The whole take, kept before live typing slices the already committed
+        # part off `audio` below: a recording that produced no text is
+        # diagnosed from everything the microphone delivered, not from
+        # whatever tail was left over — and it is what a failure keeps for a
+        # retry. Outside the try, so the failure path can always read it.
+        captured = audio
+        # Whether the model already handed text back. A failure before that
+        # (a model that would not load, a missing CUDA library) cost the take
+        # its words and keeps its audio; one after it did not (report_failure).
+        transcribed = False
         try:
-            # The whole take, kept before live typing slices the already
-            # committed part off `audio` below: a recording that produced no
-            # text is diagnosed from everything the microphone delivered, not
-            # from whatever tail was left over.
-            captured = audio
+            if retry is not None and audio is None:
+                audio = captured = self.failed_takes.load_audio(retry["id"])
             prefix = ""
             pending, typed_any = "", False
             if live is not None:
@@ -1482,9 +1566,10 @@ class App:
                 text = self.transcriber.transcribe(
                     audio, notify=self.notify, progress=self.progress
                 )
+            transcribed = True
             full_text = f"{prefix} {text}" if prefix and text else (prefix or text)
             if not full_text:
-                self._notify_no_speech(captured, source, _clip_verdict(captured))
+                no_speech(self, captured, source, _clip_verdict(captured), retry)
                 return
             # Text this take already put at the cursor. Live typing is
             # append-only and cannot take anything back, so the filler filter
@@ -1511,7 +1596,7 @@ class App:
                     # ellipsis or music glyph at the cursor is not a take
                     # somebody wants back.
                     log.info("transcript dropped: no letter or digit in %.60r", full_text)
-                    self._notify_no_speech(captured, source, _clip_verdict(captured))
+                    no_speech(self, captured, source, _clip_verdict(captured), retry)
                     return
                 if matched is not None:
                     # The phrase list alone cannot tell a hallucinated "Vielen
@@ -1541,7 +1626,7 @@ class App:
                         # Reported exactly like a take that produced no text at
                         # all, which is what this take really was: nothing is
                         # inserted, and nothing goes into the history either.
-                        self._notify_no_speech(captured, source, verdict)
+                        no_speech(self, captured, source, verdict, retry)
                         return
             if not typed_already:
                 # A decoder loop, a prompt echo or more text than the audio can
@@ -1575,11 +1660,15 @@ class App:
                             self.history.add(
                                 apply_replacements(full_text, self.cfg["replacements"])
                                 if live is None
-                                else full_text
+                                else full_text,
+                                **history_stamp(retry),
                             )
                             kept = True
                         except Exception:
                             log.exception("could not add transcript to history")
+                    if retry is not None:
+                        implausible_retry(self, retry, reason, kept)
+                        return
                     where = "It is in Settings → History." if kept else "It was discarded."
                     self.notify(
                         "Transcript not inserted — it looks like a recognition error "
@@ -1597,7 +1686,9 @@ class App:
                         full_text = text
                     except Exception as exc:
                         log.exception("assistant post-processing failed")
-                        self.notify(assistant_failure_message(exc), force=True)
+                        self.notify(
+                            assistant_failure_message(exc, inserted=retry is None), force=True
+                        )
             if live is None:
                 # Last, so the user's own rules are the final word — the
                 # assistant rewrites the whole text and would otherwise be free
@@ -1608,6 +1699,9 @@ class App:
                 # what was actually typed.
                 full_text = apply_replacements(full_text, self.cfg["replacements"])
                 text = full_text
+            if retry is not None:
+                finish_retry(self, retry, full_text)
+                return
             # Record before inserting so the transcript is kept even if the
             # insertion into the target window fails.
             kept = False
@@ -1673,17 +1767,10 @@ class App:
             self.post("flash_text", full_text)
         except Exception as exc:
             log.exception("processing failed")
-            if is_cuda_library_error(exc):
-                # A GPU/CUDA library failure that the CPU fallback couldn't
-                # recover from: give an actionable message, not the raw DLL name.
-                self.notify(
-                    "GPU transcription needs the NVIDIA CUDA 12 libraries. "
-                    "Set Device = CPU in Settings → Engine, or see the tray "
-                    "menu → Help / Troubleshooting.",
-                    force=True,
-                )
+            if retry is not None:
+                retry_failed(self, retry, exc)
             else:
-                self.notify(f"Transcription failed: {exc}", force=True)
+                report_failure(self, exc, captured, source, transcribed)
         finally:
             self.post("done")
 

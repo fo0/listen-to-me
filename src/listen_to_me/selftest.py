@@ -605,6 +605,235 @@ def _history_clear_prompt():
         assert filtered.startswith(clear_prompt(count))
     # An unreadable file lists no rows, so "the ones listed" would mean nothing.
     assert clear_prompt(None, filtered=True) == unknown
+    # Failed recordings kept for a retry (#363) lose their audio too, and that
+    # audio has no transcript anywhere — so the prompt names them, and asks
+    # about them alone when no transcript is stored.
+    for count in (None, 1, 37):
+        assert clear_prompt(count, failed=0) == clear_prompt(count)
+        with_one = clear_prompt(count, failed=1)
+        assert with_one.startswith(clear_prompt(count).split("\n\n")[0]), with_one
+        assert "audio of the failed recording kept for a retry is deleted too" in with_one
+        assert "2 failed recordings kept" in clear_prompt(count, failed=2)
+    only = clear_prompt(0, failed=1)
+    assert only.startswith("Delete the failed recording kept for a retry?"), only
+    assert "0 stored" not in only and "can no longer be retried" in only
+    assert clear_prompt(0, failed=3).startswith("Delete the 3 failed recordings")
+    assert "not just the ones listed" in clear_prompt(0, filtered=True, failed=3)
+    assert clear_prompt(5, failed="junk") == clear_prompt(5)
+
+
+def _history_inserts_a_retried_take_where_it_was_recorded():
+    """`TranscriptHistory.add` with an older timestamp inserts the entry where
+    it belongs in time (#363). A failed take retried from Settings → History
+    was recorded days ago; appended, it would top the list — and every
+    "recent transcripts" menu — with an old stamp. The cap never trims the
+    entry just asked for, the duplicate check still catches the same retry
+    delivered twice, a stored time that is no number stops the walk instead
+    of being jumped, and the default path (no timestamp) is untouched."""
+    import json
+
+    from listen_to_me.history import TranscriptHistory
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = TranscriptHistory(Path(tmp) / "history.json", max_entries=3)
+        store.add("monday", timestamp=100.0)
+        store.add("wednesday", timestamp=300.0)
+        store.add("tuesday", timestamp=200.0)  # the retried take, recorded in between
+        assert [e["text"] for e in store.entries()] == ["wednesday", "tuesday", "monday"]
+        assert store.latest() == "wednesday"
+        store.add("tuesday", timestamp=200.0)  # the same retry delivered twice
+        assert [e["text"] for e in store.entries()] == ["wednesday", "tuesday", "monday"]
+        # Full, and older than everything kept: it stays, the oldest other goes.
+        store.add("sunday", timestamp=50.0)
+        assert [e["text"] for e in store.entries()] == ["wednesday", "tuesday", "sunday"]
+        # The default path appends on top and drops the oldest, as it always did.
+        store.add("now")
+        assert [e["text"] for e in store.entries()] == ["now", "wednesday", "tuesday"]
+        store.add("now")
+        assert len(store.entries()) == 3
+        store.path.write_text(
+            json.dumps([{"time": "garbage", "text": "odd"}, {"time": 500.0, "text": "late"}]),
+            encoding="utf-8",
+        )
+        store.add("early", timestamp=10.0)
+        assert [e["text"] for e in store.entries()] == ["late", "early", "odd"]
+
+
+def _failed_takes_are_kept_for_a_retry():
+    """The store behind a failed take's Retry button (#363), and its wording.
+
+    Audio of what the user said, kept on disk — so the bounds are what is under
+    test: it round-trips within int16 precision (clipped, never wrapped round)
+    and its error can be replaced; it is gone after the retention and beyond
+    `max_takes`, the oldest first; the files are the owner's alone. And the
+    directory is untrusted input: a traversal id is refused before it becomes a
+    path, foreign names are never touched, unreadable metadata and a json
+    without its wav are dropped, an old wav without its json is cleaned up, a
+    symlinked directory is refused, and every field is normalized before it
+    reaches a label.
+
+    Run twice, the second time with numpy blocked: the CI runner installs no
+    numpy, so the stdlib fallback is what the light gate exercises there.
+    """
+    import json
+    import time
+
+    from listen_to_me.app import notification_target
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+    from listen_to_me.failed_takes import FailedTakes, valid_id
+    from listen_to_me.failed_takes_text import (
+        KEPT_NOTE,
+        NOT_KEPT_NOTE,
+        RETRY_DONE,
+        RETRY_NO_SPEECH,
+        STAYS_NOTE,
+        delete_prompt,
+        describe,
+        format_length,
+        merge_newest_first,
+        with_note,
+    )
+
+    def exercise() -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            folder = root / "failed-takes"
+            store = FailedTakes(folder, max_takes=3)
+            assert store.entries() == [] and store.purge_expired() == 0  # no directory yet
+            audio = [0.5, -0.25, 1.5, -2.0] * (SAMPLE_RATE // 4)  # one second
+            entry = store.keep(audio, SOURCE_SYSTEM, RuntimeError("model could not be loaded"))
+            assert entry is not None and valid_id(entry["id"]), entry
+            assert entry["source"] == SOURCE_SYSTEM, entry
+            assert entry["error"] == "model could not be loaded", entry
+            assert abs(entry["seconds"] - 1.0) < 0.01, entry
+            assert abs(entry["expires"] - entry["time"] - 7 * 86400) < 1, entry
+            assert [e["id"] for e in store.entries()] == [entry["id"]]
+            loaded = store.load_audio(entry["id"])
+            assert len(loaded) == len(audio), len(loaded)
+            for got, want in zip(list(loaded[:4]), (0.5, -0.25, 1.0, -1.0)):
+                assert abs(float(got) - want) <= 2 / 32767, (got, want)
+            if os.name == "posix":
+                assert folder.stat().st_mode & 0o777 == 0o700, oct(folder.stat().st_mode)
+                for path in folder.iterdir():
+                    assert path.stat().st_mode & 0o777 == 0o600, (path, oct(path.stat().st_mode))
+            assert store.update_error(entry["id"], "CUDA failed again") is True
+            assert store.entries()[0]["error"] == "CUDA failed again"
+
+            # The cap: room is made for the new take by dropping the oldest.
+            now = time.time()
+            older = [store.keep(audio, SOURCE_MIC, "x", timestamp=now - 60 * n) for n in (3, 2, 1)]
+            assert all(older), older
+            assert {e["id"] for e in store.entries()} == {
+                entry["id"], older[1]["id"], older[2]["id"]
+            }, "the oldest take was not the one dropped"
+            assert store.remove(older[1]["id"]) is True
+            assert store.remove(older[1]["id"]) is False  # already gone: no silent success
+            # The byte cap: one second is 32 kB of audio, so two fit and a third
+            # pushes the oldest out.
+            capped = FailedTakes(root / "capped", max_bytes=70_000)
+            first = capped.keep(audio, SOURCE_MIC, "x", timestamp=now - 120)
+            second = capped.keep(audio, SOURCE_MIC, "x", timestamp=now - 60)
+            third = capped.keep(audio, SOURCE_MIC, "x")
+            assert {e["id"] for e in capped.entries()} == {second["id"], third["id"]}, first
+            # Expiry, at a "now" eight days ahead.
+            assert store.purge_expired(now=now + 8 * 86400) == 2
+            assert store.entries() == []
+
+            # Ids that could reach a path outside the store are refused first.
+            outside = root / "outside.wav"
+            outside.write_bytes(b"not yours")
+            for bad in ("../outside", "../x", "", None, 42, "A" * 32, "a" * 32 + "\n"):
+                try:
+                    store.load_audio(bad)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError(f"load_audio accepted the id {bad!r}")
+                assert store.remove(bad) is False, bad
+                assert store.update_error(bad, "x") is False, bad
+            assert outside.read_bytes() == b"not yours"
+
+            # A hand-edited directory.
+            good = store.keep(audio, SOURCE_MIC, "kept")
+            junk = ["notes.txt", "README", "0123.wav", "f" * 32 + ".WAV", "e" * 32 + ".json.bak"]
+            for name in junk:
+                (folder / name).write_text("junk", encoding="utf-8")
+            (folder / f"{'a' * 32}.json").write_text("{ truncated", encoding="utf-8")
+            (folder / f"{'a' * 32}.wav").write_bytes(b"RIFF")
+            (folder / f"{'b' * 32}.json").write_text('{"time": 1}', encoding="utf-8")  # no wav
+            old_orphan, fresh_orphan = folder / f"{'c' * 32}.wav", folder / f"{'d' * 32}.wav"
+            old_orphan.write_bytes(b"RIFF")
+            fresh_orphan.write_bytes(b"RIFF")  # may be another instance's write in progress
+            os.utime(old_orphan, (now - 7200, now - 7200))
+            (folder / f"{good['id']}.json").write_text(
+                json.dumps(
+                    {
+                        "id": "../../evil",
+                        "time": now + 365 * 86400,  # would keep the audio for a year
+                        "source": "speaker",
+                        "seconds": "long",
+                        "error": "x" * 5000,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            listed = store.entries()
+            assert [e["id"] for e in listed] == [good["id"]], listed
+            assert listed[0]["time"] <= time.time() + 1, "a future time outlived the retention"
+            assert listed[0]["source"] == SOURCE_MIC and listed[0]["seconds"] == 0.0
+            assert isinstance(listed[0]["error"], str) and len(listed[0]["error"]) <= 501
+            left = sorted(path.name for path in folder.iterdir())
+            assert left == sorted(junk + [f"{good['id']}.json", f"{good['id']}.wav", fresh_orphan.name]), left
+            assert store.clear() == 3
+            assert sorted(path.name for path in folder.iterdir()) == sorted(junk)
+
+            if os.name == "posix":
+                elsewhere = root / "elsewhere"
+                elsewhere.mkdir()
+                (root / "linked").symlink_to(elsewhere, target_is_directory=True)
+                linked = FailedTakes(root / "linked")
+                assert linked.keep(audio, SOURCE_MIC, "x") is None
+                assert list(elsewhere.iterdir()) == []
+                try:
+                    linked.entries()
+                except OSError:
+                    pass
+                else:
+                    raise AssertionError("a symlinked store directory was listed")
+
+    exercise()
+    blocked = sys.modules.get("numpy")
+    sys.modules["numpy"] = None  # import numpy now raises ImportError
+    try:
+        exercise()
+    finally:
+        if blocked is None:
+            del sys.modules["numpy"]
+        else:
+            sys.modules["numpy"] = blocked
+
+    # The wording, and where a click on each notification leads.
+    when = time.mktime((2026, 10, 27, 14, 3, 0, 0, 0, -1))
+    take = {"source": SOURCE_SYSTEM, "seconds": 42.4, "time": when, "expires": when + 7 * 86400}
+    assert describe(take) == "System audio · 0:42 · kept until 2026-11-03", describe(take)
+    assert describe({"source": SOURCE_MIC, "seconds": 3700, "expires": 1e300}) == "Microphone · 1:01:40"
+    prompt = delete_prompt(take)
+    assert prompt.startswith("Delete this failed recording?"), prompt
+    assert "recorded 2026-10-27 14:03" in prompt and "can no longer be retried" in prompt
+    assert format_length(None) == "0:00" and format_length(-5) == "0:00"
+    failed = with_note("Transcription failed: boom", KEPT_NOTE)
+    assert failed == "Transcription failed: boom. " + KEPT_NOTE, failed
+    assert with_note("It broke.", STAYS_NOTE) == "It broke. " + STAYS_NOTE
+    assert notification_target(failed) == ("page", "History")
+    assert notification_target(with_note("Transcription failed: x", NOT_KEPT_NOTE)) == ("log", "")
+    for message in (STAYS_NOTE, RETRY_DONE, RETRY_NO_SPEECH):
+        assert notification_target(message) == ("page", "History"), message
+    # The transcripts keep their own order — a corrupt time included.
+    transcripts = [{"time": 300.0, "text": "c"}, {"time": 1e300, "text": "x"}, {"time": 100.0}]
+    takes = [{"time": 250.0}, {"time": 50.0}, {"time": 400.0}]
+    merged = merge_newest_first(transcripts, takes)
+    assert [e["time"] for e in merged] == [400.0, 300.0, 1e300, 250.0, 100.0, 50.0], merged
 
 
 def _history_preview_cuts_long_transcripts():
@@ -1637,6 +1866,280 @@ def _withheld_transcript_is_not_inserted():
         # A history that is on but could not be written is a failure, named.
         failed = withheld_message(False, done=True, history_enabled=True)
         assert "could not be saved" in failed and "log file" in failed
+
+
+def _failed_take_is_kept_and_retried():
+    """A take whose transcription raised keeps its audio, and Retry runs that
+    audio through the pipeline again (#363).
+
+    `App._process`, `App._handle` and `App._retry_take` are borrowed onto a
+    stub the way `_withheld_transcript_is_not_inserted` does it, with a real
+    `FailedTakes` and `TranscriptHistory` in a temp dir, so the wiring is under
+    test. A failure before the model returned text keeps the take and says
+    where to retry it — the CUDA message keeps its fix first; a failure after
+    the text exists keeps nothing (the text is in the history); history off
+    keeps nothing and words the message as it always was; a store that cannot
+    write says so. A retry runs the assistant profile of the take's own source
+    and the replacement rules, lands in the history at the take's own time,
+    deletes the audio, and reaches neither the cursor, the keyboard, the
+    clipboard nor the preview bubble. One that fails, finds no speech or
+    cannot read its audio keeps the take with the new error; with the history
+    off the text goes to the clipboard instead. And it is refused unless idle.
+    """
+    import threading
+    import time
+
+    from listen_to_me import assistant as assistant_module
+    from listen_to_me.app import (
+        STATE_IDLE,
+        STATE_PROCESSING,
+        STATE_RECORDING,
+        App,
+        notification_target,
+    )
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+    from listen_to_me.config import Config
+    from listen_to_me.failed_takes import FailedTakes
+    from listen_to_me.failed_takes_text import (
+        KEPT_NOTE,
+        NOT_KEPT_NOTE,
+        RETRY_BUSY,
+        RETRY_DONE,
+        RETRY_GONE,
+        RETRY_NO_SPEECH,
+        RETRY_NO_SPEECH_ERROR,
+        STAYS_NOTE,
+    )
+    from listen_to_me.history import TranscriptHistory
+
+    class _Transcriber:
+        def __init__(self):
+            self.answer: object = ""
+
+        def ensure_loaded(self, notify=None, progress=None):
+            pass
+
+        def transcribe(self, audio, notify=None, progress=None):
+            if isinstance(self.answer, BaseException):
+                raise self.answer
+            return self.answer
+
+    class _Injector:
+        def __init__(self):
+            self.copied: list[str] = []
+            self.typed: list[str] = []
+            self.clipboard_works = True
+
+        def clipboard_mode(self):
+            return "always"
+
+        def type_plain_blocking(self, text):
+            self.typed.append(text)
+            return ""
+
+        def copy_to_clipboard(self, text):
+            self.copied.append(text)
+            return self.clipboard_works
+
+    class _Window:
+        def __init__(self):
+            self.changed = 0
+
+        def history_changed(self):
+            self.changed += 1
+
+    class _App:
+        _handle = App._handle
+        _process = App._process
+        _retry_take = App._retry_take
+
+        def __init__(self, tmp, cfg):
+            self.cfg, self.state = cfg, STATE_IDLE
+            self._withhold = None
+            self._withhold_lock = threading.Lock()
+            self.transcriber = _Transcriber()
+            self.injector = _Injector()
+            self.history = TranscriptHistory(tmp / "history.json")
+            self.failed_takes = FailedTakes(tmp / "failed-takes")
+            self.retrying_take = None
+            self._settings_window = _Window()
+            self.inserted: list[str] = []
+            self.no_speech: list[str] = []
+            self.posts: list[tuple] = []
+            self.messages: list[tuple[str, bool]] = []
+
+        def notify(self, message, force=False):
+            self.messages.append((message, force))
+
+        def post(self, kind, payload=None):
+            self.posts.append((kind, payload))
+
+        def progress(self, *args, **kwargs):
+            pass
+
+        def _insert_transcript(self, text):
+            self.inserted.append(text)
+
+        def _notify_no_speech(self, audio, source=SOURCE_MIC, verdict=None):
+            self.no_speech.append(source)
+
+        def _set_state(self, state):
+            self.state = state
+
+    def retry(app, take_id):
+        """Click Retry, let the worker finish, hand the "done" back."""
+        app._retry_take(take_id)
+        assert app.state == STATE_PROCESSING and app.retrying_take == take_id
+        assert isinstance(app._withhold, threading.Event)  # "cancel" stays truthful
+        for worker in threading.enumerate():
+            if worker.name == "retry":
+                worker.join(timeout=30)
+        assert ("done", None) in app.posts
+        app._handle("done", None)
+        assert app.state == STATE_IDLE and app.retrying_take is None
+
+    def kept(app):
+        return {take["id"]: take for take in app.failed_takes.entries()}
+
+    audio = [0.1] * (2 * SAMPLE_RATE)  # two seconds: no transcript here is too fast to be speech
+    with tempfile.TemporaryDirectory() as tmp_name:
+        tmp = Path(tmp_name)
+        cfg = Config(path=tmp / "config.json")
+        cfg["history_enabled"] = True
+        app = _App(tmp, cfg)
+
+        # --- a failure before any text: the take is kept -------------------
+        app.transcriber.answer = RuntimeError("the model could not be loaded")
+        app._process(audio, None, SOURCE_SYSTEM)
+        takes = list(kept(app).values())
+        assert len(takes) == 1 and takes[0]["source"] == SOURCE_SYSTEM, takes
+        assert takes[0]["error"] == "the model could not be loaded"
+        message, force = app.messages[-1]
+        assert message == "Transcription failed: the model could not be loaded. " + KEPT_NOTE
+        assert force and notification_target(message) == ("page", "History"), message
+        assert app.inserted == [] and app.history.entries() == []
+        assert ("done", None) in app.posts
+        app.transcriber.answer = RuntimeError("Unable to load cudnn_ops64_9.dll")
+        app._process(audio, None, SOURCE_MIC)
+        message = app.messages[-1][0]
+        assert message.startswith("GPU transcription needs") and message.endswith(KEPT_NOTE)
+        assert notification_target(message) == ("page", "Engine")  # the fix comes first
+        assert len(kept(app)) == 2
+
+        # --- a failure after the text exists keeps nothing ------------------
+        app.transcriber.answer = "This text made it."
+
+        def _broken_insert(text):
+            raise RuntimeError("the window went away")
+
+        app._insert_transcript = _broken_insert
+        app._process(audio, None, SOURCE_MIC)
+        del app._insert_transcript
+        assert len(kept(app)) == 2, "audio kept although its text is in the history"
+        assert app.messages[-1] == ("Transcription failed: the window went away", True)
+        assert [e["text"] for e in app.history.entries()] == ["This text made it."]
+
+        # --- history off: nothing stored, the message as it always was ------
+        cfg["history_enabled"] = False
+        app.transcriber.answer = RuntimeError("boom")
+        app._process(audio, None, SOURCE_MIC)
+        assert app.messages[-1] == ("Transcription failed: boom", True)
+        assert len(kept(app)) == 2
+        cfg["history_enabled"] = True
+
+        # --- a store that cannot write, and a stub that predates the store --
+        (tmp / "a-file").write_text("", encoding="utf-8")
+        unkept = _App(tmp, cfg)
+        unkept.failed_takes = FailedTakes(tmp / "a-file" / "failed-takes")
+        unkept.transcriber.answer = RuntimeError("boom")
+        unkept._process(audio, None, SOURCE_MIC)
+        assert unkept.messages[-1] == ("Transcription failed: boom. " + NOT_KEPT_NOTE, True)
+        assert notification_target(unkept.messages[-1][0]) == ("log", "")
+        del unkept.failed_takes
+        unkept._process(audio, None, SOURCE_MIC)
+        assert unkept.messages[-1] == ("Transcription failed: boom", True)
+
+        # --- a retry that works ---------------------------------------------
+        newer = "A dictation made after the failed take."
+        app.history.add(newer)
+        take = app.failed_takes.keep(audio, SOURCE_SYSTEM, "boom", timestamp=time.time() - 3600)
+        # The profile of the take's own source: only the system-audio one is on.
+        cfg["assistant"]["enabled"] = False
+        cfg["assistant"]["system_audio"]["enabled"] = True
+        cfg["replacements"] = "lost => found"
+        profiles: list[dict] = []
+
+        def _refine(text, acfg):
+            profiles.append(acfg)
+            return f"Minutes: {text}"
+
+        real_refine = assistant_module.refine
+        assistant_module.refine = _refine
+        app.transcriber.answer = "the words that were lost"
+        app.posts.clear()
+        try:
+            retry(app, take["id"])
+            expected = assistant_module.profile(cfg["assistant"], SOURCE_SYSTEM)
+        finally:
+            assistant_module.refine = real_refine
+            cfg["assistant"]["system_audio"]["enabled"] = False
+        assert profiles == [expected], profiles
+        # Below both transcripts made since it was recorded, not on top.
+        stored = app.history.entries()
+        assert [e["text"] for e in stored] == [
+            newer, "This text made it.", "Minutes: the words that were found"
+        ], stored
+        assert abs(stored[2]["time"] - take["time"]) < 1e-6, "not stored at the take's own time"
+        assert take["id"] not in kept(app)
+        assert app.inserted == [] and app.injector.copied == [] and app.injector.typed == []
+        assert not [p for p in app.posts if p[0] == "flash_text"], app.posts
+        assert app.messages[-1] == (RETRY_DONE, True)
+
+        # --- retries that keep the take -------------------------------------
+        take = app.failed_takes.keep(audio, SOURCE_MIC, "first error")
+        app.transcriber.answer = RuntimeError("second error")
+        retry(app, take["id"])
+        assert kept(app)[take["id"]]["error"] == "second error"
+        assert app.messages[-1] == ("Retry failed: second error. " + STAYS_NOTE, True)
+        assert notification_target(app.messages[-1][0]) == ("page", "History")
+        app.transcriber.answer = ""
+        retry(app, take["id"])
+        assert kept(app)[take["id"]]["error"] == RETRY_NO_SPEECH_ERROR
+        assert app.messages[-1] == (RETRY_NO_SPEECH, True) and app.no_speech == []
+        (tmp / "failed-takes" / f"{take['id']}.wav").write_bytes(b"not a wav at all")
+        retry(app, take["id"])
+        assert "RIFF" in kept(app)[take["id"]]["error"], kept(app)[take["id"]]
+        assert app.messages[-1][0].startswith("Retry failed:")
+        assert app.messages[-1][0].endswith(STAYS_NOTE)
+
+        # --- history off: the clipboard instead, or the take stays ----------
+        cfg["history_enabled"] = False
+        before = len(app.history.entries())
+        take = app.failed_takes.keep(audio, SOURCE_MIC, "boom")
+        app.transcriber.answer = "Words for the clipboard."
+        retry(app, take["id"])
+        assert app.injector.copied == ["Words for the clipboard."], app.injector.copied
+        assert len(app.history.entries()) == before and take["id"] not in kept(app)
+        assert "clipboard" in app.messages[-1][0], app.messages[-1]
+        take = app.failed_takes.keep(audio, SOURCE_MIC, "boom")
+        app.injector.clipboard_works = False
+        retry(app, take["id"])
+        assert kept(app)[take["id"]]["error"].startswith("Transcribed, but the history is off")
+        assert app.messages[-1][0].endswith(STAYS_NOTE)
+        cfg["history_enabled"] = True
+
+        # --- refused unless idle, and a take that is gone --------------------
+        app.state = STATE_RECORDING
+        changed = app._settings_window.changed
+        app._retry_take(take["id"])
+        assert app.messages[-1] == (RETRY_BUSY, True)
+        assert app.state == STATE_RECORDING and app.retrying_take is None
+        assert not [t for t in threading.enumerate() if t.name == "retry"]
+        assert app._settings_window.changed == changed + 1  # "Retrying…" is relabelled
+        app.state = STATE_IDLE
+        app._handle("retry_take", "f" * 32)  # as the History page posts it
+        assert app.messages[-1] == (RETRY_GONE, True) and app.state == STATE_IDLE
 
 
 def _notifications_lead_to_the_place_they_name():
@@ -10679,6 +11182,161 @@ def _surfaces_name_an_unreadable_history():
             window.deleteLater()
 
 
+def _history_page_lists_a_failed_take():
+    """Settings → History lists a failed take kept for a retry among the
+    transcripts (#363), and every control on the page treats it as what it is.
+
+    Its row says "Transcription failed" in the error role, shows the error and
+    what was recorded until when, and offers Retry — enabled from idle,
+    disabled with a reason while anything records or transcribes, "Retrying…"
+    on the take being retried (Delete… off there), and a click posts the event
+    and relabels at once. The count names it; Export and Copy all leave it out
+    (it has no text); a word search hides it and a date search finds it.
+    Delete… asks and removes the audio; "Clear history…" counts it, and with
+    only failed takes left the page neither claims an empty history nor
+    disables Clear. A store that cannot be listed costs the failed rows, never
+    the transcripts.
+    """
+    import time
+
+    from listen_to_me import settings_ui as _settings_module
+    from listen_to_me.choices import SOURCE_SYSTEM
+    from listen_to_me.failed_takes import FailedTakes
+    from listen_to_me.settings_ui import _RETRY_LABEL, _RETRYING_LABEL, SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    from PySide6.QtWidgets import QLabel, QMessageBox, QPushButton
+
+    class _FakeBox:
+        StandardButton = QMessageBox.StandardButton
+        answer = QMessageBox.StandardButton.No
+        asked: list[str] = []
+        warned: list[str] = []
+
+        @classmethod
+        def question(cls, _parent, _title, text, *_args, **_kwargs):
+            cls.asked.append(text)
+            return cls.answer
+
+        @classmethod
+        def warning(cls, _parent, _title, text, *_args, **_kwargs):
+            cls.warned.append(text)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        stub.failed_takes = FailedTakes(Path(tmp) / "failed-takes")
+        stub.retrying_take = None
+        take = stub.failed_takes.keep([0.1] * 16000 * 3, SOURCE_SYSTEM, "the model could not load")
+        window = SettingsWindow(stub)
+        real_box = _settings_module.QMessageBox
+        try:
+            assert "7 days" in window.chk_history_enabled.toolTip()
+            window._show_page("History")
+            window._refresh_history()
+
+            def page_text() -> str:
+                return " ".join(
+                    label.text() for label in window._history_inner.findChildren(QLabel)
+                )
+
+            def buttons(text: str) -> list:
+                return [
+                    b for b in window._history_inner.findChildren(QPushButton) if b.text() == text
+                ]
+
+            shown = page_text()
+            assert "the model could not load" in shown, shown
+            assert "System audio · 0:03 · kept until" in shown, shown
+            status = [
+                label for label in window._history_inner.findChildren(QLabel)
+                if label.text() == "Transcription failed"
+            ]
+            assert len(status) == 1 and status[0].property("role") == "error", status
+            [retry] = buttons(_RETRY_LABEL)
+            assert retry.isEnabled() and retry.accessibleName().startswith("Retry the failed")
+            assert window.history_count_label.text() == "2 transcripts · 1 failed recording"
+            exported = window._history_export_entries
+            assert len(exported) == 2 and not any(e.get("failed") for e in exported), exported
+            assert window.history_copy_all_button.isEnabled()
+            assert "failed recording" in window.history_clear_button.toolTip()
+
+            # The app's state drives the button without a re-render.
+            assert [b for b, _d, tid, _w in window._retry_buttons if tid == take["id"]] == [retry]
+            stub.state = "recording"
+            window.set_app_state("recording")
+            assert not retry.isEnabled() and "finished" in retry.toolTip(), retry.toolTip()
+            stub.state, stub.retrying_take = "processing", take["id"]
+            window.set_app_state("processing")
+            assert retry.text() == _RETRYING_LABEL and not retry.isEnabled()
+            assert not window._retry_buttons[0][1].isEnabled(), "Delete… on the take being retried"
+            stub.state, stub.retrying_take = "idle", None
+            window.set_app_state("idle")
+            assert retry.text() == _RETRY_LABEL and retry.isEnabled()
+            assert window._retry_buttons[0][1].isEnabled()
+            retry.click()
+            assert stub.posts[-1] == ("retry_take", take["id"]), stub.posts[-1:]
+            assert retry.text() == _RETRYING_LABEL and not retry.isEnabled()
+
+            # Search: a failed take has no text, only its date.
+            window.history_filter_edit.setText("stored")
+            window._refresh_history()
+            assert "Transcription failed" not in page_text()
+            window.history_filter_edit.setText(
+                time.strftime("%Y-%m-%d", time.localtime(take["time"]))
+            )
+            window._refresh_history()
+            assert "Transcription failed" in page_text()
+            assert window.history_count_label.text() == "2 of 3 match", (
+                window.history_count_label.text()
+            )
+            assert [e["text"] for e in window._history_export_entries] == [
+                "A stored transcript for the self-test."
+            ]
+            window.history_filter_edit.setText("")
+            window._refresh_history()
+
+            _settings_module.QMessageBox = _FakeBox
+            window._clear_history()  # declined
+            assert "failed recording kept for a retry is deleted too" in _FakeBox.asked[-1]
+            assert stub.failed_takes.count() == 1
+            _FakeBox.answer = QMessageBox.StandardButton.Yes
+            window._delete_failed_take(dict(take, failed=True))
+            assert _FakeBox.asked[-1].startswith("Delete this failed recording?")
+            assert stub.failed_takes.count() == 0 and "Transcription failed" not in page_text()
+            window._delete_failed_take(dict(take, failed=True))
+            assert "no longer kept" in _FakeBox.warned[-1], _FakeBox.warned
+
+            # Only failed takes left.
+            stub.history.clear()
+            stub.failed_takes.keep([0.1] * 16000, SOURCE_SYSTEM, "boom")
+            window._refresh_history()
+            assert "No transcripts yet" not in page_text() and "Transcription failed" in page_text()
+            assert window.history_count_label.text() == "1 failed recording"
+            assert window.history_clear_button.isEnabled()
+            assert not window.history_export_button.isEnabled()
+            window._clear_history()
+            assert _FakeBox.asked[-1].startswith("Delete the failed recording kept for a retry?")
+            assert stub.failed_takes.count() == 0
+            assert "No transcripts yet" in page_text()
+            _settings_module.QMessageBox = real_box
+
+            class _Unlistable:
+                def entries(self):
+                    raise OSError("refused")
+
+            stub.failed_takes = _Unlistable()
+            stub.history.add("Still listed.")
+            window._refresh_history()
+            assert "Still listed." in page_text()
+        finally:
+            _settings_module.QMessageBox = real_box
+            window.force_close()
+            window.deleteLater()
+
+
 def _settings_engine_offers_the_parakeet_model_and_cpu_threads():
     """The two Engine controls of #286. The Parakeet model combo is shown
     exactly where the Parakeet precision is — with the Parakeet backend only —
@@ -15547,6 +16205,9 @@ _LIGHT_CHECKS = [
     ("history export format", _history_export_format),
     ("history export opens in a real folder", _history_export_start_path),
     ("history clear names what it deletes", _history_clear_prompt),
+    ("history inserts a retried take where it was recorded",
+     _history_inserts_a_retried_take_where_it_was_recorded),
+    ("failed takes are kept for a retry", _failed_takes_are_kept_for_a_retry),
     ("CLI flags", _cli_flags),
     ("recording length warning", _recording_length_warning),
     ("take is warned about its own cap", _take_is_warned_about_its_own_cap),
@@ -15558,6 +16219,7 @@ _LIGHT_CHECKS = [
     ("filler take inserts nothing", _filler_take_inserts_nothing),
     ("implausible take inserts nothing", _implausible_take_inserts_nothing),
     ("withheld transcript is not inserted", _withheld_transcript_is_not_inserted),
+    ("failed take is kept and retried", _failed_take_is_kept_and_retried),
     ("notifications lead to the place they name", _notifications_lead_to_the_place_they_name),
     ("the parsers bound the lines they walk", _the_parsers_bound_the_lines_they_walk),
     ("missing microphone falls back", _missing_microphone_falls_back),
@@ -15674,6 +16336,7 @@ _LIGHT_CHECKS = [
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("source-aware controls stop their take", _source_aware_controls_stop_their_take),
     ("surfaces name an unreadable history", _surfaces_name_an_unreadable_history),
+    ("history page lists a failed take", _history_page_lists_a_failed_take),
     ("settings window edits the new options", _settings_window_edits_the_new_options),
     ("settings engine offers the Parakeet model and CPU threads",
      _settings_engine_offers_the_parakeet_model_and_cpu_threads),

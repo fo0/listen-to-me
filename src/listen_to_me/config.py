@@ -269,9 +269,11 @@ DEFAULTS: dict = {
     # fixed default, which ignores the core count) and at most 8. Held to 1-64 and to the logical
     # processor count at the point of use (cpuinfo.resolve_cpu_threads).
     "cpu_threads": 0,
-    # Keep a local history of transcribed text (never the audio) so a lost
-    # transcript can be recovered from Settings → History. Stored in
-    # history.json next to this config file.
+    # Keep a local history of transcribed text so a lost transcript can be
+    # recovered from Settings → History. Stored in history.json next to this
+    # config file. Never audio — except a take whose transcription failed,
+    # kept 7 days in failed-takes/ beside it for a retry (failed_takes.py),
+    # and only while this is on.
     "history_enabled": True,
     # How many of the most recent transcripts to keep.
     "history_max": 200,
