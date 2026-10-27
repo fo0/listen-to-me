@@ -269,9 +269,11 @@ DEFAULTS: dict = {
     # fixed default, which ignores the core count) and at most 8. Held to 1-64 and to the logical
     # processor count at the point of use (cpuinfo.resolve_cpu_threads).
     "cpu_threads": 0,
-    # Keep a local history of transcribed text (never the audio) so a lost
-    # transcript can be recovered from Settings → History. Stored in
-    # history.json next to this config file.
+    # Keep a local history of transcribed text so a lost transcript can be
+    # recovered from Settings → History. Stored in history.json next to this
+    # config file. Never audio — except a take whose transcription failed,
+    # kept 7 days for a retry in failed_takes_dir() (machine-local, see
+    # there), and only while this is on.
     "history_enabled": True,
     # How many of the most recent transcripts to keep.
     "history_max": 200,
@@ -384,6 +386,40 @@ def config_dir() -> Path:
         return Path.home() / "Library" / "Application Support" / "ListenToMe"
     base = Path(os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config"))
     return base / "listen-to-me"
+
+
+FAILED_TAKES_DIR_NAME = "failed-takes"
+
+
+def failed_takes_dir() -> Path:
+    """Where the audio of a take whose transcription failed is kept for a
+    retry (#363, `failed_takes.py`) — deliberately NOT beside the config.
+
+    `config_dir()` is ``%APPDATA%``, the *roaming* profile on Windows: in a
+    corporate domain, roaming profiles and folder redirection copy it to a
+    file server at every logoff, and up to a gigabyte of voice recordings
+    would end up there, outliving the 7-day purge, Delete… and "Clear
+    history…" on this machine. So each platform gets the place that stays
+    local and is skipped by backups:
+
+    - Windows: ``%LOCALAPPDATA%`` (machine-local, never roamed) — beside the
+      config only when the variable is unset, which a real logon never is;
+    - macOS: ``~/Library/Caches`` (Time Machine skips it);
+    - Linux and the rest: ``$XDG_STATE_HOME`` or ``~/.local/state`` (the XDG
+      home for state that is not worth carrying to another machine).
+
+    Same app folder name as `config_dir`, and the same rule that a set but
+    empty variable counts as unset.
+    """
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        base = Path(local) / "ListenToMe" if local else config_dir()
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches" / "ListenToMe"
+    else:
+        state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+        base = Path(state) / "listen-to-me"
+    return base / FAILED_TAKES_DIR_NAME
 
 
 # The rotating log file `app._setup_logging` writes, beside the config it

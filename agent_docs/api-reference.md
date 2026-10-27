@@ -26,7 +26,7 @@ Config is a JSON file in the platform config dir (`config.py → config_dir()`):
 
 The authoritative schema is `DEFAULTS` in `src/listen_to_me/config.py` (deep-merged over the stored file, so new keys appear automatically on upgrade). Top-level groups: hotkey/model/device settings, `system_audio` (the second recording source: its own hotkey, hotkey mode, loopback device, length cap and the `bundled_portaudio` escape hatch), `overlay`, `assistant` (with a nested `assistant.system_audio` profile for that source's transcripts), `integrations`, plus `history_*`, `update_*` flags. When adding a key: update `DEFAULTS`, wire it into `settings_ui.py` (exceptions: `system_audio.bundled_portaudio`, a support lever deliberately kept out of the Settings UI, and the `overlay.x` / `y` / `screen` / `rel_x` / `rel_y` position the floating icon saves itself), and reflect it in the settings table in `docs/guide/settings.md` (`## config.json reference`).
 
-`history.json` (next to the config) stores recent transcript **text only** — never audio.
+`history.json` (next to the config) stores recent transcript **text only** — never audio. The one exception is a separate store: `config.failed_takes_dir()` — machine-local, deliberately not the roaming config dir: `%LOCALAPPDATA%\ListenToMe\failed-takes`, `$XDG_STATE_HOME`/`~/.local/state/listen-to-me/failed-takes`, `~/Library/Caches/ListenToMe/failed-takes` — keeps the audio of a take whose transcription failed — `<id>.wav` + `<id>.json` (`time`, `source`, `seconds`, `error`) — for 7 days so Settings → History can retry it, and only while `history_enabled` is on (`failed_takes.py`).
 
 ## Consumed External Services
 

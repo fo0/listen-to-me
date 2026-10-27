@@ -19,6 +19,9 @@ installed, GPU transcription fails.
   transcription keeps working.
 - **Make it permanent:** set **Settings → Engine → Device = CPU**. No CUDA
   needed; for the small models the speed difference is minor.
+- **The recording that failed is not lost:** while the history is on, its audio
+  is kept for 7 days — once the device is fixed, press **Retry** on its row in
+  **Settings → History**.
 - **Use the GPU instead (NVIDIA only):** install a recent NVIDIA driver plus the
   CUDA 12 runtime library **cuBLAS** — the [CUDA Toolkit
   12.x](https://developer.nvidia.com/cuda-downloads), or drop the DLLs from the

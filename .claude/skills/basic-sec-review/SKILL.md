@@ -52,6 +52,7 @@ outdated one. Two obligations make the coverage checkable:
 
 - [ ] Assistant `api_key` never logged, never committed, never echoed in a notification
 - [ ] `history.json` stores text only — never audio, never secrets
+- [ ] Audio is stored only by `failed_takes.py` (failed transcriptions, #363): only while the history is on, in a non-roaming local folder, 7-day purge plus count/size caps, owner-only on POSIX, deleted on retry success / Delete / Clear, ids validated before any path is built, never logged
 - [ ] No hardcoded credentials / tokens anywhere in the diff
 - [ ] Config written via `atomic_write_json` (no partial/truncated writes)
 

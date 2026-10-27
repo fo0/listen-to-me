@@ -11,6 +11,7 @@ the "jump to" table of contents and the anchors for it automatically.
 from __future__ import annotations
 
 from . import APP_NAME, REPO_URL
+from .failed_takes_text import RETENTION_DAYS
 
 # Each topic: a short anchor ``id``, a ``title`` and an HTML ``body`` (a subset
 # of HTML that Qt's rich-text engine renders: headings, paragraphs, lists,
@@ -34,6 +35,10 @@ to make CPU the permanent choice, or to run on the GPU on purpose.</p>
 <p><b>Quick fix — works on any PC.</b> Open <b>Settings → Engine → Device</b> and
 set it to <b>CPU</b>. No CUDA required. It is a bit slower but reliable; for the
 small models the difference is minor.</p>
+
+<p><b>The recording that failed is not lost.</b> While the history is on, its
+audio is kept for {RETENTION_DAYS}&nbsp;days: once the device is fixed, press <b>Retry</b> on
+its row in <b>Settings → History</b> to transcribe it again.</p>
 
 <p><b>Use the GPU (NVIDIA graphics cards only).</b> You need a recent NVIDIA
 driver plus the CUDA&nbsp;12 runtime library <b>cuBLAS</b>. Either install the
