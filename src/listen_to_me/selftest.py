@@ -13873,7 +13873,6 @@ def _system_audio_hint_names_the_outputs_it_cannot_record():
 
 def _gui_construction():
     from listen_to_me import overlay as overlay_module
-    from listen_to_me.choices import GERMAN_TURBO_CT2, model_from_label, model_label
     from listen_to_me.onboarding import OnboardingWizard
     from listen_to_me.overlay import Overlay
     from listen_to_me.settings_ui import SettingsWindow
