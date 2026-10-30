@@ -41,6 +41,13 @@ Everything Listen To Me does, in detail. The short version is in the
   and a signal too quiet to recognize are named as the device problems they are,
   instead of every case reading "No speech detected." and sending you back to
   repeat the dictation into a muted microphone.
+- **A dead microphone is reported while you are still speaking** — when a
+  dictation has delivered nothing but silence for its first 3 seconds (the
+  wrong input device, a mute switch, a revoked permission), a notification says
+  so while the recording is still running, instead of after you have dictated
+  the whole paragraph into it. Only for microphone takes — a system-audio take
+  is silent until something plays — and only for no signal at all: a
+  working microphone before you start talking does not trigger it.
 - **A notification takes you where it points** — click one that names a place
   ("Settings → Audio", "it is in Settings → History", "see the log file", "tray
   menu → Help") and that page of the settings window, or the log file, opens.

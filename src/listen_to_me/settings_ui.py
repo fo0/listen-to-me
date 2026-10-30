@@ -918,6 +918,14 @@ class SettingsWindow(QDialog):
         self._help_index = self._page_index["Help"]
         self.nav.currentRowChanged.connect(self._on_page_changed)
         self.nav.setCurrentRow(self._nav_row["Home"])
+        from .settings_search import SettingsSearch
+
+        self.settings_search = SettingsSearch(
+            self.settings_search_edit, self._search_pages, self._go_to_setting
+        )
+        # The window still opens with the sidebar focused, as it did before the
+        # search field above it became the first stop in the focus chain.
+        self.nav.setFocus()
 
         # Re-check the "Selected model" status line when an input it depends on
         # changes — debounced so typing in the model-folder field probes once,
@@ -1032,6 +1040,21 @@ class SettingsWindow(QDialog):
         # top (the unsaved-changes prompt) blocks it like any other input.
         self.apply_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Save), self)
         self.apply_shortcut.activated.connect(self._apply)
+        # Ctrl+Tab / Ctrl+Shift+Tab and Ctrl+PgDown / Ctrl+PgUp step through the
+        # sidebar's pages, as they step through the tabs of any tabbed dialog —
+        # the eight pages were reachable from the keyboard only by tabbing back
+        # into the sidebar first. Window-wide like Ctrl+S, so they work from
+        # whichever field has the focus.
+        self.page_shortcuts = []
+        for keys, step in (
+            (QKeySequence.StandardKey.NextChild, 1),
+            (QKeySequence.StandardKey.PreviousChild, -1),
+            ("Ctrl+PgDown", 1),
+            ("Ctrl+PgUp", -1),
+        ):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.activated.connect(lambda step=step: self._step_page(step))
+            self.page_shortcuts.append(shortcut)
         apply_keys = self.apply_shortcut.key().toString(QKeySequence.SequenceFormat.NativeText)
         apply_btn = QPushButton("&Apply")
         apply_btn.setToolTip(
@@ -1116,6 +1139,18 @@ class SettingsWindow(QDialog):
         bh.addLayout(names)
         bh.addStretch(1)
         sv.addWidget(brand)
+
+        # "Find a setting" (settings_search.py), wired once the pages exist.
+        search_row = QWidget()
+        sr = QHBoxLayout(search_row)
+        sr.setContentsMargins(12, 0, 12, 6)
+        self.settings_search_edit = QLineEdit()
+        self.settings_search_edit.setPlaceholderText("Find a setting…")
+        self.settings_search_edit.setClearButtonEnabled(True)
+        self.settings_search_edit.setAccessibleName("Find a setting")
+        self.settings_search_edit.setToolTip("Type part of an option's name, then pick it or press Enter.")
+        sr.addWidget(self.settings_search_edit)
+        sv.addWidget(search_row)
 
         self.nav = QListWidget()
         self.nav.setObjectName("nav")
@@ -3482,6 +3517,43 @@ class SettingsWindow(QDialog):
     def _show_page(self, title: str) -> None:
         """Switch the sidebar (and with it the stack) to the page `title`."""
         self.nav.setCurrentRow(self._nav_row[title])
+
+    def _step_page(self, step: int) -> None:
+        """Move `step` pages down (or up) the sidebar, skipping the section
+        headers and wrapping around at either end. The focus goes to the
+        sidebar, as a tab dialog's goes to its tab bar: the field that held it
+        is on the page that was just hidden."""
+        rows = [
+            row for row in range(self.nav.count())
+            if self.nav.item(row).flags() & Qt.ItemFlag.ItemIsSelectable
+        ]
+        if not rows:
+            return
+        current = self.nav.currentRow()
+        position = rows.index(current) if current in rows else 0
+        self.nav.setCurrentRow(rows[(position + step) % len(rows)])
+        self.nav.setFocus(Qt.FocusReason.ShortcutFocusReason)
+
+    def _search_pages(self) -> list:
+        """What "Find a setting" indexes: every page but Home, in sidebar order."""
+        pages = self._page_index.items()
+        return [(title, self.stack.widget(i)) for title, i in pages if title != "Home"]
+
+    def _go_to_setting(self, title: str, widget: QWidget) -> None:
+        """Open page `title` with `widget` scrolled into view and focused — a
+        pick in "Find a setting" lands on the option, not on top of its page."""
+        self._show_page(title)
+        scroll = self.stack.widget(self._page_index[title]).findChild(QScrollArea)
+        if scroll is not None:
+            scroll.ensureWidgetVisible(widget)
+        # A card or a row container takes no focus itself: its first field does.
+        fields = [widget] + widget.findChildren(QWidget)
+        no_focus = Qt.FocusPolicy.NoFocus
+        focusable = [
+            w for w in fields
+            if w.focusPolicy() != no_focus and w.isEnabled() and w.isVisibleTo(widget)
+        ]
+        (focusable[0] if focusable else widget).setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _stop_app_hotkeys(self) -> None:
         """Stop *both* of the app's global listeners (#191).

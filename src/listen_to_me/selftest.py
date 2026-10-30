@@ -2487,6 +2487,9 @@ def _failed_take_is_kept_and_retried():
         def _check_length_warning(self):
             pass
 
+        def _check_silent_microphone(self):
+            pass
+
         def _tick_recording_clock(self):
             pass
 
@@ -3738,6 +3741,103 @@ def _empty_transcript_names_the_microphone():
         assert no_speech_message(unknown) == generic
     # The thresholds the verdicts rest on: ordered, and both inside full scale.
     assert 0.0 < _SILENT_PEAK < _QUIET_PEAK < 1.0
+
+
+def _microphone_silence_is_reported_while_recording():
+    """A microphone that delivers nothing but digital silence is reported while
+    the take is still running, not only once it is over — exactly once per
+    take, never for a system-audio take (silent until something plays), never
+    for a merely quiet signal (a working microphone before the user speaks),
+    and never from too little audio to judge. Borrowed unbound onto a stub
+    like `_take_is_warned_about_its_own_cap`; the verdict is stubbed so this
+    runs without numpy, which the CI smoke job does not install."""
+    import time
+
+    from listen_to_me import app as app_module
+    from listen_to_me.app import (
+        _SILENT_MIC_CHECK_SECONDS,
+        SAMPLE_RATE,
+        STATE_PROCESSING,
+        STATE_RECORDING,
+        App,
+        notification_target,
+        silent_microphone_message,
+    )
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+
+    message = silent_microphone_message("silent")
+    assert message and "still running" in message and "muted" in message, message
+    assert str(int(_SILENT_MIC_CHECK_SECONDS)) in message, message
+    assert notification_target(message) == ("page", "Audio"), notification_target(message)
+    for verdict in ("quiet", "ok", "unknown", "", "Silent"):
+        assert silent_microphone_message(verdict) is None, verdict
+    assert silent_microphone_message("silent", SOURCE_SYSTEM) is None
+
+    class _Recorder:
+        def __init__(self, frames, fail=False):
+            self.frames, self.fail, self.reads = frames, fail, 0
+
+        def snapshot(self, max_frames=None, start_frame=None):
+            self.reads += 1
+            if self.fail:
+                raise RuntimeError("stream gone")
+            return [0.0] * self.frames
+
+    class _App:
+        _check_silent_microphone = App._check_silent_microphone
+
+        def __init__(self, elapsed, *, source=SOURCE_MIC, frames=None, fail=False,
+                     state=STATE_RECORDING):
+            self.state = state
+            self._source = source
+            self._silence_checked = False
+            self._recording_started = time.monotonic() - elapsed
+            if frames is None:
+                frames = int(SAMPLE_RATE * elapsed)
+            self.recorder = _Recorder(frames, fail)
+            self.messages: list[tuple[str, bool]] = []
+
+        def notify(self, message, force=False):
+            self.messages.append((message, force))
+
+    due = _SILENT_MIC_CHECK_SECONDS + 0.1
+    verdict = ["silent"]
+    real_verdict = app_module._clip_verdict
+    app_module._clip_verdict = lambda audio: verdict[0]
+    try:
+        early = _App(_SILENT_MIC_CHECK_SECONDS - 1)
+        early._check_silent_microphone()
+        assert not early.messages and not early._silence_checked and early.recorder.reads == 0
+
+        dead = _App(due)
+        dead._check_silent_microphone()
+        assert dead.messages == [(silent_microphone_message("silent"), True)], dead.messages
+        # Once per take: latched, and the capture is read exactly once.
+        dead._check_silent_microphone()
+        assert len(dead.messages) == 1 and dead.recorder.reads == 1
+
+        system = _App(due, source=SOURCE_SYSTEM)
+        system._check_silent_microphone()
+        assert not system.messages and system._silence_checked and system.recorder.reads == 0
+
+        late_stream = _App(due, frames=SAMPLE_RATE // 2)  # the device was slow to start
+        late_stream._check_silent_microphone()
+        assert not late_stream.messages and late_stream._silence_checked
+
+        broken = _App(due, fail=True)
+        broken._check_silent_microphone()  # must not raise into the poll
+        assert not broken.messages and broken._silence_checked
+
+        busy = _App(due, state=STATE_PROCESSING)
+        busy._check_silent_microphone()
+        assert not busy.messages and busy.recorder.reads == 0
+
+        verdict[0] = "quiet"  # a working microphone before the user speaks
+        quiet = _App(due)
+        quiet._check_silent_microphone()
+        assert not quiet.messages and quiet._silence_checked
+    finally:
+        app_module._clip_verdict = real_verdict
 
 
 def _recorder_events_carry_their_take():
@@ -9598,6 +9698,9 @@ def _the_poll_ticks_the_cursor_preview():
         def _check_length_warning(self):
             self.warned += 1
 
+        def _check_silent_microphone(self):
+            pass
+
         def _tick_recording_clock(self):
             self.clocked += 1
 
@@ -9644,6 +9747,9 @@ def _the_poll_ticks_the_cursor_preview():
             self.overlay.show_live(str(payload))
 
         def _check_length_warning(self):
+            pass
+
+        def _check_silent_microphone(self):
             pass
 
         def _tick_recording_clock(self):
@@ -10604,6 +10710,88 @@ def _settings_window_reopens_as_it_was_left():
         finally:
             reopened.deleteLater()
         assert "settings_geometry" not in stub.cfg.data
+
+
+def _settings_can_be_found_by_name():
+    """"Find a setting" lists the options shown on the pages by name and page,
+    matches every typed word anywhere in the row, never offers a row hidden on
+    its page, and Enter opens the first match instead of reaching Save."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QCheckBox, QLabel, QLineEdit, QPushButton
+
+    from listen_to_me.settings_search import SEPARATOR, match_entries, setting_label
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    keys = ["Global hotkey — General", "Beep on start/stop — General", "Model — Engine"]
+    assert match_entries("  ", keys) == [] and match_entries("HOTKEY", keys) == keys[:1]
+    assert match_entries("general beep", keys) == keys[1:2]
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    field, label = QLineEdit(), QLabel("&Global hotkey:")
+    label.setBuddy(field)
+    assert setting_label(label) == ("Global hotkey", field)
+    assert setting_label(QLabel("A hint without a field.")) is None
+    assert setting_label(QPushButton("Save")) is None
+    assert setting_label(QCheckBox("Save && close"))[0] == "Save & close"
+    with tempfile.TemporaryDirectory() as tmp:
+        window = SettingsWindow(_StubApp(Path(tmp)))
+        try:
+            search = window.settings_search
+            search.refresh()
+            entries = list(search._index)
+            assert f"Global hotkey{SEPARATOR}General" in entries, entries[:20]
+            pages = {key.rsplit(SEPARATOR, 1)[1] for key in entries}
+            assert {"General", "Engine", "Audio", "Overlay", "Assistant"} <= pages, pages
+            assert "Home" not in pages
+            engine = window.stack.widget(window._page_index["Engine"])
+            if not window.ov_device_combo.isVisibleTo(engine):  # another backend
+                assert window.ov_device_combo not in [w for _t, w in search._index.values()]
+            edit = window.settings_search_edit
+            edit.setText("global hotkey")
+            QTest.keyClick(edit, Qt.Key.Key_Return)
+            app.processEvents()  # the page opens on the next event-loop turn
+            assert window.stack.currentIndex() == window._page_index["General"]
+            assert edit.text() == "" and window.result() == 0, "Enter reached Save"
+            assert not search.open("Nothing like this — Nowhere")
+        finally:
+            window.deleteLater()
+
+
+def _settings_pages_step_with_ctrl_tab():
+    """Ctrl+Tab / Ctrl+PgDown and back step through the sidebar's pages like a
+    tabbed dialog's tabs: section headers are skipped and both ends wrap.
+    Asserted through `activated`, like Ctrl+S —
+    the offscreen platform delivers no window-wide shortcut to a hidden window."""
+    from PySide6.QtGui import QKeySequence
+
+    from listen_to_me.settings_ui import SettingsWindow
+
+    _ensure_qapp()
+    with tempfile.TemporaryDirectory() as tmp:
+        window = SettingsWindow(_StubApp(Path(tmp)))
+        try:
+            keys = [shortcut.key() for shortcut in window.page_shortcuts]
+            assert QKeySequence(QKeySequence.StandardKey.NextChild) in keys, keys
+            assert QKeySequence("Ctrl+PgUp") in keys, keys
+            nxt, prev = window.page_shortcuts[0], window.page_shortcuts[1]
+
+            def page() -> str:
+                return window.nav.currentItem().text()
+
+            assert page() == "Home"
+            nxt.activated.emit()
+            assert page() == "General", "the SETTINGS header was not skipped"
+            prev.activated.emit()
+            prev.activated.emit()
+            assert page() == "Help", "the first page does not wrap to the last"
+            nxt.activated.emit()
+            assert page() == "Home", "the last page does not wrap to the first"
+            assert window.stack.currentIndex() == window._page_index["Home"]
+        finally:
+            window.deleteLater()
 
 
 def _hotkey_pause_is_visible_and_temporary():
@@ -16638,6 +16826,8 @@ _LIGHT_CHECKS = [
     ("the recording path asks PortAudio nothing", _recording_path_asks_portaudio_nothing),
     ("assistant failure is actionable", _assistant_failure_is_actionable),
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
+    ("microphone silence is reported while recording",
+     _microphone_silence_is_reported_while_recording),
     ("no-speech report names its own source", _no_speech_report_names_its_own_source),
     ("recorder events carry their take", _recorder_events_carry_their_take),
     ("a modifier-only toggle hotkey fires on a clean release",
@@ -16732,6 +16922,8 @@ _LIGHT_CHECKS = [
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray notification click is forwarded", _tray_notification_click_is_forwarded),
     ("settings window reopens as it was left", _settings_window_reopens_as_it_was_left),
+    ("settings can be found by name", _settings_can_be_found_by_name),
+    ("settings pages step with Ctrl+Tab", _settings_pages_step_with_ctrl_tab),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("transcription is counted", _transcription_is_counted),
     ("too short take explains hold mode", _too_short_take_explains_hold_mode),
