@@ -10760,6 +10760,40 @@ def _settings_can_be_found_by_name():
             window.deleteLater()
 
 
+def _settings_pages_step_with_ctrl_tab():
+    """Ctrl+Tab / Ctrl+PgDown and back step through the sidebar's pages like a
+    tabbed dialog's tabs: section headers are skipped and both ends wrap.
+    Asserted through `activated`, like Ctrl+S —
+    the offscreen platform delivers no window-wide shortcut to a hidden window."""
+    from PySide6.QtGui import QKeySequence
+
+    from listen_to_me.settings_ui import SettingsWindow
+
+    _ensure_qapp()
+    with tempfile.TemporaryDirectory() as tmp:
+        window = SettingsWindow(_StubApp(Path(tmp)))
+        try:
+            keys = [shortcut.key() for shortcut in window.page_shortcuts]
+            assert QKeySequence(QKeySequence.StandardKey.NextChild) in keys, keys
+            assert QKeySequence("Ctrl+PgUp") in keys, keys
+            nxt, prev = window.page_shortcuts[0], window.page_shortcuts[1]
+
+            def page() -> str:
+                return window.nav.currentItem().text()
+
+            assert page() == "Home"
+            nxt.activated.emit()
+            assert page() == "General", "the SETTINGS header was not skipped"
+            prev.activated.emit()
+            prev.activated.emit()
+            assert page() == "Help", "the first page does not wrap to the last"
+            nxt.activated.emit()
+            assert page() == "Home", "the last page does not wrap to the first"
+            assert window.stack.currentIndex() == window._page_index["Home"]
+        finally:
+            window.deleteLater()
+
+
 def _hotkey_pause_is_visible_and_temporary():
     """Pausing the global hotkey stops the listener, says so in the tray status,
     and survives every path that hands the listener back (a saved setting, a
@@ -16889,6 +16923,7 @@ _LIGHT_CHECKS = [
     ("tray notification click is forwarded", _tray_notification_click_is_forwarded),
     ("settings window reopens as it was left", _settings_window_reopens_as_it_was_left),
     ("settings can be found by name", _settings_can_be_found_by_name),
+    ("settings pages step with Ctrl+Tab", _settings_pages_step_with_ctrl_tab),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("transcription is counted", _transcription_is_counted),
     ("too short take explains hold mode", _too_short_take_explains_hold_mode),

@@ -1040,6 +1040,21 @@ class SettingsWindow(QDialog):
         # top (the unsaved-changes prompt) blocks it like any other input.
         self.apply_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Save), self)
         self.apply_shortcut.activated.connect(self._apply)
+        # Ctrl+Tab / Ctrl+Shift+Tab and Ctrl+PgDown / Ctrl+PgUp step through the
+        # sidebar's pages, as they step through the tabs of any tabbed dialog —
+        # the eight pages were reachable from the keyboard only by tabbing back
+        # into the sidebar first. Window-wide like Ctrl+S, so they work from
+        # whichever field has the focus.
+        self.page_shortcuts = []
+        for keys, step in (
+            (QKeySequence.StandardKey.NextChild, 1),
+            (QKeySequence.StandardKey.PreviousChild, -1),
+            ("Ctrl+PgDown", 1),
+            ("Ctrl+PgUp", -1),
+        ):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.activated.connect(lambda step=step: self._step_page(step))
+            self.page_shortcuts.append(shortcut)
         apply_keys = self.apply_shortcut.key().toString(QKeySequence.SequenceFormat.NativeText)
         apply_btn = QPushButton("&Apply")
         apply_btn.setToolTip(
@@ -3502,6 +3517,22 @@ class SettingsWindow(QDialog):
     def _show_page(self, title: str) -> None:
         """Switch the sidebar (and with it the stack) to the page `title`."""
         self.nav.setCurrentRow(self._nav_row[title])
+
+    def _step_page(self, step: int) -> None:
+        """Move `step` pages down (or up) the sidebar, skipping the section
+        headers and wrapping around at either end. The focus goes to the
+        sidebar, as a tab dialog's goes to its tab bar: the field that held it
+        is on the page that was just hidden."""
+        rows = [
+            row for row in range(self.nav.count())
+            if self.nav.item(row).flags() & Qt.ItemFlag.ItemIsSelectable
+        ]
+        if not rows:
+            return
+        current = self.nav.currentRow()
+        position = rows.index(current) if current in rows else 0
+        self.nav.setCurrentRow(rows[(position + step) % len(rows)])
+        self.nav.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def _search_pages(self) -> list:
         """What "Find a setting" indexes: every page but Home, in sidebar order."""

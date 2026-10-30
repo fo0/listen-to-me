@@ -14,6 +14,10 @@ changes at a glance.
 
 ### Added
 
+- **`Ctrl+Tab` steps through the settings pages.** `Ctrl+Tab` /
+  `Ctrl+Shift+Tab` and `Ctrl+PgDown` / `Ctrl+PgUp` move to the next or
+  previous page from any field, wrapping at either end, as in any tabbed
+  dialog.
 - **Find a setting by name.** **Find a setting…** above the settings sidebar
   lists every option whose name contains the words typed, with its page; a
   pick (or Enter) opens that page with the option in view and focused.
