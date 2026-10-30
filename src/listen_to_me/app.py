@@ -76,6 +76,12 @@ _LENGTH_WARNING_SECONDS = 30
 # the CPU can take minutes, and a status that never moves reads as a hang.
 _PROCESSING_CLOCK_AFTER_S = 5
 
+# How far into a microphone take the captured audio is checked once for a dead
+# device (see `silent_microphone_message`). Long enough for the stream to have
+# delivered real buffers and for a breath or a room to register on a working
+# microphone, short enough that the user has not dictated a paragraph yet.
+_SILENT_MIC_CHECK_SECONDS = 3.0
+
 
 def still_transcribing_message(elapsed, retrying: bool = False) -> str:
     """The answer to a hotkey press while the previous take is transcribed —
@@ -143,6 +149,33 @@ def length_warning_message(
     return (
         f"{int(round(remaining))} seconds left of the {int(cap)} s maximum "
         "recording length — the recording stops by itself then."
+    )
+
+
+def silent_microphone_message(verdict: str, source: str = SOURCE_MIC) -> str | None:
+    """The early warning for a microphone take that has carried no signal at
+    all for its first `_SILENT_MIC_CHECK_SECONDS`, or None when none is due.
+
+    A dead microphone — the wrong input device, a hardware mute switch, an OS
+    permission that was revoked — used to be noticed only after the take:
+    "No sound reached the microphone …" arrives once the user has finished
+    speaking, and everything said into the dead device is lost. This goes out
+    while the recording is still running, so the fix costs one sentence
+    instead of the whole dictation.
+
+    Only the "silent" verdict counts: "quiet" is what a working microphone
+    reports before the user has started to speak, and a warning about that
+    would interrupt every take that begins with a pause. Only the microphone:
+    a system-audio take is silent until something plays, which is normal.
+    Takes the verdict of `diagnostics.clip_stats` so it says the same as the
+    finished-take message and the microphone test on the Audio page.
+    """
+    if source != SOURCE_MIC or verdict != "silent":
+        return None
+    return (
+        f"No sound has reached the microphone in the first {int(_SILENT_MIC_CHECK_SECONDS)} "
+        "seconds — the recording is still running. Check the input device under "
+        "Settings → Audio and whether the microphone is muted."
     )
 
 
@@ -848,6 +881,7 @@ class App:
         self._recording_started = 0.0  # monotonic start of the running take
         self._processing_started = 0.0  # monotonic start of its transcription
         self._length_warned = False  # one max-length heads-up per take
+        self._silence_checked = False  # one dead-microphone check per take
         # Set by "Don't insert this transcript" while the take that owns it is
         # transcribed: the model cannot be stopped mid-decode, but its result
         # can be kept away from the cursor. One Event per take, handed to its
@@ -984,6 +1018,7 @@ class App:
         except queue.Empty:
             pass
         self._check_length_warning()
+        self._check_silent_microphone()
         self._tick_recording_clock()
         purge_when_due(self)
         if self.overlay is not None:
@@ -1023,6 +1058,42 @@ class App:
         # into one notification per poll tick for the rest of the take.
         self._length_warned = True
         self.notify(message)
+
+    def _check_silent_microphone(self) -> None:
+        """Warn once, while the take is still running, when the microphone has
+        delivered nothing but digital silence for its first seconds.
+
+        Rides the 100 ms poll like `_check_length_warning` and looks exactly
+        once per take, when it turns `_SILENT_MIC_CHECK_SECONDS` old (a few
+        seconds of 16 kHz mono, so the one snapshot is cheap). Latched first,
+        so a failure can never repeat every 100 ms. A capture shorter than it
+        should be by then — a device slow to start delivering — is not judged:
+        a false alarm sends the user to fix a microphone that works.
+        """
+        if self._silence_checked or self.state != STATE_RECORDING:
+            return
+        if time.monotonic() - self._recording_started < _SILENT_MIC_CHECK_SECONDS:
+            return
+        self._silence_checked = True
+        if self._source != SOURCE_MIC:
+            return
+        try:
+            audio = self.recorder.snapshot()
+        except Exception:
+            log.debug("could not read the running take for the silence check", exc_info=True)
+            return
+        if len(audio) < SAMPLE_RATE * (_SILENT_MIC_CHECK_SECONDS - 1):
+            return
+        message = silent_microphone_message(_clip_verdict(audio), self._source)
+        if message is None:
+            return
+        log.warning(
+            "the microphone delivered only silence in the first %.0f s of the take",
+            _SILENT_MIC_CHECK_SECONDS,
+        )
+        # Forced for the reason the finished take's "silent" message is: a
+        # device the user has to fix, not a status to be suppressed.
+        self.notify(message, force=True)
 
     def _processing_elapsed(self) -> float:
         """Seconds the running transcription has taken, 0 outside one."""
@@ -1307,6 +1378,7 @@ class App:
         self._recording_id = take
         self._recording_started = time.monotonic()
         self._length_warned = False
+        self._silence_checked = False
         self._clock_seconds = -1  # the next poll renders this take's 0:00
         self._set_state(STATE_RECORDING)
         self._beep(880)
