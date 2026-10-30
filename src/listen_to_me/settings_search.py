@@ -9,9 +9,9 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QObject, QStringListModel, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, QStringListModel, QTimer
 from PySide6.QtWidgets import (
-    QCheckBox, QCompleter, QGroupBox, QLabel, QLineEdit, QRadioButton, QWidget,
+    QCheckBox, QCompleter, QGroupBox, QLabel, QLineEdit, QRadioButton, QToolTip, QWidget,
 )
 
 from .qtutil import clear_on_escape, keep_return_in_field
@@ -136,3 +136,11 @@ class SettingsSearch(QObject):
         matches = match_entries(self._edit.text(), self._index)
         if matches:
             self.open(matches[0])
+        elif self._edit.text().strip():
+            # Enter on a miss did nothing at all — say so where the user looks.
+            self.show_feedback(self._edit.accessibleDescription())
+
+    def show_feedback(self, message: str) -> None:
+        """Show `message` as a tooltip just below the field."""
+        anchor = self._edit.mapToGlobal(QPoint(0, self._edit.height()))
+        QToolTip.showText(anchor, message, self._edit)

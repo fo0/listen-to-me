@@ -10753,6 +10753,12 @@ def _settings_can_be_found_by_name():
             # The outcome is voiced on the field: a miss only keeps the popup shut.
             edit.setText("zzqx-no-such-option")
             assert edit.accessibleDescription() == "No setting matches “zzqx-no-such-option”"
+            # …and Enter on it says so on screen instead of doing nothing.
+            shown: list[str] = []
+            search.show_feedback = shown.append
+            QTest.keyClick(edit, Qt.Key.Key_Return)
+            assert shown == ["No setting matches “zzqx-no-such-option”"], shown
+            assert edit.text() == "zzqx-no-such-option" and window.result() == 0
             edit.setText("global hotkey")
             voiced = edit.accessibleDescription()
             assert voiced.endswith(("setting matches", "settings match")), voiced
