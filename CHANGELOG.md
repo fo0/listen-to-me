@@ -14,6 +14,9 @@ changes at a glance.
 
 ### Added
 
+- **Find a setting by name.** **Find a setting…** above the settings sidebar
+  lists every option whose name contains the words typed, with its page; a
+  pick (or Enter) opens that page with the option in view and focused.
 - **A dead microphone is reported while the take is still running.** A
   microphone that delivered no signal at all — wrong input device, mute
   switch, revoked permission — was only named once the take was over, after

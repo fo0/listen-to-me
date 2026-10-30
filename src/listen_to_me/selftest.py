@@ -10712,6 +10712,54 @@ def _settings_window_reopens_as_it_was_left():
         assert "settings_geometry" not in stub.cfg.data
 
 
+def _settings_can_be_found_by_name():
+    """"Find a setting" lists the options shown on the pages by name and page,
+    matches every typed word anywhere in the row, never offers a row hidden on
+    its page, and Enter opens the first match instead of reaching Save."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QCheckBox, QLabel, QLineEdit, QPushButton
+
+    from listen_to_me.settings_search import SEPARATOR, match_entries, setting_label
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    keys = ["Global hotkey — General", "Beep on start/stop — General", "Model — Engine"]
+    assert match_entries("  ", keys) == [] and match_entries("HOTKEY", keys) == keys[:1]
+    assert match_entries("general beep", keys) == keys[1:2]
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    field, label = QLineEdit(), QLabel("&Global hotkey:")
+    label.setBuddy(field)
+    assert setting_label(label) == ("Global hotkey", field)
+    assert setting_label(QLabel("A hint without a field.")) is None
+    assert setting_label(QPushButton("Save")) is None
+    assert setting_label(QCheckBox("Save && close"))[0] == "Save & close"
+    with tempfile.TemporaryDirectory() as tmp:
+        window = SettingsWindow(_StubApp(Path(tmp)))
+        try:
+            search = window.settings_search
+            search.refresh()
+            entries = list(search._index)
+            assert f"Global hotkey{SEPARATOR}General" in entries, entries[:20]
+            pages = {key.rsplit(SEPARATOR, 1)[1] for key in entries}
+            assert {"General", "Engine", "Audio", "Overlay", "Assistant"} <= pages, pages
+            assert "Home" not in pages
+            engine = window.stack.widget(window._page_index["Engine"])
+            if not window.ov_device_combo.isVisibleTo(engine):  # another backend
+                assert window.ov_device_combo not in [w for _t, w in search._index.values()]
+            edit = window.settings_search_edit
+            edit.setText("global hotkey")
+            QTest.keyClick(edit, Qt.Key.Key_Return)
+            app.processEvents()  # the page opens on the next event-loop turn
+            assert window.stack.currentIndex() == window._page_index["General"]
+            assert edit.text() == "" and window.result() == 0, "Enter reached Save"
+            assert not search.open("Nothing like this — Nowhere")
+        finally:
+            window.deleteLater()
+
+
 def _hotkey_pause_is_visible_and_temporary():
     """Pausing the global hotkey stops the listener, says so in the tray status,
     and survives every path that hands the listener back (a saved setting, a
@@ -16840,6 +16888,7 @@ _LIGHT_CHECKS = [
     ("tray names the hotkey", _tray_names_the_hotkey),
     ("tray notification click is forwarded", _tray_notification_click_is_forwarded),
     ("settings window reopens as it was left", _settings_window_reopens_as_it_was_left),
+    ("settings can be found by name", _settings_can_be_found_by_name),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("transcription is counted", _transcription_is_counted),
     ("too short take explains hold mode", _too_short_take_explains_hold_mode),
