@@ -10789,6 +10789,10 @@ def _settings_pages_step_with_ctrl_tab():
             assert QKeySequence(QKeySequence.StandardKey.NextChild) in keys, keys
             assert QKeySequence("Ctrl+PgUp") in keys, keys
             nxt, prev = window.page_shortcuts[0], window.page_shortcuts[1]
+            # Named where the pages are, for the mouse and the screen reader.
+            named = nxt.key().toString(QKeySequence.SequenceFormat.NativeText)
+            assert named and named in window.nav.accessibleDescription(), named
+            assert window.nav.toolTip() == window.nav.accessibleDescription()
 
             def page() -> str:
                 return window.nav.currentItem().text()
