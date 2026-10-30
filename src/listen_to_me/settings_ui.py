@@ -1055,6 +1055,19 @@ class SettingsWindow(QDialog):
             shortcut = QShortcut(QKeySequence(keys), self)
             shortcut.activated.connect(lambda step=step: self._step_page(step))
             self.page_shortcuts.append(shortcut)
+        # Named on the sidebar, as Ctrl+S is on Apply: a key nothing on screen
+        # mentions is one only readers of the user guide ever find.
+        next_keys, prev_keys = (
+            shortcut.key().toString(QKeySequence.SequenceFormat.NativeText)
+            for shortcut in self.page_shortcuts[:2]
+        )
+        if next_keys and prev_keys:
+            pages_hint = (
+                f"Press {next_keys} or {prev_keys} to go to the next or previous "
+                "page from any field."
+            )
+            self.nav.setToolTip(pages_hint)
+            self.nav.setAccessibleDescription(pages_hint)
         apply_keys = self.apply_shortcut.key().toString(QKeySequence.SequenceFormat.NativeText)
         apply_btn = QPushButton("&Apply")
         apply_btn.setToolTip(

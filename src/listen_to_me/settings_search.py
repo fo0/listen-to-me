@@ -9,9 +9,9 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QObject, QStringListModel, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, QStringListModel, QTimer
 from PySide6.QtWidgets import (
-    QCheckBox, QCompleter, QGroupBox, QLabel, QLineEdit, QRadioButton, QWidget,
+    QCheckBox, QCompleter, QGroupBox, QLabel, QLineEdit, QRadioButton, QToolTip, QWidget,
 )
 
 from .qtutil import clear_on_escape, keep_return_in_field
@@ -75,6 +75,8 @@ class SettingsSearch(QObject):
         self.completer.setWidget(edit)
         self.completer.activated[str].connect(self.open)
         edit.textEdited.connect(self._filter)
+        # textChanged, not textEdited: Escape and a pick clear the field too.
+        edit.textChanged.connect(self._describe)
         edit.installEventFilter(self)
         keep_return_in_field(edit, self._open_first)
         clear_on_escape(edit)
@@ -87,6 +89,23 @@ class SettingsSearch(QObject):
             return
         # No complete(): focus returns here as the popup closes, re-opening it would trap it.
         self._model.setStringList(match_entries(self._edit.text(), self._index))
+        self._describe(self._edit.text())
+
+    def _describe(self, text: str) -> None:
+        """Voice the outcome on the field's accessible description: the popup
+        just stays shut for a term that matches nothing, and focus never leaves
+        the field, so a screen reader user could not tell a miss from a hit."""
+        term = str(text or "").strip()
+        count = len(match_entries(term, self._index))
+        if not term:
+            description = ""
+        elif count == 0:
+            description = f"No setting matches “{term}”"
+        elif count == 1:
+            description = "1 setting matches"
+        else:
+            description = f"{count} settings match"
+        self._edit.setAccessibleDescription(description)
 
     def _filter(self, text: str) -> None:
         matches = match_entries(text, self._index)
@@ -117,3 +136,11 @@ class SettingsSearch(QObject):
         matches = match_entries(self._edit.text(), self._index)
         if matches:
             self.open(matches[0])
+        elif self._edit.text().strip():
+            # Enter on a miss did nothing at all — say so where the user looks.
+            self.show_feedback(self._edit.accessibleDescription())
+
+    def show_feedback(self, message: str) -> None:
+        """Show `message` as a tooltip just below the field."""
+        anchor = self._edit.mapToGlobal(QPoint(0, self._edit.height()))
+        QToolTip.showText(anchor, message, self._edit)

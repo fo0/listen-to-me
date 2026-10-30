@@ -10750,11 +10750,23 @@ def _settings_can_be_found_by_name():
             if not window.ov_device_combo.isVisibleTo(engine):  # another backend
                 assert window.ov_device_combo not in [w for _t, w in search._index.values()]
             edit = window.settings_search_edit
+            # The outcome is voiced on the field: a miss only keeps the popup shut.
+            edit.setText("zzqx-no-such-option")
+            assert edit.accessibleDescription() == "No setting matches “zzqx-no-such-option”"
+            # …and Enter on it says so on screen instead of doing nothing.
+            shown: list[str] = []
+            search.show_feedback = shown.append
+            QTest.keyClick(edit, Qt.Key.Key_Return)
+            assert shown == ["No setting matches “zzqx-no-such-option”"], shown
+            assert edit.text() == "zzqx-no-such-option" and window.result() == 0
             edit.setText("global hotkey")
+            voiced = edit.accessibleDescription()
+            assert voiced.endswith(("setting matches", "settings match")), voiced
             QTest.keyClick(edit, Qt.Key.Key_Return)
             app.processEvents()  # the page opens on the next event-loop turn
             assert window.stack.currentIndex() == window._page_index["General"]
             assert edit.text() == "" and window.result() == 0, "Enter reached Save"
+            assert edit.accessibleDescription() == "", "a stale outcome is voiced"
             assert not search.open("Nothing like this — Nowhere")
         finally:
             window.deleteLater()
@@ -10777,6 +10789,10 @@ def _settings_pages_step_with_ctrl_tab():
             assert QKeySequence(QKeySequence.StandardKey.NextChild) in keys, keys
             assert QKeySequence("Ctrl+PgUp") in keys, keys
             nxt, prev = window.page_shortcuts[0], window.page_shortcuts[1]
+            # Named where the pages are, for the mouse and the screen reader.
+            named = nxt.key().toString(QKeySequence.SequenceFormat.NativeText)
+            assert named and named in window.nav.accessibleDescription(), named
+            assert window.nav.toolTip() == window.nav.accessibleDescription()
 
             def page() -> str:
                 return window.nav.currentItem().text()
