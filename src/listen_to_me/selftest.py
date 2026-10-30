@@ -10750,11 +10750,17 @@ def _settings_can_be_found_by_name():
             if not window.ov_device_combo.isVisibleTo(engine):  # another backend
                 assert window.ov_device_combo not in [w for _t, w in search._index.values()]
             edit = window.settings_search_edit
+            # The outcome is voiced on the field: a miss only keeps the popup shut.
+            edit.setText("zzqx-no-such-option")
+            assert edit.accessibleDescription() == "No setting matches “zzqx-no-such-option”"
             edit.setText("global hotkey")
+            voiced = edit.accessibleDescription()
+            assert voiced.endswith(("setting matches", "settings match")), voiced
             QTest.keyClick(edit, Qt.Key.Key_Return)
             app.processEvents()  # the page opens on the next event-loop turn
             assert window.stack.currentIndex() == window._page_index["General"]
             assert edit.text() == "" and window.result() == 0, "Enter reached Save"
+            assert edit.accessibleDescription() == "", "a stale outcome is voiced"
             assert not search.open("Nothing like this — Nowhere")
         finally:
             window.deleteLater()
