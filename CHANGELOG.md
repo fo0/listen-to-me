@@ -363,6 +363,13 @@ unknown` — byte for byte what the old bundled one reports — so the log line
   the list is empty or the history file could not be read, since that page is
   where the history switch, a failed take kept for a retry and the unreadable
   file are.
+- **The setup wizard's hotkey error clears once the combination is fixed.**
+  After Next refused an unusable hotkey, the red line under the field kept
+  naming the refused value while a working one was typed in, until Next was
+  pressed again. It now follows the field: it disappears as soon as the
+  combination parses and names the current value while it still does not —
+  for a screen reader on the field as well. Before the first Next the field
+  stays quiet, as before.
 - **A screen reader reaches the rest of a cut-off Home transcript.** The
   Home page's recent rows carry the whole transcript in their tooltip, which a
   screen reader never reads; the same text is now the row's accessible

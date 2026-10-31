@@ -13076,6 +13076,53 @@ def _setup_wizard_recommends_the_engine_for_this_pc():
             _delete_now(app, *wizards)
 
 
+def _wizard_hotkey_error_follows_the_field():
+    """The setup wizard's hotkey refusal follows the field once Next showed it.
+
+    It used to go on naming the refused value after a working one had been
+    typed, until Next was pressed again. Before the first refusal the field
+    stays quiet, so typing a combination by hand is not interrupted; once one
+    is shown, a fix clears it (label and the field's accessible description)
+    and a still-broken value is named as it now reads. The real parser imports
+    pynput, which the light run has not got, so it is stood in for."""
+    from listen_to_me import onboarding
+
+    app = _ensure_qapp()
+
+    class _FakeHotkeys:
+        @staticmethod
+        def validate(combo):
+            return combo == "<ctrl>+<alt>+<space>"
+
+    real = onboarding.Hotkeys
+    onboarding.Hotkeys = _FakeHotkeys
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        wizard = onboarding.OnboardingWizard(stub.cfg, probe=lambda _snapshot: {})
+        try:
+            wizard.engine_page._probe_thread.join(5)
+            edit, error = wizard.hotkey_edit, wizard._hotkey_error
+            edit.setText("nonsense")
+            assert not error.text(), "an error before Next was pressed"
+            assert not wizard._validate_hotkey()
+            assert "“nonsense”" in error.text(), error.text()
+            # Still broken: named as it reads now, not as it was refused.
+            edit.setText("still wrong")
+            assert "“still wrong”" in error.text() and "nonsense" not in error.text()
+            assert "still wrong" in edit.accessibleDescription()
+            # Fixed: gone at once, from the label and from the field.
+            edit.setText("<ctrl>+<alt>+<space>")
+            assert not error.text(), error.text()
+            assert not edit.accessibleDescription()
+            # …and quiet again until the next refusal.
+            edit.setText("again wrong")
+            assert not error.text()
+        finally:
+            onboarding.Hotkeys = real
+            wizard.mic_test.cancel()
+            _delete_now(app, wizard)
+
+
 def _app_disposes_the_setup_wizard():
     """App._run_onboarding hands the wizard to Qt for deletion on the GUI
     thread however it ends — Finish, Cancel, or exec() raising. Left to
@@ -16995,6 +17042,7 @@ _LIGHT_CHECKS = [
     ("setup wizard recommends the engine for this PC",
      _setup_wizard_recommends_the_engine_for_this_pc),
     ("app disposes the setup wizard", _app_disposes_the_setup_wizard),
+    ("wizard hotkey error follows the field", _wizard_hotkey_error_follows_the_field),
     ("system audio picker reads as an output picker",
      _system_audio_picker_reads_as_an_output_picker),
     ("system audio hint names the outputs it cannot record",

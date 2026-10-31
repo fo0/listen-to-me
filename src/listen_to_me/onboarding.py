@@ -50,6 +50,11 @@ from .widgets import HotkeyCaptureDialog
 log = logging.getLogger(__name__)
 
 
+def _invalid_hotkey_reason(hotkey: str) -> str:
+    """The hotkey page's refusal, worded as the settings window words it."""
+    return f"“{hotkey}” is not a valid combination — click “Change…” and press the keys."
+
+
 class _Page(QWizardPage):
     """A wizard page with an optional validate hook run on Next/Finish."""
 
@@ -134,6 +139,10 @@ class OnboardingWizard(QWizard):
         # above the explanatory hint below and is the reason Next refused.
         self._hotkey_error.setProperty("role", "error")
         layout.addWidget(self._hotkey_error)
+        # Once Next has refused, the reason follows the field: it went on
+        # naming the old value after the user had typed a working one, until
+        # Next was pressed again — an error for a combination no longer there.
+        self.hotkey_edit.textChanged.connect(self._recheck_hotkey_error)
         layout.addWidget(hint_label(
             "Pick a combination that no other application uses. The default "
             "toggle mode records between two presses; hold (push-to-talk) can "
@@ -297,11 +306,32 @@ class OnboardingWizard(QWizard):
             self._hotkey_error.setText("")
             self.hotkey_edit.setAccessibleDescription("")
             return True
-        reason = f"“{hotkey}” is not a valid combination — click “Change…” and press the keys."
+        reason = _invalid_hotkey_reason(hotkey)
         self._hotkey_error.setText(reason)
         self.hotkey_edit.setAccessibleDescription(reason)
         self.hotkey_edit.setFocus()
         return False
+
+    def _recheck_hotkey_error(self) -> None:
+        """Keep a shown refusal in step with the field while it is edited.
+
+        Only while one is shown: before the first Next the field stays quiet,
+        so typing a combination by hand is not interrupted at every keystroke.
+        Fixed, the reason goes (label and field description together); still
+        broken, it names what the field holds now. A parser that cannot be
+        imported leaves the line as it is — Next checks again anyway.
+        """
+        if not self._hotkey_error.text():
+            return
+        hotkey = self.hotkey_edit.text().strip()
+        try:
+            valid = Hotkeys.validate(hotkey)
+        except Exception:
+            log.debug("could not re-check the hotkey %r while editing", hotkey, exc_info=True)
+            return
+        reason = "" if valid else _invalid_hotkey_reason(hotkey)
+        self._hotkey_error.setText(reason)
+        self.hotkey_edit.setAccessibleDescription(reason)
 
     def _mic_test_refusal(self) -> str | None:
         """The microphone test's can_start: not while a take runs (the
