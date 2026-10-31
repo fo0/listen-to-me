@@ -198,7 +198,8 @@ Everything Listen To Me does, in detail. The short version is in the
   tray menu and in the floating icon's right-click menu puts it straight back
   on the clipboard — and a **Recent transcripts** submenu in both of those
   menus lists the last five, so the one before last is a click away too,
-  whichever of the two icons you work from. With nothing to copy it says why —
+  whichever of the two icons you work from, and ends with **Open history…**
+  for everything older. With nothing to copy it says why —
   no transcript yet, the history switched off (and where to turn it on), or a
   history file that could not be read — instead of promising one is coming.
   If the history file itself ever **cannot be read** — a hand-edit gone wrong,

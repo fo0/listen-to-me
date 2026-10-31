@@ -356,6 +356,13 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **"Recent transcripts" leads on to the full history.** The submenu in the
+  tray menu and in the floating icon's menu lists the last five transcripts,
+  and the one just before them meant Settings…, then the sidebar. Both now end
+  with **Open history…**, which opens Settings → History directly — also when
+  the list is empty or the history file could not be read, since that page is
+  where the history switch, a failed take kept for a retry and the unreadable
+  file are.
 - **A screen reader reaches the rest of a cut-off Home transcript.** The
   Home page's recent rows carry the whole transcript in their tooltip, which a
   screen reader never reads; the same text is now the row's accessible

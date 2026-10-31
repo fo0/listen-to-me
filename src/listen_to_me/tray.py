@@ -149,6 +149,27 @@ def recent_entry_label(entry: dict, max_chars: int = _RECENT_CHARS) -> str:
     return text.replace("&", "&&")
 
 
+# The last entry of both "Recent transcripts" submenus. The submenu is bounded
+# to a few transcripts — the History page is the archive — and the way there
+# from either icon was Settings…, then the sidebar: the one dictation that had
+# just scrolled off the list was the one that took the longest to reach.
+_HISTORY_LINK_LABEL = "Open history…"
+
+
+def add_history_link(menu: QMenu, app) -> None:
+    """End a "Recent transcripts" submenu with the way to the full History page.
+
+    Added whatever the list above it says: with no transcripts the page is
+    still where the history switch and a failed take kept for a retry are, and
+    with an unreadable file it is where that file is named and can be cleared.
+    Shared by the tray and the floating icon so the two submenus stay twins.
+    """
+    menu.addSeparator()
+    action = menu.addAction(_HISTORY_LINK_LABEL)
+    action.setToolTip("Every stored transcript — search, export, delete — in Settings → History.")
+    action.triggered.connect(lambda: app.post("history"))
+
+
 def state_label(
     state: str, cfg, elapsed=None, paused: bool = False, source: str = SOURCE_MIC
 ) -> str:
@@ -446,10 +467,12 @@ class Tray:
             log.exception("could not read the transcript history for the tray menu")
             failed = menu.addAction("Could not read the history")
             failed.setEnabled(False)
+            add_history_link(menu, self.app)
             return
         if not entries:
             empty = menu.addAction("No transcripts yet")
             empty.setEnabled(False)
+            add_history_link(menu, self.app)
             return
         for entry in entries:
             text = str(entry.get("text", ""))
@@ -464,6 +487,7 @@ class Tray:
             action.triggered.connect(
                 lambda _checked=False, t=text: self.app.post("copy_text", t)
             )
+        add_history_link(menu, self.app)
 
     def _fill_language_menu(self) -> None:
         """(Re-)build the "Dictation language" submenu from the current config.

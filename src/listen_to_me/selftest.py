@@ -2565,6 +2565,7 @@ def _notifications_lead_to_the_place_they_name():
 
     class _App:
         _follow_notification = App._follow_notification
+        _open_history = App._open_history
 
         def __init__(self):
             self._settings_window = None
@@ -2584,6 +2585,10 @@ def _notifications_lead_to_the_place_they_name():
     assert app.logs == 1 and app.opened == 1
     app._follow_notification("Recording cancelled.")
     assert app.opened == 1 and app.logs == 1 and app._settings_window.pages == ["History"]
+    # The "Open history…" entry under both "Recent transcripts" submenus
+    # lands on the same page through the same window.
+    app._open_history()
+    assert app.opened == 2 and app._settings_window.pages == ["History", "History"]
 
 
 def _implausible_take_inserts_nothing():
@@ -10384,11 +10389,18 @@ def _overlay_lists_recent_transcripts():
             overlay._fill_recent_menu()
             labels = [action.text() for action in overlay._recent_menu.actions()]
             # _StubApp seeds two transcripts; newest first, as the store hands
-            # them over — the same order the tray renders.
+            # them over — the same order the tray renders — then a separator
+            # and the way to the archive, as on the tray.
             assert labels == [
                 "An entry with a corrupt timestamp.",
                 "A stored transcript for the self-test.",
+                "",
+                tray_module._HISTORY_LINK_LABEL,
             ], labels
+            assert overlay._recent_menu.actions()[2].isSeparator()
+            stub.posts.clear()
+            overlay._recent_menu.actions()[-1].trigger()
+            assert stub.posts == [("history",)], stub.posts
 
             # One menu line whatever the dictation did: no line breaks, elided,
             # and its "&" doubled so Qt renders it instead of eating it as the
@@ -10411,14 +10423,18 @@ def _overlay_lists_recent_transcripts():
             for i in range(10):
                 stub.history.add(f"Transcript number {i}")
             overlay._fill_recent_menu()
-            assert len(overlay._recent_menu.actions()) == tray_module._RECENT_LIMIT
+            # The bound plus the separator and the History link under it.
+            assert len(overlay._recent_menu.actions()) == tray_module._RECENT_LIMIT + 2
             assert overlay._recent_menu.actions()[0].text() == "Transcript number 9"
 
             stub.history.clear()
             overlay._fill_recent_menu()
             actions = overlay._recent_menu.actions()
-            assert len(actions) == 1 and actions[0].text() == "No transcripts yet"
+            assert [a.text() for a in actions] == [
+                "No transcripts yet", "", tray_module._HISTORY_LINK_LABEL,
+            ], [a.text() for a in actions]
             assert not actions[0].isEnabled()
+            assert actions[-1].isEnabled(), "the way to History must stay clickable"
         finally:
             overlay.destroy()
 
@@ -10926,11 +10942,17 @@ def _tray_lists_recent_transcripts():
             tray._fill_recent_menu()
             labels = [action.text() for action in tray._recent_menu.actions()]
             # _StubApp seeds two transcripts; newest first, as the store hands
-            # them over.
+            # them over — then a separator and the way to the archive.
             assert labels == [
                 "An entry with a corrupt timestamp.",
                 "A stored transcript for the self-test.",
+                "",
+                tray_module._HISTORY_LINK_LABEL,
             ], labels
+            assert tray._recent_menu.actions()[2].isSeparator()
+            stub.posts.clear()
+            tray._recent_menu.actions()[-1].trigger()
+            assert stub.posts == [("history",)], stub.posts
 
             # A dictated paragraph is one menu line: no line breaks, elided,
             # and its "&" doubled so Qt renders it instead of eating it as the
@@ -10969,14 +10991,18 @@ def _tray_lists_recent_transcripts():
             for i in range(10):
                 stub.history.add(f"Transcript number {i}")
             tray._fill_recent_menu()
-            assert len(tray._recent_menu.actions()) == tray_module._RECENT_LIMIT
+            # The bound plus the separator and the History link under it.
+            assert len(tray._recent_menu.actions()) == tray_module._RECENT_LIMIT + 2
             assert tray._recent_menu.actions()[0].text() == "Transcript number 9"
 
             stub.history.clear()
             tray._fill_recent_menu()
             actions = tray._recent_menu.actions()
-            assert len(actions) == 1 and actions[0].text() == "No transcripts yet"
+            assert [a.text() for a in actions] == [
+                "No transcripts yet", "", tray_module._HISTORY_LINK_LABEL,
+            ], [a.text() for a in actions]
             assert not actions[0].isEnabled()
+            assert actions[-1].isEnabled(), "the way to History must stay clickable"
         finally:
             tray.stop()
 
@@ -11728,7 +11754,11 @@ def _surfaces_name_an_unreadable_history():
             try:
                 tray._fill_recent_menu()
                 labels = [action.text() for action in tray._recent_menu.actions()]
-                assert labels == ["Could not read the history"], labels
+                # The History page names the unreadable file and can clear it,
+                # so the link stays under the refusal.
+                assert labels == [
+                    "Could not read the history", "", tray_module._HISTORY_LINK_LABEL,
+                ], labels
                 assert not tray._recent_menu.actions()[0].isEnabled()
             finally:
                 tray.stop()
@@ -11737,7 +11767,9 @@ def _surfaces_name_an_unreadable_history():
             try:
                 overlay._fill_recent_menu()
                 labels = [action.text() for action in overlay._recent_menu.actions()]
-                assert labels == ["Could not read the history"], labels
+                assert labels == [
+                    "Could not read the history", "", tray_module._HISTORY_LINK_LABEL,
+                ], labels
                 assert not overlay._recent_menu.actions()[0].isEnabled()
             finally:
                 overlay.destroy()

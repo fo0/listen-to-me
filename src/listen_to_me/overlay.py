@@ -49,6 +49,7 @@ from .tray import (
     _SYSTEM_START_LABEL,
     _SYSTEM_STOP_LABEL,
     _apply_cancel_entry,
+    add_history_link,
     format_duration,
     recent_entry_label,
     transcribing_label,
@@ -1419,7 +1420,8 @@ class Overlay:
         second interpretation of it: newest first, bounded to the same few, one
         elided line each, the timestamp in the tooltip so two similar-looking
         dictations can be told apart, and the raw transcript — line breaks and
-        single "&" intact — handed to the same `copy_text` event.
+        single "&" intact — handed to the same `copy_text` event, and the same
+        closing link to the History page (`add_history_link`).
 
         A history that cannot be read says so instead of showing an empty list:
         an app that offers nothing looks exactly like one that stored nothing.
@@ -1435,10 +1437,12 @@ class Overlay:
             log.exception("could not read the transcript history for the overlay menu")
             failed = menu.addAction("Could not read the history")
             failed.setEnabled(False)
+            add_history_link(menu, self.app)
             return
         if not entries:
             empty = menu.addAction("No transcripts yet")
             empty.setEnabled(False)
+            add_history_link(menu, self.app)
             return
         for entry in entries:
             text = str(entry.get("text", ""))
@@ -1450,6 +1454,7 @@ class Overlay:
             action.triggered.connect(
                 lambda _checked=False, t=text: self.app.post("copy_text", t)
             )
+        add_history_link(menu, self.app)
 
     def show_menu(self, global_pos) -> None:
         # Right before it becomes visible, not only on the last state change:
