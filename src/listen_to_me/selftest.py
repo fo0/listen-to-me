@@ -2565,6 +2565,7 @@ def _notifications_lead_to_the_place_they_name():
 
     class _App:
         _follow_notification = App._follow_notification
+        _open_history = App._open_history
 
         def __init__(self):
             self._settings_window = None
@@ -2584,6 +2585,10 @@ def _notifications_lead_to_the_place_they_name():
     assert app.logs == 1 and app.opened == 1
     app._follow_notification("Recording cancelled.")
     assert app.opened == 1 and app.logs == 1 and app._settings_window.pages == ["History"]
+    # The "Open history…" entry under both "Recent transcripts" submenus
+    # lands on the same page through the same window.
+    app._open_history()
+    assert app.opened == 2 and app._settings_window.pages == ["History", "History"]
 
 
 def _implausible_take_inserts_nothing():
@@ -10384,11 +10389,18 @@ def _overlay_lists_recent_transcripts():
             overlay._fill_recent_menu()
             labels = [action.text() for action in overlay._recent_menu.actions()]
             # _StubApp seeds two transcripts; newest first, as the store hands
-            # them over — the same order the tray renders.
+            # them over — the same order the tray renders — then a separator
+            # and the way to the archive, as on the tray.
             assert labels == [
                 "An entry with a corrupt timestamp.",
                 "A stored transcript for the self-test.",
+                "",
+                tray_module._HISTORY_LINK_LABEL,
             ], labels
+            assert overlay._recent_menu.actions()[2].isSeparator()
+            stub.posts.clear()
+            overlay._recent_menu.actions()[-1].trigger()
+            assert stub.posts == [("history",)], stub.posts
 
             # One menu line whatever the dictation did: no line breaks, elided,
             # and its "&" doubled so Qt renders it instead of eating it as the
@@ -10411,14 +10423,18 @@ def _overlay_lists_recent_transcripts():
             for i in range(10):
                 stub.history.add(f"Transcript number {i}")
             overlay._fill_recent_menu()
-            assert len(overlay._recent_menu.actions()) == tray_module._RECENT_LIMIT
+            # The bound plus the separator and the History link under it.
+            assert len(overlay._recent_menu.actions()) == tray_module._RECENT_LIMIT + 2
             assert overlay._recent_menu.actions()[0].text() == "Transcript number 9"
 
             stub.history.clear()
             overlay._fill_recent_menu()
             actions = overlay._recent_menu.actions()
-            assert len(actions) == 1 and actions[0].text() == "No transcripts yet"
+            assert [a.text() for a in actions] == [
+                "No transcripts yet", "", tray_module._HISTORY_LINK_LABEL,
+            ], [a.text() for a in actions]
             assert not actions[0].isEnabled()
+            assert actions[-1].isEnabled(), "the way to History must stay clickable"
         finally:
             overlay.destroy()
 
@@ -10926,11 +10942,17 @@ def _tray_lists_recent_transcripts():
             tray._fill_recent_menu()
             labels = [action.text() for action in tray._recent_menu.actions()]
             # _StubApp seeds two transcripts; newest first, as the store hands
-            # them over.
+            # them over — then a separator and the way to the archive.
             assert labels == [
                 "An entry with a corrupt timestamp.",
                 "A stored transcript for the self-test.",
+                "",
+                tray_module._HISTORY_LINK_LABEL,
             ], labels
+            assert tray._recent_menu.actions()[2].isSeparator()
+            stub.posts.clear()
+            tray._recent_menu.actions()[-1].trigger()
+            assert stub.posts == [("history",)], stub.posts
 
             # A dictated paragraph is one menu line: no line breaks, elided,
             # and its "&" doubled so Qt renders it instead of eating it as the
@@ -10969,14 +10991,18 @@ def _tray_lists_recent_transcripts():
             for i in range(10):
                 stub.history.add(f"Transcript number {i}")
             tray._fill_recent_menu()
-            assert len(tray._recent_menu.actions()) == tray_module._RECENT_LIMIT
+            # The bound plus the separator and the History link under it.
+            assert len(tray._recent_menu.actions()) == tray_module._RECENT_LIMIT + 2
             assert tray._recent_menu.actions()[0].text() == "Transcript number 9"
 
             stub.history.clear()
             tray._fill_recent_menu()
             actions = tray._recent_menu.actions()
-            assert len(actions) == 1 and actions[0].text() == "No transcripts yet"
+            assert [a.text() for a in actions] == [
+                "No transcripts yet", "", tray_module._HISTORY_LINK_LABEL,
+            ], [a.text() for a in actions]
             assert not actions[0].isEnabled()
+            assert actions[-1].isEnabled(), "the way to History must stay clickable"
         finally:
             tray.stop()
 
@@ -11728,7 +11754,11 @@ def _surfaces_name_an_unreadable_history():
             try:
                 tray._fill_recent_menu()
                 labels = [action.text() for action in tray._recent_menu.actions()]
-                assert labels == ["Could not read the history"], labels
+                # The History page names the unreadable file and can clear it,
+                # so the link stays under the refusal.
+                assert labels == [
+                    "Could not read the history", "", tray_module._HISTORY_LINK_LABEL,
+                ], labels
                 assert not tray._recent_menu.actions()[0].isEnabled()
             finally:
                 tray.stop()
@@ -11737,7 +11767,9 @@ def _surfaces_name_an_unreadable_history():
             try:
                 overlay._fill_recent_menu()
                 labels = [action.text() for action in overlay._recent_menu.actions()]
-                assert labels == ["Could not read the history"], labels
+                assert labels == [
+                    "Could not read the history", "", tray_module._HISTORY_LINK_LABEL,
+                ], labels
                 assert not overlay._recent_menu.actions()[0].isEnabled()
             finally:
                 overlay.destroy()
@@ -13042,6 +13074,53 @@ def _setup_wizard_recommends_the_engine_for_this_pc():
             for item in wizards:
                 item.mic_test.cancel()
             _delete_now(app, *wizards)
+
+
+def _wizard_hotkey_error_follows_the_field():
+    """The setup wizard's hotkey refusal follows the field once Next showed it.
+
+    It used to go on naming the refused value after a working one had been
+    typed, until Next was pressed again. Before the first refusal the field
+    stays quiet, so typing a combination by hand is not interrupted; once one
+    is shown, a fix clears it (label and the field's accessible description)
+    and a still-broken value is named as it now reads. The real parser imports
+    pynput, which the light run has not got, so it is stood in for."""
+    from listen_to_me import onboarding
+
+    app = _ensure_qapp()
+
+    class _FakeHotkeys:
+        @staticmethod
+        def validate(combo):
+            return combo == "<ctrl>+<alt>+<space>"
+
+    real = onboarding.Hotkeys
+    onboarding.Hotkeys = _FakeHotkeys
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        wizard = onboarding.OnboardingWizard(stub.cfg, probe=lambda _snapshot: {})
+        try:
+            wizard.engine_page._probe_thread.join(5)
+            edit, error = wizard.hotkey_edit, wizard._hotkey_error
+            edit.setText("nonsense")
+            assert not error.text(), "an error before Next was pressed"
+            assert not wizard._validate_hotkey()
+            assert "“nonsense”" in error.text(), error.text()
+            # Still broken: named as it reads now, not as it was refused.
+            edit.setText("still wrong")
+            assert "“still wrong”" in error.text() and "nonsense" not in error.text()
+            assert "still wrong" in edit.accessibleDescription()
+            # Fixed: gone at once, from the label and from the field.
+            edit.setText("<ctrl>+<alt>+<space>")
+            assert not error.text(), error.text()
+            assert not edit.accessibleDescription()
+            # …and quiet again until the next refusal.
+            edit.setText("again wrong")
+            assert not error.text()
+        finally:
+            onboarding.Hotkeys = real
+            wizard.mic_test.cancel()
+            _delete_now(app, wizard)
 
 
 def _app_disposes_the_setup_wizard():
@@ -16963,6 +17042,7 @@ _LIGHT_CHECKS = [
     ("setup wizard recommends the engine for this PC",
      _setup_wizard_recommends_the_engine_for_this_pc),
     ("app disposes the setup wizard", _app_disposes_the_setup_wizard),
+    ("wizard hotkey error follows the field", _wizard_hotkey_error_follows_the_field),
     ("system audio picker reads as an output picker",
      _system_audio_picker_reads_as_an_output_picker),
     ("system audio hint names the outputs it cannot record",

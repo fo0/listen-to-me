@@ -1260,6 +1260,8 @@ class App:
             self._open_updates()
         elif kind == "help":
             self._open_help()
+        elif kind == "history":
+            self._open_history()
         elif kind == "open_config":
             self._open_config_folder()
         elif kind == "open_log":
@@ -2538,6 +2540,16 @@ class App:
                 self._settings_window.show_help_page()
             except Exception:
                 log.debug("could not open the help page", exc_info=True)
+
+    def _open_history(self) -> None:
+        """The "Open history…" entry closing both "Recent transcripts" submenus:
+        the settings window on its History page."""
+        self._open_settings()
+        if self._settings_window is not None:
+            try:
+                self._settings_window.show_page("History")
+            except Exception:
+                log.debug("could not open the history page", exc_info=True)
 
     def _startup_update_check(self) -> None:
         """Background: notify (once) if a newer release exists. Best-effort — a
