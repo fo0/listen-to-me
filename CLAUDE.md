@@ -2,11 +2,11 @@
 
 ## Session Start — Read Order
 
-`MEMORY.md` → `SCRATCHPAD.md`; `BACKLOG.md` only when prior findings come up or the user asks "what's open"; skip what is missing. `agent_docs/*` and skills load on demand, never up front.
+`MEMORY.md` → `SCRATCHPAD.md`; `BACKLOG.md` only when prior findings come up or the user asks "what's open"; skip what is missing. `agent_docs/*` and skills load on demand, never up front. Never suggest `/clear` or `/compact` — the user runs them; keep the state in `SCRATCHPAD.md`, `BACKLOG.md` or `MEMORY.md` as you go.
 
 ## Workflow Triggers
 
-Skills (`.claude/skills/<name>/SKILL.md`): `done` · `pr` · `basic-review` · `basic-sec-review` · `rollback` · `ci` · `stuck` · `beacon` · `scheduler` (bare `/loop`: `.claude/loop.md`) · `orca` (`/orca <objective>`). Diagram → `agent_docs/diagram_prompt.md`. Review on demand only, never from `done`. Findings → `BACKLOG.md`, knowledge → `MEMORY.md` / `SCRATCHPAD.md` (`backlog_process.md`, `memory_process.md` under `agent_docs/`).
+Skills (`.claude/skills/<name>/SKILL.md`): `done` · `pr` · `basic-review` · `basic-sec-review` · `rollback` · `ci` · `stuck` · `beacon` · `scheduler` (bare `/loop`: `.claude/loop.md`) · `orca` (`/orca <objective>`) · `ui-mockup` (views, mockups). Diagram → `agent_docs/diagram_prompt.md`. Review on demand only, never from `done`. Findings → `BACKLOG.md`, knowledge → `MEMORY.md` / `SCRATCHPAD.md` (`backlog_process.md`, `memory_process.md` under `agent_docs/`).
 
 ## Output Languages
 
@@ -53,7 +53,7 @@ A turn that hands a decision back or names a next step / recommendation ends wit
 
 ## Subagents — orchestrator mode is the default
 
-**Every session starts in orchestrator mode, width 5:** the main agent decomposes, does units of about five tool calls and one file, verifies returned diffs, runs the gates and reports; long, context-heavy or parallel work goes to subagents. Code-judging seats inherit the session's model and effort; search, git status, CI, log reads keep the model at lower effort — `sonnet` only for a trivial lookup, effort `low`/`medium`, `high` at most. `/orca <N>` sets the width, `/orca off` drops to plain behavior for this session; `/orca <objective>` / `/orca <N> <objective>` runs an objective. Seat only what the change calls for:
+**Every session starts in orchestrator mode, width 5:** the main agent decomposes, does units of about five tool calls and one file, verifies returned diffs, runs the gates and relays results, never blocking the chat; only work that waits long, reads raw material in bulk or implements across files goes to subagents. Every subagent is an Opus seat from `.claude/agents/`: `opus-high` the default and floor, `opus-xhigh` / `opus-max` for heavy work, `opus-medium` only to watch a pipeline — never `general-purpose`, `Explore`, `Plan`, a fork, or a `model` / `effort` on the call (no seat listed: skill item 4). `/orca <N>` (1–10) sets the width, `/orca off` drops to plain behavior for this session; `/orca <objective>` / `/orca <N> <objective>` runs an objective. Seat only what the change calls for:
 
 | Role          | Earns a seat when                          |
 | ------------- | ------------------------------------------ |
@@ -65,7 +65,7 @@ A turn that hands a decision back or names a next step / recommendation ends wit
 | `docs`        | a documented interface or contract changes |
 | `security`    | trust boundaries, untrusted input, secrets |
 
-Contract: `.claude/skills/orca/SKILL.md`; type table: `agent_docs/review_process.md → Subagent Delegation`.
+Contract: `.claude/skills/orca/SKILL.md`; seats: `.claude/agents/opus-*.md`.
 
 ## Tech Stack
 
@@ -95,14 +95,11 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src \
 
 ## Key Patterns
 
-**Threading (critical)** — Qt only on the main thread, workers post via `App.post` / `App.notify` (`app.py`) · **Lazy heavy imports** — Qt, `sounddevice`, `pynput`, `faster_whisper`, `numpy` inside functions, never hoisted · **Two recording sources** — a loopback `None` **refuses the take**, never the default input (`system_audio.py`), and `prepare_library_path()` stays `main()`'s first statement (ADR-0010). More: `agent_docs/key-patterns.md`.
+Offloaded (context budget): **threading** (Qt only on the main thread, `App.post` / `App.notify`), **lazy heavy imports**, **two recording sources** (a loopback `None` refuses the take; `prepare_library_path()` first in `main()`, ADR-0010) — `agent_docs/key-patterns.md`.
 
 ## Coding Conventions
 
-- **`App.state` (via `_set_state`) is the single source of truth** — tray icon, overlay and mute integrations move together; never flip one alone.
-- **Degrade gracefully, never silently** — no mic / GPU / network / clipboard each fail soft with a user-visible notification, never a crash or a no-op.
-- Max file length ~300 lines (split), ~500 strongly recommended — candidates + invariants: `agent_docs/refactoring_guidelines.md`.
-- `from __future__ import annotations` everywhere, logging never print; naming, imports, formatting, error handling: `agent_docs/coding_conventions.md`; full principle set: `agent_docs/architecture_principles.md`.
+Offloaded (context budget): `App.state` via `_set_state` as single source of truth and degrade gracefully, never silently — `agent_docs/architecture_principles.md`; max file length ~300 / ~500 lines, `from __future__ import annotations`, logging never print and the rest — `agent_docs/coding_conventions.md`.
 
 ## Git Conventions
 
@@ -114,13 +111,11 @@ QT_QPA_PLATFORM=offscreen PYTHONPATH=src \
 
 ## Environment Variables
 
-The app reads **none of its own** — settings live in `config.json` (`config.py → config_dir()`), there is no `.env`. Three matter to an agent: `HF_HOME` / `HF_HUB_CACHE` (STT model cache), `QT_QPA_PLATFORM=offscreen` (headless Qt smoke), `APPDATA` / `XDG_CONFIG_HOME` (config-dir base).
-
-**Secrets:** the one user secret is the optional assistant API key in the local `config.json` — never logged, never committed, never realistic in a fixture; never `gh secret set` unprompted. Full list + locations: `agent_docs/env-vars.md`.
+Offloaded (context budget): the app reads none of its own (`config.json`, no `.env`); `HF_HOME` / `HF_HUB_CACHE`, `QT_QPA_PLATFORM=offscreen`, `APPDATA` / `XDG_CONFIG_HOME` and **Secrets Locations**: `agent_docs/env-vars.md`. The assistant API key is never logged or committed; never `gh secret set` unprompted.
 
 ## Deployment
 
-**Trigger:** manual `workflow_dispatch` on `desktop-release.yml` → Windows one-file exe + GitHub Release, guarded to `main`. **Agent scope:** branches and PRs; a merge **and a release dispatch** each need an explicit user command or an owner-authorized routine — non-destructive change set, verification green; destructive change sets stay gated (`/pr merge`, ADR-0005). Detail: `agent_docs/deployment.md`.
+Manual `desktop-release.yml` dispatch. **No merge and no release dispatch** without an explicit user command or an owner-authorized routine (ADR-0005) — merge gate `/pr merge`; trigger, conditions, pipeline: `agent_docs/deployment.md`.
 
 ## API / Interfaces
 
@@ -128,11 +123,11 @@ Desktop GUI app, no HTTP API — a small **CLI**, and it consumes OpenAI-compati
 
 ## Testing
 
-**No test framework** — the _Commands_ chain is the gate; the checks live in `selftest.py`, whose `gui_smoke()` is the dependency-light subset CI runs headless (`python -m listen_to_me --selftest` runs them all). Constraints: `agent_docs/review_process.md`; detail: `agent_docs/testing.md`.
+**No test framework** — the _Commands_ chain is the gate. Constraints: `agent_docs/review_process.md`; `selftest.py`, `gui_smoke()`, `--selftest`: `agent_docs/testing.md`.
 
 ## External Integrations / MCPs
 
-Availability is never auto-detected — fall back to `Read` / `Bash` / `WebFetch`, never hard-require an MCP. Everything else is stated once in `agent_docs/mcp_catalog.md`: the `gh` → `mcp__github__*` equivalence, the allowlist and its local-only self-heal, cloud/routine reach (`→ Prompt-free triggers everywhere`).
+Offloaded (context budget): never auto-detected, never hard-required — `gh` → `mcp__github__*`, allowlist, local-only self-heal, cloud/routine reach: `agent_docs/mcp_catalog.md`.
 
 ## Architecture Decisions
 
@@ -146,4 +141,4 @@ After a code change, update only what it changed: `docs/guide/` (detail; `README
 
 `CLAUDE.md` loads every turn: **12k** target, offload at **14k**, hard 16k. `MEMORY.md` / `SCRATCHPAD.md` load at session start: 8k / 4k target, offload at 16k / 8k. Over → **move** content out and leave a one-line pointer, never delete to fit — ladder: `agent_docs/context_budget.md`.
 
-<!-- Generated by claude-code-optimizer v1.69.0 -->
+<!-- Generated by claude-code-optimizer v1.72.0 -->
