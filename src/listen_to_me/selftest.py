@@ -11433,6 +11433,160 @@ def _tray_switches_the_dictation_language():
         assert fake._settings_window.synced == 1
 
 
+def _tray_switches_the_microphone():
+    """The tray's "Microphone" submenu, App's half of it and the open
+    settings window it has to keep in step.
+
+    The list is the Audio page's (index prefix included — PortAudio names one
+    microphone once per host API on Windows), rebuilt on every opening and
+    ticked after the config, never after the value it was built with. A choice is
+    posted, never written by the tray. App saves it, says which device the next
+    take uses, and corrects an open settings window whose Save would otherwise
+    put the old device back — without leaving it "unsaved".
+    """
+    import json
+
+    from listen_to_me import app as app_module
+    from listen_to_me import settings_ui as settings_module
+    from listen_to_me import tray as tray_module
+    from listen_to_me.choices import SYSTEM_DEFAULT_DEVICE
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    devices = [SYSTEM_DEFAULT_DEVICE, "1: Laptop Microphone", "4: USB Headset"]
+
+    def _choices(current=None):
+        selected = SYSTEM_DEFAULT_DEVICE
+        for label in devices[1:]:
+            if label.startswith(f"{current}: "):
+                selected = label
+        return list(devices), selected
+
+    qt_app = _ensure_qapp()
+    apply_theme(qt_app)
+    real = (tray_module.input_device_choices, app_module.input_device_choices,
+            settings_module.input_device_choices)
+    tray_module.input_device_choices = _choices
+    app_module.input_device_choices = _choices
+    settings_module.input_device_choices = _choices
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = _StubApp(Path(tmp))
+            tray = tray_module.Tray(stub)
+            tray.start()
+            try:
+                tray._fill_mic_menu()
+                actions = tray._mic_menu.actions()
+                assert [a.text() for a in actions] == devices, [a.text() for a in actions]
+                assert [a.text() for a in actions if a.isChecked()] == [SYSTEM_DEFAULT_DEVICE]
+                stub.posts.clear()
+                actions[2].trigger()
+                assert stub.posts == [("set_input_device", 4)], stub.posts
+                assert stub.cfg["input_device"] is None, "the tray must not write the config"
+                stub.posts.clear()
+                tray._mic_menu.actions()[0].trigger()
+                assert stub.posts == [("set_input_device", None)], stub.posts
+
+                # Re-read on open: a device chosen elsewhere carries the tick,
+                # and the entries are whatever the device list says now.
+                stub.cfg["input_device"] = 4
+                devices.append("7: Docking Station Mic")
+                tray._fill_mic_menu()
+                actions = tray._mic_menu.actions()
+                assert len(actions) == 4
+                assert [a.text() for a in actions if a.isChecked()] == ["4: USB Headset"]
+
+                # A "&" in a device name is shown, not eaten as a mnemonic.
+                devices.append("2: Line In & Mic")
+                tray._fill_mic_menu()
+                amp = tray._mic_menu.actions()[-1]
+                assert amp.text() == "2: Line In && Mic", amp.text()
+                stub.posts.clear()
+                amp.trigger()
+                assert stub.posts == [("set_input_device", 2)], stub.posts
+                devices.pop()
+
+                # The inline "could not read the list" entry is not a choice.
+                devices[1:] = ["(could not read the microphone list — see the log file)"]
+                tray._fill_mic_menu()
+                actions = tray._mic_menu.actions()
+                assert actions[0].isEnabled() and not actions[1].isEnabled()
+                devices[1:] = ["1: Laptop Microphone", "4: USB Headset", "7: Docking Station Mic"]
+            finally:
+                tray.stop()
+
+            # App: validates, saves, names the device, syncs the open window.
+            class _Window:
+                def __init__(self):
+                    self.synced = 0
+
+                def sync_input_device(self):
+                    self.synced += 1
+
+            class _MicApp:
+                def __init__(self, cfg):
+                    self.cfg = cfg
+                    self.state = app_module.STATE_IDLE
+                    self.notes: list[str] = []
+                    self._settings_window = _Window()
+
+                def notify(self, message, force=False):
+                    self.notes.append(str(message))
+
+            fake = _MicApp(stub.cfg)
+            fake.cfg["input_device"] = None
+            for bad in ("4", True, 2.5):
+                app_module.App._set_input_device(fake, bad)
+            assert fake.cfg["input_device"] is None and not fake.notes, fake.notes
+            fake.cfg["input_device"] = True  # hand-edited; equals 1 in Python
+            app_module.App._set_input_device(fake, 1)
+            assert fake.cfg["input_device"] == 1 and fake._settings_window.synced == 1
+            fake._settings_window.synced = 0
+            fake.notes.clear()
+            fake.cfg["input_device"] = None
+            app_module.App._set_input_device(fake, 4)
+            assert fake.cfg["input_device"] == 4
+            assert fake.notes == ["Microphone: USB Headset"], fake.notes
+            assert fake._settings_window.synced == 1
+            app_module.App._set_input_device(fake, 4)  # unchanged: no save, no sync
+            assert fake._settings_window.synced == 1 and len(fake.notes) == 1
+            fake.state = app_module.STATE_RECORDING
+            app_module.App._set_input_device(fake, None)
+            assert fake.cfg["input_device"] is None
+            assert fake.notes[-1] == "Microphone: System default — from the next recording"
+            stored = json.loads((Path(tmp) / "config.json").read_text(encoding="utf-8"))
+            assert stored["input_device"] is None, stored["input_device"]
+
+            # The real window: before and after the Audio page loaded its list.
+            stub.cfg["input_device"] = None
+            window = SettingsWindow(stub)
+            try:
+                stub.cfg["input_device"] = 4
+                window.sync_input_device()
+                assert window._selected_input_device() == 4
+                assert window._collect() == window._saved_snapshot, "a tray switch left it unsaved"
+                window._show_page("Audio")
+                qt_app.processEvents()
+                assert window.input_combo.currentText() == "4: USB Headset"
+                stub.cfg["input_device"] = 1
+                window.sync_input_device()
+                assert window.input_combo.currentText() == "1: Laptop Microphone"
+                stub.cfg["input_device"] = None
+                window.sync_input_device()
+                assert window.input_combo.currentText() == SYSTEM_DEFAULT_DEVICE
+                devices.append("9: Plugged In Later")
+                stub.cfg["input_device"] = 9
+                window.sync_input_device()
+                assert window.input_combo.currentText() == "9: Plugged In Later"
+                assert window._collect() == window._saved_snapshot
+            finally:
+                window.deleteLater()
+                qt_app.processEvents()
+    finally:
+        (tray_module.input_device_choices, app_module.input_device_choices,
+         settings_module.input_device_choices) = real
+
+
 def _tray_survives_a_missing_notification_area():
     """Started by the OS autostart, the app can be up before the shell is: the
     tray icon is dropped and Qt still reports it visible. Tray.start() must keep
@@ -17219,6 +17373,7 @@ _LIGHT_CHECKS = [
     ("tray click opens the window", _tray_click_opens_the_window),
     ("the log file can be reached", _the_log_file_can_be_reached),
     ("tray switches the dictation language", _tray_switches_the_dictation_language),
+    ("tray switches the microphone", _tray_switches_the_microphone),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("source-aware controls stop their take", _source_aware_controls_stop_their_take),
     ("surfaces name an unreadable history", _surfaces_name_an_unreadable_history),

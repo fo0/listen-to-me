@@ -1190,6 +1190,37 @@ class SettingsWindow(QDialog):
         # the user is most likely looking at when the tray menu closes.
         self.home.refresh()
 
+    def sync_input_device(self) -> None:
+        """Re-select the Input device box from the config (called by
+        App._set_input_device on the Qt main thread).
+
+        The tray's "Microphone" submenu writes the key this window edits — the
+        same trap `sync_language` closes. Before the Audio page was opened the
+        box holds only its placeholder and `_selected_input_device` answers
+        from the config, so there is nothing to re-select. The saved snapshot
+        follows either way: nobody edited anything here, and closing the
+        window must not ask about unsaved changes.
+        """
+        stored = self.cfg["input_device"]
+        if self._devices_loaded:
+            rows = [
+                row
+                for row in range(self.input_combo.count())
+                if input_device_from_label(self.input_combo.itemText(row)) == stored
+                and (stored is not None or self.input_combo.itemText(row) == SYSTEM_DEFAULT_DEVICE)
+            ]
+            if rows:
+                self.input_combo.setCurrentIndex(rows[0])
+            else:
+                # Chosen from a newer device list than this box shows.
+                values, current = input_device_choices(stored)
+                self.input_combo.clear()
+                self.input_combo.addItems(values)
+                self.input_combo.setCurrentText(current)
+        self._saved_snapshot["input_device"] = self._selected_input_device()
+        # The Home hub names the microphone on a stat card.
+        self.home.refresh()
+
     def set_app_state(self, state: str) -> None:
         """Mirror the app state into the Home hero (called by App._set_state
         on the Qt main thread)."""

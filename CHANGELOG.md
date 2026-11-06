@@ -14,6 +14,10 @@ changes at a glance.
 
 ### Added
 
+- **Switch the microphone from the tray.** A **Microphone** submenu in the
+  tray menu lists the input devices of Settings → Audio and ticks the one in
+  use; a click switches the device the next recording uses, without opening
+  the settings window. An open settings window follows the choice.
 - **Add a space after each transcript.** A new option under Settings →
   General → _Insert text by_ ends every inserted transcript with one space, so
   dictating sentence by sentence into the same field no longer glues each take

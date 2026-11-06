@@ -28,6 +28,8 @@ from .choices import (
     LANGUAGES,
     SOURCE_MIC,
     SOURCE_SYSTEM,
+    SYSTEM_DEFAULT_DEVICE,
+    input_device_choices,
     known_source,
     language_label,
     resolve_input_device,
@@ -1211,6 +1213,8 @@ class App:
             self.tray.set_state(self.state)  # refresh the "Show floating icon" tick
         elif kind == "set_language":
             self._set_language(str(payload))
+        elif kind == "set_input_device":
+            self._set_input_device(payload)
         elif kind == "reset_overlay_position":
             self._reset_overlay_position()
         elif kind == "cancel":
@@ -2050,6 +2054,48 @@ class App:
             self._settings_window = None
         except Exception:
             log.exception("could not update the open settings window's language")
+
+    def _set_input_device(self, index) -> None:
+        """Tray → "Microphone": record the next take from another input device.
+
+        `index` is a PortAudio input index, None for the system default. A
+        running take keeps its open stream — the switch applies from the next
+        one, and the receipt says so then. The open settings window is
+        corrected exactly as for the language, so its Save cannot write the
+        old device back.
+        """
+        if index is not None and (isinstance(index, bool) or not isinstance(index, int)):
+            log.warning("ignoring an invalid input device %r", index)
+            return
+        stored = self.cfg["input_device"]
+        # A hand-edited `true` equals 1 in Python and must not pass for it.
+        if stored == index and not isinstance(stored, bool):
+            return
+        self.cfg["input_device"] = index
+        try:
+            _values, label = input_device_choices(index)
+        except Exception:
+            log.exception("could not name the chosen input device")
+            label = SYSTEM_DEFAULT_DEVICE if index is None else f"device {index}"
+        label = label.split(": ", 1)[-1]  # the index means nothing in a sentence
+        when = " — from the next recording" if self.state == STATE_RECORDING else ""
+        if self.cfg.save():
+            self.notify(f"Microphone: {label}{when}", force=True)
+        else:
+            self.notify(
+                f"Microphone: {label}{when} — but the settings could not be saved, "
+                "so the old one is back after a restart. See the log file.",
+                force=True,
+            )
+        window = self._settings_window
+        if window is None:
+            return
+        try:
+            window.sync_input_device()
+        except RuntimeError:
+            self._settings_window = None
+        except Exception:
+            log.exception("could not update the open settings window's input device")
 
     def _copy_last_transcript(self) -> None:
         """Put the most recent transcript back on the clipboard.
