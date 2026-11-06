@@ -8231,7 +8231,7 @@ def _engine_recommendation_matrix():
     reads, `language` is never among them, and the text a user reads is
     there, with the download size read out of the choice notes."""
     from listen_to_me import choices
-    from listen_to_me.autoconfig import changes, differs, recommend
+    from listen_to_me.autoconfig import changes, recommend
     from listen_to_me.autoconfig_hardware import Hardware
     from listen_to_me.config import DEFAULTS, Config
     from listen_to_me.parakeet_models import MODELS, V3_LANGUAGES
@@ -8331,7 +8331,7 @@ def _engine_recommendation_matrix():
     # "Already set up like this" against a plain snapshot and a Config.
     rec = recommend(Hardware(parakeet=True), "de")
     snapshot = dict(DEFAULTS, **rec.values)
-    assert changes(rec, snapshot) == {} and not differs(rec, snapshot)
+    assert changes(rec, snapshot) == {}, changes(rec, snapshot)
     moved = changes(rec, DEFAULTS)
     assert moved["backend"] == ("faster-whisper", "parakeet"), moved
     assert moved["device"] == ("auto", "cpu"), moved
@@ -8339,10 +8339,10 @@ def _engine_recommendation_matrix():
     assert changes(rec, {}) == {key: (None, value) for key, value in rec.values.items()}
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Config(path=Path(tmp) / "config.json")
-        assert differs(rec, cfg)
+        assert changes(rec, cfg)
         for key, value in rec.values.items():
             cfg[key] = value
-        assert not differs(rec, cfg)
+        assert not changes(rec, cfg), changes(rec, cfg)
         assert cfg["language"] == DEFAULTS["language"]
 
 

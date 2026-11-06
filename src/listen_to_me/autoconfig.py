@@ -432,9 +432,3 @@ def changes(recommendation: Recommendation, cfg) -> dict:
         if current != value:
             result[key] = (current, value)
     return result
-
-
-def differs(recommendation: Recommendation, cfg) -> bool:
-    """Whether applying `recommendation` would change anything in `cfg`."""
-    return bool(changes(recommendation, cfg))
-
