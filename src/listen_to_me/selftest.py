@@ -8231,7 +8231,7 @@ def _engine_recommendation_matrix():
     reads, `language` is never among them, and the text a user reads is
     there, with the download size read out of the choice notes."""
     from listen_to_me import choices
-    from listen_to_me.autoconfig import changes, differs, recommend
+    from listen_to_me.autoconfig import changes, recommend
     from listen_to_me.autoconfig_hardware import Hardware
     from listen_to_me.config import DEFAULTS, Config
     from listen_to_me.parakeet_models import MODELS, V3_LANGUAGES
@@ -8331,7 +8331,7 @@ def _engine_recommendation_matrix():
     # "Already set up like this" against a plain snapshot and a Config.
     rec = recommend(Hardware(parakeet=True), "de")
     snapshot = dict(DEFAULTS, **rec.values)
-    assert changes(rec, snapshot) == {} and not differs(rec, snapshot)
+    assert changes(rec, snapshot) == {}, changes(rec, snapshot)
     moved = changes(rec, DEFAULTS)
     assert moved["backend"] == ("faster-whisper", "parakeet"), moved
     assert moved["device"] == ("auto", "cpu"), moved
@@ -8339,10 +8339,10 @@ def _engine_recommendation_matrix():
     assert changes(rec, {}) == {key: (None, value) for key, value in rec.values.items()}
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Config(path=Path(tmp) / "config.json")
-        assert differs(rec, cfg)
+        assert changes(rec, cfg)
         for key, value in rec.values.items():
             cfg[key] = value
-        assert not differs(rec, cfg)
+        assert not changes(rec, cfg), changes(rec, cfg)
         assert cfg["language"] == DEFAULTS["language"]
 
 
@@ -13910,9 +13910,8 @@ def _system_audio_picker_reads_as_an_output_picker():
         _SYS_NO_LOOPBACK_ROW,
         _SYSTEM_AUDIO_AUTO,
         SettingsWindow,
-        _loopback_output_name,
-        _sys_device_label,
     )
+    from listen_to_me.system_audio import device_label, loopback_output_name
     from listen_to_me.theme import apply_theme
 
     # No heading may ever parse to a device index — nor may "Automatic", which
@@ -13932,13 +13931,13 @@ def _system_audio_picker_reads_as_an_output_picker():
     # the only words they recognize. Where the name carries no mapping, none
     # is invented: a made-up one promises a take comes from an output that
     # nothing in the system connects it to.
-    assert _loopback_output_name(
+    assert loopback_output_name(
         {"name": "Monitor of Built-in Audio Analog Stereo", "hint": "monitor of"}
     ) == "Built-in Audio Analog Stereo"
-    assert _loopback_output_name(
+    assert loopback_output_name(
         {"name": "Monitor von Lautsprecher (Realtek)", "hint": "monitor von"}
     ) == "Lautsprecher (Realtek)"
-    assert _loopback_output_name(
+    assert loopback_output_name(
         {"name": "Speakers (Realtek(R) Audio) [Loopback]", "hint": "[loopback]"}
     ) == "Speakers (Realtek(R) Audio)"
     for nothing in (
@@ -13948,13 +13947,13 @@ def _system_audio_picker_reads_as_an_output_picker():
         {"name": "[Loopback]", "hint": "[loopback]"},  # nothing left of the name
         {"name": "Built-in Microphone"},  # not a candidate at all: no hint key
     ):
-        assert _loopback_output_name(nothing) is None, nothing
+        assert loopback_output_name(nothing) is None, nothing
     # A row never carries the score. It is a sum of LOOPBACK_HINTS weights, not
     # a percentage: "140" beside a device name reads as a confidence and is
     # not one.
     scored = {"index": 7, "name": "Speakers [Loopback]", "hint": "[loopback]", "score": 140}
-    assert "140" not in _sys_device_label(scored), _sys_device_label(scored)
-    assert "score" not in _sys_device_label(scored).casefold()
+    assert "140" not in device_label(scored), device_label(scored)
+    assert "score" not in device_label(scored).casefold()
 
     app = _ensure_qapp()
     apply_theme(app)
@@ -14151,11 +14150,11 @@ def _system_audio_hint_names_the_outputs_it_cannot_record():
     Bounded, too: a machine with fifteen outputs must grow the hint by a count,
     not by twelve device names.
     """
-    from listen_to_me.settings_ui import (
-        _SYS_OUTPUTS_NAMED,
-        SettingsWindow,
-        _output_list_phrase,
-        _outputs_without_loopback,
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.system_audio import (
+        OUTPUTS_NAMED,
+        output_list_phrase,
+        outputs_without_loopback,
     )
     from listen_to_me.theme import apply_theme
 
@@ -14165,29 +14164,29 @@ def _system_audio_hint_names_the_outputs_it_cannot_record():
     monitor = {"name": "Monitor of Built-in Audio Analog Stereo", "hint": "monitor of"}
     stereo_mix = {"name": "Stereo Mix (Realtek(R) Audio)", "hint": "stereo mix"}
     outputs = ["Built-in Audio Analog Stereo", "HDMI / DisplayPort"]
-    assert _outputs_without_loopback(outputs, [monitor]) == ["HDMI / DisplayPort"]
-    assert _outputs_without_loopback(outputs, [stereo_mix]) == outputs
-    assert _outputs_without_loopback(outputs, []) == outputs
-    assert _outputs_without_loopback([], [monitor]) == []
+    assert outputs_without_loopback(outputs, [monitor]) == ["HDMI / DisplayPort"]
+    assert outputs_without_loopback(outputs, [stereo_mix]) == outputs
+    assert outputs_without_loopback(outputs, []) == outputs
+    assert outputs_without_loopback([], [monitor]) == []
     # Windows' MME host API truncates device names to 31 characters, so the
     # output entry and its loopback twin agree only on a prefix.
     truncated = {"name": "Speakers (High Definition Audi [Loopback]", "hint": "[loopback]"}
-    assert _outputs_without_loopback(["Speakers (High Definition Audio Device)"], [truncated]) == []
+    assert outputs_without_loopback(["Speakers (High Definition Audio Device)"], [truncated]) == []
     # …but a prefix of three characters is not a pairing, it is a collision.
-    assert _outputs_without_loopback(["USB"], [{"name": "USB Speaker [Loopback]",
-                                                "hint": "[loopback]"}]) == ["USB"]
+    assert outputs_without_loopback(["USB"], [{"name": "USB Speaker [Loopback]",
+                                               "hint": "[loopback]"}]) == ["USB"]
 
     # An empty list is a landmine, not an impossibility: `quoted[-1]` raised
     # IndexError. Its only caller is guarded by `if missing:` today, which is
     # exactly why the guard belongs in the function — the next caller reads the
     # signature, and nothing in it says the list may not be empty.
-    assert _output_list_phrase([]) == ""
-    assert _output_list_phrase([], limit=0) == ""
-    assert _output_list_phrase(["A"]) == "“A”"
-    assert _output_list_phrase(["A", "B"]) == "“A” and “B”"
-    assert _output_list_phrase(["A", "B", "C"]) == "“A”, “B” and “C”"
-    assert _SYS_OUTPUTS_NAMED == 3  # the wording above is bounded by this
-    assert _output_list_phrase(["A", "B", "C", "D", "E"]) == "“A”, “B”, “C” and 2 more"
+    assert output_list_phrase([]) == ""
+    assert output_list_phrase([], limit=0) == ""
+    assert output_list_phrase(["A"]) == "“A”"
+    assert output_list_phrase(["A", "B"]) == "“A” and “B”"
+    assert output_list_phrase(["A", "B", "C"]) == "“A”, “B” and “C”"
+    assert OUTPUTS_NAMED == 3  # the wording above is bounded by this
+    assert output_list_phrase(["A", "B", "C", "D", "E"]) == "“A”, “B”, “C” and 2 more"
 
     app = _ensure_qapp()
     apply_theme(app)
