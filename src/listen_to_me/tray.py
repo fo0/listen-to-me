@@ -22,7 +22,7 @@ from .choices import (
 )
 from .history import entry_timestamp
 from .keymap import hotkey_label
-from .qtutil import tray_icon
+from .qtutil import busy_cursor, tray_icon
 
 log = logging.getLogger(__name__)
 
@@ -594,7 +594,11 @@ class Tray:
             failed = menu.addAction("Could not read the settings")
             failed.setEnabled(False)
             return
-        values, selected = input_device_choices(current)
+        # The wait cursor the Audio page and the setup wizard show for the same
+        # PortAudio enumeration: it runs on the Qt main thread, and without it
+        # the open tray menu just freezes until the submenu appears.
+        with busy_cursor():
+            values, selected = input_device_choices(current)
         for label in values:
             # "&&": a device named "Line In & Mic" would otherwise lose its "&"
             # to Qt as a mnemonic marker.

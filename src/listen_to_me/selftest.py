@@ -11453,9 +11453,15 @@ def _tray_switches_the_microphone():
     from listen_to_me.settings_ui import SettingsWindow
     from listen_to_me.theme import apply_theme
 
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
     devices = [SYSTEM_DEFAULT_DEVICE, "1: Laptop Microphone", "4: USB Headset"]
+    cursors: list = []  # the override cursor each enumeration ran under
 
     def _choices(current=None):
+        cursor = QApplication.overrideCursor()
+        cursors.append(None if cursor is None else cursor.shape())
         selected = SYSTEM_DEFAULT_DEVICE
         for label in devices[1:]:
             if label.startswith(f"{current}: "):
@@ -11475,7 +11481,12 @@ def _tray_switches_the_microphone():
             tray = tray_module.Tray(stub)
             tray.start()
             try:
+                cursors.clear()
                 tray._fill_mic_menu()
+                # PortAudio can stall on the Qt main thread: the wait cursor
+                # shows for the enumeration and is gone again afterwards.
+                assert cursors == [Qt.CursorShape.WaitCursor], cursors
+                assert QApplication.overrideCursor() is None
                 actions = tray._mic_menu.actions()
                 assert [a.text() for a in actions] == devices, [a.text() for a in actions]
                 assert [a.text() for a in actions if a.isChecked()] == [SYSTEM_DEFAULT_DEVICE]
