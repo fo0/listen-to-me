@@ -148,7 +148,13 @@ from .qtutil import (
 # Qt-free and PortAudio-free at import time (`audio` is imported inside their
 # bodies), so both may live up here — the enumeration itself still happens on
 # the first visit to the Audio page, see _load_system_devices.
-from .system_audio import loopback_candidates, system_audio_help
+from .system_audio import (
+    device_label,
+    loopback_candidates,
+    output_list_phrase,
+    outputs_without_loopback,
+    system_audio_help,
+)
 from .widgets import HotkeyCaptureDialog
 
 log = logging.getLogger(__name__)
@@ -318,16 +324,6 @@ _SYS_GROUP_ABSENT = "Selected earlier — not available right now"
 # to "where are my outputs?", in the list itself. Without it the group would
 # be empty and the microphones below it would read as the answer.
 _SYS_NO_LOOPBACK_ROW = "None found — nothing here can record the computer's output"
-# How many output devices the hint spells out by name before it counts the
-# rest. A studio interface can expose a dozen, and a hint that grows into a
-# paragraph is one nobody reads.
-_SYS_OUTPUTS_NAMED = 3
-# The shortest name half that may stand in for a whole output name when a
-# loopback device is matched to its output. Windows' MME host API truncates
-# device names to 31 characters, so "Monitor of <long output name>" and the
-# output itself agree only on a prefix — but a prefix of two or three
-# characters would pair devices that have nothing to do with each other.
-_SYS_OUTPUT_PREFIX_MIN = 8
 # What the feature does, in the one place both the hint and the tooltips point
 # at. Kept short: the platform-specific instruction that follows it
 # (system_audio_help) is the part the user has to act on.
@@ -366,127 +362,6 @@ _HISTORY_RENDER_LIMIT = 300
 # transcribed again (#363) — both labels are compared in the self-test.
 _RETRY_LABEL = "Retry"
 _RETRYING_LABEL = "Retrying…"
-
-
-def _loopback_output_name(candidate: dict) -> str | None:
-    """The OUTPUT device a loopback candidate records, read out of its own
-    name — or None where the name carries no such mapping (#195).
-
-    "Monitor of Built-in Audio Analog Stereo" and "Speakers (Realtek) [Loopback]"
-    both carry the output they belong to, and the user thinks in outputs: the
-    mechanism marker is display noise in front of the only word they recognize.
-    Keyed on the fragment `system_audio.loopback_candidates` reports as
-    "hint", so this never keeps a second list of markers — a prefix hint names
-    the output after it, the suffix hint names it before.
-
-    "Stereo Mix", "CABLE Output" and "BlackHole" carry no output name at all,
-    and none is invented for them: a made-up mapping would promise that a take
-    comes from a specific output when nothing in the system says so.
-    """
-    name = str(candidate.get("name") or "").strip()
-    hint = str(candidate.get("hint") or "")
-    if not name or not hint:
-        return None
-    lowered = name.casefold()
-    if hint in ("monitor of", "monitor von"):
-        cut = lowered.find(hint)
-        if cut >= 0:
-            return name[cut + len(hint):].strip(" :–—-") or None
-    if hint == "[loopback]":
-        cut = lowered.rfind(hint)
-        if cut >= 0:
-            return name[:cut].strip(" :–—-") or None
-    return None
-
-
-def _sys_device_label(profile: dict) -> str:
-    """One row of the system-audio dropdown: "<index>: <what the user thinks
-    this is>", plus why it is offered when it is a loopback candidate.
-
-    The index prefix is load-bearing — `choices.input_device_from_label` parses
-    it back and Save writes exactly what that returns, so it stays first and
-    stays the only ":" this function can put in front of the name.
-
-    A candidate is labelled with the *output* it records where its name says
-    so, and with the name fragment that identified it — never with its score,
-    which is a sum of weights and not a percentage ("170" says nothing;
-    “monitor of” says why this row is here). Where no output can be read out
-    of the name the raw device name stays, marked as a loopback input rather
-    than as an output it may not be.
-    """
-    index = profile.get("index")
-    name = str(profile.get("name") or f"Device {index}")
-    hint = profile.get("hint")
-    if not hint:
-        return f"{index}: {name}"
-    output = _loopback_output_name(profile)
-    if output:
-        return f"{index}: {output}  — records this output, matched “{hint}”"
-    return f"{index}: {name}  — loopback input, matched “{hint}”"
-
-
-def _outputs_without_loopback(outputs: list[str], candidates: list[dict]) -> list[str]:
-    """The output devices no loopback candidate covers — the ones the hint has
-    to name, because they are what the user came to the card to pick (#195).
-
-    An output counts as covered when some candidate's name resolves to it
-    (`_loopback_output_name`). Matched on equality or on a prefix of at least
-    `_SYS_OUTPUT_PREFIX_MIN` characters: Windows' MME host API truncates device
-    names to 31 characters, so the output entry and the loopback entry of one
-    device can differ in their tail while naming the same hardware.
-
-    Order is PortAudio's, so the hint lists the outputs in the order the
-    Windows sound panel does. A candidate that maps to no output at all
-    ("Stereo Mix") covers nothing — it may well carry the output the user
-    wants, but nothing in its name says which, and this list is only used to
-    say what cannot be recorded *directly*.
-    """
-    covered = [
-        name.strip().casefold()
-        for name in (_loopback_output_name(candidate) for candidate in candidates)
-        if name and name.strip()
-    ]
-    missing: list[str] = []
-    for output in outputs:
-        key = str(output or "").strip()
-        if not key:
-            continue
-        folded = key.casefold()
-        if any(
-            folded == other
-            or (
-                min(len(folded), len(other)) >= _SYS_OUTPUT_PREFIX_MIN
-                and (folded.startswith(other) or other.startswith(folded))
-            )
-            for other in covered
-        ):
-            continue
-        missing.append(key)
-    return missing
-
-
-def _output_list_phrase(names: list[str], limit: int = _SYS_OUTPUTS_NAMED) -> str:
-    """“A”, “B” and 7 more — a bounded enumeration for the hint.
-
-    Bounded on purpose: the sentence has to be readable on a machine with two
-    outputs and on one with fifteen, and the count carries the rest. Quoted
-    because an output name can be a whole phrase ("Speakers (Realtek(R)
-    Audio)") that would otherwise dissolve into the sentence around it.
-
-    An empty list gives an empty string rather than an `IndexError` on
-    `quoted[-1]`. Its only caller today is guarded by `if missing:`, which is
-    exactly why the guard belongs here: nothing about the signature says the
-    list may not be empty, and the next caller reads the signature.
-    """
-    if not names:
-        return ""
-    quoted = [f"“{name}”" for name in names[:limit]]
-    rest = len(names) - len(quoted)
-    if rest > 0:
-        quoted.append(f"{rest} more")
-    if len(quoted) == 1:
-        return quoted[0]
-    return ", ".join(quoted[:-1]) + " and " + quoted[-1]
 
 
 class MuteTargetRow(QGroupBox):
@@ -3734,7 +3609,7 @@ class SettingsWindow(QDialog):
         goes into the notification that refuses a take, and two drifting copies
         are how a user follows the one that no longer fits their system.
 
-        Bounded on purpose (`_output_list_phrase`): fifteen outputs must not
+        Bounded on purpose (`output_list_phrase`): fifteen outputs must not
         turn this into a paragraph.
         """
         parts = [_SYSTEM_AUDIO_NOTE]
@@ -3744,7 +3619,7 @@ class SettingsWindow(QDialog):
                             "recording would be refused with nothing captured.")
         missing = self._sys_missing_outputs
         if missing:
-            named = _output_list_phrase(missing)
+            named = output_list_phrase(missing)
             if none_found:
                 parts.append(
                     f"Your outputs are {named} — none of them can be recorded "
@@ -3913,7 +3788,7 @@ class SettingsWindow(QDialog):
         says so, plus the *name fragment* that identified it, never its score —
         that number is a sum of weights, not a percentage, and "170" tells the
         user nothing while “monitor of” tells them exactly why the device is
-        offered (`_sys_device_label`).
+        offered (`device_label`).
 
         Like `_load_devices` this keeps an unsaved on-screen choice across a
         refresh, and it keeps a configured device that is not currently there
@@ -3944,13 +3819,13 @@ class SettingsWindow(QDialog):
             profiles, outputs = [], []
         candidates = loopback_candidates(profiles)
         self._sys_candidates = len(candidates)
-        self._sys_missing_outputs = _outputs_without_loopback(outputs, candidates)
+        self._sys_missing_outputs = outputs_without_loopback(outputs, candidates)
         combo = self.sys_device_combo
         combo.clear()
         combo.addItem(_SYSTEM_AUDIO_AUTO)
         self._sys_add_group(_SYS_GROUP_LOOPBACK)
         for candidate in candidates:
-            combo.addItem(_sys_device_label(candidate))
+            combo.addItem(device_label(candidate))
         if not candidates:
             self._sys_add_unselectable(
                 _SYS_NO_LOOPBACK_ROW, f"Not available. {_SYS_NO_LOOPBACK_ROW}"
@@ -3960,7 +3835,7 @@ class SettingsWindow(QDialog):
         if rest:
             self._sys_add_group(_SYS_GROUP_OTHER)
             for profile in rest:
-                combo.addItem(_sys_device_label(profile))
+                combo.addItem(device_label(profile))
         current = _SYSTEM_AUDIO_AUTO
         if stored is not None:
             for row in range(combo.count()):
