@@ -1652,6 +1652,9 @@ def _filler_take_inserts_nothing():
         def clipboard_mode(self):
             return "on_failure"
 
+        def trailing_space(self):
+            return ""
+
         def type_plain_blocking(self, text):
             self.typed.append(text)
             return ""
@@ -1887,6 +1890,9 @@ def _withheld_transcript_is_not_inserted():
         def clipboard_mode(self):
             return "always"
 
+        def trailing_space(self):
+            return ""
+
         def type_plain_blocking(self, typed):
             self.typed.append(typed)
             return ""
@@ -2109,6 +2115,9 @@ def _failed_take_is_kept_and_retried():
 
         def clipboard_mode(self):
             return "always"
+
+        def trailing_space(self):
+            return ""
 
         def type_plain_blocking(self, text):
             self.typed.append(text)
@@ -2641,6 +2650,9 @@ def _implausible_take_inserts_nothing():
 
         def clipboard_mode(self):
             return "on_failure"
+
+        def trailing_space(self):
+            return ""
 
         def type_plain_blocking(self, text):
             self.typed.append(text)
@@ -4556,11 +4568,16 @@ def _injector_paste_falls_back_to_typing():
         def _paste(self, text, keep=False):
             raise RuntimeError("clipboard is unavailable")
 
-        def _type(self, text):
+        def _type(self, text, suffix=""):
             typed.append(text)
 
     injector = _Injector(
-        {"injection_mode": "paste", "restore_clipboard": True, "clipboard_copy": "off"}
+        {
+            "injection_mode": "paste",
+            "restore_clipboard": True,
+            "clipboard_copy": "off",
+            "append_space": False,
+        }
     )
     injector.insert("recovered text")
     assert typed == ["recovered text"]
@@ -4586,7 +4603,7 @@ def _injector_clipboard_policy():
     pastes: list[bool] = []
 
     class _Injector(Injector):
-        def _type(self, text):
+        def _type(self, text, suffix=""):
             pass
 
         def _paste(self, text, keep=False):
@@ -4602,6 +4619,7 @@ def _injector_clipboard_policy():
             "injection_mode": injection_mode,
             "restore_clipboard": True,
             "clipboard_copy": clipboard_copy,
+            "append_space": False,
         }
 
     assert _Injector(_cfg("always")).insert("hello") is True
@@ -4652,6 +4670,175 @@ def _injector_clipboard_policy():
             del sys.modules["pyperclip"]
         else:
             sys.modules["pyperclip"] = previous
+
+
+def _append_space_spaces_consecutive_takes():
+    """`append_space` puts one space after what reaches the cursor — and only
+    there.
+
+    Dictating sentence by sentence into one field glued every take to the end
+    of the one before ("…the report.Next sentence"). With the option on, the
+    paste carries the space, simulated typing keeps it although sanitizing
+    strips trailing whitespace, and live typing ends with it even when the
+    whole text already went out during the take. The clipboard copy and the
+    history keep the transcript exactly as it was recognised, and anything but
+    a real True — the default is off — adds nothing.
+    """
+    import types
+
+    from listen_to_me.app import App
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.choices import SOURCE_MIC
+    from listen_to_me.config import DEFAULTS, Config
+    from listen_to_me.injector import Injector
+
+    assert DEFAULTS["append_space"] is False, "a space nobody asked for is the worse default"
+
+    pasted: list[str] = []
+    typed: list[tuple[str, str]] = []
+    copied: list[str] = []
+
+    class _Injector(Injector):
+        def _paste(self, text, keep=False):
+            pasted.append(text)
+            return keep
+
+        def _type(self, text, suffix=""):
+            typed.append((text, suffix))
+
+        def copy_to_clipboard(self, text):
+            copied.append(text)
+            return True
+
+    def _cfg(append_space, injection_mode="paste", clipboard_copy="on_failure"):
+        return {
+            "injection_mode": injection_mode,
+            "restore_clipboard": True,
+            "clipboard_copy": clipboard_copy,
+            "append_space": append_space,
+        }
+
+    _Injector(_cfg(True)).insert("First take.")
+    assert pasted == ["First take. "], pasted
+    _Injector(_cfg(True, "type", "always")).insert("First take.")
+    assert typed == [("First take.", " ")], typed
+    assert copied == ["First take."], "the clipboard copy must stay the plain transcript"
+    pasted.clear()
+    typed.clear()
+    for value in (False, "yes", 1, None):
+        _Injector(_cfg(value)).insert("First take.")
+        _Injector(_cfg(value, "type")).insert("First take.")
+    assert pasted == ["First take."] * 4, pasted
+    assert typed == [("First take.", "")] * 4, typed
+
+    # The real typing path: the space survives sanitizing, newlines do not.
+    keys: list[str] = []
+
+    class _Controller:
+        def type(self, text):
+            keys.append(text)
+
+    keyboard = types.ModuleType("pynput.keyboard")
+    keyboard.Controller = _Controller
+    pynput = types.ModuleType("pynput")
+    pynput.keyboard = keyboard
+    saved = {name: sys.modules.get(name) for name in ("pynput", "pynput.keyboard")}
+    sys.modules.update({"pynput": pynput, "pynput.keyboard": keyboard})
+    try:
+        Injector(_cfg(True, "type"))._type("two\nlines  ", " ")
+        assert keys == ["two lines "], keys
+        keys.clear()
+        # type_plain (live typing) splits on spaces and must not drop the last.
+        assert Injector(_cfg(True)).type_plain(" rest ") == ""
+        assert "".join(keys) == " rest ", keys
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+    # Live typing: the final flush ends with the space, and a take whose words
+    # all went out while recording still gets it.
+    class _LiveInjector:
+        def __init__(self, space):
+            self.space = space
+            self.typed: list[str] = []
+
+        def clipboard_mode(self):
+            return "on_failure"
+
+        def trailing_space(self):
+            return self.space
+
+        def type_plain_blocking(self, text):
+            self.typed.append(text)
+            return ""
+
+    class _Transcriber:
+        def __init__(self, text):
+            self.text = text
+
+        def ensure_loaded(self, notify=None, progress=None):
+            pass
+
+        def transcribe(self, audio, notify=None, progress=None):
+            return self.text
+
+    class _History:
+        def __init__(self):
+            self.stored: list[str] = []
+
+        def add(self, text):
+            self.stored.append(text)
+
+    class _Live:
+        committed_text = "Already typed"
+        committed_frames = 0
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def hand_over(self):
+            return ("", True)
+
+    class _App:
+        _process = App._process
+
+        def __init__(self, cfg, text, space):
+            self.cfg = cfg
+            self.transcriber = _Transcriber(text)
+            self.injector = _LiveInjector(space)
+            self.history = _History()
+            self.messages: list[str] = []
+
+        def notify(self, message, force=False):
+            self.messages.append(message)
+
+        def post(self, kind, payload=None):
+            pass
+
+        def progress(self, *args, **kwargs):
+            pass
+
+    audio = [0.0] * SAMPLE_RATE
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        cfg["assistant"]["enabled"] = False
+        take = _App(cfg, "and the rest.", " ")
+        take._process(audio, _Live(), SOURCE_MIC)
+        assert take.injector.typed == [" and the rest. "], take.injector.typed
+        assert take.history.stored == ["Already typed and the rest."], take.history.stored
+        done = _App(cfg, "", " ")
+        done._process(audio, _Live(), SOURCE_MIC)
+        assert done.injector.typed == [" "], done.injector.typed
+        assert done.messages == [], done.messages
+        off = _App(cfg, "", "")
+        off._process(audio, _Live(), SOURCE_MIC)
+        assert off.injector.typed == [], off.injector.typed
 
 
 def _clipboard_copy_is_announced():
@@ -7114,7 +7301,12 @@ def _injector_waits_for_quiet_modifiers():
     sys.modules.update({"pynput": pynput, "pynput.keyboard": keyboard, "pyperclip": clip})
     original_down = injector.modifiers_down
     original_timeout = injector._INSERT_SETTLE_TIMEOUT_S
-    cfg = {"injection_mode": "paste", "restore_clipboard": True, "clipboard_copy": "on_failure"}
+    cfg = {
+        "injection_mode": "paste",
+        "restore_clipboard": True,
+        "clipboard_copy": "on_failure",
+        "append_space": False,
+    }
 
     def refused(config, text="hello"):
         try:
@@ -16937,6 +17129,7 @@ _LIGHT_CHECKS = [
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),
+    ("append space spaces consecutive takes", _append_space_spaces_consecutive_takes),
     ("clipboard copy is announced", _clipboard_copy_is_announced),
     ("copy button reports a failure", _copy_button_reports_failure),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),

@@ -167,6 +167,13 @@ DEFAULTS: dict = {
     },
     # How to insert text at the cursor: "paste" (clipboard + Ctrl+V) or "type".
     "injection_mode": "paste",
+    # Add one space after every inserted transcript, so the next dictation
+    # into the same field does not stick to the end of this one ("…the
+    # report.Next sentence"). Off by default: a single-line field (a search
+    # box, a file name) would otherwise end in a space nobody asked for.
+    # Applies to both injection modes and to the end of live typing; never to
+    # the history or a transcript copied to the clipboard for recovery.
+    "append_space": False,
     # Experimental: type already-stable parts of the transcript at the cursor
     # WHILE recording instead of waiting for the end. Append-only (never
     # deletes or corrects), always simulated typing (never paste) and plain

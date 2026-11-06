@@ -14,6 +14,12 @@ changes at a glance.
 
 ### Added
 
+- **Add a space after each transcript.** A new option under Settings →
+  General → _Insert text by_ ends every inserted transcript with one space, so
+  dictating sentence by sentence into the same field no longer glues each take
+  to the end of the previous one. Works for paste and simulated typing and at
+  the end of live typing; the history and clipboard copies stay without the
+  space. Off by default (`append_space`).
 - **`Ctrl+Tab` steps through the settings pages.** `Ctrl+Tab` /
   `Ctrl+Shift+Tab` and `Ctrl+PgDown` / `Ctrl+PgUp` move to the next or
   previous page from any field, wrapping at either end, as in any tabbed

@@ -1424,6 +1424,15 @@ class SettingsWindow(QDialog):
         (self.rb_type if self.cfg["injection_mode"] == "type" else self.rb_paste).setChecked(True)
         iv.addWidget(self.rb_paste)
         iv.addWidget(self.rb_type)
+        self.chk_append_space = self._checkbox(
+            "Add a space after each transcript",
+            self.cfg["append_space"],
+            "End every inserted transcript with one space, so the next dictation into the "
+            "same field does not stick to the end of this one. Leave it off for "
+            "single-line fields such as a search box or a file name, which would keep "
+            "the space. The history and any copy on the clipboard stay without it.",
+        )
+        iv.addWidget(self.chk_append_space)
         self.chk_live_typing = self._checkbox(
             "Type while you speak (live, experimental)",
             self.cfg["live_typing"],
@@ -6789,6 +6798,7 @@ class SettingsWindow(QDialog):
             "model": self._selected_model(),
             "model_dir": self.model_dir_edit.text().strip() or None,
             "injection_mode": "type" if self.rb_type.isChecked() else "paste",
+            "append_space": self.chk_append_space.isChecked(),
             "live_typing": self.chk_live_typing.isChecked(),
             "clipboard_copy": self._selected_clipboard_mode(),
             "restore_clipboard": self.chk_restore.isChecked(),

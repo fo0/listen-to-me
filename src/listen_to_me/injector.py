@@ -125,6 +125,14 @@ class Injector:
         """The configured clipboard policy: "off", "on_failure" or "always"."""
         return clipboard_copy_mode(self.cfg["clipboard_copy"])
 
+    def trailing_space(self) -> str:
+        """" " when `append_space` is on, else "" — what goes in after a
+        transcript so the next dictation into the same field does not stick to
+        it. `is True`, not truthiness: the key's default is a bool, so the
+        config's type guard already repairs a hand-edited value, and anything
+        that still is not exactly True must not add text nobody asked for."""
+        return " " if self.cfg["append_space"] is True else ""
+
     def insert(self, text: str) -> bool:
         """Insert `text` at the cursor of whatever window has focus.
 
@@ -147,17 +155,22 @@ class Injector:
             return False
         keep = self.clipboard_mode() == "always"
         mode = self.cfg["injection_mode"]
+        # Only what reaches the cursor carries the space; the clipboard copy
+        # below and every recovery copy the caller makes keep the transcript
+        # as it is. A kept paste is the one exception — that clipboard holds
+        # exactly what was pasted, so pasting it again spaces the same way.
+        suffix = self.trailing_space()
         on_clipboard = False
         if mode == "type":
-            self._type(text)
+            self._type(text, suffix)
         else:
             try:
-                on_clipboard = self._paste(text, keep=keep)
+                on_clipboard = self._paste(text + suffix, keep=keep)
             except ModifierHeldError:
                 raise
             except Exception:
                 log.exception("clipboard paste failed — falling back to typing")
-                self._type(text)
+                self._type(text, suffix)
                 mode = "type (clipboard unavailable)"
         if keep and not on_clipboard:
             # Typing mode, or a paste that fell back to it: the option promises
@@ -197,7 +210,7 @@ class Injector:
             return False
         return True
 
-    def _type(self, text: str) -> None:
+    def _type(self, text: str, suffix: str = "") -> None:
         from pynput.keyboard import Controller
 
         # Typed under a held Ctrl/Alt/Win every character is a shortcut in the
@@ -213,8 +226,9 @@ class Injector:
         # terminal that submits instead of typing. Whisper output is flat, but
         # assistant output arrives verbatim, so every simulated-typing path
         # gets the sanitized text; pasting is unaffected (a pasted newline
-        # presses no key).
-        Controller().type(sanitize_typed_text(text))
+        # presses no key). The trailing space goes on after sanitizing, which
+        # would otherwise strip it as trailing whitespace.
+        Controller().type(sanitize_typed_text(text) + suffix)
 
     def type_plain(self, text: str) -> str:
         """Type already-sanitized plain text word by word, re-checking the

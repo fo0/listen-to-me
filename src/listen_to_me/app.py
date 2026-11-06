@@ -1833,11 +1833,17 @@ class App:
                 rest = sanitize_typed_text(text)
                 if pending:
                     rest = f"{pending} {rest}" if rest else pending
+                # append_space ends live typing like any other insertion —
+                # also when the whole text already went out during the take.
+                tail = self.injector.trailing_space() if (rest or typed_any) else ""
                 leftover = ""
-                if rest:
+                if rest or tail:
                     leftover = self.injector.type_plain_blocking(
-                        (" " if typed_any else "") + rest
+                        ((" " if typed_any else "") + rest if rest else "") + tail
                     )
+                    if tail:
+                        # A space that could not go out is nothing to recover.
+                        leftover = leftover.rstrip()
                 if leftover:
                     # Only the untyped remainder goes to the clipboard: pasting
                     # the whole transcript would duplicate what was typed.
