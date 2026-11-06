@@ -1190,6 +1190,37 @@ class SettingsWindow(QDialog):
         # the user is most likely looking at when the tray menu closes.
         self.home.refresh()
 
+    def sync_input_device(self) -> None:
+        """Re-select the Input device box from the config (called by
+        App._set_input_device on the Qt main thread).
+
+        The tray's "Microphone" submenu writes the key this window edits — the
+        same trap `sync_language` closes. Before the Audio page was opened the
+        box holds only its placeholder and `_selected_input_device` answers
+        from the config, so there is nothing to re-select. The saved snapshot
+        follows either way: nobody edited anything here, and closing the
+        window must not ask about unsaved changes.
+        """
+        stored = self.cfg["input_device"]
+        if self._devices_loaded:
+            rows = [
+                row
+                for row in range(self.input_combo.count())
+                if input_device_from_label(self.input_combo.itemText(row)) == stored
+                and (stored is not None or self.input_combo.itemText(row) == SYSTEM_DEFAULT_DEVICE)
+            ]
+            if rows:
+                self.input_combo.setCurrentIndex(rows[0])
+            else:
+                # Chosen from a newer device list than this box shows.
+                values, current = input_device_choices(stored)
+                self.input_combo.clear()
+                self.input_combo.addItems(values)
+                self.input_combo.setCurrentText(current)
+        self._saved_snapshot["input_device"] = self._selected_input_device()
+        # The Home hub names the microphone on a stat card.
+        self.home.refresh()
+
     def set_app_state(self, state: str) -> None:
         """Mirror the app state into the Home hero (called by App._set_state
         on the Qt main thread)."""
@@ -1424,6 +1455,15 @@ class SettingsWindow(QDialog):
         (self.rb_type if self.cfg["injection_mode"] == "type" else self.rb_paste).setChecked(True)
         iv.addWidget(self.rb_paste)
         iv.addWidget(self.rb_type)
+        self.chk_append_space = self._checkbox(
+            "Add a space after each transcript",
+            self.cfg["append_space"],
+            "End every inserted transcript with one space, so the next dictation into the "
+            "same field does not stick to the end of this one. Leave it off for "
+            "single-line fields such as a search box or a file name, which would keep "
+            "the space. The history and any copy on the clipboard stay without it.",
+        )
+        iv.addWidget(self.chk_append_space)
         self.chk_live_typing = self._checkbox(
             "Type while you speak (live, experimental)",
             self.cfg["live_typing"],
@@ -6789,6 +6829,7 @@ class SettingsWindow(QDialog):
             "model": self._selected_model(),
             "model_dir": self.model_dir_edit.text().strip() or None,
             "injection_mode": "type" if self.rb_type.isChecked() else "paste",
+            "append_space": self.chk_append_space.isChecked(),
             "live_typing": self.chk_live_typing.isChecked(),
             "clipboard_copy": self._selected_clipboard_mode(),
             "restore_clipboard": self.chk_restore.isChecked(),

@@ -26,7 +26,11 @@ Everything Listen To Me does, in detail. The short version is in the
   [Recording system audio](system-audio.md).
 - **Inserts at the cursor** — via clipboard paste (default) or simulated
   typing; if the clipboard is unavailable, paste mode falls back to typing
-  instead of losing the transcript.
+  instead of losing the transcript. **Add a space after each transcript**
+  (Settings → General) keeps sentence-by-sentence dictation into one field from
+  sticking together ("…the report.Next sentence") — the history and any
+  clipboard copy stay without the space, and it is off by default because a
+  single-line field such as a search box would keep it.
 - **Clipboard safety net** — when the text cannot be inserted into the focused
   window, it is put on the clipboard so one Ctrl+V recovers it. Optionally
   **always** (every transcript stays on the clipboard) or **never**
@@ -224,6 +228,13 @@ Everything Listen To Me does, in detail. The short version is in the
   the language itself and ignores the setting, exactly as the Engine page
   already shows (the German Parakeet model names German, the one language it
   knows).
+- **Switch the microphone from the tray** — **Microphone** in the tray menu
+  lists the same input devices as Settings → Audio → _Input device_ and ticks
+  the one in use, so putting a headset on for a call (or taking it off after)
+  is one click instead of a walk to the Audio page. A notification names the
+  device the next recording uses, and an open settings window follows the
+  choice, so saving there can never put the old device back. A switch during a
+  recording applies from the next take.
 - **Home hub** — the main window opens on a **Home page**: the live recording
   state with a big **Start/Stop** button (red while recording), your hotkey
   shown as key caps, at-a-glance cards for the active engine/model, language

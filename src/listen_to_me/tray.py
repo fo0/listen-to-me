@@ -10,7 +10,16 @@ from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
 from . import APP_NAME, REPO_URL
-from .choices import LANGUAGES, SOURCE_MIC, SOURCE_SYSTEM, language_label, source_label
+from .choices import (
+    LANGUAGES,
+    SOURCE_MIC,
+    SOURCE_SYSTEM,
+    SYSTEM_DEFAULT_DEVICE,
+    input_device_choices,
+    input_device_from_label,
+    language_label,
+    source_label,
+)
 from .history import entry_timestamp
 from .keymap import hotkey_label
 from .qtutil import tray_icon
@@ -81,6 +90,7 @@ def _apply_cancel_entry(action, state: str) -> None:
 # The "Dictation language" submenu's own line, which also names the language in
 # use ("Dictation language: German — Deutsch [de]") — see _sync_language_title.
 _LANGUAGE_TITLE = "Dictation language"
+_MIC_TITLE = "Microphone"
 
 # Shown instead of the language list while the Parakeet backend is selected:
 # it detects the language itself and ignores the setting, exactly as the Home
@@ -252,6 +262,8 @@ class Tray:
         self._recent_menu = None
         self._language_menu = None
         self._language_group = None
+        self._mic_menu = None
+        self._mic_group = None
         self._retry_timer = None
         self._retries = 0
         # Text of a running download; while set it owns the tooltip and
@@ -360,6 +372,25 @@ class Tray:
         # page writes the same key.
         menu.aboutToShow.connect(self._sync_language_title)
         self._sync_language_title()
+
+        # The microphone, for the same reason as the language above: it is the
+        # other setting that changes between two takes — the headset goes on
+        # for a call and comes off after it, a laptop moves to the docking
+        # station — and each switch was a walk to Settings → Audio. Same list
+        # and spelling as that page's Input device box.
+        self._mic_menu = QMenu(_MIC_TITLE, menu)
+        self._mic_menu.setToolTipsVisible(True)
+        self._mic_group = QActionGroup(self._mic_menu)
+        self._mic_group.setExclusive(True)
+        # Filled when it opens, never at startup or with the main menu: the
+        # list comes from PortAudio, which can stall for a moment, and only
+        # somebody who points at this entry wants to wait for it.
+        self._mic_menu.aboutToShow.connect(self._fill_mic_menu)
+        act_mic = menu.addMenu(self._mic_menu)
+        act_mic.setToolTip(
+            "Switch the input device the next recording uses — the same setting "
+            "as Settings → Audio → Input device, one click away."
+        )
 
         self._act_pause = QAction("Pause hotkey", menu)
         self._act_pause.setCheckable(True)
@@ -539,6 +570,46 @@ class Tray:
             # every other entry in this menu.
             action.triggered.connect(
                 lambda _checked=False, chosen=code: self.app.post("set_language", chosen)
+            )
+
+    def _fill_mic_menu(self) -> None:
+        """(Re-)build the "Microphone" submenu from the device list and the
+        config, every time it opens.
+
+        The entries are `input_device_choices`' — the labels of the Audio
+        page's Input device box, index prefix included: PortAudio lists one
+        microphone once per host API on Windows, and the index is the only
+        thing that tells two equal names apart. A list that could not be read
+        shows its inline error entry, disabled, rather than an empty menu, and
+        a config that cannot be read says so instead of ticking nothing.
+        """
+        menu = self._mic_menu
+        if menu is None:
+            return
+        menu.clear()
+        try:
+            current = self.app.cfg["input_device"]
+        except Exception:
+            log.exception("could not read the configured input device")
+            failed = menu.addAction("Could not read the settings")
+            failed.setEnabled(False)
+            return
+        values, selected = input_device_choices(current)
+        for label in values:
+            # "&&": a device named "Line In & Mic" would otherwise lose its "&"
+            # to Qt as a mnemonic marker.
+            action = menu.addAction(label.replace("&", "&&"))
+            index = input_device_from_label(label)
+            if index is None and label != SYSTEM_DEFAULT_DEVICE:
+                action.setEnabled(False)  # the "could not read the list" entry
+                continue
+            action.setCheckable(True)
+            action.setChecked(label == selected)
+            if self._mic_group is not None:
+                self._mic_group.addAction(action)
+            # App validates and saves, as for every other entry of this menu.
+            action.triggered.connect(
+                lambda _checked=False, chosen=index: self.app.post("set_input_device", chosen)
             )
 
     def _parakeet_language(self) -> str | None:

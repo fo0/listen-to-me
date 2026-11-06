@@ -1652,6 +1652,9 @@ def _filler_take_inserts_nothing():
         def clipboard_mode(self):
             return "on_failure"
 
+        def trailing_space(self):
+            return ""
+
         def type_plain_blocking(self, text):
             self.typed.append(text)
             return ""
@@ -1887,6 +1890,9 @@ def _withheld_transcript_is_not_inserted():
         def clipboard_mode(self):
             return "always"
 
+        def trailing_space(self):
+            return ""
+
         def type_plain_blocking(self, typed):
             self.typed.append(typed)
             return ""
@@ -2109,6 +2115,9 @@ def _failed_take_is_kept_and_retried():
 
         def clipboard_mode(self):
             return "always"
+
+        def trailing_space(self):
+            return ""
 
         def type_plain_blocking(self, text):
             self.typed.append(text)
@@ -2641,6 +2650,9 @@ def _implausible_take_inserts_nothing():
 
         def clipboard_mode(self):
             return "on_failure"
+
+        def trailing_space(self):
+            return ""
 
         def type_plain_blocking(self, text):
             self.typed.append(text)
@@ -4556,11 +4568,16 @@ def _injector_paste_falls_back_to_typing():
         def _paste(self, text, keep=False):
             raise RuntimeError("clipboard is unavailable")
 
-        def _type(self, text):
+        def _type(self, text, suffix=""):
             typed.append(text)
 
     injector = _Injector(
-        {"injection_mode": "paste", "restore_clipboard": True, "clipboard_copy": "off"}
+        {
+            "injection_mode": "paste",
+            "restore_clipboard": True,
+            "clipboard_copy": "off",
+            "append_space": False,
+        }
     )
     injector.insert("recovered text")
     assert typed == ["recovered text"]
@@ -4586,7 +4603,7 @@ def _injector_clipboard_policy():
     pastes: list[bool] = []
 
     class _Injector(Injector):
-        def _type(self, text):
+        def _type(self, text, suffix=""):
             pass
 
         def _paste(self, text, keep=False):
@@ -4602,6 +4619,7 @@ def _injector_clipboard_policy():
             "injection_mode": injection_mode,
             "restore_clipboard": True,
             "clipboard_copy": clipboard_copy,
+            "append_space": False,
         }
 
     assert _Injector(_cfg("always")).insert("hello") is True
@@ -4652,6 +4670,175 @@ def _injector_clipboard_policy():
             del sys.modules["pyperclip"]
         else:
             sys.modules["pyperclip"] = previous
+
+
+def _append_space_spaces_consecutive_takes():
+    """`append_space` puts one space after what reaches the cursor — and only
+    there.
+
+    Dictating sentence by sentence into one field glued every take to the end
+    of the one before ("…the report.Next sentence"). With the option on, the
+    paste carries the space, simulated typing keeps it although sanitizing
+    strips trailing whitespace, and live typing ends with it even when the
+    whole text already went out during the take. The clipboard copy and the
+    history keep the transcript exactly as it was recognised, and anything but
+    a real True — the default is off — adds nothing.
+    """
+    import types
+
+    from listen_to_me.app import App
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.choices import SOURCE_MIC
+    from listen_to_me.config import DEFAULTS, Config
+    from listen_to_me.injector import Injector
+
+    assert DEFAULTS["append_space"] is False, "a space nobody asked for is the worse default"
+
+    pasted: list[str] = []
+    typed: list[tuple[str, str]] = []
+    copied: list[str] = []
+
+    class _Injector(Injector):
+        def _paste(self, text, keep=False):
+            pasted.append(text)
+            return keep
+
+        def _type(self, text, suffix=""):
+            typed.append((text, suffix))
+
+        def copy_to_clipboard(self, text):
+            copied.append(text)
+            return True
+
+    def _cfg(append_space, injection_mode="paste", clipboard_copy="on_failure"):
+        return {
+            "injection_mode": injection_mode,
+            "restore_clipboard": True,
+            "clipboard_copy": clipboard_copy,
+            "append_space": append_space,
+        }
+
+    _Injector(_cfg(True)).insert("First take.")
+    assert pasted == ["First take. "], pasted
+    _Injector(_cfg(True, "type", "always")).insert("First take.")
+    assert typed == [("First take.", " ")], typed
+    assert copied == ["First take."], "the clipboard copy must stay the plain transcript"
+    pasted.clear()
+    typed.clear()
+    for value in (False, "yes", 1, None):
+        _Injector(_cfg(value)).insert("First take.")
+        _Injector(_cfg(value, "type")).insert("First take.")
+    assert pasted == ["First take."] * 4, pasted
+    assert typed == [("First take.", "")] * 4, typed
+
+    # The real typing path: the space survives sanitizing, newlines do not.
+    keys: list[str] = []
+
+    class _Controller:
+        def type(self, text):
+            keys.append(text)
+
+    keyboard = types.ModuleType("pynput.keyboard")
+    keyboard.Controller = _Controller
+    pynput = types.ModuleType("pynput")
+    pynput.keyboard = keyboard
+    saved = {name: sys.modules.get(name) for name in ("pynput", "pynput.keyboard")}
+    sys.modules.update({"pynput": pynput, "pynput.keyboard": keyboard})
+    try:
+        Injector(_cfg(True, "type"))._type("two\nlines  ", " ")
+        assert keys == ["two lines "], keys
+        keys.clear()
+        # type_plain (live typing) splits on spaces and must not drop the last.
+        assert Injector(_cfg(True)).type_plain(" rest ") == ""
+        assert "".join(keys) == " rest ", keys
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+    # Live typing: the final flush ends with the space, and a take whose words
+    # all went out while recording still gets it.
+    class _LiveInjector:
+        def __init__(self, space):
+            self.space = space
+            self.typed: list[str] = []
+
+        def clipboard_mode(self):
+            return "on_failure"
+
+        def trailing_space(self):
+            return self.space
+
+        def type_plain_blocking(self, text):
+            self.typed.append(text)
+            return ""
+
+    class _Transcriber:
+        def __init__(self, text):
+            self.text = text
+
+        def ensure_loaded(self, notify=None, progress=None):
+            pass
+
+        def transcribe(self, audio, notify=None, progress=None):
+            return self.text
+
+    class _History:
+        def __init__(self):
+            self.stored: list[str] = []
+
+        def add(self, text):
+            self.stored.append(text)
+
+    class _Live:
+        committed_text = "Already typed"
+        committed_frames = 0
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def hand_over(self):
+            return ("", True)
+
+    class _App:
+        _process = App._process
+
+        def __init__(self, cfg, text, space):
+            self.cfg = cfg
+            self.transcriber = _Transcriber(text)
+            self.injector = _LiveInjector(space)
+            self.history = _History()
+            self.messages: list[str] = []
+
+        def notify(self, message, force=False):
+            self.messages.append(message)
+
+        def post(self, kind, payload=None):
+            pass
+
+        def progress(self, *args, **kwargs):
+            pass
+
+    audio = [0.0] * SAMPLE_RATE
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        cfg["assistant"]["enabled"] = False
+        take = _App(cfg, "and the rest.", " ")
+        take._process(audio, _Live(), SOURCE_MIC)
+        assert take.injector.typed == [" and the rest. "], take.injector.typed
+        assert take.history.stored == ["Already typed and the rest."], take.history.stored
+        done = _App(cfg, "", " ")
+        done._process(audio, _Live(), SOURCE_MIC)
+        assert done.injector.typed == [" "], done.injector.typed
+        assert done.messages == [], done.messages
+        off = _App(cfg, "", "")
+        off._process(audio, _Live(), SOURCE_MIC)
+        assert off.injector.typed == [], off.injector.typed
 
 
 def _clipboard_copy_is_announced():
@@ -7114,7 +7301,12 @@ def _injector_waits_for_quiet_modifiers():
     sys.modules.update({"pynput": pynput, "pynput.keyboard": keyboard, "pyperclip": clip})
     original_down = injector.modifiers_down
     original_timeout = injector._INSERT_SETTLE_TIMEOUT_S
-    cfg = {"injection_mode": "paste", "restore_clipboard": True, "clipboard_copy": "on_failure"}
+    cfg = {
+        "injection_mode": "paste",
+        "restore_clipboard": True,
+        "clipboard_copy": "on_failure",
+        "append_space": False,
+    }
 
     def refused(config, text="hello"):
         try:
@@ -11239,6 +11431,160 @@ def _tray_switches_the_dictation_language():
         assert any("German" in note for note in fake.notes), fake.notes
         App._set_language(fake, "de")  # already live — nothing to save, nothing to sync
         assert fake._settings_window.synced == 1
+
+
+def _tray_switches_the_microphone():
+    """The tray's "Microphone" submenu, App's half of it and the open
+    settings window it has to keep in step.
+
+    The list is the Audio page's (index prefix included — PortAudio names one
+    microphone once per host API on Windows), rebuilt on every opening and
+    ticked after the config, never after the value it was built with. A choice is
+    posted, never written by the tray. App saves it, says which device the next
+    take uses, and corrects an open settings window whose Save would otherwise
+    put the old device back — without leaving it "unsaved".
+    """
+    import json
+
+    from listen_to_me import app as app_module
+    from listen_to_me import settings_ui as settings_module
+    from listen_to_me import tray as tray_module
+    from listen_to_me.choices import SYSTEM_DEFAULT_DEVICE
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    devices = [SYSTEM_DEFAULT_DEVICE, "1: Laptop Microphone", "4: USB Headset"]
+
+    def _choices(current=None):
+        selected = SYSTEM_DEFAULT_DEVICE
+        for label in devices[1:]:
+            if label.startswith(f"{current}: "):
+                selected = label
+        return list(devices), selected
+
+    qt_app = _ensure_qapp()
+    apply_theme(qt_app)
+    real = (tray_module.input_device_choices, app_module.input_device_choices,
+            settings_module.input_device_choices)
+    tray_module.input_device_choices = _choices
+    app_module.input_device_choices = _choices
+    settings_module.input_device_choices = _choices
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            stub = _StubApp(Path(tmp))
+            tray = tray_module.Tray(stub)
+            tray.start()
+            try:
+                tray._fill_mic_menu()
+                actions = tray._mic_menu.actions()
+                assert [a.text() for a in actions] == devices, [a.text() for a in actions]
+                assert [a.text() for a in actions if a.isChecked()] == [SYSTEM_DEFAULT_DEVICE]
+                stub.posts.clear()
+                actions[2].trigger()
+                assert stub.posts == [("set_input_device", 4)], stub.posts
+                assert stub.cfg["input_device"] is None, "the tray must not write the config"
+                stub.posts.clear()
+                tray._mic_menu.actions()[0].trigger()
+                assert stub.posts == [("set_input_device", None)], stub.posts
+
+                # Re-read on open: a device chosen elsewhere carries the tick,
+                # and the entries are whatever the device list says now.
+                stub.cfg["input_device"] = 4
+                devices.append("7: Docking Station Mic")
+                tray._fill_mic_menu()
+                actions = tray._mic_menu.actions()
+                assert len(actions) == 4
+                assert [a.text() for a in actions if a.isChecked()] == ["4: USB Headset"]
+
+                # A "&" in a device name is shown, not eaten as a mnemonic.
+                devices.append("2: Line In & Mic")
+                tray._fill_mic_menu()
+                amp = tray._mic_menu.actions()[-1]
+                assert amp.text() == "2: Line In && Mic", amp.text()
+                stub.posts.clear()
+                amp.trigger()
+                assert stub.posts == [("set_input_device", 2)], stub.posts
+                devices.pop()
+
+                # The inline "could not read the list" entry is not a choice.
+                devices[1:] = ["(could not read the microphone list — see the log file)"]
+                tray._fill_mic_menu()
+                actions = tray._mic_menu.actions()
+                assert actions[0].isEnabled() and not actions[1].isEnabled()
+                devices[1:] = ["1: Laptop Microphone", "4: USB Headset", "7: Docking Station Mic"]
+            finally:
+                tray.stop()
+
+            # App: validates, saves, names the device, syncs the open window.
+            class _Window:
+                def __init__(self):
+                    self.synced = 0
+
+                def sync_input_device(self):
+                    self.synced += 1
+
+            class _MicApp:
+                def __init__(self, cfg):
+                    self.cfg = cfg
+                    self.state = app_module.STATE_IDLE
+                    self.notes: list[str] = []
+                    self._settings_window = _Window()
+
+                def notify(self, message, force=False):
+                    self.notes.append(str(message))
+
+            fake = _MicApp(stub.cfg)
+            fake.cfg["input_device"] = None
+            for bad in ("4", True, 2.5):
+                app_module.App._set_input_device(fake, bad)
+            assert fake.cfg["input_device"] is None and not fake.notes, fake.notes
+            fake.cfg["input_device"] = True  # hand-edited; equals 1 in Python
+            app_module.App._set_input_device(fake, 1)
+            assert fake.cfg["input_device"] == 1 and fake._settings_window.synced == 1
+            fake._settings_window.synced = 0
+            fake.notes.clear()
+            fake.cfg["input_device"] = None
+            app_module.App._set_input_device(fake, 4)
+            assert fake.cfg["input_device"] == 4
+            assert fake.notes == ["Microphone: USB Headset"], fake.notes
+            assert fake._settings_window.synced == 1
+            app_module.App._set_input_device(fake, 4)  # unchanged: no save, no sync
+            assert fake._settings_window.synced == 1 and len(fake.notes) == 1
+            fake.state = app_module.STATE_RECORDING
+            app_module.App._set_input_device(fake, None)
+            assert fake.cfg["input_device"] is None
+            assert fake.notes[-1] == "Microphone: System default — from the next recording"
+            stored = json.loads((Path(tmp) / "config.json").read_text(encoding="utf-8"))
+            assert stored["input_device"] is None, stored["input_device"]
+
+            # The real window: before and after the Audio page loaded its list.
+            stub.cfg["input_device"] = None
+            window = SettingsWindow(stub)
+            try:
+                stub.cfg["input_device"] = 4
+                window.sync_input_device()
+                assert window._selected_input_device() == 4
+                assert window._collect() == window._saved_snapshot, "a tray switch left it unsaved"
+                window._show_page("Audio")
+                qt_app.processEvents()
+                assert window.input_combo.currentText() == "4: USB Headset"
+                stub.cfg["input_device"] = 1
+                window.sync_input_device()
+                assert window.input_combo.currentText() == "1: Laptop Microphone"
+                stub.cfg["input_device"] = None
+                window.sync_input_device()
+                assert window.input_combo.currentText() == SYSTEM_DEFAULT_DEVICE
+                devices.append("9: Plugged In Later")
+                stub.cfg["input_device"] = 9
+                window.sync_input_device()
+                assert window.input_combo.currentText() == "9: Plugged In Later"
+                assert window._collect() == window._saved_snapshot
+            finally:
+                window.deleteLater()
+                qt_app.processEvents()
+    finally:
+        (tray_module.input_device_choices, app_module.input_device_choices,
+         settings_module.input_device_choices) = real
 
 
 def _tray_survives_a_missing_notification_area():
@@ -16937,6 +17283,7 @@ _LIGHT_CHECKS = [
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),
+    ("append space spaces consecutive takes", _append_space_spaces_consecutive_takes),
     ("clipboard copy is announced", _clipboard_copy_is_announced),
     ("copy button reports a failure", _copy_button_reports_failure),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
@@ -17026,6 +17373,7 @@ _LIGHT_CHECKS = [
     ("tray click opens the window", _tray_click_opens_the_window),
     ("the log file can be reached", _the_log_file_can_be_reached),
     ("tray switches the dictation language", _tray_switches_the_dictation_language),
+    ("tray switches the microphone", _tray_switches_the_microphone),
     ("tray survives a missing notification area", _tray_survives_a_missing_notification_area),
     ("source-aware controls stop their take", _source_aware_controls_stop_their_take),
     ("surfaces name an unreadable history", _surfaces_name_an_unreadable_history),
