@@ -37,3 +37,5 @@ config.json
 .claude/settings.local.json
 # Claude Code per-user project instructions — never commit
 CLAUDE.local.md
+# Claude Code local worktrees (full checkouts of other branches) — never commit
+.claude/worktrees/
