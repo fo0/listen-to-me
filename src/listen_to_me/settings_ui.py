@@ -2596,9 +2596,15 @@ class SettingsWindow(QDialog):
         conn, form = self._card("Connection")
         self.a_url_edit = QLineEdit(acfg["base_url"])
         self.a_url_edit.setToolTip("Base URL of the OpenAI-compatible API, e.g. http://localhost:11434/v1 for Ollama.")
+        # A cleared field showed nothing about the shape it expects, and the
+        # shape is only checked at Save / Test connection; the tooltip's
+        # example needs a hover first. Empty fields only — a saved value is
+        # never covered.
+        self.a_url_edit.setPlaceholderText("e.g. http://localhost:11434/v1")
         form.addRow("API base URL:", self.a_url_edit)
         self.a_model_edit = QLineEdit(acfg["model"])
         self.a_model_edit.setToolTip("Model name as the endpoint knows it, e.g. llama3.2, qwen2.5:14b or gpt-4o-mini.")
+        self.a_model_edit.setPlaceholderText("e.g. llama3.2")
         form.addRow("Model:", self.a_model_edit)
         key_row = QWidget()
         kh = QHBoxLayout(key_row)

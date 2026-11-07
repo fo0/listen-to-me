@@ -366,6 +366,12 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **The assistant's empty connection fields show what they expect.** A
+  cleared **API base URL** or **Model** field under Settings → Assistant →
+  Connection showed nothing about its shape, which was only checked at Save or
+  Test connection. They now hint `e.g. http://localhost:11434/v1` and
+  `e.g. llama3.2`; the hint is never saved, so an empty field is still refused
+  as before.
 - **"Recent transcripts" leads on to the full history.** The submenu in the
   tray menu and in the floating icon's menu lists the last five transcripts,
   and the one just before them meant Settings…, then the sidebar. Both now end

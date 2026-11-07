@@ -16795,6 +16795,39 @@ def _assistant_api_key_can_be_shown():
             app.processEvents()
 
 
+def _assistant_connection_fields_show_their_shape():
+    """A cleared API base URL or Model field shows the shape it expects.
+
+    The shape is only checked at Save / Test connection, and the tooltip's
+    example needs a hover first — an empty field said nothing at all. The
+    placeholder is a hint, never a value: what is saved stays exactly what was
+    typed, empty included, so Save still names the missing field."""
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        stub.cfg["assistant"]["base_url"] = ""
+        stub.cfg["assistant"]["model"] = ""
+        window = SettingsWindow(stub)
+        try:
+            url, model = window.a_url_edit, window.a_model_edit
+            assert url.text() == "" and model.text() == ""
+            assert url.placeholderText() == "e.g. http://localhost:11434/v1", url.placeholderText()
+            assert model.placeholderText() == "e.g. llama3.2", model.placeholderText()
+            collected = window._collect()["assistant"]
+            assert collected["base_url"] == "" and collected["model"] == "", collected
+            # A saved value is shown as itself; the hint only fills the gap.
+            url.setText("http://example.invalid/v1")
+            assert window._collect()["assistant"]["base_url"] == "http://example.invalid/v1"
+        finally:
+            window.deleteLater()
+            app.processEvents()
+
+
 def _save_refuses_an_assistant_profile_with_no_prompt():
     """Save refuses an enabled assistant profile that cannot produce a
     request, names the profile it means, and puts the caret in the field the
@@ -17290,6 +17323,8 @@ _LIGHT_CHECKS = [
     ("assistant destination names where a recording goes",
      _assistant_destination_names_where_a_recording_goes),
     ("assistant API key can be shown", _assistant_api_key_can_be_shown),
+    ("assistant connection fields show their shape",
+     _assistant_connection_fields_show_their_shape),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),
