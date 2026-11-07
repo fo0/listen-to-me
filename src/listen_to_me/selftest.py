@@ -16795,6 +16795,39 @@ def _assistant_api_key_can_be_shown():
             app.processEvents()
 
 
+def _assistant_connection_fields_show_their_shape():
+    """A cleared API base URL or Model field shows the shape it expects.
+
+    The shape is only checked at Save / Test connection, and the tooltip's
+    example needs a hover first — an empty field said nothing at all. The
+    placeholder is a hint, never a value: what is saved stays exactly what was
+    typed, empty included, so Save still names the missing field."""
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        stub.cfg["assistant"]["base_url"] = ""
+        stub.cfg["assistant"]["model"] = ""
+        window = SettingsWindow(stub)
+        try:
+            url, model = window.a_url_edit, window.a_model_edit
+            assert url.text() == "" and model.text() == ""
+            assert url.placeholderText() == "e.g. http://localhost:11434/v1", url.placeholderText()
+            assert model.placeholderText() == "e.g. llama3.2", model.placeholderText()
+            collected = window._collect()["assistant"]
+            assert collected["base_url"] == "" and collected["model"] == "", collected
+            # A saved value is shown as itself; the hint only fills the gap.
+            url.setText("http://example.invalid/v1")
+            assert window._collect()["assistant"]["base_url"] == "http://example.invalid/v1"
+        finally:
+            window.deleteLater()
+            app.processEvents()
+
+
 def _save_refuses_an_assistant_profile_with_no_prompt():
     """Save refuses an enabled assistant profile that cannot produce a
     request, names the profile it means, and puts the caret in the field the
@@ -16950,6 +16983,18 @@ def _save_refuses_an_assistant_profile_with_no_prompt():
             app.processEvents()
 
 
+def _update_verdict(status: str) -> str:
+    """The Updates page's check verdict without its "Checked at HH:MM." stamp.
+
+    Asserts the stamp is there: a verdict left on screen for hours read
+    exactly like a fresh one, and the stamp is what tells them apart."""
+    import re
+
+    match = re.fullmatch(r"(.+) Checked at \d{2}:\d{2}\.", status)
+    assert match, status
+    return match.group(1)
+
+
 def _settings_updates_lists_the_release_history():
     """The Updates page is a release history, not only a list of updates
     (#314): newer releases, then the running build — marked, its changelog on
@@ -17042,7 +17087,7 @@ def _settings_updates_lists_the_release_history():
             window._on_update_check_done(releases)
             assert lst.count() == step, lst.count()
             assert marked() == [3], labels()
-            assert window.update_status.text() == "3 newer releases available."
+            assert _update_verdict(window.update_status.text()) == "3 newer releases available."
             assert window.update_more_hint.text() == f"Showing {step} of 30 releases."
             assert window.update_more_button.isEnabled()
             # The latest is preselected and installable.
@@ -17138,7 +17183,7 @@ def _settings_updates_lists_the_release_history():
             # Nothing newer: the running build is preselected, changelog shown.
             running(30)
             window._on_update_check_done(releases)
-            assert window.update_status.text() == "You're on the latest version."
+            assert _update_verdict(window.update_status.text()) == "You're on the latest version."
             assert lst.count() == step and marked() == [0]
             assert lst.currentRow() == 0
             assert "v2026.07.30.1" in window.update_changelog.toPlainText()
@@ -17156,7 +17201,7 @@ def _settings_updates_lists_the_release_history():
             updater.current_version = lambda: updater.parse_version("0.0.0.dev0")
             window._on_update_check_done(releases)
             assert lst.count() == 30 and not marked()
-            assert window.update_status.text() == "30 newer releases available."
+            assert _update_verdict(window.update_status.text()) == "30 newer releases available."
             assert not window.update_more_button.isEnabled()
 
             # Running a build the list does not carry, nothing newer: older
@@ -17290,6 +17335,8 @@ _LIGHT_CHECKS = [
     ("assistant destination names where a recording goes",
      _assistant_destination_names_where_a_recording_goes),
     ("assistant API key can be shown", _assistant_api_key_can_be_shown),
+    ("assistant connection fields show their shape",
+     _assistant_connection_fields_show_their_shape),
     ("recorder start failure resets", _recorder_start_failure_resets),
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),

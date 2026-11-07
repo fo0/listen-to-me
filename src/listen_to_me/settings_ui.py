@@ -2596,9 +2596,15 @@ class SettingsWindow(QDialog):
         conn, form = self._card("Connection")
         self.a_url_edit = QLineEdit(acfg["base_url"])
         self.a_url_edit.setToolTip("Base URL of the OpenAI-compatible API, e.g. http://localhost:11434/v1 for Ollama.")
+        # A cleared field showed nothing about the shape it expects, and the
+        # shape is only checked at Save / Test connection; the tooltip's
+        # example needs a hover first. Empty fields only — a saved value is
+        # never covered.
+        self.a_url_edit.setPlaceholderText("e.g. http://localhost:11434/v1")
         form.addRow("API base URL:", self.a_url_edit)
         self.a_model_edit = QLineEdit(acfg["model"])
         self.a_model_edit.setToolTip("Model name as the endpoint knows it, e.g. llama3.2, qwen2.5:14b or gpt-4o-mini.")
+        self.a_model_edit.setPlaceholderText("e.g. llama3.2")
         form.addRow("Model:", self.a_model_edit)
         key_row = QWidget()
         kh = QHBoxLayout(key_row)
@@ -5178,11 +5184,14 @@ class SettingsWindow(QDialog):
         self._releases_newer_count = newer
         self._release_installed_row = updater.installed_release_index(releases)
         if newer:
-            self.update_status.setText(
-                f"{newer} newer release{'s' if newer != 1 else ''} available."
-            )
+            verdict = f"{newer} newer release{'s' if newer != 1 else ''} available."
         else:
-            self.update_status.setText("You're on the latest version.")
+            verdict = "You're on the latest version."
+        # The verdict stays on the page for as long as the window is open — a
+        # window left open since the morning still said "latest version" in
+        # the afternoon with nothing to tell it was hours old. Local wall
+        # clock, the minute the answer arrived.
+        self.update_status.setText(f"{verdict} Checked at {time.strftime('%H:%M')}.")
         # Every check starts over at the default window.
         self._list_releases(updater.release_history_rows(len(releases), newer))
         if not releases:
