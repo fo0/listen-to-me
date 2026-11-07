@@ -5184,11 +5184,14 @@ class SettingsWindow(QDialog):
         self._releases_newer_count = newer
         self._release_installed_row = updater.installed_release_index(releases)
         if newer:
-            self.update_status.setText(
-                f"{newer} newer release{'s' if newer != 1 else ''} available."
-            )
+            verdict = f"{newer} newer release{'s' if newer != 1 else ''} available."
         else:
-            self.update_status.setText("You're on the latest version.")
+            verdict = "You're on the latest version."
+        # The verdict stays on the page for as long as the window is open — a
+        # window left open since the morning still said "latest version" in
+        # the afternoon with nothing to tell it was hours old. Local wall
+        # clock, the minute the answer arrived.
+        self.update_status.setText(f"{verdict} Checked at {time.strftime('%H:%M')}.")
         # Every check starts over at the default window.
         self._list_releases(updater.release_history_rows(len(releases), newer))
         if not releases:

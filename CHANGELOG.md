@@ -372,6 +372,11 @@ unknown` — byte for byte what the old bundled one reports — so the log line
   Test connection. They now hint `e.g. http://localhost:11434/v1` and
   `e.g. llama3.2`; the hint is never saved, so an empty field is still refused
   as before.
+- **The update check says when it ran.** Settings → Updates kept "You're on
+  the latest version." (or "3 newer releases available.") on screen for as
+  long as the window stayed open, so a verdict from the morning read exactly
+  like a fresh one in the afternoon. It now ends with the minute the answer
+  arrived, e.g. "You're on the latest version. Checked at 14:32."
 - **"Recent transcripts" leads on to the full history.** The submenu in the
   tray menu and in the floating icon's menu lists the last five transcripts,
   and the one just before them meant Settings…, then the sidebar. Both now end

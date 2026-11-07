@@ -16983,6 +16983,18 @@ def _save_refuses_an_assistant_profile_with_no_prompt():
             app.processEvents()
 
 
+def _update_verdict(status: str) -> str:
+    """The Updates page's check verdict without its "Checked at HH:MM." stamp.
+
+    Asserts the stamp is there: a verdict left on screen for hours read
+    exactly like a fresh one, and the stamp is what tells them apart."""
+    import re
+
+    match = re.fullmatch(r"(.+) Checked at \d{2}:\d{2}\.", status)
+    assert match, status
+    return match.group(1)
+
+
 def _settings_updates_lists_the_release_history():
     """The Updates page is a release history, not only a list of updates
     (#314): newer releases, then the running build — marked, its changelog on
@@ -17075,7 +17087,7 @@ def _settings_updates_lists_the_release_history():
             window._on_update_check_done(releases)
             assert lst.count() == step, lst.count()
             assert marked() == [3], labels()
-            assert window.update_status.text() == "3 newer releases available."
+            assert _update_verdict(window.update_status.text()) == "3 newer releases available."
             assert window.update_more_hint.text() == f"Showing {step} of 30 releases."
             assert window.update_more_button.isEnabled()
             # The latest is preselected and installable.
@@ -17171,7 +17183,7 @@ def _settings_updates_lists_the_release_history():
             # Nothing newer: the running build is preselected, changelog shown.
             running(30)
             window._on_update_check_done(releases)
-            assert window.update_status.text() == "You're on the latest version."
+            assert _update_verdict(window.update_status.text()) == "You're on the latest version."
             assert lst.count() == step and marked() == [0]
             assert lst.currentRow() == 0
             assert "v2026.07.30.1" in window.update_changelog.toPlainText()
@@ -17189,7 +17201,7 @@ def _settings_updates_lists_the_release_history():
             updater.current_version = lambda: updater.parse_version("0.0.0.dev0")
             window._on_update_check_done(releases)
             assert lst.count() == 30 and not marked()
-            assert window.update_status.text() == "30 newer releases available."
+            assert _update_verdict(window.update_status.text()) == "30 newer releases available."
             assert not window.update_more_button.isEnabled()
 
             # Running a build the list does not carry, nothing newer: older
