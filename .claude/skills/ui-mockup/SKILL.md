@@ -78,6 +78,15 @@ the owner's guard hook blocks every agent prompt that names them without the ide
 
 ## UI rules — for mockups and implementation alike
 
+The owner's decisions. They outrank every older UI statement in the README, `docs/` and `agent_docs/`: a doc that
+contradicts one is corrected in the same change, never followed. An Accepted ADR that contradicts one stays binding
+until the owner says otherwise in chat — propose the superseding ADR and ask
+(`agent_docs/adr_template.md → Lifecycle`). An existing screen that breaks one is no precedent. The UI review checks
+every changed screen against each rule.
+
+- Compact first: single-line rows over cards, the smallest readable size; no decorative headings or step lists.
+- Labels, not sentences: at most one short help line per form, no explanatory paragraphs, nothing that narrates what
+  the UI obviously does.
 - Plain like the neighbouring component: a title, one status line, actions on the right. Little text; explanations
   collected in ONE info tooltip. Emphasis sparingly: one badge OR one bold word.
 - No page title under the menu when the menu already names the page. Page-wide switches right-aligned in the tab
@@ -95,4 +104,21 @@ the owner's guard hook blocks every agent prompt that names them without the ide
   covers no text and shifts no layout — the app's own badge component where it has one.
 - A live display shows a green pulsing dot while updates arrive, and none without them. Longer log or live areas are
   set apart and collapsible.
+- Items are named by what differs: the distinguishing name first, a name many items share second — never a list
+  whose entries all lead with the same word.
+- No manual configuration the app can infer: what it can derive from its own data it derives — no picker, no add or
+  remove for it.
+- Settings are staged: changes apply with one primary save beside cancel; an action that takes effect at once is an
+  explicit button of its own.
+- One primary action per form or flow, bottom right. A flow that succeeded closes or returns by itself — never a close
+  button to press after success.
+- Feedback goes away: a success notice closes after 3 s, an undo offer after 8 s; only warnings and errors stay.
+  Nothing sticks on screen.
+- Toggles stay in place: maximize becomes minimize on the same spot, no separate back button.
+- An installed app updates itself: check, update available with at most 5 changelog bullets, install, progress,
+  restart. Never a web page as the update path.
+- Honest evidence: a screenshot or preview shown as the result comes from the exact build being delivered — a
+  mockup is a proposal, never the result.
+- Accessibility adds no visible prose: accessible names and tooltips carry the detail; an icon button gets an
+  accessible name, not a caption.
 - A UI assignment to a seat asks for before and after screenshots.
