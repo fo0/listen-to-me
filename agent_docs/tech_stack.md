@@ -10,7 +10,7 @@ the version reasoning.
 | Icons             | Pillow (tray/app icons drawn in code, `.ico` for the exe)                                  | >=12.3.0                               |
 | Speech-to-text    | faster-whisper (CTranslate2); optional `[openvino]` / `[parakeet]` extras, both in the exe | >=1.2.1                                |
 | Audio · hotkeys   | sounddevice (PortAudio) · pynput                                                           | >=0.5.6 / >=1.8.2                      |
-| Build · packaging | setuptools (`pyproject.toml`) · PyInstaller one-file (CI)                                  | >=84.0.0                               |
+| Build · packaging | setuptools (`pyproject.toml`) · PyInstaller one-file (CI)                                  | >=84.2.1                               |
 | Package Manager   | pip (`requirements.txt` + `pyproject.toml`)                                                | —                                      |
 | Test Framework    | none configured                                                                            | CI: `compileall` + Qt offscreen smoke  |
 | Linter/Formatter  | none for Python; Prettier (via npx) for Markdown only                                      | de-facto black-style, line length ~100 |
