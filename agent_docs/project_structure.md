@@ -12,7 +12,7 @@ scripts/              # make_icon.py — generates the .ico PyInstaller bundles
 docs/                 # ARCHITECTURE.mmd (+ .svg), adr/, research/, guide/ (user docs)
 agent_docs/           # Agent process docs (this file, review, backlog, memory, budget, …)
 .claude/skills/       # done, pr, basic-review, basic-sec-review, rollback, ci, stuck, beacon,
-                      # scheduler, orca
+                      # scheduler, orca, ui-mockup
 ```
 
 ## `src/listen_to_me/` modules
