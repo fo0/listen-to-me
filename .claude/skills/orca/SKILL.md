@@ -100,8 +100,8 @@ one of the two and says which; only new work runs plain.
    pipeline — no merge, no change, no decision. Classify before every spawn; in doubt `opus-high`, not `fable-medium`.
    **The seat follows the package, not the objective:** cut the hard core out as a package of its own, so only it
    runs at `fable-high` and the rest at `opus-high` or `fable-medium`. **A fallback only when the model cannot run:**
-   a Fable seat that ends on a usage or rate limit, missing access or an unavailable model — `Agent terminated early
-due to an API error`, a background failure naming that error, or a partial return marked as cut off by it — hands
+   a Fable seat that ends on a usage or rate limit, missing access or an unavailable model —
+   `Agent terminated early due to an API error`, a background failure naming that error, or a partial return marked as cut off by it — hands
    the same assignment, with what it returned, to the `opus-*` seat its description names, and both Fable seats stay
    on their fallbacks for the rest of the session: the wave report says so, and `SCRATCHPAD.md` → _Current Work_ keeps
    `**Orca** — Fable out (<date>)` so a compaction cannot lose it. A report that opens `⚠ This agent switched to` ran
