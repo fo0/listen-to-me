@@ -162,6 +162,8 @@ Summary: X categories checked | Y fixed | Z deferred → Backlog | N dropped at 
 | P1 findings | Fix by default. Defer only if effort is clearly disproportionate — document reasoning in Backlog |
 | P2 findings | Fix if trivial (<5 min). Otherwise defer to Backlog                                              |
 
+A fix that grows into restructuring is a refactoring — `agent_docs/refactoring_guidelines.md` says when one happens and how.
+
 ## Regression & Complexity QA
 
 After all review fixes are applied, re-read the full implementation one more time:
@@ -195,7 +197,7 @@ This app's own checks on every changed view:
 
 **The review itself is delegated, and to a different agent than wrote the code.** A fresh-context reviewer reads the diff without holding the author's intent, which is why it finds what self-critique does not; the author re-reading its own work verifies what it meant, not what it wrote. Where a change can fail in more than one way, seat _distinct_ lenses from the roster (`architect`, `domain`, `security`, `docs`) rather than a second reviewer with the same one — agreement between identical lenses is not evidence of correctness. The orchestrator still owns the process: it reads the returned diffs, decides what the findings mean, and holds the commit gate.
 
-**The role carries the lens.** The roster and the seat criterion per role are canonical in `CLAUDE.md → Subagents` (the wave report names the role, so the vocabulary is closed there); this table says what each lens looks at. A role is _how the assignment is framed_, not a separate mechanism: it goes to the Opus seat its weight calls for, whose brief names the lens, the standard it answers to, and what its return must contain:
+**The role carries the lens.** The roster and the seat criterion per role are canonical in `CLAUDE.md → Subagents` (the wave report names the role, so the vocabulary is closed there); this table says what each lens looks at. A role is _how the assignment is framed_, not a separate mechanism: it goes to the seat its weight calls for, whose brief names the lens, the standard it answers to, and what its return must contain:
 
 | Role          | Lens it applies                                                                         |
 | ------------- | --------------------------------------------------------------------------------------- |
@@ -207,13 +209,13 @@ This app's own checks on every changed view:
 | `docs`        | What a reader needs that the diff does not say                                          |
 | `security`    | Trust boundaries, untrusted input, secrets → `.claude/skills/basic-sec-review/SKILL.md` |
 
-Roles are lenses, not a standing panel: a typo fix needs `implementer` and `reviewer`, a new integration may need five. Repo-local roles go in `.claude/agents/*.md` only for a role _this_ repo seats often enough to be worth a file, and only fixed at `model: opus` and `effort: high` or above; role-framed assignments cover the rest and cannot drift out of date.
+Roles are lenses, not a standing panel: a typo fix needs `implementer` and `reviewer`, a new integration may need five. Repo-local roles go in `.claude/agents/*.md` only for a role _this_ repo seats often enough to be worth a file, and only fixed at the `model:` and `effort:` of one of the seats there; role-framed assignments cover the rest and cannot drift out of date.
 
-**The seat carries the effort.** The `subagent_type` is one of the four seats in `.claude/agents/` — `opus-high`, `opus-xhigh`, `opus-max`, `opus-medium` — and each seat's `description` says which work it takes; the policy behind them (floor, the one seat below it, the types that never run) is the skill's contract, item 4.
+**The seat carries model and effort.** The `subagent_type` is one of the seats in `.claude/agents/` — `opus-high`, `fable-medium`, `fable-high`, `opus-medium` to watch a pipeline, or a Fable seat's fallback when Fable cannot run — and each seat's `description` says which work it takes, a Fable seat's also which `opus-*` seat takes over when Fable cannot run; the policy behind them (floor, fallback, the types that never run) is the skill's contract, item 4.
 
 ## Subagent Selection Rules
 
-- **Classify before every spawn, in doubt `opus-high`** — each seat's description names the work it takes. A plan before non-trivial implementation is `opus-xhigh` work, and the plan then goes to `opus-high` for execution — acting on it in the main thread is plain behavior, for `/orca off` only.
+- **Classify before every spawn, in doubt `opus-high`** — each seat's description names the work it takes. A plan before non-trivial implementation is `fable-medium` work, and the plan then goes to `opus-high` for execution — acting on it in the main thread is plain behavior, for `/orca off` only.
 - **Parallelize independent work** — multiple Agent calls in one message when no dependencies exist.
 - **In orchestrator mode, raw material in bulk is task work.** Long logs, transcripts or many files go to a subagent; a short search, a known file read for a short unit (the skill's contract, item 1) and the _verification_ reads — `git status`, `git diff`, reading a returned change — are the orchestrator's own. `/orca off` restores plain behavior.
 - **Pass full context** — subagents have no conversation history. Include the goal, file paths, line numbers, the known facts, what was already tried, and the return format (the skill's contract, item 7).
@@ -233,4 +235,4 @@ Only commit when:
 - [ ] Commit message follows project's Git Conventions (imperative subject)
 - [ ] UI review done (if UI changed)
 
-<!-- Generated by claude-code-optimizer v1.74.1 -->
+<!-- Generated by claude-code-optimizer v1.77.0 -->

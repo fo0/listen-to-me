@@ -1,6 +1,6 @@
 ---
 name: orca
-description: "Orchestrator mode, this project's default working mode. Short units the main agent does itself; long waits, bulk reads and multi-file work go to role-framed Opus seats, at most 5 in parallel. '/orca <objective>' or '/orca <N> <objective>' runs a delegated objective: steps, a review each, one overall review. Load it for that, for the contract, on '/orca', 'orca mode', 'orchestrator mode', 'orca an/aus', or a question about the width. '/orca off': plain behavior for this session."
+description: "Orchestrator mode, this project's default working mode. Short units the main agent does itself; long waits, bulk reads and multi-file work go to role-framed seats, at most 5 in parallel. '/orca <objective>' or '/orca <N> <objective>' runs a delegated objective: steps, a review each, one overall review. Load it for that, for the contract, on '/orca', 'orca mode', 'orchestrator mode', 'orca an/aus', or a question about the width. '/orca off': plain behavior for this session."
 argument-hint: "[on|off|status|N] [objective]"
 metadata:
   origin: claude-code-optimizer
@@ -16,7 +16,7 @@ metadata:
 - Session start, when `SCRATCHPAD.md` still carries an Orca line from an earlier session or from before a compaction
 
 Not this skill: choosing the seat for one assignment while already orchestrating. That is the `description` of each
-seat in `.claude/agents/opus-*.md`; the roles and their seat criteria are in `CLAUDE.md → Subagents`.
+seat in `.claude/agents/`; the roles and their seat criteria are in `CLAUDE.md → Subagents`.
 
 ## Scope Boundaries
 
@@ -88,24 +88,34 @@ one of the two and says which; only new work runs plain.
    no code — a search, a log read, a pipeline watch — applies no lens and names none.
 3. **The orchestrator keeps five things:** decomposition and assignment · the short units of item 1 ·
    read-only verification of what comes back (`git status`, `git diff`, reading the changed files) · integration and
-   its gates (commit, push, `/pr`, `/ci`, `/rollback`, merge, release dispatch) · the report to the user. A gate
-   handed to a subagent is a gate that answers itself — the subagent holds the tool and has nobody to ask. It stays
-   responsive while the seats work: a wait runs in the background, never as a call that blocks the chat.
-4. **Every seat is a typed Opus agent; its effort is chosen, never inherited.** A subagent runs as one of the four
-   seats in `.claude/agents/` — `opus-high`, `opus-xhigh`, `opus-max`, `opus-medium` — each `model: opus` with a
-   fixed `effort:`, and each description says when it is the one. `opus-high` is the default and the floor, for
-   short work as much as long; `opus-xhigh` only for heavy work; `opus-max` only as an exception, with a one-line
-   reason in the assignment; `opus-medium` is the one seat below the floor and only watches a pipeline — no merge, no
-   change, no decision. Classify before every spawn; in doubt `opus-high`, not `opus-xhigh`. **Never a type whose
-   level the session decides:** `general-purpose`, `Explore`, `Plan` and `subagent_type: fork` inherit the session's
-   effort, so none of them is a seat; neither is a `model` or `effort` passed on the call, which would override the
-   seat's own — never `sonnet`, never `haiku`. A repo agent of its own is a seat only when its frontmatter fixes
-   `model: opus` and `effort: high` or above. The same floor holds for `opts.effort` in a workflow script. **No seat in
-   the agent list** — the files are not written yet, or the session loaded its agents before they were — is the one
-   case where the call carries the level: `general-purpose` with `model: opus` and the seat's `effort` on the call —
-   the call's `model` also beats a host's `CLAUDE_CODE_SUBAGENT_MODEL`; where the call takes no `effort`, the
-   orchestrator does the unit itself. Below
-   `high` too many units came back wrong (owner, 2026-10-05); `xhigh` where `high` does is waste (2026-10-28).
+   its gates (commit, push, `/pr`, `/ci`, `/rollback`, merge, release dispatch) · the report to the user. A gate handed to a
+   subagent is a gate that answers itself — the subagent holds the tool and has nobody to ask. It stays responsive
+   while the seats work: a wait runs in the background, never as a call that blocks the chat.
+4. **Every seat is a typed agent; its model and effort are chosen, never inherited.** A subagent runs as one of the
+   six seats in `.claude/agents/`, each with the fixed `model:` and `effort:` its name says and a description that
+   says when it is the one. `opus-high` is the default and the floor, for short work as much as long — the `fable-*`
+   seats sit above it at any effort; `fable-medium` only for heavy work; `fable-high` only as an exception, with a
+   one-line reason in the assignment — a genuinely complex algorithm, or a core feature of the app where no error is
+   acceptable (the step up after a failure: _Rules_); `opus-medium` is the one seat below the floor and only watches a
+   pipeline — no merge, no change, no decision. Classify before every spawn; in doubt `opus-high`, not `fable-medium`.
+   **The seat follows the package, not the objective:** cut the hard core out as a package of its own, so only it
+   runs at `fable-high` and the rest at `opus-high` or `fable-medium`. **A fallback only when the model cannot run:**
+   a Fable seat that ends on a usage or rate limit, missing access or an unavailable model — `Agent terminated early
+due to an API error`, a background failure naming that error, or a partial return marked as cut off by it — hands
+   the same assignment, with what it returned, to the `opus-*` seat its description names, and both Fable seats stay
+   on their fallbacks for the rest of the session: the wave report says so, and `SCRATCHPAD.md` → _Current Work_ keeps
+   `**Orca** — Fable out (<date>)` so a compaction cannot lose it. A report that opens `⚠ This agent switched to` ran
+   on Claude Code's own fallback chain and counts the same. An overload or connection error is retried once on the
+   same seat first. A weak result is no fallback case (_Rules_), and no fallback seat is picked first.
+   **Never a type whose level the session decides:** `general-purpose`, `Explore`, `Plan` and `subagent_type: fork`
+   inherit the session's effort, so none of them is a seat; neither is a `model` or `effort` passed on the call, which
+   would override the seat's own — never `sonnet`, never `haiku`. A repo agent of its own is a seat only when its
+   frontmatter fixes the `model:` and `effort:` of one of these seats. The same floor holds for `opts.effort` in a
+   workflow script. **No seat in the agent list** — the files are not written yet, or the session loaded its agents
+   before they were — is the one case where the call carries the level: `general-purpose` with `model: opus` and the
+   effort of the seat — of its fallback for a `fable-*` seat — on the call — the call's `model` also beats a host's `CLAUDE_CODE_SUBAGENT_MODEL`; where the
+   call takes no `effort`, the orchestrator does the unit itself. Below `high` too many units came back wrong (owner,
+   2026-10-05) — measured on Opus; a heavier seat where `opus-high` does is waste (2026-10-28).
 5. **Width: 5 in parallel unless overridden.** Independent assignments — each in its own repo or worktree, on its own
    port — go out in a single message, up to N; the rest runs in waves as slots free up. Only what shares a file or a
    port is sequenced, and dependent work — never parallelized in the hope that the order works out. Cut along clean
@@ -113,7 +123,7 @@ one of the two and says which; only new work runs plain.
    wait for it.
 6. **Disjoint write scopes.** Two subagents in the same wave never hold write access to the same file. Split by file,
    or sequence, or give each one its own `git worktree` under `tmp/wt-<repo>-<topic>` in the workspace that holds
-   the repo — never inside the repo's own tree — and remove it once its push or PR is done. In this repo
+   the repo — never inside the repo's own tree — and remove it once its work is merged, pushed or in a PR. In this repo
    `settings_ui.py` and `app.py` are the files two assignments most easily collide on.
 7. **Assignments are self-contained.** A subagent knows nothing of the chat: name the goal, the exact paths, the facts
    already known and what was already tried, the skill file to follow if one applies, the rules, and the return
@@ -122,8 +132,24 @@ one of the two and says which; only new work runs plain.
    points — no retelling.
 8. **Verify the diff, not the summary.** A subagent's report describes intent. After every write-capable agent, read
    the actual change. A wave is done when the orchestrator has looked at what it produced, not when the agent says so.
-9. **Only the current goal.** No curiosity assignment, no second agent clarifying what another already does, no
-   backlog side topic — that waits for its own task. A subagent does not orchestrate: it delegates nothing further.
+9. **Only the current goal, and no bigger than it needs.** No curiosity assignment, no second agent clarifying what
+   another already does, no backlog side topic — that waits for its own task. No over-engineering: a package builds
+   what the goal needs and nothing beside it — no abstraction, option, layer or generality nobody asked for, no wave
+   or seat the change does not call for. A subagent does not orchestrate: it delegates nothing further.
+10. **Small packages keep every context small.** Cut so that each package needs only a focused slice in view — one
+    coherent change, its paths, the facts it rests on; one that would have to read half the repo is cut again along a
+    seam (item 5). The brief names paths and lines instead of pasting file contents or the chat, the return stays
+    terse (item 7), and the orchestrator's own context holds decisions and results, not raw material (item 1) — what
+    has to outlive it goes to `SCRATCHPAD.md` as the work goes. Effort costs tokens as well: no seat above what its
+    package calls for (item 4).
+11. **One CI run for the finished work, not one per step.** A push that runs CI — to an open PR or the default
+    branch, or any push where the workflows trigger on every branch — spends paid Actions minutes. The steps of a wave
+    or an objective run are gated on the machine — the _Commands_ chain in CLAUDE.md, the checks CI runs too — and
+    committed; a push that runs CI carries the finished work, once. A push that runs nothing (a branch without a PR) is
+    free and keeps the work safe, and a run that stops early — stuck, a decision, a cut-off — pushes what it committed
+    either way: a cloud container keeps nothing. Earlier with CI only for a check the machine cannot run (another OS, a
+    secret, a live service), and then once for that check. Nothing gets cheaper in quality: every step still passes
+    the full local chain, and CI still gates the PR.
 
 ## Objective runs — `/orca <objective>`
 
@@ -136,11 +162,11 @@ for. It adds no mechanism: it is the ordering of ones this project already has.
 2. **Cut it into steps, each with an observable result** — a check that passes, a file that exists, a command that
    exits 0. A step whose result cannot be observed is not a step, it is a hope.
 3. **Per step: build, then review.** The implementer wave, then a `reviewer` seat that wrote none of it. Verify the
-   diff yourself before the next step starts (contract 8).
+   diff yourself before the next step starts (contract 8), then commit it — no push that runs CI (contract 11).
 4. **One overall review over the combined diff at the end,** by an agent that wrote none of it. A boundary that
    moved, a duplication spread over two steps, an interface quietly widened in step four — none of that is visible in
    any single-step review.
-5. **Close through `/done`.**
+5. **Close through `/done`** — the push that runs CI comes here, once (contract 11).
 
 **Three stop conditions end the run rather than bend it:** the same defect three times → `.claude/skills/stuck/SKILL.md` ·
 the objective turns out to be the wrong one → say so and stop · a decision only the user can make → stop, with the
@@ -169,10 +195,11 @@ v1.30.0 removed.
 
 ## Rules
 
-- **A failed subagent is a re-assignment, not a takeover — one seat higher.** An assignment that failed or came back
+- **A failed subagent is a re-assignment, not a takeover — one tier higher.** An assignment that failed or came back
   unclear is not sent again as it was: sharpen or split it and give it to the next seat up — `opus-high` →
-  `opus-xhigh`, and an `opus-xhigh` assignment that fails again → `opus-max` with its one-line reason; the
-  orchestrator never "just fixes it quickly" itself. Third failure on the same unit →
+  `fable-medium`, and a `fable-medium` assignment that fails again → `fable-high` with its one-line reason; with
+  Fable out the climb is `opus-high` → `opus-xhigh` → `opus-max`. The orchestrator never "just fixes it quickly"
+  itself. Third failure on the same unit →
   `.claude/skills/stuck/SKILL.md`.
 - **Results reach the user only through you.** The user sees no subagent report, so pass on what matters. Never
   invent or anticipate a result: an agent still running is reported as running.
@@ -196,7 +223,7 @@ Close every wave with:
 ### Orca — wave <n> (<k>/<N> parallel)
 | Assignment | Role | subagent_type | Scope | Result | Verified |
 |------------|------|---------------|-------|--------|----------|
-| <what> | <role from the roster> | <opus-* seat> | <files> | done / partial / failed | diff read ✅ / ❌ |
+| <what> | <role from the roster> | <seat — a fallback marked as such> | <files> | done / partial / failed | diff read ✅ / ❌ |
 
 Next: <next wave / integration step / "nothing — reporting to user">
 ```
