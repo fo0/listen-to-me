@@ -96,7 +96,7 @@ If revert produces a conflict → stop, ask user to resolve manually.
 
 ## Phase E — Revert merged PR
 
-`gh` has no `pr revert` subcommand — build the revert PR manually. A revert **PR** is preferred over a direct push to the default branch: it survives branch protection and keeps the change reviewable. It needs no issue of its own — the reverted PR is its tracking item (`agent_docs/autonomy.md → Issue-based work`). Unattended, the branch is `claude/revert-pr-$PR` instead (`agent_docs/autonomy.md → Branch rule`).
+Build the revert PR by hand, as below — the branch name stays the run's own choice, which the unattended branch rule needs. A revert **PR** is preferred over a direct push to the default branch: it survives branch protection and keeps the change reviewable. It needs no issue of its own — the reverted PR is its tracking item (`agent_docs/autonomy.md → Issue-based work`). Unattended, the branch is `claude/revert-pr-$PR` instead (`agent_docs/autonomy.md → Branch rule`).
 
 ```bash
 PR=<number>

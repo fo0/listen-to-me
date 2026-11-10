@@ -49,7 +49,7 @@ MOCKUP-PFLICHT v1 — verbindliche Anforderungen des Betreibers an jedes UI-Mock
 
 1. **Settle the starting point:** the app, the screens, today's state (`bisher`), what is to change. Find the sources
    of the real app shell — layout, menu, CSS tokens, components — and pass them as paths.
-2. **Delegate** to `opus-xhigh` for a larger round (many views or variants), to `opus-high` for a small change. The
+2. **Delegate** to `fable-medium` for a larger round (many views or variants), to `opus-high` for a small change. The
    assignment carries:
    - the block above, verbatim;
    - the screens (tabs), and per screen three variant ideas with their difference in one line, the recommended one ★;

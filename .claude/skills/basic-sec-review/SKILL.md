@@ -29,7 +29,7 @@ Diff-based by default. Full-codebase only on explicit user request (`/basic-sec-
 1. git status + git diff                              → identify changed files
 2. Read CLAUDE.md _Coding Conventions_ + _Environment Variables_ (full list: `agent_docs/env-vars.md`) → understand trust boundaries
 3. Read every changed file completely
-4. Work the current OWASP Top 10 (see Coverage), then the checklist below
+4. Work the _Coverage_ section below — one verdict per category, then the checklist below
 5. Run security-relevant tooling (see Tooling)
 6. Fix findings inline (prefer over defer; security debt compounds)
 7. Output standard Security Review Results table
@@ -93,7 +93,7 @@ review on tool availability** — the manual pass above is the audit; tools only
 ## Severity & Fixing Rules
 
 - **All security findings default to P0 or P1.** P2 only for clearly informational items.
-- **Never defer a P0** without explicit user override + BACKLOG entry naming the user as the deferring party.
+- **Never defer a P0** without explicit user override + BACKLOG entry naming the user as the deferring party. Unattended (`$CLAUDE_CODE_REMOTE=true`), nobody overrides: a P0 that cannot be fixed inline is reported `❌ Blocked` and entered in `BACKLOG.md` as an open P0, never as deferred.
 - **Fix inline** — security tech debt compounds.
 
 ## Report

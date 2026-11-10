@@ -61,13 +61,13 @@ Trigger: `PreToolUse`. Agent-facing, **non-blocking** — it names the right hom
   "hooks": [
     {
       "type": "command",
-      "command": "printf '%s' '{\"systemMessage\":\"Session ending — verify SCRATCHPAD.md is clean. Promote stable entries to MEMORY.md per memory_process.md.\"}'"
+      "command": "printf '%s' '{\"systemMessage\":\"Turn ended — verify SCRATCHPAD.md is clean. Promote stable entries to MEMORY.md per memory_process.md.\"}'"
     }
   ]
 }
 ```
 
-Trigger: `Stop`. **User-facing** by design: `additionalContext` on `Stop` would resume the turn so the agent can act on it — not what an end-of-session reminder should do.
+Trigger: `Stop` — it fires when the agent finishes a turn, not once per session, and the message says so. **User-facing** by design: `additionalContext` on `Stop` would resume the turn so the agent can act on it — not what a reminder should do.
 
 ### PreCompact — dump scratchpad state
 
@@ -107,7 +107,7 @@ Trigger: `SessionStart`. Agent-facing via plain stdout — one of the three even
   "hooks": [
     {
       "type": "command",
-      "command": "printf '%s' '{\"systemMessage\":\"Session ending — if code changed this session, the review process per agent_docs/review_process.md must have run before commit.\"}'"
+      "command": "printf '%s' '{\"systemMessage\":\"Turn ended — if code changed this session, the review process per agent_docs/review_process.md must have run before commit.\"}'"
     }
   ]
 }
@@ -131,7 +131,7 @@ Trigger: `Stop`. User-facing (same reasoning as the cleanup reminder above).
 
 Trigger: `PreToolUse`. Runs this project's checks (`compileall` + offscreen Qt smoke) before a push to a protected branch. Requires `jq` — without it the guard never fires (see Notes). Err-safe: a bare `git push` is resolved via the current branch; it only blocks when the checks are red.
 
-### Block force-push without confirmation
+### Block force-push
 
 ```json
 {
@@ -139,13 +139,13 @@ Trigger: `PreToolUse`. Runs this project's checks (`compileall` + offscreen Qt s
   "hooks": [
     {
       "type": "command",
-      "command": "cmd=$(jq -r '.tool_input.command // empty'); if echo \"$cmd\" | grep -qE 'git push.*(--force(-with-lease)?|-f)\\b'; then echo 'BLOCKED: force-push requires explicit user confirmation. Re-run after user approves.' >&2; exit 2; fi"
+      "command": "cmd=$(jq -r '.tool_input.command // empty'); if echo \"$cmd\" | grep -qE 'git push.*(--force(-with-lease)?|-f)\\b'; then echo 'BLOCKED by hook: force-push. The user runs it themselves or removes this hook; a retry is blocked the same way.' >&2; exit 2; fi"
     }
   ]
 }
 ```
 
-Trigger: `PreToolUse`. Catches `--force`, `--force-with-lease`, and the short `-f` flag. Requires `jq` (see Notes).
+Trigger: `PreToolUse`. Catches `--force`, `--force-with-lease`, and the short `-f` flag (combined short flags like `-uf` are not detected). Requires `jq` — without it the guard never fires (see Notes).
 
 ### Mermaid validate on save
 
@@ -207,13 +207,13 @@ Trigger: `PostToolUse`. Agent-facing.
   "hooks": [
     {
       "type": "command",
-      "command": "cmd=$(jq -r '.tool_input.command // empty'); if echo \"$cmd\" | grep -qE 'pip install [a-zA-Z]'; then printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"New dependency — confirm with the user per the dependencies line in CLAUDE.md → Git Conventions, and keep requirements.txt + pyproject.toml (+ PyInstaller --collect-all) in sync.\"}}'; fi; exit 0"
+      "command": "cmd=$(jq -r '.tool_input.command // empty'); if echo \"$cmd\" | grep -qE 'pip install [a-zA-Z]'; then if [ \"$CLAUDE_CODE_REMOTE\" = \"true\" ]; then printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"New dependency in an unattended session — a runtime one needs the user per the dependencies line in CLAUDE.md → Git Conventions; nobody answers here, so CLAUDE.md → Autonomy decides. Keep requirements.txt + pyproject.toml (+ PyInstaller --collect-all) in sync.\"}}'; else printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDecisionReason\":\"New dependency — a runtime one needs the user per the dependencies line in CLAUDE.md → Git Conventions; keep requirements.txt + pyproject.toml (+ PyInstaller --collect-all) in sync.\"}}'; fi; fi; exit 0"
     }
   ]
 }
 ```
 
-Trigger: `PreToolUse`. Forces the permission prompt instead of only mentioning the rule, so the install cannot slip through unconfirmed. An install that names no package (`pip install -e .`, `pip install -r requirements.txt`) does not match — those are the check chain's own first stage.
+Trigger: `PreToolUse`. Interactive, the hook forces the permission prompt instead of only mentioning the rule, so the install cannot slip through unconfirmed; unattended (`$CLAUDE_CODE_REMOTE=true`) a prompt would stall the run, so the rule reaches the agent as context. An install that names no package (`pip install -e .`, `pip install -r requirements.txt`) does not match — those are the check chain's own first stage.
 
 ### Done-skill auto-trigger on "done"/"fertig"
 
@@ -242,4 +242,4 @@ Trigger: `UserPromptSubmit`. One of the three events where bare stdout _is_ adde
 - Hooks run in the user's shell. Quote paths, escape `$` carefully when copying.
 - After modifying `.claude/settings.json`, restart the Claude Code session (or review via `/hooks`) for changes to take effect.
 
-<!-- Generated by claude-code-optimizer v1.51.1 -->
+<!-- Generated by claude-code-optimizer v1.77.0 -->

@@ -89,11 +89,7 @@ Over 14,000 / 16,000 / 8,000 chars → offload per `agent_docs/context_budget.md
 
 ### 8. Suggest PR + CI (feature branch only)
 
-After push on a feature branch, suggest follow-ups — do NOT run them automatically:
-
-- Print: `Run /pr to handle the PR (auto-detects: create / update / status).`
-- Print: `Run /ci to check the build (auto-detects: status / logs / fix).`
-- The PR skill (`.claude/skills/pr/SKILL.md`) and CI skill (`.claude/skills/ci/SKILL.md`) auto-route by state. Done-skill never invokes them directly.
+After push on a feature branch the follow-ups are `/pr`, then `/ci` — named in the report's `Next:` line (step 10), never run from here and never printed beside the report. Both skills auto-route by state.
 
 ### 9. Close related GitHub issue (if applicable)
 
@@ -113,8 +109,6 @@ Strict format, strict limits:
 ## Rules
 
 - **Format-write always runs before the checks** when Markdown changed — never commit unformatted `.md` files; `docs-format.yml` is unforgiving. Python has no formatter/linter/typechecker here: the check step is `compileall` + the Qt smoke test. Do not add tooling to make a check pass.
-- **Never push to `main` with failing checks.** Hard stop.
-- **Never force-push** without explicit user request.
 - **Ambiguous state on main** (large uncommitted diff, unclear scope) → ask first; unattended → uncommitted plus a report line (step 6).
 - **The report is the two lines above and nothing else.** No preamble, no postamble, nothing the commit message already says; the `Next:` line only when something is open — and when it names a step, the one handoff line from `CLAUDE.md → Handoff Prompt` closes the report.
 - If nothing to commit AND nothing to push AND no issue for step 9 to close → single-line confirmation: `✅ <branch>: already clean, nothing to do.`
