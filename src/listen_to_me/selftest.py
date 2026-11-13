@@ -3857,6 +3857,112 @@ def _microphone_silence_is_reported_while_recording():
         app_module._clip_verdict = real_verdict
 
 
+def _quit_asks_while_a_take_would_be_lost():
+    """Quit from the tray or the floating icon asks first while a take is
+    recording or transcribing, quits straight away when idle, re-reads the
+    state after the question, ignores a second Quit while the question is
+    open, and both menus post the asking event — never the bare "quit" the
+    updater's restart uses. The box itself is stubbed (`_confirm_quit`): a
+    modal question would hang this run."""
+    from listen_to_me import tray as tray_module
+    from listen_to_me.app import (
+        STATE_IDLE,
+        STATE_PROCESSING,
+        STATE_RECORDING,
+        App,
+        quit_question,
+    )
+    from listen_to_me.overlay import Overlay
+
+    assert quit_question(STATE_IDLE) is None
+    assert "recording is still running" in (quit_question(STATE_RECORDING) or "")
+    processing = quit_question(STATE_PROCESSING) or ""
+    assert "being transcribed" in processing and "history" in processing, processing
+    # A retry reads a recording kept on disk, which survives the quit.
+    assert quit_question(STATE_PROCESSING, retrying=True) is None
+    assert quit_question(STATE_RECORDING, retrying=True) is not None
+
+    class _App:
+        _request_quit = App._request_quit
+
+        def __init__(self, state, answer=True, finish_while_asking=False,
+                     quit_while_asking=False):
+            self.state, self.answer = state, answer
+            self.finish_while_asking = finish_while_asking
+            self.quit_while_asking = quit_while_asking
+            self._quitting = self._quit_asking = False
+            self.asked: list[str] = []
+            self.quits = 0
+
+        def _confirm_quit(self, question):
+            self.asked.append(question)
+            assert self._quit_asking, "a second Quit must be dropped while asking"
+            self._request_quit()  # a second click drained by the nested loop
+            if self.finish_while_asking:
+                self.state = STATE_IDLE
+            if self.quit_while_asking:
+                self._quit()  # the updater's restart, drained by the nested loop
+            return self.answer
+
+        def _quit(self):
+            self.quits += 1
+            self._quitting = True
+
+    idle = _App(STATE_IDLE)
+    idle._request_quit()
+    assert idle.quits == 1 and not idle.asked
+
+    for state in (STATE_RECORDING, STATE_PROCESSING):
+        kept = _App(state, answer=False)
+        kept._request_quit()
+        assert kept.asked == [quit_question(state)] and kept.quits == 0, kept.asked
+        assert not kept._quit_asking
+        confirmed = _App(state, answer=True)
+        confirmed._request_quit()
+        assert len(confirmed.asked) == 1 and confirmed.quits == 1
+
+    finished = _App(STATE_RECORDING, answer=True, finish_while_asking=True)
+    finished._request_quit()
+    assert finished.quits == 1
+
+    updater = _App(STATE_RECORDING, answer=True, quit_while_asking=True)
+    updater._request_quit()
+    assert updater.quits == 1, "a shutdown that began meanwhile is not run twice"
+
+    retry = _App(STATE_PROCESSING)
+    retry.retrying_take = "0123abcd"
+    retry._request_quit()
+    assert retry.quits == 1 and not retry.asked
+
+    shutting_down = _App(STATE_RECORDING)
+    shutting_down._quitting = True
+    shutting_down._request_quit()
+    assert not shutting_down.asked and shutting_down.quits == 0
+
+    _ensure_qapp()
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        tray = tray_module.Tray(stub)
+        tray.start()
+        try:
+            quit_action = [a for a in tray._menu.actions() if a.text() == "Quit"]
+            assert len(quit_action) == 1, [a.text() for a in tray._menu.actions()]
+            stub.posts.clear()
+            quit_action[0].trigger()
+            assert stub.posts == [("quit_request",)], stub.posts
+        finally:
+            tray.stop()
+        overlay = Overlay(stub)
+        try:
+            quit_action = [a for a in overlay._menu.actions() if a.text() == "Quit"]
+            assert len(quit_action) == 1, [a.text() for a in overlay._menu.actions()]
+            stub.posts.clear()
+            quit_action[0].trigger()
+            assert stub.posts == [("quit_request",)], stub.posts
+        finally:
+            overlay.destroy()
+
+
 def _recorder_events_carry_their_take():
     """`auto_stop` / `stream_died` may only stop the take they were posted for:
     both come from PortAudio's callback thread and can wait up to 100 ms in the
@@ -17323,6 +17429,7 @@ _LIGHT_CHECKS = [
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
     ("microphone silence is reported while recording",
      _microphone_silence_is_reported_while_recording),
+    ("quit asks while a take would be lost", _quit_asks_while_a_take_would_be_lost),
     ("no-speech report names its own source", _no_speech_report_names_its_own_source),
     ("recorder events carry their take", _recorder_events_carry_their_take),
     ("a modifier-only toggle hotkey fires on a clean release",

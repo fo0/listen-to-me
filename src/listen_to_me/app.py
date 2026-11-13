@@ -736,6 +736,35 @@ def withheld_message(kept: bool, *, done: bool, history_enabled: bool = True) ->
     return "Transcript not inserted, as requested — the history is off, so it was discarded."
 
 
+def quit_question(state: str, retrying: bool = False) -> str | None:
+    """What to ask before Quit from a menu ends the app, or None when nothing
+    would be lost.
+
+    A take is gone with the process: a running recording only exists in the
+    recorder's memory, and a transcription runs on a daemon thread that is
+    killed mid-decode — its text never reaches the cursor, the clipboard or
+    the history. "Quit" sits at the bottom of both menus, right under the
+    entries used during a take, so one slip used to cost the dictation.
+
+    A `retrying` transcription is the exception: it reads a recording kept on
+    disk (failed_takes.py), which stays there for the next Retry whether or
+    not this one finishes.
+    """
+    if state == STATE_PROCESSING and retrying:
+        return None
+    if state == STATE_RECORDING:
+        return (
+            "A recording is still running. If you quit now, what was recorded so far "
+            "is lost."
+        )
+    if state == STATE_PROCESSING:
+        return (
+            "A recording is still being transcribed. If you quit now, its text is lost — "
+            "it is neither inserted nor kept in the history."
+        )
+    return None
+
+
 def assistant_failure_message(exc: BaseException, inserted: bool = True) -> str:
     """What to show when the assistant could not clean up a finished dictation.
 
@@ -919,6 +948,7 @@ class App:
         self.hotkey_paused = False
         self._live_typer = None  # per-take live-typing worker (livetype.py)
         self._quitting = False  # set by _quit; guards UI opened after shutdown
+        self._quit_asking = False  # the "quit anyway?" question is open
         # True while a factory reset is running its (modal, nested) wizard —
         # see _factory_reset.
         self._resetting = False
@@ -1274,6 +1304,8 @@ class App:
             self._follow_notification(payload)
         elif kind == "factory_reset":
             self._factory_reset()
+        elif kind == "quit_request":
+            self._request_quit()
         elif kind == "quit":
             self._quit()
 
@@ -2691,6 +2723,50 @@ class App:
                 "Use “Open config folder” and open it from there.",
                 force=True,
             )
+
+    def _request_quit(self) -> None:
+        """Quit chosen in the tray or floating-icon menu: ask first while a take
+        would be lost (`quit_question`), quit straight away otherwise.
+
+        Only the menus come through here. The updater's restart posts "quit"
+        directly and must never stall on a question nobody may be there to
+        answer. The box runs a nested event loop, during which the queue keeps
+        draining: a second Quit click is dropped instead of stacking a second
+        box, and a shutdown that began meanwhile (the updater) is not run a
+        second time.
+        """
+        if self._quitting or self._quit_asking:
+            return
+        question = quit_question(self.state, bool(getattr(self, "retrying_take", None)))
+        if question is not None:
+            self._quit_asking = True
+            try:
+                confirmed = self._confirm_quit(question)
+            finally:
+                self._quit_asking = False
+            if not confirmed or self._quitting:
+                return
+        self._quit()
+
+    def _confirm_quit(self, question: str) -> bool:
+        """The modal "quit anyway?" box; True when the user chose Quit. Keep
+        running is the default button, so a reflexive Enter keeps the take."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QMessageBox
+
+        box = QMessageBox(QMessageBox.Icon.Question, f"Quit {APP_NAME}?", question)
+        quit_button = box.addButton("&Quit", QMessageBox.ButtonRole.AcceptRole)
+        keep_button = box.addButton("&Keep running", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep_button)
+        box.setEscapeButton(keep_button)
+        # Opened from the tray or the floating icon, with no window of ours
+        # in front: without this it can come up behind the app being used.
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        try:
+            box.exec()
+            return box.clickedButton() is quit_button
+        finally:
+            box.deleteLater()
 
     def _quit(self) -> None:
         log.info("shutting down")

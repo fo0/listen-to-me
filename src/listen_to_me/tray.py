@@ -460,7 +460,7 @@ class Tray:
         menu.addSeparator()
 
         act_quit = QAction("Quit", menu)
-        act_quit.triggered.connect(lambda: app.post("quit"))
+        act_quit.triggered.connect(lambda: app.post("quit_request"))
         menu.addAction(act_quit)
 
         self._icon.setContextMenu(menu)

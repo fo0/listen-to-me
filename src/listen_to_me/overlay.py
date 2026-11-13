@@ -583,7 +583,7 @@ class Overlay:
         self._menu.addAction("Reset icon position", lambda: app.post("reset_overlay_position"))
         self._menu.addAction("Hide floating icon", lambda: app.post("toggle_overlay"))
         self._menu.addSeparator()
-        self._menu.addAction("Quit", lambda: app.post("quit"))
+        self._menu.addAction("Quit", lambda: app.post("quit_request"))
         self._sync_menu_state()
 
         self.apply_always_on_top()
