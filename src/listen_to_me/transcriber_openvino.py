@@ -23,13 +23,9 @@ from pathlib import Path
 
 from .audio import SAMPLE_RATE
 from .choices import OPENVINO_UNSUPPORTED_MODELS, openvino_alternative
-from .hallucination import (
-    PROMPT_TOKEN_BUDGET,
-    estimate_prompt_tokens,
-    prompt_tail,
-    strip_foreign_runs,
-    trim_silence,
-)
+from .hallucination import strip_foreign_runs
+from .prompt_window import PROMPT_TOKEN_BUDGET, estimate_prompt_tokens, prompt_tail
+from .silence_trim import trim_silence
 from .transcriber import _PREVIEW_WINDOW_SECONDS
 
 log = logging.getLogger(__name__)

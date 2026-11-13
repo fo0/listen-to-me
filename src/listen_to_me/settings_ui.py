@@ -117,12 +117,6 @@ from .diagnostics import DiagnosticsEngine, model_cache_status
 from .failed_takes_text import RETENTION_DAYS
 from .fillers import describe_filler_phrases
 from .glyphs import glyph_icon
-from .hallucination import (
-    _CHARS_PER_TOKEN_ESTIMATE,
-    PROMPT_TOKEN_BUDGET,
-    estimate_prompt_tokens,
-    prompt_exceeds_window,
-)
 from .home_page import HomePage
 from .hotkeys import Hotkeys
 from .keymap import hotkey_label
@@ -133,6 +127,12 @@ from .mic_test_widget import APP_BUSY_TEXT, CANCELLED, MicTestWidget, app_busy
 # reaches nothing heavy at import time — `audio` keeps numpy behind
 # TYPE_CHECKING, and Qt is already loaded by this module.
 from .overlay import ANCHOR_ICON, PREVIEW_ANCHORS, preview_anchor
+from .prompt_window import (
+    _CHARS_PER_TOKEN_ESTIMATE,
+    PROMPT_TOKEN_BUDGET,
+    estimate_prompt_tokens,
+    prompt_exceeds_window,
+)
 from .qtutil import (
     busy_cursor,
     clear_on_escape,

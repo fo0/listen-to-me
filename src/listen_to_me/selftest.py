@@ -6804,7 +6804,7 @@ def _whisper_prompt_window():
 
     from listen_to_me import transcriber as fw
     from listen_to_me.config import Config
-    from listen_to_me.hallucination import prompt_tail
+    from listen_to_me.prompt_window import prompt_tail
 
     class FakeTokenizer:
         """The `tokenizers.Tokenizer` surface faster-whisper's model carries:
@@ -6997,7 +6997,7 @@ def _hallucination_prompt_tail():
     list."""
     import re
 
-    from listen_to_me.hallucination import (
+    from listen_to_me.prompt_window import (
         PROMPT_TOKEN_BUDGET,
         estimate_prompt_tokens,
         prompt_exceeds_window,
@@ -7071,7 +7071,7 @@ def _hallucination_speech_bounds():
     speech no longer sets a bar the whole dictation stays under. trim_silence
     hands back the very same audio whenever it has nothing to trim or cannot
     run (no numpy on the CI runner)."""
-    from listen_to_me.hallucination import speech_bounds, trim_silence
+    from listen_to_me.silence_trim import speech_bounds, trim_silence
 
     assert speech_bounds([]) is None
     assert speech_bounds([0.0, 0.001, 0.002]) is None  # below the floor: no speech
@@ -7098,7 +7098,7 @@ def _hallucination_trim_silence():
     import numpy as np
 
     from listen_to_me.audio import SAMPLE_RATE
-    from listen_to_me.hallucination import trim_silence
+    from listen_to_me.silence_trim import trim_silence
 
     audio = np.zeros(5 * SAMPLE_RATE, dtype="float32")
     audio[2 * SAMPLE_RATE : 3 * SAMPLE_RATE] = 0.3
@@ -7880,7 +7880,7 @@ def _openvino_decode_guards():
     from listen_to_me import transcriber_openvino as ov
     from listen_to_me.audio import SAMPLE_RATE
     from listen_to_me.config import Config
-    from listen_to_me.hallucination import prompt_tail
+    from listen_to_me.prompt_window import prompt_tail
 
     class Samples(list):
         """The Recorder's numpy array, as far as _decode uses it: slices stay
@@ -12691,7 +12691,7 @@ def _settings_prompt_window_hint():
     than leaving a blank line; and it greys out with the field for Parakeet,
     which takes no prompt."""
     from listen_to_me.choices import BACKENDS
-    from listen_to_me.hallucination import estimate_prompt_tokens
+    from listen_to_me.prompt_window import estimate_prompt_tokens
     from listen_to_me.settings_ui import SettingsWindow
     from listen_to_me.theme import apply_theme
 

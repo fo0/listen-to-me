@@ -8,13 +8,8 @@ import threading
 
 from .audio import SAMPLE_RATE
 from .cpuinfo import resolve_cpu_threads
-from .hallucination import (
-    PROMPT_TOKEN_BUDGET,
-    estimate_prompt_tokens,
-    prompt_tail,
-    segment_drop_reason,
-    strip_foreign_runs,
-)
+from .hallucination import segment_drop_reason, strip_foreign_runs
+from .prompt_window import PROMPT_TOKEN_BUDGET, estimate_prompt_tokens, prompt_tail
 
 log = logging.getLogger(__name__)
 
