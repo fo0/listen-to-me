@@ -719,6 +719,8 @@ class SettingsWindow(QDialog):
         # Bumped on every test start so a stale timeout timer from an earlier
         # (already finished) test can't cancel a later one.
         self._hotkey_test_gen = 0
+        # (button, where Qt moved the focus) while a test runs — see _test_hotkey.
+        self._hotkey_test_refocus: tuple[QWidget, QWidget | None] | None = None
 
         # Set by force_close(): skip the unsaved-changes prompt when the app
         # itself closes the window (shutdown, updater restart).
@@ -4592,11 +4594,11 @@ class SettingsWindow(QDialog):
             # Stopping the app's listener mid-recording would lose a hold-mode
             # release, leaving the recording stuck until stopped via the overlay
             # — including a press still sitting in the queue (see _app_busy).
-            self.hotkey_test_status.setText("Finish the current recording first, then run the test.")
+            self._set_hotkey_test_status("Finish the current recording first, then run the test.")
             return
         combo = self.hotkey_edit.text().strip()
         if not Hotkeys.validate(combo):
-            self.hotkey_test_status.setText("Invalid hotkey — fix the combination first.")
+            self._set_hotkey_test_status("Invalid hotkey — fix the combination first.")
             return
         # Pause the app's real listeners so the test press can't start a real
         # recording behind the dialog (same pattern as _capture_hotkey). Both of
@@ -4609,16 +4611,21 @@ class SettingsWindow(QDialog):
         except Exception as exc:
             log.exception("could not register the test hotkey")
             self.app._register_hotkey()
-            self.hotkey_test_status.setText(f"Could not listen for the hotkey: {exc}")
+            self._set_hotkey_test_status(f"Could not listen for the hotkey: {exc}")
             return
         self._hotkey_test = test
         self._hotkey_test_gen += 1
         generation = self._hotkey_test_gen
+        # No Cancel to take the focus: disabling the pressed button lets Qt
+        # move it on, so note where and give it back when the test ends.
+        focused = self.window().focusWidget()
         self.hotkey_test_button.setEnabled(False)
+        if focused is self.hotkey_test_button:
+            self._hotkey_test_refocus = (focused, self.window().focusWidget())
         # Key caps ("Ctrl+Alt+Space"), as every other surface names a hotkey —
         # the field holds the pynput token, and "Press <ctrl>+<alt>+<space>"
         # reads as an instruction to type angle brackets.
-        self.hotkey_test_status.setText(f"Press {hotkey_label(combo) or 'the hotkey'} now…")
+        self._set_hotkey_test_status(f"Press {hotkey_label(combo) or 'the hotkey'} now…")
         QTimer.singleShot(
             _HOTKEY_TEST_TIMEOUT_MS, lambda: self._hotkey_test_timeout(generation)
         )
@@ -4649,8 +4656,19 @@ class SettingsWindow(QDialog):
             # Still paused = a recording diagnostic is running and owns the
             # listener; it re-registers when it ends.
             self.app._register_hotkey()
+        refocus, self._hotkey_test_refocus = self._hotkey_test_refocus, None
         self.hotkey_test_button.setEnabled(True)
-        self.hotkey_test_status.setText(message)
+        # Only while the focus still sits where Qt put it (as _end_diag_cooldown).
+        if refocus is not None and self.window().focusWidget() is refocus[1]:
+            refocus[0].setFocus(Qt.FocusReason.OtherFocusReason)
+        self._set_hotkey_test_status(message)
+
+    def _set_hotkey_test_status(self, text: str) -> None:
+        """Show the hotkey test's status and voice it on its button, where
+        the focus comes back when the test ends (see _finish_hotkey_test) —
+        the label beside it is never read out."""
+        self.hotkey_test_status.setText(text)
+        self.hotkey_test_button.setAccessibleDescription(text)
 
     def _cancel_diagnostics(self) -> None:
         """Stop any running diagnostic when the dialog closes: unblock the

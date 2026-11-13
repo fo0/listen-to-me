@@ -15968,10 +15968,19 @@ def _gui_construction():
         _hotkey_test_module.Hotkeys = _SilentHotkeys
         try:
             window.hotkey_edit.setText("<ctrl>+<alt>+m")
+            # The button disables itself while listening; the focus it loses
+            # comes back when the test ends, and the status is voiced on it.
+            window.show()
+            window._show_page("General")
+            window.hotkey_test_button.setFocus()
             window._test_hotkey()
             prompt = window.hotkey_test_status.text()
             assert prompt == "Press Ctrl+Alt+M now…", prompt
+            assert window.hotkey_test_button.accessibleDescription() == prompt
             window._finish_hotkey_test("done")
+            assert window.focusWidget() is window.hotkey_test_button, window.focusWidget()
+            assert window.hotkey_test_button.accessibleDescription() == "done"
+            window.hide()
         finally:
             _hotkey_test_module.Hotkeys = real_hotkeys
             window.hotkey_edit.setText(typed)
