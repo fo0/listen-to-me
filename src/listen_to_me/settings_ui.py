@@ -1149,6 +1149,10 @@ class SettingsWindow(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # The scroll area takes Tab focus (so the page scrolls by keyboard) and
+        # is the first stop after the sidebar; unnamed, a screen reader
+        # announces a bare pane there. The page title names it.
+        scroll.setAccessibleName(title)
         wrap.addWidget(scroll)
 
         inner = QWidget()
@@ -3031,6 +3035,8 @@ class SettingsWindow(QDialog):
         # Scrollable list of past transcripts, rendered lazily on first view.
         self._history_scroll = QScrollArea()
         self._history_scroll.setWidgetResizable(True)
+        # A Tab stop of its own, like the page around it (see _page).
+        self._history_scroll.setAccessibleName("Transcripts")
         self._history_inner = QWidget()
         self._history_layout = QVBoxLayout(self._history_inner)
         self._history_layout.setContentsMargins(2, 2, 2, 2)

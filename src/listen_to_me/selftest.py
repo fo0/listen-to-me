@@ -14601,6 +14601,12 @@ def _gui_construction():
         assert window._devices_loaded is True
         window._show_page("Home")
 
+        # Every page's scroll area is a Tab stop, so none may be an unnamed pane.
+        from PySide6.QtWidgets import QScrollArea
+
+        unnamed = [a for a in window.findChildren(QScrollArea) if not a.accessibleName()]
+        assert not unnamed, f"{len(unnamed)} scroll area(s) without an accessible name"
+
         # Home hub: the hotkey renders as key caps, the stored transcript is
         # listed, and the hero mirrors every app state (posted by App via
         # set_app_state). isHidden() not isVisible(): the window isn't shown.
