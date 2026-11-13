@@ -13382,7 +13382,12 @@ def _settings_audio_tests_the_microphone_through_the_widget():
             # the start button returns it once the button is enabled again.
             engine = window._diag
             window._begin_diag("tx")
+            window._set_diag_status("Recording 5 s — speak now")
+            assert window.diag_cancel_button.accessibleDescription() == "Recording 5 s — speak now"
             window._cancel_diagnostic()
+            # The outcome is voiced on the start buttons, and Cancel is idle.
+            assert window.tx_test_button.accessibleDescription() == "Transcription test cancelled."
+            assert not window.diag_cancel_button.accessibleDescription()
             assert not window.tx_test_button.isEnabled()
             assert window.focusWidget() is not window.tx_test_button
             window._diag_cooldown_timer.stop()

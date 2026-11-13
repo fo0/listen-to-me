@@ -4361,12 +4361,12 @@ class SettingsWindow(QDialog):
             return
         self.diag_progress.setVisible(False)
         if kind == "model":
-            self.diag_status.setText(
+            self._set_diag_status(
                 "Cancelled. A download that already started may finish in the "
                 "background — anything already fetched is reused next time."
             )
         else:
-            self.diag_status.setText("Transcription test cancelled.")
+            self._set_diag_status("Transcription test cancelled.")
 
     def _begin_diag_cooldown(self) -> None:
         """Keep the start buttons disabled for a moment after a Cancel.
@@ -4399,10 +4399,22 @@ class SettingsWindow(QDialog):
         if refocus is not None and self.window().focusWidget() is refocus[1]:
             refocus[0].setFocus(Qt.FocusReason.OtherFocusReason)
 
+    def _set_diag_status(self, text: str) -> None:
+        """Show a model check / transcription test status and voice it on
+        the buttons the focus moves between (start, Cancel while it runs, see
+        _set_diag_busy) — the line below them is never read out, as in the
+        microphone test. Not for the byte-progress ticks, which fire several
+        times a second and would flood a screen reader."""
+        self.diag_status.setText(text)
+        self.model_download_button.setAccessibleDescription(text)
+        self.tx_test_button.setAccessibleDescription(text)
+        running = self._diag_busy and self._diag_kind in ("model", "tx")
+        self.diag_cancel_button.setAccessibleDescription(text if running else "")
+
     def _on_diag_status(self, gen: int, message: str) -> None:
         if gen != self._diag_gen:
             return
-        self.diag_status.setText(message)
+        self._set_diag_status(message)
 
     def _download_model(self) -> None:
         if self._diag_busy:
@@ -4414,7 +4426,7 @@ class SettingsWindow(QDialog):
         self.diag_progress.setRange(0, 100)
         self.diag_progress.setValue(0)
         self.diag_progress.setVisible(True)
-        self.diag_status.setText(f"Preparing model '{snapshot['model']}'…")
+        self._set_diag_status(f"Preparing model '{snapshot['model']}'…")
 
         def work():
             try:
@@ -4484,7 +4496,7 @@ class SettingsWindow(QDialog):
             return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
-        self.diag_status.setText(message)
+        self._set_diag_status(message)
         self._after_model_diagnostic()
 
     def _on_model_failed(self, gen: int, message: str) -> None:
@@ -4492,7 +4504,7 @@ class SettingsWindow(QDialog):
             return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
-        self.diag_status.setText(f"Model download/load failed: {message}")
+        self._set_diag_status(f"Model download/load failed: {message}")
         self._after_model_diagnostic()
 
     def _after_model_diagnostic(self) -> None:
@@ -4508,7 +4520,7 @@ class SettingsWindow(QDialog):
         if self._diag_busy:
             return
         if self._app_busy():
-            self.diag_status.setText("Finish the current recording first, then run the test.")
+            self._set_diag_status("Finish the current recording first, then run the test.")
             return
         snapshot = self._diag_snapshot()
         device = self._selected_input_device()
@@ -4517,7 +4529,7 @@ class SettingsWindow(QDialog):
         self._model_download_label = str(snapshot["model"])
         self.diag_progress.setRange(0, 0)  # indeterminate while the model loads
         self.diag_progress.setVisible(True)
-        self.diag_status.setText("Preparing model…")
+        self._set_diag_status("Preparing model…")
 
         def work():
             try:
@@ -4557,9 +4569,9 @@ class SettingsWindow(QDialog):
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
         if text:
-            self.diag_status.setText(f"Transcription works ✓ — result: “{text}”")
+            self._set_diag_status(f"Transcription works ✓ — result: “{text}”")
         else:
-            self.diag_status.setText(
+            self._set_diag_status(
                 "No speech detected in the test recording — try the microphone "
                 "test on the Audio page."
             )
@@ -4570,7 +4582,7 @@ class SettingsWindow(QDialog):
             return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
-        self.diag_status.setText(f"Transcription test failed: {message}")
+        self._set_diag_status(f"Transcription test failed: {message}")
         self._after_model_diagnostic()
 
     def _mic_test_refusal(self) -> str | None:
