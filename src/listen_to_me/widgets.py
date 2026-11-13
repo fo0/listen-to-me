@@ -176,6 +176,10 @@ class HotkeyCaptureDialog(QDialog):
         reads as a result; `QLabel[role="error"]` (theme.py) exists precisely
         so an inline failure cannot be mistaken for the text beside it."""
         self._display.setText(text)
+        # Voiced on the dialog itself: every key is captured, so no control
+        # here takes focus, and the label is never read out — a screen reader
+        # user could not hear what was captured or why it was refused.
+        self.setAccessibleDescription(text)
         role = "error" if refusal else ""
         if self._display.property("role") != role:
             self._display.setProperty("role", role)

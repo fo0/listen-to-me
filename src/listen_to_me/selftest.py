@@ -16247,6 +16247,10 @@ def _gui_construction():
         )
 
         dialog = HotkeyCaptureDialog(None)
+        # What the display line shows is voiced on the dialog (no control there
+        # takes focus), refusals included.
+        dialog._set_display("(unsupported key — try another)", refusal=True)
+        assert dialog.accessibleDescription() == "(unsupported key — try another)"
 
         # The first-run wizard: build, exercise the backend-dependent device
         # rows of its manual engine fields, then apply — the chosen values must
