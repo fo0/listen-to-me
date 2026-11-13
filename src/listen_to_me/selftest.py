@@ -13382,7 +13382,12 @@ def _settings_audio_tests_the_microphone_through_the_widget():
             # the start button returns it once the button is enabled again.
             engine = window._diag
             window._begin_diag("tx")
+            window._set_diag_status("Recording 5 s — speak now")
+            assert window.diag_cancel_button.accessibleDescription() == "Recording 5 s — speak now"
             window._cancel_diagnostic()
+            # The outcome is voiced on the start buttons, and Cancel is idle.
+            assert window.tx_test_button.accessibleDescription() == "Transcription test cancelled."
+            assert not window.diag_cancel_button.accessibleDescription()
             assert not window.tx_test_button.isEnabled()
             assert window.focusWidget() is not window.tx_test_button
             window._diag_cooldown_timer.stop()
@@ -14601,6 +14606,12 @@ def _gui_construction():
         assert window._devices_loaded is True
         window._show_page("Home")
 
+        # Every page's scroll area is a Tab stop, so none may be an unnamed pane.
+        from PySide6.QtWidgets import QScrollArea
+
+        unnamed = [a for a in window.findChildren(QScrollArea) if not a.accessibleName()]
+        assert not unnamed, f"{len(unnamed)} scroll area(s) without an accessible name"
+
         # Home hub: the hotkey renders as key caps, the stored transcript is
         # listed, and the hero mirrors every app state (posted by App via
         # set_app_state). isHidden() not isVisible(): the window isn't shown.
@@ -14967,6 +14978,9 @@ def _gui_construction():
         assert window.a_test_button.isEnabled()
         assert not window.a_test_cancel_button.isEnabled()
         assert "cancelled" in window.a_test_status.text().lower(), window.a_test_status.text()
+        # Voiced on the button the focus went back to; Cancel is idle again.
+        assert window.a_test_button.accessibleDescription() == window.a_test_status.text()
+        assert not window.a_test_cancel_button.accessibleDescription()
         window._on_assistant_tested(stale, "a late answer nobody is waiting for")
         assert "late answer" not in window.a_test_status.text(), window.a_test_status.text()
         window._on_assistant_test_failed(stale, "a late failure nobody is waiting for")
@@ -15962,10 +15976,19 @@ def _gui_construction():
         _hotkey_test_module.Hotkeys = _SilentHotkeys
         try:
             window.hotkey_edit.setText("<ctrl>+<alt>+m")
+            # The button disables itself while listening; the focus it loses
+            # comes back when the test ends, and the status is voiced on it.
+            window.show()
+            window._show_page("General")
+            window.hotkey_test_button.setFocus()
             window._test_hotkey()
             prompt = window.hotkey_test_status.text()
             assert prompt == "Press Ctrl+Alt+M now…", prompt
+            assert window.hotkey_test_button.accessibleDescription() == prompt
             window._finish_hotkey_test("done")
+            assert window.focusWidget() is window.hotkey_test_button, window.focusWidget()
+            assert window.hotkey_test_button.accessibleDescription() == "done"
+            window.hide()
         finally:
             _hotkey_test_module.Hotkeys = real_hotkeys
             window.hotkey_edit.setText(typed)
@@ -16241,6 +16264,10 @@ def _gui_construction():
         )
 
         dialog = HotkeyCaptureDialog(None)
+        # What the display line shows is voiced on the dialog (no control there
+        # takes focus), refusals included.
+        dialog._set_display("(unsupported key — try another)", refusal=True)
+        assert dialog.accessibleDescription() == "(unsupported key — try another)"
 
         # The first-run wizard: build, exercise the backend-dependent device
         # rows of its manual engine fields, then apply — the chosen values must

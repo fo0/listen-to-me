@@ -719,6 +719,8 @@ class SettingsWindow(QDialog):
         # Bumped on every test start so a stale timeout timer from an earlier
         # (already finished) test can't cancel a later one.
         self._hotkey_test_gen = 0
+        # (button, where Qt moved the focus) while a test runs — see _test_hotkey.
+        self._hotkey_test_refocus: tuple[QWidget, QWidget | None] | None = None
 
         # Set by force_close(): skip the unsaved-changes prompt when the app
         # itself closes the window (shutdown, updater restart).
@@ -1149,6 +1151,10 @@ class SettingsWindow(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # The scroll area takes Tab focus (so the page scrolls by keyboard) and
+        # is the first stop after the sidebar; unnamed, a screen reader
+        # announces a bare pane there. The page title names it.
+        scroll.setAccessibleName(title)
         wrap.addWidget(scroll)
 
         inner = QWidget()
@@ -3031,6 +3037,8 @@ class SettingsWindow(QDialog):
         # Scrollable list of past transcripts, rendered lazily on first view.
         self._history_scroll = QScrollArea()
         self._history_scroll.setWidgetResizable(True)
+        # A Tab stop of its own, like the page around it (see _page).
+        self._history_scroll.setAccessibleName("Transcripts")
         self._history_inner = QWidget()
         self._history_layout = QVBoxLayout(self._history_inner)
         self._history_layout.setContentsMargins(2, 2, 2, 2)
@@ -4094,7 +4102,7 @@ class SettingsWindow(QDialog):
             # Answerable without the network: say it instantly and put the
             # caret in the offending field, exactly as Save does.
             field, reason = problem
-            self.a_test_status.setText(
+            self._set_assistant_test_status(
                 f"Cannot test “{self._assistant_test_name}” — {reason}."
             )
             if field == "base_url":
@@ -4128,7 +4136,7 @@ class SettingsWindow(QDialog):
         timeout = values["timeout"]
         # Name the wait: a cold local model can take a while to answer, and a
         # button that just sits there reads as a hang rather than as patience.
-        self.a_test_status.setText(
+        self._set_assistant_test_status(
             f"Sending a sample sentence to {values['base_url']} as "
             f"“{self._assistant_test_name}” — waiting up to {timeout:.0f} s…"
         )
@@ -4165,7 +4173,7 @@ class SettingsWindow(QDialog):
             return
         self._assistant_gen += 1
         self._end_assistant_test()
-        self.a_test_status.setText("Test cancelled.")
+        self._set_assistant_test_status("Test cancelled.")
 
     def _on_assistant_tested(self, gen: int, reply: str) -> None:
         if gen != self._assistant_gen:
@@ -4178,7 +4186,7 @@ class SettingsWindow(QDialog):
         preview = " ".join(reply.split())
         if len(preview) > _A_TEST_PREVIEW_CHARS:
             preview = preview[:_A_TEST_PREVIEW_CHARS].rstrip() + "…"
-        self.a_test_status.setText(
+        self._set_assistant_test_status(
             f"“{self._assistant_test_name}” works ✓ — the endpoint returned: “{preview}”"
         )
 
@@ -4186,7 +4194,16 @@ class SettingsWindow(QDialog):
         if gen != self._assistant_gen:
             return  # detached by Cancel or superseded — see _cancel_assistant_test
         self._end_assistant_test()
-        self.a_test_status.setText(f"“{self._assistant_test_name}” failed: {message}")
+        self._set_assistant_test_status(f"“{self._assistant_test_name}” failed: {message}")
+
+    def _set_assistant_test_status(self, text: str) -> None:
+        """Show the assistant test's status and voice it where the focus is:
+        on Cancel while the request runs, on Test connection otherwise (both
+        hand the focus over, see _test_assistant) — the label below them is
+        never read out, as in the microphone test."""
+        self.a_test_status.setText(text)
+        self.a_test_button.setAccessibleDescription(text)
+        self.a_test_cancel_button.setAccessibleDescription(text if self._assistant_busy else "")
 
     def _end_assistant_test(self) -> None:
         """Hand the button back to the user (all three outcomes)."""
@@ -4344,12 +4361,12 @@ class SettingsWindow(QDialog):
             return
         self.diag_progress.setVisible(False)
         if kind == "model":
-            self.diag_status.setText(
+            self._set_diag_status(
                 "Cancelled. A download that already started may finish in the "
                 "background — anything already fetched is reused next time."
             )
         else:
-            self.diag_status.setText("Transcription test cancelled.")
+            self._set_diag_status("Transcription test cancelled.")
 
     def _begin_diag_cooldown(self) -> None:
         """Keep the start buttons disabled for a moment after a Cancel.
@@ -4382,10 +4399,22 @@ class SettingsWindow(QDialog):
         if refocus is not None and self.window().focusWidget() is refocus[1]:
             refocus[0].setFocus(Qt.FocusReason.OtherFocusReason)
 
+    def _set_diag_status(self, text: str) -> None:
+        """Show a model check / transcription test status and voice it on
+        the buttons the focus moves between (start, Cancel while it runs, see
+        _set_diag_busy) — the line below them is never read out, as in the
+        microphone test. Not for the byte-progress ticks, which fire several
+        times a second and would flood a screen reader."""
+        self.diag_status.setText(text)
+        self.model_download_button.setAccessibleDescription(text)
+        self.tx_test_button.setAccessibleDescription(text)
+        running = self._diag_busy and self._diag_kind in ("model", "tx")
+        self.diag_cancel_button.setAccessibleDescription(text if running else "")
+
     def _on_diag_status(self, gen: int, message: str) -> None:
         if gen != self._diag_gen:
             return
-        self.diag_status.setText(message)
+        self._set_diag_status(message)
 
     def _download_model(self) -> None:
         if self._diag_busy:
@@ -4397,7 +4426,7 @@ class SettingsWindow(QDialog):
         self.diag_progress.setRange(0, 100)
         self.diag_progress.setValue(0)
         self.diag_progress.setVisible(True)
-        self.diag_status.setText(f"Preparing model '{snapshot['model']}'…")
+        self._set_diag_status(f"Preparing model '{snapshot['model']}'…")
 
         def work():
             try:
@@ -4467,7 +4496,7 @@ class SettingsWindow(QDialog):
             return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
-        self.diag_status.setText(message)
+        self._set_diag_status(message)
         self._after_model_diagnostic()
 
     def _on_model_failed(self, gen: int, message: str) -> None:
@@ -4475,7 +4504,7 @@ class SettingsWindow(QDialog):
             return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
-        self.diag_status.setText(f"Model download/load failed: {message}")
+        self._set_diag_status(f"Model download/load failed: {message}")
         self._after_model_diagnostic()
 
     def _after_model_diagnostic(self) -> None:
@@ -4491,7 +4520,7 @@ class SettingsWindow(QDialog):
         if self._diag_busy:
             return
         if self._app_busy():
-            self.diag_status.setText("Finish the current recording first, then run the test.")
+            self._set_diag_status("Finish the current recording first, then run the test.")
             return
         snapshot = self._diag_snapshot()
         device = self._selected_input_device()
@@ -4500,7 +4529,7 @@ class SettingsWindow(QDialog):
         self._model_download_label = str(snapshot["model"])
         self.diag_progress.setRange(0, 0)  # indeterminate while the model loads
         self.diag_progress.setVisible(True)
-        self.diag_status.setText("Preparing model…")
+        self._set_diag_status("Preparing model…")
 
         def work():
             try:
@@ -4540,9 +4569,9 @@ class SettingsWindow(QDialog):
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
         if text:
-            self.diag_status.setText(f"Transcription works ✓ — result: “{text}”")
+            self._set_diag_status(f"Transcription works ✓ — result: “{text}”")
         else:
-            self.diag_status.setText(
+            self._set_diag_status(
                 "No speech detected in the test recording — try the microphone "
                 "test on the Audio page."
             )
@@ -4553,7 +4582,7 @@ class SettingsWindow(QDialog):
             return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
-        self.diag_status.setText(f"Transcription test failed: {message}")
+        self._set_diag_status(f"Transcription test failed: {message}")
         self._after_model_diagnostic()
 
     def _mic_test_refusal(self) -> str | None:
@@ -4586,11 +4615,11 @@ class SettingsWindow(QDialog):
             # Stopping the app's listener mid-recording would lose a hold-mode
             # release, leaving the recording stuck until stopped via the overlay
             # — including a press still sitting in the queue (see _app_busy).
-            self.hotkey_test_status.setText("Finish the current recording first, then run the test.")
+            self._set_hotkey_test_status("Finish the current recording first, then run the test.")
             return
         combo = self.hotkey_edit.text().strip()
         if not Hotkeys.validate(combo):
-            self.hotkey_test_status.setText("Invalid hotkey — fix the combination first.")
+            self._set_hotkey_test_status("Invalid hotkey — fix the combination first.")
             return
         # Pause the app's real listeners so the test press can't start a real
         # recording behind the dialog (same pattern as _capture_hotkey). Both of
@@ -4603,16 +4632,21 @@ class SettingsWindow(QDialog):
         except Exception as exc:
             log.exception("could not register the test hotkey")
             self.app._register_hotkey()
-            self.hotkey_test_status.setText(f"Could not listen for the hotkey: {exc}")
+            self._set_hotkey_test_status(f"Could not listen for the hotkey: {exc}")
             return
         self._hotkey_test = test
         self._hotkey_test_gen += 1
         generation = self._hotkey_test_gen
+        # No Cancel to take the focus: disabling the pressed button lets Qt
+        # move it on, so note where and give it back when the test ends.
+        focused = self.window().focusWidget()
         self.hotkey_test_button.setEnabled(False)
+        if focused is self.hotkey_test_button:
+            self._hotkey_test_refocus = (focused, self.window().focusWidget())
         # Key caps ("Ctrl+Alt+Space"), as every other surface names a hotkey —
         # the field holds the pynput token, and "Press <ctrl>+<alt>+<space>"
         # reads as an instruction to type angle brackets.
-        self.hotkey_test_status.setText(f"Press {hotkey_label(combo) or 'the hotkey'} now…")
+        self._set_hotkey_test_status(f"Press {hotkey_label(combo) or 'the hotkey'} now…")
         QTimer.singleShot(
             _HOTKEY_TEST_TIMEOUT_MS, lambda: self._hotkey_test_timeout(generation)
         )
@@ -4643,8 +4677,19 @@ class SettingsWindow(QDialog):
             # Still paused = a recording diagnostic is running and owns the
             # listener; it re-registers when it ends.
             self.app._register_hotkey()
+        refocus, self._hotkey_test_refocus = self._hotkey_test_refocus, None
         self.hotkey_test_button.setEnabled(True)
-        self.hotkey_test_status.setText(message)
+        # Only while the focus still sits where Qt put it (as _end_diag_cooldown).
+        if refocus is not None and self.window().focusWidget() is refocus[1]:
+            refocus[0].setFocus(Qt.FocusReason.OtherFocusReason)
+        self._set_hotkey_test_status(message)
+
+    def _set_hotkey_test_status(self, text: str) -> None:
+        """Show the hotkey test's status and voice it on its button, where
+        the focus comes back when the test ends (see _finish_hotkey_test) —
+        the label beside it is never read out."""
+        self.hotkey_test_status.setText(text)
+        self.hotkey_test_button.setAccessibleDescription(text)
 
     def _cancel_diagnostics(self) -> None:
         """Stop any running diagnostic when the dialog closes: unblock the

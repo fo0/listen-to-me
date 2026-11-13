@@ -205,6 +205,9 @@ class HomePage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # A Tab stop (keyboard scrolling): named, or a screen reader announces
+        # a bare pane as the first stop after the sidebar (as SettingsWindow._page).
+        scroll.setAccessibleName("Home")
         wrap.addWidget(scroll)
         inner = QWidget()
         layout = QVBoxLayout(inner)
