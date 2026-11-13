@@ -2499,6 +2499,9 @@ def _failed_take_is_kept_and_retried():
         def _check_silent_microphone(self):
             pass
 
+        def _check_silence_auto_stop(self):
+            pass
+
         def _tick_recording_clock(self):
             pass
 
@@ -3855,6 +3858,244 @@ def _microphone_silence_is_reported_while_recording():
         assert not quiet.messages and quiet._silence_checked
     finally:
         app_module._clip_verdict = real_verdict
+
+
+def _quit_asks_while_a_take_would_be_lost():
+    """Quit from the tray or the floating icon asks first while a take is
+    recording or transcribing, quits straight away when idle, re-reads the
+    state after the question, ignores a second Quit while the question is
+    open, and both menus post the asking event — never the bare "quit" the
+    updater's restart uses. The box itself is stubbed (`_confirm_quit`): a
+    modal question would hang this run."""
+    from listen_to_me import tray as tray_module
+    from listen_to_me.app import (
+        STATE_IDLE,
+        STATE_PROCESSING,
+        STATE_RECORDING,
+        App,
+        quit_question,
+    )
+    from listen_to_me.overlay import Overlay
+
+    assert quit_question(STATE_IDLE) is None
+    assert "recording is still running" in (quit_question(STATE_RECORDING) or "")
+    processing = quit_question(STATE_PROCESSING) or ""
+    assert "being transcribed" in processing and "history" in processing, processing
+    # A retry reads a recording kept on disk, which survives the quit.
+    assert quit_question(STATE_PROCESSING, retrying=True) is None
+    assert quit_question(STATE_RECORDING, retrying=True) is not None
+
+    class _App:
+        _request_quit = App._request_quit
+
+        def __init__(self, state, answer=True, finish_while_asking=False,
+                     quit_while_asking=False):
+            self.state, self.answer = state, answer
+            self.finish_while_asking = finish_while_asking
+            self.quit_while_asking = quit_while_asking
+            self._quitting = self._quit_asking = False
+            self.asked: list[str] = []
+            self.quits = 0
+
+        def _confirm_quit(self, question):
+            self.asked.append(question)
+            assert self._quit_asking, "a second Quit must be dropped while asking"
+            self._request_quit()  # a second click drained by the nested loop
+            if self.finish_while_asking:
+                self.state = STATE_IDLE
+            if self.quit_while_asking:
+                self._quit()  # the updater's restart, drained by the nested loop
+            return self.answer
+
+        def _quit(self):
+            self.quits += 1
+            self._quitting = True
+
+    idle = _App(STATE_IDLE)
+    idle._request_quit()
+    assert idle.quits == 1 and not idle.asked
+
+    for state in (STATE_RECORDING, STATE_PROCESSING):
+        kept = _App(state, answer=False)
+        kept._request_quit()
+        assert kept.asked == [quit_question(state)] and kept.quits == 0, kept.asked
+        assert not kept._quit_asking
+        confirmed = _App(state, answer=True)
+        confirmed._request_quit()
+        assert len(confirmed.asked) == 1 and confirmed.quits == 1
+
+    finished = _App(STATE_RECORDING, answer=True, finish_while_asking=True)
+    finished._request_quit()
+    assert finished.quits == 1
+
+    updater = _App(STATE_RECORDING, answer=True, quit_while_asking=True)
+    updater._request_quit()
+    assert updater.quits == 1, "a shutdown that began meanwhile is not run twice"
+
+    retry = _App(STATE_PROCESSING)
+    retry.retrying_take = "0123abcd"
+    retry._request_quit()
+    assert retry.quits == 1 and not retry.asked
+
+    shutting_down = _App(STATE_RECORDING)
+    shutting_down._quitting = True
+    shutting_down._request_quit()
+    assert not shutting_down.asked and shutting_down.quits == 0
+
+    _ensure_qapp()
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        tray = tray_module.Tray(stub)
+        tray.start()
+        try:
+            quit_action = [a for a in tray._menu.actions() if a.text() == "Quit"]
+            assert len(quit_action) == 1, [a.text() for a in tray._menu.actions()]
+            stub.posts.clear()
+            quit_action[0].trigger()
+            assert stub.posts == [("quit_request",)], stub.posts
+        finally:
+            tray.stop()
+        overlay = Overlay(stub)
+        try:
+            quit_action = [a for a in overlay._menu.actions() if a.text() == "Quit"]
+            assert len(quit_action) == 1, [a.text() for a in overlay._menu.actions()]
+            stub.posts.clear()
+            quit_action[0].trigger()
+            assert stub.posts == [("quit_request",)], stub.posts
+        finally:
+            overlay.destroy()
+
+
+def _silence_stops_a_toggle_take():
+    """Settings → Audio → "Stop after silence": a toggle-mode microphone take
+    ends by itself once it has been quiet for the configured seconds after
+    speech — never before the first speech, never in hold mode or for system
+    audio, counted in real seconds whatever the poll collected, and stopped
+    through `_finish_recording` exactly once. `_block_peaks` is stubbed with a
+    pure-Python twin so this runs without numpy, which the CI smoke job does
+    not install; the numpy half is compared against it where numpy exists."""
+    from listen_to_me import app as app_module
+    from listen_to_me.app import (
+        SAMPLE_RATE,
+        STATE_PROCESSING,
+        STATE_RECORDING,
+        App,
+        auto_stop_seconds,
+    )
+    from listen_to_me.choices import SOURCE_MIC, SOURCE_SYSTEM
+    from listen_to_me.config import DEFAULTS
+    from listen_to_me.diagnostics import SilenceWatch
+
+    assert DEFAULTS["auto_stop_silence"] == 0  # off unless the user opts in
+
+    def cfg(seconds, mode="toggle"):
+        return {"auto_stop_silence": seconds, "hotkey_mode": mode,
+                "system_audio": {"hotkey_mode": "toggle"}}
+
+    assert auto_stop_seconds(cfg(0), SOURCE_MIC) == 0
+    assert auto_stop_seconds(cfg(3), SOURCE_MIC) == 3
+    assert auto_stop_seconds(cfg(3, "hold"), SOURCE_MIC) == 0
+    assert auto_stop_seconds(cfg(3), SOURCE_SYSTEM) == 0
+    assert auto_stop_seconds(cfg(99), SOURCE_MIC) == 30  # held to the Settings range
+    assert auto_stop_seconds(cfg(-5), SOURCE_MIC) == 0
+    assert auto_stop_seconds(cfg("soon"), SOURCE_MIC) == 0
+    assert app_module._silence_watch(cfg(0), SOURCE_MIC) is None
+    assert app_module._silence_watch(cfg(2), SOURCE_MIC).seconds == 2
+
+    loud, quiet = 0.4, 0.01
+    watch = SilenceWatch(3)
+    assert not watch.feed([(quiet, 0.1)] * 100)  # nothing said yet: never stops
+    assert not watch.feed([(loud, 0.1)] + [(quiet, 0.1)] * 29)
+    assert watch.feed([(quiet, 0.1)])  # thirty quiet tenths = 3 s
+    watch = SilenceWatch(3)
+    assert not watch.feed([(loud, 0.1)] + [(quiet, 0.1)] * 20 + [(loud, 0.1)]
+                          + [(quiet, 0.1)] * 20)  # speech restarts the count
+    watch = SilenceWatch(1)
+    # Remainder blocks count for their real length, not as whole blocks.
+    assert not watch.feed([(loud, 0.1)] + [(quiet, 0.1), (quiet, 0.006)] * 9)
+    assert watch.feed([(quiet, 0.1)])
+
+    block = SAMPLE_RATE // 10
+
+    def pure_peaks(audio):
+        return [(max(abs(x) for x in audio[i:i + block]), len(audio[i:i + block]) / SAMPLE_RATE)
+                for i in range(0, len(audio), block)]
+
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        from listen_to_me.diagnostics import block_peaks
+
+        sample = [0.0] * (block + 100)
+        sample[5], sample[block + 3] = -0.5, 0.25
+        got = block_peaks(sample)
+        want = pure_peaks(sample)
+        assert len(got) == 2 and all(abs(a - b) < 1e-6 and abs(c - d) < 1e-9
+                                     for (a, c), (b, d) in zip(got, want)), got
+
+    class _Recorder:
+        def __init__(self, audio, fail=False):
+            self.audio, self.fail, self.starts = audio, fail, []
+
+        def snapshot(self, max_frames=None, start_frame=None):
+            self.starts.append(start_frame)
+            if self.fail:
+                raise RuntimeError("stream gone")
+            return self.audio[start_frame:]
+
+    class _App:
+        _check_silence_auto_stop = App._check_silence_auto_stop
+
+        def __init__(self, audio, seconds=1, state=STATE_RECORDING, fail=False):
+            self.state = state
+            self.recorder = _Recorder(audio, fail)
+            self._silence_watch = SilenceWatch(seconds) if seconds else None
+            self._silence_frame = 0
+            self.finished = 0
+
+        def _finish_recording(self):
+            self.finished += 1
+            self.state = STATE_PROCESSING
+
+    speech = [0.3] * block * 5
+    silence = [0.002] * block
+    real_peaks = app_module._block_peaks
+    app_module._block_peaks = pure_peaks
+    try:
+        take = _App(speech + silence * 5)
+        take._check_silence_auto_stop()
+        assert take.finished == 0 and take._silence_frame == len(take.recorder.audio)
+        take.recorder.audio = take.recorder.audio + silence * 5
+        take._check_silence_auto_stop()  # reads only what arrived since
+        assert take.recorder.starts == [0, len(speech) + len(silence) * 5], take.recorder.starts
+        assert take.finished == 1 and take._silence_watch is None
+        take.state = STATE_RECORDING
+        take._check_silence_auto_stop()  # once per take
+        assert take.finished == 1
+
+        unspoken = _App(silence * 50)
+        unspoken._check_silence_auto_stop()
+        assert unspoken.finished == 0
+
+        off = _App(speech + silence * 50, seconds=0)
+        off._check_silence_auto_stop()
+        assert off.finished == 0 and not off.recorder.starts
+
+        busy = _App(speech + silence * 50, state=STATE_PROCESSING)
+        busy._check_silence_auto_stop()
+        assert busy.finished == 0 and not busy.recorder.starts
+
+        broken = _App([], fail=True)
+        broken._check_silence_auto_stop()  # must not raise into the poll
+        assert broken.finished == 0
+
+        short_pause = _App(speech + silence * 9)
+        short_pause._check_silence_auto_stop()
+        assert short_pause.finished == 0, "0.9 s of quiet is not 1 s"
+    finally:
+        app_module._block_peaks = real_peaks
 
 
 def _recorder_events_carry_their_take():
@@ -9898,6 +10139,9 @@ def _the_poll_ticks_the_cursor_preview():
         def _check_silent_microphone(self):
             pass
 
+        def _check_silence_auto_stop(self):
+            pass
+
         def _tick_recording_clock(self):
             self.clocked += 1
 
@@ -9947,6 +10191,9 @@ def _the_poll_ticks_the_cursor_preview():
             pass
 
         def _check_silent_microphone(self):
+            pass
+
+        def _check_silence_auto_stop(self):
             pass
 
         def _tick_recording_clock(self):
@@ -13686,6 +13933,20 @@ def _settings_window_edits_the_new_options():
         window.rb_sys_toggle.setChecked(True)
         window.sys_max_seconds_spin.setValue(window.cfg["system_audio"]["max_seconds"])
         window.chk_a_sys_enabled.setChecked(False)
+        # Stop after silence: "Off" at 0, collected as an int, part of the
+        # unsaved-changes snapshot, and greyed out under a hold hotkey.
+        assert window.auto_stop_spin.value() == 0
+        assert window.auto_stop_spin.text() == "Off", window.auto_stop_spin.text()
+        window.auto_stop_spin.setValue(4)
+        assert window._collect()["auto_stop_silence"] == 4
+        assert window._collect() != window._saved_snapshot
+        window.auto_stop_spin.setValue(0)
+        hold_before = window.rb_hold.isChecked()
+        window.rb_hold.setChecked(True)
+        assert not window.auto_stop_spin.isEnabled()
+        window.rb_toggle.setChecked(True)
+        assert window.auto_stop_spin.isEnabled()
+        (window.rb_hold if hold_before else window.rb_toggle).setChecked(True)
         window.a_sys_prompt_edit.setPlainText(
             window.cfg["assistant"]["system_audio"]["system_prompt"]
         )
@@ -17323,6 +17584,8 @@ _LIGHT_CHECKS = [
     ("empty transcript names the microphone", _empty_transcript_names_the_microphone),
     ("microphone silence is reported while recording",
      _microphone_silence_is_reported_while_recording),
+    ("quit asks while a take would be lost", _quit_asks_while_a_take_would_be_lost),
+    ("silence stops a toggle take", _silence_stops_a_toggle_take),
     ("no-speech report names its own source", _no_speech_report_names_its_own_source),
     ("recorder events carry their take", _recorder_events_carry_their_take),
     ("a modifier-only toggle hotkey fires on a clean release",

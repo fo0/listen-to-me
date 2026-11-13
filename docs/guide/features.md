@@ -10,7 +10,11 @@ Everything Listen To Me does, in detail. The short version is in the
   the last word and the inserted text.
 - **Global hotkey** (default `Ctrl+Alt+Space`) — start/stop recording from any
   app, either as **toggle** (press to start, press to stop) or as true
-  **push-to-talk** (record while the keys are held).
+  **push-to-talk** (record while the keys are held). In toggle mode a
+  dictation can also **stop by itself after a pause** (Settings → Audio →
+  _Stop after silence_, off by default): once you have spoken and the
+  microphone stays quiet for that many seconds, the take ends and the text is
+  inserted as if you had pressed the hotkey again.
 - **A second hotkey records what the computer plays** — a call, a meeting, a
   video: the playback is transcribed by the same local model and inserted at
   the cursor just like a dictation, with its own device, its own maximum

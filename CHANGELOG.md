@@ -14,6 +14,18 @@ changes at a glance.
 
 ### Added
 
+- **Stop a dictation by pausing.** A new option under Settings → Audio,
+  **Stop after silence**, ends a toggle-mode microphone recording by itself
+  once you have spoken and the microphone has then stayed quiet for the chosen
+  number of seconds — the text is inserted as if you had pressed the hotkey
+  again. Off by default (`auto_stop_silence`); never applies to hold mode or
+  to system-audio recordings.
+- **Quit asks first while a take would be lost.** Choosing **Quit** in the
+  tray menu or the floating icon's menu while a recording is running or still
+  being transcribed asks whether to quit anyway, because that take would be
+  gone — not inserted and not kept in the history. **Keep running** is the
+  default answer; when no take is running, Quit closes the app right away as
+  before.
 - **Switch the microphone from the tray.** A **Microphone** submenu in the
   tray menu lists the input devices of Settings → Audio and ticks the one in
   use; a click switches the device the next recording uses, without opening

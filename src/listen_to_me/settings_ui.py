@@ -1230,6 +1230,10 @@ class SettingsWindow(QDialog):
             combo.addItem(value)
         combo.setCurrentText(value)
 
+    def _sync_auto_stop_enabled(self, *_args) -> None:
+        """Audio → "Stop after silence" only applies to a toggle hotkey."""
+        self.auto_stop_spin.setEnabled(not self.rb_hold.isChecked())
+
     @staticmethod
     def _to_int(value, default: int) -> int:
         try:
@@ -2171,6 +2175,25 @@ class SettingsWindow(QDialog):
             "Safety cap for a single recording — it stops automatically when the limit is reached."
         )
         form.addRow("Max recording length (s):", self.max_seconds_spin)
+
+        self.auto_stop_spin = QSpinBox()
+        self.auto_stop_spin.setRange(0, 30)
+        self.auto_stop_spin.setSpecialValueText("Off")
+        self.auto_stop_spin.setValue(
+            min(30, max(0, self._to_int(self.cfg["auto_stop_silence"], 0)))
+        )
+        self.auto_stop_spin.setToolTip(
+            "Toggle mode only: the recording stops by itself and the text is inserted "
+            "once the microphone has been quiet for this many seconds after you spoke. "
+            "Off keeps recording until you press the hotkey again."
+        )
+        self.auto_stop_spin.setAccessibleName("Stop after silence, in seconds")
+        form.addRow("Stop after silence (s):", self.auto_stop_spin)
+        # Greyed out under a hold hotkey, where releasing the key is the stop
+        # (app.auto_stop_seconds ignores the value there). The General page is
+        # built first, so its mode buttons exist by now.
+        self.rb_hold.toggled.connect(self._sync_auto_stop_enabled)
+        self._sync_auto_stop_enabled()
 
         # The same widget as the first-run wizard's Microphone page. It owns
         # its worker, signals, generation and cancel event; this window folds
@@ -6749,6 +6772,7 @@ class SettingsWindow(QDialog):
             "filler_phrases": self.filler_edit.toPlainText().strip(),
             "input_device": self._selected_input_device(),
             "max_seconds": int(self.max_seconds_spin.value()),
+            "auto_stop_silence": int(self.auto_stop_spin.value()),
             "system_audio": {
                 "hotkey": self.sys_hotkey_edit.text().strip(),
                 "hotkey_mode": "hold" if self.rb_sys_hold.isChecked() else "toggle",

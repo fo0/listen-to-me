@@ -239,6 +239,23 @@ def hotkey_mode(cfg, source: str) -> str:
     return keys["hotkey_mode"]
 
 
+def auto_stop_seconds(cfg, source: str) -> float:
+    """Seconds of quiet after speech that end a take by itself, 0 = never.
+
+    Only a microphone take in toggle mode: in hold mode releasing the key is
+    the stop, and a take that ended while the key is still held would leave
+    the release to start nothing; a system-audio take is a meeting or a video,
+    whose pauses are not its end.
+    """
+    if source != SOURCE_MIC or hotkey_mode(cfg, SOURCE_MIC) == "hold":
+        return 0.0
+    try:
+        seconds = float(clamp_setting("auto_stop_silence", cfg["auto_stop_silence"], 0, 30))
+    except (TypeError, ValueError):
+        return 0.0
+    return seconds if seconds > 0 else 0.0
+
+
 def too_short_message(cfg, source: str) -> str:
     """What a take shorter than the 0.3 s floor is answered with.
 
@@ -316,6 +333,26 @@ def _clip_verdict(audio) -> str:
     except Exception:
         log.debug("could not classify the recorded audio", exc_info=True)
         return "unknown"
+
+
+def _block_peaks(audio) -> list[tuple[float, float]]:
+    """`diagnostics.block_peaks`, imported where it runs like `_clip_verdict`
+    — and a module function so the self-test can stub it on the CI runner,
+    which has no numpy."""
+    from .diagnostics import block_peaks
+
+    return block_peaks(audio)
+
+
+def _silence_watch(cfg, source: str):
+    """A fresh `diagnostics.SilenceWatch` for a take, or None when the take
+    does not stop by itself (`auto_stop_seconds`)."""
+    seconds = auto_stop_seconds(cfg, source)
+    if not seconds:
+        return None
+    from .diagnostics import SilenceWatch
+
+    return SilenceWatch(seconds)
 
 
 def _notify_source_busy(app, source: str) -> None:
@@ -736,6 +773,35 @@ def withheld_message(kept: bool, *, done: bool, history_enabled: bool = True) ->
     return "Transcript not inserted, as requested — the history is off, so it was discarded."
 
 
+def quit_question(state: str, retrying: bool = False) -> str | None:
+    """What to ask before Quit from a menu ends the app, or None when nothing
+    would be lost.
+
+    A take is gone with the process: a running recording only exists in the
+    recorder's memory, and a transcription runs on a daemon thread that is
+    killed mid-decode — its text never reaches the cursor, the clipboard or
+    the history. "Quit" sits at the bottom of both menus, right under the
+    entries used during a take, so one slip used to cost the dictation.
+
+    A `retrying` transcription is the exception: it reads a recording kept on
+    disk (failed_takes.py), which stays there for the next Retry whether or
+    not this one finishes.
+    """
+    if state == STATE_PROCESSING and retrying:
+        return None
+    if state == STATE_RECORDING:
+        return (
+            "A recording is still running. If you quit now, what was recorded so far "
+            "is lost."
+        )
+    if state == STATE_PROCESSING:
+        return (
+            "A recording is still being transcribed. If you quit now, its text is lost — "
+            "it is neither inserted nor kept in the history."
+        )
+    return None
+
+
 def assistant_failure_message(exc: BaseException, inserted: bool = True) -> str:
     """What to show when the assistant could not clean up a finished dictation.
 
@@ -884,6 +950,10 @@ class App:
         self._processing_started = 0.0  # monotonic start of its transcription
         self._length_warned = False  # one max-length heads-up per take
         self._silence_checked = False  # one dead-microphone check per take
+        # The running take's auto-stop on silence (None = off for this take),
+        # and the recorder frame its next look starts at.
+        self._silence_watch = None
+        self._silence_frame = 0
         # Set by "Don't insert this transcript" while the take that owns it is
         # transcribed: the model cannot be stopped mid-decode, but its result
         # can be kept away from the cursor. One Event per take, handed to its
@@ -919,6 +989,7 @@ class App:
         self.hotkey_paused = False
         self._live_typer = None  # per-take live-typing worker (livetype.py)
         self._quitting = False  # set by _quit; guards UI opened after shutdown
+        self._quit_asking = False  # the "quit anyway?" question is open
         # True while a factory reset is running its (modal, nested) wizard —
         # see _factory_reset.
         self._resetting = False
@@ -1021,6 +1092,7 @@ class App:
             pass
         self._check_length_warning()
         self._check_silent_microphone()
+        self._check_silence_auto_stop()
         self._tick_recording_clock()
         purge_when_due(self)
         if self.overlay is not None:
@@ -1096,6 +1168,40 @@ class App:
         # Forced for the reason the finished take's "silent" message is: a
         # device the user has to fix, not a status to be suppressed.
         self.notify(message, force=True)
+
+    def _check_silence_auto_stop(self) -> None:
+        """End a toggle-mode microphone take once it has gone quiet after
+        speech for `auto_stop_silence` seconds (`diagnostics.SilenceWatch`).
+
+        Rides the 100 ms poll like the two checks above and reads only the
+        audio that arrived since the previous tick (`snapshot(start_frame=…)`),
+        so the cost per tick stays one tenth of a second of samples however
+        long the take runs. Stops through `_finish_recording`, exactly like a
+        second hotkey press, so the take is transcribed and inserted as usual.
+        A capture that cannot be read is left alone — the hotkey still works.
+        """
+        watch = self._silence_watch
+        if watch is None or self.state != STATE_RECORDING:
+            return
+        try:
+            audio = self.recorder.snapshot(start_frame=self._silence_frame)
+            if not len(audio):
+                return
+            self._silence_frame += len(audio)
+            due = watch.feed(_block_peaks(audio))
+        except Exception:
+            log.debug("could not read the running take for the silence auto-stop", exc_info=True)
+            return
+        if not due:
+            return
+        self._silence_watch = None  # once per take, whatever happens below
+        log.info("stopping the take after %.0f s of silence", watch.seconds)
+        # Guarded like every handler `_poll` drains: a failure here must not
+        # cost this tick the clock, the purge and the cursor preview below.
+        try:
+            self._finish_recording()
+        except Exception:
+            log.exception("could not stop the take after the silence")
 
     def _processing_elapsed(self) -> float:
         """Seconds the running transcription has taken, 0 outside one."""
@@ -1274,6 +1380,8 @@ class App:
             self._follow_notification(payload)
         elif kind == "factory_reset":
             self._factory_reset()
+        elif kind == "quit_request":
+            self._request_quit()
         elif kind == "quit":
             self._quit()
 
@@ -1385,6 +1493,12 @@ class App:
         self._recording_started = time.monotonic()
         self._length_warned = False
         self._silence_checked = False
+        try:
+            self._silence_watch = _silence_watch(self.cfg, source)
+        except Exception:
+            log.exception("could not set up the silence auto-stop — the hotkey stops this take")
+            self._silence_watch = None
+        self._silence_frame = 0  # the recorder counts this take's frames from 0
         self._clock_seconds = -1  # the next poll renders this take's 0:00
         self._set_state(STATE_RECORDING)
         self._beep(880)
@@ -2691,6 +2805,50 @@ class App:
                 "Use “Open config folder” and open it from there.",
                 force=True,
             )
+
+    def _request_quit(self) -> None:
+        """Quit chosen in the tray or floating-icon menu: ask first while a take
+        would be lost (`quit_question`), quit straight away otherwise.
+
+        Only the menus come through here. The updater's restart posts "quit"
+        directly and must never stall on a question nobody may be there to
+        answer. The box runs a nested event loop, during which the queue keeps
+        draining: a second Quit click is dropped instead of stacking a second
+        box, and a shutdown that began meanwhile (the updater) is not run a
+        second time.
+        """
+        if self._quitting or self._quit_asking:
+            return
+        question = quit_question(self.state, bool(getattr(self, "retrying_take", None)))
+        if question is not None:
+            self._quit_asking = True
+            try:
+                confirmed = self._confirm_quit(question)
+            finally:
+                self._quit_asking = False
+            if not confirmed or self._quitting:
+                return
+        self._quit()
+
+    def _confirm_quit(self, question: str) -> bool:
+        """The modal "quit anyway?" box; True when the user chose Quit. Keep
+        running is the default button, so a reflexive Enter keeps the take."""
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QMessageBox
+
+        box = QMessageBox(QMessageBox.Icon.Question, f"Quit {APP_NAME}?", question)
+        quit_button = box.addButton("&Quit", QMessageBox.ButtonRole.AcceptRole)
+        keep_button = box.addButton("&Keep running", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(keep_button)
+        box.setEscapeButton(keep_button)
+        # Opened from the tray or the floating icon, with no window of ours
+        # in front: without this it can come up behind the app being used.
+        box.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        try:
+            box.exec()
+            return box.clickedButton() is quit_button
+        finally:
+            box.deleteLater()
 
     def _quit(self) -> None:
         log.info("shutting down")

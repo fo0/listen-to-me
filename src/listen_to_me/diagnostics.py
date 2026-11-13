@@ -249,6 +249,59 @@ def clip_stats(audio) -> dict:
     return {"peak": peak, "rms": rms, "seconds": seconds, "verdict": verdict}
 
 
+# Length of one block `block_peaks` judges: the app's poll interval, so a pause
+# is measured to a tenth of a second whatever the poll happened to collect.
+_SILENCE_BLOCK_S = 0.1
+
+
+def block_peaks(audio) -> list[tuple[float, float]]:
+    """``(peak, seconds)`` for every `_SILENCE_BLOCK_S` block of `audio`. A
+    shorter remainder at the end is a block of its own, with its own length:
+    the poll never collects an exact multiple of a block, and counting each
+    remainder as a whole block would make a pause look longer than it was."""
+    import numpy as np
+
+    block = max(1, int(SAMPLE_RATE * _SILENCE_BLOCK_S))
+    samples = np.abs(np.asarray(audio, dtype="float32").ravel())
+    return [
+        (float(samples[i : i + block].max()), len(samples[i : i + block]) / SAMPLE_RATE)
+        for i in range(0, len(samples), block)
+    ]
+
+
+class SilenceWatch:
+    """When a running microphone take has been quiet long enough after speech
+    to stop by itself (`auto_stop_silence`, toggle mode only).
+
+    Fed the blocks of each new piece of the take (`block_peaks`). A block
+    reaching `_QUIET_PEAK` — the level the microphone test calls working — is
+    speech and restarts the count; anything below is quiet. Nothing counts
+    before the first speech, so a take never ends while the user is still
+    gathering their first sentence. Errs toward recording on: a noisy room
+    whose floor reaches speech level never stops a take, it is simply left to
+    the hotkey, which is what a take without this option does anyway.
+
+    Pure Python, so the self-test runs it on the CI runner, which has no numpy.
+    """
+
+    def __init__(self, seconds: float):
+        self.seconds = float(seconds)
+        self.heard_speech = False
+        self.quiet_for = 0.0
+
+    def feed(self, blocks) -> bool:
+        """Account for the next ``(peak, seconds)`` blocks; True once the quiet
+        stretch after speech has reached `seconds`."""
+        for peak, seconds in blocks:
+            if peak >= _QUIET_PEAK:
+                self.heard_speech = True
+                self.quiet_for = 0.0
+            elif self.heard_speech:
+                self.quiet_for += seconds
+        # The tolerance keeps thirty 0.1 s blocks from summing to just under 3.
+        return self.heard_speech and self.quiet_for + 1e-6 >= self.seconds
+
+
 def no_speech_message(verdict: str, source: str = SOURCE_MIC) -> str:
     """What to tell the user about a recording that produced no text.
 
