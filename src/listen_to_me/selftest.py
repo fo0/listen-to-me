@@ -14973,6 +14973,9 @@ def _gui_construction():
         assert window.a_test_button.isEnabled()
         assert not window.a_test_cancel_button.isEnabled()
         assert "cancelled" in window.a_test_status.text().lower(), window.a_test_status.text()
+        # Voiced on the button the focus went back to; Cancel is idle again.
+        assert window.a_test_button.accessibleDescription() == window.a_test_status.text()
+        assert not window.a_test_cancel_button.accessibleDescription()
         window._on_assistant_tested(stale, "a late answer nobody is waiting for")
         assert "late answer" not in window.a_test_status.text(), window.a_test_status.text()
         window._on_assistant_test_failed(stale, "a late failure nobody is waiting for")

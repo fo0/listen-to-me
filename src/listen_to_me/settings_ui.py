@@ -4102,7 +4102,7 @@ class SettingsWindow(QDialog):
             # Answerable without the network: say it instantly and put the
             # caret in the offending field, exactly as Save does.
             field, reason = problem
-            self.a_test_status.setText(
+            self._set_assistant_test_status(
                 f"Cannot test “{self._assistant_test_name}” — {reason}."
             )
             if field == "base_url":
@@ -4136,7 +4136,7 @@ class SettingsWindow(QDialog):
         timeout = values["timeout"]
         # Name the wait: a cold local model can take a while to answer, and a
         # button that just sits there reads as a hang rather than as patience.
-        self.a_test_status.setText(
+        self._set_assistant_test_status(
             f"Sending a sample sentence to {values['base_url']} as "
             f"“{self._assistant_test_name}” — waiting up to {timeout:.0f} s…"
         )
@@ -4173,7 +4173,7 @@ class SettingsWindow(QDialog):
             return
         self._assistant_gen += 1
         self._end_assistant_test()
-        self.a_test_status.setText("Test cancelled.")
+        self._set_assistant_test_status("Test cancelled.")
 
     def _on_assistant_tested(self, gen: int, reply: str) -> None:
         if gen != self._assistant_gen:
@@ -4186,7 +4186,7 @@ class SettingsWindow(QDialog):
         preview = " ".join(reply.split())
         if len(preview) > _A_TEST_PREVIEW_CHARS:
             preview = preview[:_A_TEST_PREVIEW_CHARS].rstrip() + "…"
-        self.a_test_status.setText(
+        self._set_assistant_test_status(
             f"“{self._assistant_test_name}” works ✓ — the endpoint returned: “{preview}”"
         )
 
@@ -4194,7 +4194,16 @@ class SettingsWindow(QDialog):
         if gen != self._assistant_gen:
             return  # detached by Cancel or superseded — see _cancel_assistant_test
         self._end_assistant_test()
-        self.a_test_status.setText(f"“{self._assistant_test_name}” failed: {message}")
+        self._set_assistant_test_status(f"“{self._assistant_test_name}” failed: {message}")
+
+    def _set_assistant_test_status(self, text: str) -> None:
+        """Show the assistant test's status and voice it where the focus is:
+        on Cancel while the request runs, on Test connection otherwise (both
+        hand the focus over, see _test_assistant) — the label below them is
+        never read out, as in the microphone test."""
+        self.a_test_status.setText(text)
+        self.a_test_button.setAccessibleDescription(text)
+        self.a_test_cancel_button.setAccessibleDescription(text if self._assistant_busy else "")
 
     def _end_assistant_test(self) -> None:
         """Hand the button back to the user (all three outcomes)."""
