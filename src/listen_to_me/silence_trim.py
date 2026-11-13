@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import logging
 import math
 
-log = logging.getLogger(__name__)
+from .hallucination import log
 
 
 def speech_bounds(levels, *, relative=0.05, floor=0.003) -> tuple[int, int] | None:

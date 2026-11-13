@@ -4,11 +4,10 @@ that tail instead of a term cut in half (#293). Qt-free, stdlib only."""
 
 from __future__ import annotations
 
-import logging
 import math
 import unicodedata
 
-log = logging.getLogger(__name__)
+from .hallucination import log
 
 # Prompt tokens Whisper reads (448 // 2 - 1), and the characters one token is
 # assumed to cover without a tokenizer. Measured with the real Whisper

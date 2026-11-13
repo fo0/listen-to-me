@@ -15,9 +15,12 @@ said. Qt-free and numpy-free."""
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 import zlib
+
+log = logging.getLogger(__name__)
 
 # Whisper language codes written in Latin script: for these, CJK, Thai or
 # Cyrillic letters are never what was dictated; elsewhere they are the language.
