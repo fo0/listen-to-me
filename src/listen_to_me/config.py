@@ -133,6 +133,12 @@ DEFAULTS: dict = {
     "input_device": None,
     # Hard cap for a single recording.
     "max_seconds": 300,
+    # Toggle-mode microphone takes only: stop the recording by itself once the
+    # microphone has stayed quiet for this many seconds after speech was heard
+    # (diagnostics.SilenceWatch). 0 = off — the take runs until the hotkey is
+    # pressed again. Never for hold mode (releasing the key ends the take) or
+    # for system audio (a pause in a meeting is not the end of it).
+    "auto_stop_silence": 0,
     # A second global hotkey that records what the computer PLAYS (a meeting,
     # a video) instead of the microphone, through a loopback/monitor input
     # device the OS provides ("Monitor of …" on Linux, "Stereo Mix" or a
