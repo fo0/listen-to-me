@@ -693,6 +693,16 @@ def nothing_to_copy_message(history, history_enabled) -> str:
     return "No transcript in the history yet."
 
 
+# What "Hide floating icon" on the icon's own menu says. The click removes the
+# very surface it was made on, and the way back (the tray entry, the Overlay
+# page) was nowhere in sight — so the icon went away without a word. Leads with
+# "Settings → Overlay" so a click on the notification opens that page.
+OVERLAY_HIDDEN_MESSAGE = (
+    "Floating icon hidden. Bring it back in Settings → Overlay, or with "
+    "“Show floating icon” in the tray menu."
+)
+
+
 # The pages of the main window a notification can name as "Settings → <Page>".
 # Mirrors SettingsWindow's sidebar (the self-test holds the two together); Home
 # is left out, no message sends anybody there.
@@ -1317,6 +1327,8 @@ class App:
             if self.overlay is not None:
                 self.overlay.set_visible(bool(ocfg["enabled"]))
             self.tray.set_state(self.state)  # refresh the "Show floating icon" tick
+        elif kind == "hide_overlay":
+            self._hide_overlay()
         elif kind == "set_language":
             self._set_language(str(payload))
         elif kind == "set_input_device":
@@ -2734,6 +2746,32 @@ class App:
             self.notify(
                 f"Update available: {newer[0].tag}. Open the tray menu → Check for updates."
             )
+
+    def _hide_overlay(self) -> None:
+        """"Hide floating icon" on the icon's own right-click menu.
+
+        Not the tray's toggle: that one flips the setting, and a menu left
+        open across a tray click would then bring back the icon it was asked
+        to hide. Says where the icon comes back from, because the surface the
+        click was made on is the one that just went away.
+        """
+        ocfg = self.cfg["overlay"]
+        if not ocfg["enabled"]:
+            # Already off: still take the icon down (the entry was clicked on
+            # it, so it is on screen), but there is no setting to change and
+            # nothing new to report.
+            if self.overlay is not None:
+                self.overlay.set_visible(False)
+            return
+        ocfg["enabled"] = False
+        saved = self.cfg.save()
+        if self.overlay is not None:
+            self.overlay.set_visible(False)
+        self.tray.set_state(self.state)  # refresh the "Show floating icon" tick
+        if saved:
+            self.notify(OVERLAY_HIDDEN_MESSAGE)
+        else:
+            self.notify("Could not save the settings — see the log file.", force=True)
 
     def _reset_overlay_position(self) -> None:
         """Move the floating icon back to its default corner.

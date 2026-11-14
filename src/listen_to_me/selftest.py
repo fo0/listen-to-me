@@ -2603,6 +2603,72 @@ def _notifications_lead_to_the_place_they_name():
     assert app.opened == 2 and app._settings_window.pages == ["History", "History"]
 
 
+def _hiding_the_icon_says_where_it_comes_back():
+    """"Hide floating icon" on the icon's own menu hides it and says where it
+    comes back from — the surface the click was made on is the one that went
+    away, and the way back used to be nowhere in sight.
+
+    `App._handle` and `App._hide_overlay` are borrowed onto a stub, as
+    `_notifications_lead_to_the_place_they_name` borrows its routing. Pinned:
+    the message leads to Settings → Overlay when clicked; a second hide (a
+    menu left open across a tray toggle) does not flip the icon back on the
+    way the tray's toggle would; and a failed save says so instead of
+    promising a way back that the next start would not keep."""
+    from listen_to_me.app import OVERLAY_HIDDEN_MESSAGE, App, notification_target
+
+    assert notification_target(OVERLAY_HIDDEN_MESSAGE) == ("page", "Overlay")
+    assert "Show floating icon" in OVERLAY_HIDDEN_MESSAGE
+
+    class _Cfg(dict):
+        saves_ok = True
+
+        def save(self):
+            return self.saves_ok
+
+    class _Overlay:
+        def __init__(self):
+            self.visible: list[bool] = []
+
+        def set_visible(self, visible):
+            self.visible.append(visible)
+
+    class _Tray:
+        def __init__(self):
+            self.states: list[str] = []
+
+        def set_state(self, state):
+            self.states.append(state)
+
+    class _App:
+        _handle, _hide_overlay = App._handle, App._hide_overlay
+
+        def __init__(self):
+            self.cfg = _Cfg(overlay={"enabled": True})
+            self.overlay, self.tray, self.state = _Overlay(), _Tray(), "idle"
+            self.messages: list[tuple[str, bool]] = []
+
+        def notify(self, message, force=False):
+            self.messages.append((message, force))
+
+    app = _App()
+    app._handle("hide_overlay", None)
+    assert app.cfg["overlay"]["enabled"] is False
+    assert app.overlay.visible == [False]
+    assert app.tray.states == ["idle"], "the tray's Show floating icon tick went stale"
+    assert app.messages == [(OVERLAY_HIDDEN_MESSAGE, False)], app.messages
+    # Already off: nothing flips back on and nothing is said twice — but an
+    # icon still on screen is taken down all the same, the click was on it.
+    app._handle("hide_overlay", None)
+    assert app.cfg["overlay"]["enabled"] is False
+    assert app.overlay.visible == [False, False] and len(app.messages) == 1
+
+    app = _App()
+    app.cfg.saves_ok = False
+    app._handle("hide_overlay", None)
+    assert app.overlay.visible == [False]
+    assert app.messages == [("Could not save the settings — see the log file.", True)]
+
+
 def _implausible_take_inserts_nothing():
     """A transcript that cannot have come from its take reaches neither the
     cursor nor the assistant, but stays in the history (#293).
@@ -10955,6 +11021,14 @@ def _overlay_menu_follows_the_state():
             overlay._act_pause.trigger()
             assert stub.posts == [("toggle_hotkey_pause",)], stub.posts
 
+            # "Hide floating icon" posts its own event — App hides the icon
+            # and says where it comes back from — and its tooltip names that
+            # way back before the click, too.
+            stub.posts.clear()
+            overlay._act_hide.trigger()
+            assert stub.posts == [("hide_overlay",)], stub.posts
+            assert "Settings → Overlay" in overlay._act_hide.toolTip()
+
             # The icon's own tooltip says so too, re-rendered by the
             # refresh_status App calls after the toggle — a pause is no state
             # transition, and "press Ctrl+Alt+Space" named a key that does
@@ -14848,6 +14922,25 @@ def _gui_construction():
         assert window.update_button.toolTip() == _INSTALL_DISABLED_TIP
         assert not window._update_busy
         assert "Could not apply update" in window.update_status.text()
+        # …and the outcome is voiced on Check now, where the focus lands once
+        # the button is enabled again; Cancel download is gone, so it says
+        # nothing (BACKLOG #72 — the status line is never read out).
+        assert window.update_check_button.accessibleDescription() == "Could not apply update: boom"
+        assert not window.update_cancel_button.accessibleDescription()
+        # While a download runs Cancel download carries it too — the
+        # "Cancelling download…" feedback included — and a cancel that lands
+        # puts the outcome back on Check now alone.
+        window.update_cancel_button.setVisible(True)
+        window._update_busy = True
+        window._update_cancel_event = None
+        window._cancel_update_download()
+        assert window.update_cancel_button.accessibleDescription() == "Cancelling download…"
+        assert window.update_check_button.accessibleDescription() == "Cancelling download…"
+        window._on_update_download_cancelled()
+        cancelled = "Download cancelled — nothing was installed."
+        assert window.update_check_button.accessibleDescription() == cancelled
+        assert not window.update_cancel_button.accessibleDescription()
+        assert not window._update_busy
 
         # Assistant connection test. It is the only subsystem whose
         # misconfiguration used to surface after the fact — on a worker thread,
@@ -16022,12 +16115,16 @@ def _gui_construction():
         # few-hundred-MB transfer, so the status line carries the sizes — and
         # keeps reporting progress when the server sends no Content-Length.
         window._update_download_label = "v2026.07.30.1"
+        voiced = window.update_check_button.accessibleDescription()
         window._on_update_progress(50 * 1024 * 1024, 200 * 1024 * 1024)
         assert window.update_progress.value() == 25
         assert "50.0 MB of 200.0 MB" in window.update_status.text()
         window._on_update_progress(1024 * 1024, 0)  # unknown total → indeterminate
         assert window.update_progress.maximum() == 0
         assert "1.0 MB so far" in window.update_status.text()
+        # The ticks stay off the accessible description: one per 256 KB chunk
+        # would flood a screen reader (BACKLOG #72).
+        assert window.update_check_button.accessibleDescription() == voiced
 
         # Idle guard: a hotkey press still queued in App is applied before the
         # state is read, so a test can't take the microphone/listener while a
@@ -17599,6 +17696,7 @@ _LIGHT_CHECKS = [
     ("withheld transcript is not inserted", _withheld_transcript_is_not_inserted),
     ("failed take is kept and retried", _failed_take_is_kept_and_retried),
     ("notifications lead to the place they name", _notifications_lead_to_the_place_they_name),
+    ("hiding the icon says where it comes back", _hiding_the_icon_says_where_it_comes_back),
     ("the parsers bound the lines they walk", _the_parsers_bound_the_lines_they_walk),
     ("missing microphone falls back", _missing_microphone_falls_back),
     ("loopback device is ranked and resolved", _loopback_device_is_ranked_and_resolved),
