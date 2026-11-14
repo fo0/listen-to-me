@@ -581,7 +581,15 @@ class Overlay:
         # to move back is the one you are already right-clicking, and reaching
         # the settings page means finding the icon or the tray first.
         self._menu.addAction("Reset icon position", lambda: app.post("reset_overlay_position"))
-        self._menu.addAction("Hide floating icon", lambda: app.post("toggle_overlay"))
+        # Its own event rather than the tray's toggle: hiding is all this entry
+        # can mean, and App says where the icon comes back from.
+        self._act_hide = self._menu.addAction(
+            "Hide floating icon", lambda: app.post("hide_overlay")
+        )
+        self._act_hide.setToolTip(
+            "Hide this icon. Bring it back in Settings → Overlay, or with "
+            "“Show floating icon” in the tray menu."
+        )
         self._menu.addSeparator()
         self._menu.addAction("Quit", lambda: app.post("quit_request"))
         self._sync_menu_state()

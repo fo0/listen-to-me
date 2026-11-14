@@ -378,6 +378,11 @@ unknown` — byte for byte what the old bundled one reports — so the log line
 
 ### Changed
 
+- **Hiding the floating icon says how to bring it back.** **Hide floating
+  icon** in the icon's own right-click menu used to make it vanish without a
+  word. It now shows a notification naming the way back — Settings → Overlay,
+  or **Show floating icon** in the tray menu — and a click on it opens the
+  Overlay page. The entry's tooltip says the same before the click.
 - **The assistant's empty connection fields show what they expect.** A
   cleared **API base URL** or **Model** field under Settings → Assistant →
   Connection showed nothing about its shape, which was only checked at Save or

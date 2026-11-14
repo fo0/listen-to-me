@@ -93,7 +93,9 @@ Everything Listen To Me does, in detail. The short version is in the
   whether it starts or stops the take and **Cancel recording** only appears
   while there is one to cancel. **Record system audio** is in that menu too,
   so the second source can be used once without giving up a global hotkey for
-  it. Hovering
+  it. **Hide floating icon** in that menu says where the icon comes back from
+  (Settings → Overlay, or **Show floating icon** in the tray menu), and a click
+  on that notification opens the Overlay page. Hovering
   it while you dictate shows **how long the take has been running**
   ("Recording 1:12… click again to stop"), the same clock the tray carries —
   so the maximum recording length is visible on the control that never leaves
