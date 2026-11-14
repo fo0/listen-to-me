@@ -5221,7 +5221,7 @@ class SettingsWindow(QDialog):
         self._reset_releases()
         self._disable_install_button(_INSTALL_CHECKING_TIP)
         self.update_changelog.clear()
-        self.update_status.setText("Checking for updates…")
+        self._set_update_status("Checking for updates…")
         include_pre = self.chk_prereleases.isChecked()
 
         def work():
@@ -5259,7 +5259,7 @@ class SettingsWindow(QDialog):
         # window left open since the morning still said "latest version" in
         # the afternoon with nothing to tell it was hours old. Local wall
         # clock, the minute the answer arrived.
-        self.update_status.setText(f"{verdict} Checked at {time.strftime('%H:%M')}.")
+        self._set_update_status(f"{verdict} Checked at {time.strftime('%H:%M')}.")
         # Every check starts over at the default window.
         self._list_releases(updater.release_history_rows(len(releases), newer))
         if not releases:
@@ -5371,7 +5371,20 @@ class SettingsWindow(QDialog):
         self._update_busy = False
         self._end_update_check()
         self._disable_install_button("The update check failed — run “Check now” again.")
-        self.update_status.setText(f"Update check failed: {message}")
+        self._set_update_status(f"Update check failed: {message}")
+
+    def _set_update_status(self, text: str) -> None:
+        """Show an update check / download status and voice it on the
+        buttons the focus sits on: Check now, and Cancel download while a
+        download runs. The line itself is never read out by a screen reader,
+        as with _set_diag_status. Not for the byte-progress ticks of
+        _on_update_progress: they fire per 256 KB chunk and would flood a
+        screen reader, so the description keeps the "Downloading …" line
+        that started the transfer until its outcome replaces it."""
+        self.update_status.setText(text)
+        self.update_check_button.setAccessibleDescription(text)
+        downloading = not self.update_cancel_button.isHidden()
+        self.update_cancel_button.setAccessibleDescription(text if downloading else "")
 
     def _end_update_check(self) -> None:
         """Hand the check button back to the user (both check outcomes)."""
@@ -5557,7 +5570,7 @@ class SettingsWindow(QDialog):
         # Named once here so every progress line can repeat which version is
         # being fetched without re-reading the (selectable) release list.
         self._update_download_label = release.tag or release.title
-        self.update_status.setText(f"Downloading {self._update_download_label}…")
+        self._set_update_status(f"Downloading {self._update_download_label}…")
         from . import updater
 
         url = release.asset_url
@@ -5603,7 +5616,7 @@ class SettingsWindow(QDialog):
             self._update_cancel_event.set()
         # Feedback right away; the worker confirms via download_cancelled.
         self.update_cancel_button.setEnabled(False)
-        self.update_status.setText("Cancelling download…")
+        self._set_update_status("Cancelling download…")
 
     def _on_update_progress(self, done: int, total: int) -> None:
         from . import updater
@@ -5672,7 +5685,7 @@ class SettingsWindow(QDialog):
             log.exception("could not apply update")
             self._end_update_download(f"Could not apply update: {exc}")
             return
-        self.update_status.setText("Update downloaded — restarting…")
+        self._set_update_status("Update downloaded — restarting…")
         # Quit so the detached swapper can replace the (now unlocked) exe.
         self.app.post("quit")
 
@@ -5694,7 +5707,7 @@ class SettingsWindow(QDialog):
         # Back to whatever the selected row offers: the list stays usable
         # during a download, and an older row picked meanwhile installs nothing.
         self._sync_install_button(self.update_list.currentRow())
-        self.update_status.setText(status)
+        self._set_update_status(status)
 
     def _on_update_download_failed(self, message: str) -> None:
         self._end_update_download(f"Download failed: {message}")

@@ -14848,6 +14848,25 @@ def _gui_construction():
         assert window.update_button.toolTip() == _INSTALL_DISABLED_TIP
         assert not window._update_busy
         assert "Could not apply update" in window.update_status.text()
+        # …and the outcome is voiced on Check now, where the focus lands once
+        # the button is enabled again; Cancel download is gone, so it says
+        # nothing (BACKLOG #72 — the status line is never read out).
+        assert window.update_check_button.accessibleDescription() == "Could not apply update: boom"
+        assert not window.update_cancel_button.accessibleDescription()
+        # While a download runs Cancel download carries it too — the
+        # "Cancelling download…" feedback included — and a cancel that lands
+        # puts the outcome back on Check now alone.
+        window.update_cancel_button.setVisible(True)
+        window._update_busy = True
+        window._update_cancel_event = None
+        window._cancel_update_download()
+        assert window.update_cancel_button.accessibleDescription() == "Cancelling download…"
+        assert window.update_check_button.accessibleDescription() == "Cancelling download…"
+        window._on_update_download_cancelled()
+        cancelled = "Download cancelled — nothing was installed."
+        assert window.update_check_button.accessibleDescription() == cancelled
+        assert not window.update_cancel_button.accessibleDescription()
+        assert not window._update_busy
 
         # Assistant connection test. It is the only subsystem whose
         # misconfiguration used to surface after the fact — on a worker thread,
@@ -16022,12 +16041,16 @@ def _gui_construction():
         # few-hundred-MB transfer, so the status line carries the sizes — and
         # keeps reporting progress when the server sends no Content-Length.
         window._update_download_label = "v2026.07.30.1"
+        voiced = window.update_check_button.accessibleDescription()
         window._on_update_progress(50 * 1024 * 1024, 200 * 1024 * 1024)
         assert window.update_progress.value() == 25
         assert "50.0 MB of 200.0 MB" in window.update_status.text()
         window._on_update_progress(1024 * 1024, 0)  # unknown total → indeterminate
         assert window.update_progress.maximum() == 0
         assert "1.0 MB so far" in window.update_status.text()
+        # The ticks stay off the accessible description: one per 256 KB chunk
+        # would flood a screen reader (BACKLOG #72).
+        assert window.update_check_button.accessibleDescription() == voiced
 
         # Idle guard: a hotkey press still queued in App is applied before the
         # state is read, so a test can't take the microphone/listener while a
