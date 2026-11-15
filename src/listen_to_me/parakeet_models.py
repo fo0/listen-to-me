@@ -47,15 +47,23 @@ class ParakeetModel:
     revision: str | None = None  # pinned commit, None = an onnx-asr preset
     # The one language the model understands; None = multilingual, detected.
     language: str | None = None
+    # Whether every graph of either quantization keeps its weights in an
+    # external ``<graph>.data`` file beside it. False is the layout of
+    # istupakov's exports (v3, primeline): weights inline, except the fp32
+    # encoder, which is past protobuf's 2 GB cap for one file. FluidVoice's
+    # export splits all four graphs. Part of the file list `model_files`
+    # downloads and checks — wrong here means a stub graph without weights.
+    split_weights: bool = False
 
 
 DEFAULT_MODEL = "parakeet-tdt-0.6b-v3"
 
 # The 25 European languages Parakeet TDT 0.6b v3 transcribes, as Whisper
 # language codes — the list on NVIDIA's model card
-# (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3). Any other language it
-# does not understand at all: the recommendation (autoconfig) offers Parakeet
-# only for these, or for auto-detection.
+# (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3). Fluid Speech Pro, a
+# fine-tune of it, keeps exactly these (its model card's language list). Any
+# other language they do not understand at all: the recommendation
+# (autoconfig) offers Parakeet only for these, or for auto-detection.
 V3_LANGUAGES = frozenset(
     {
         "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "it",
@@ -92,6 +100,25 @@ MODELS = {
             revision="411093fba73540a11c451841a8e7922c13b0fb00",
             language="de",
         ),
+        # FluidVoice-Labs/fluid-speech-pro (CC-BY-4.0): a fine-tune of v3 via
+        # moondream/parakeet-ultra — same 0.6B network plus one small block
+        # inside the encoder, same 25 languages, lower error rates in all of
+        # them (German FLEURS 3.52 against v3's 4.18 on its model card). Its
+        # int8 is weight-only (MatMulNBits, full-precision math), so on a CPU
+        # it decodes about half as fast as v3's int8 — why it is a choice and
+        # not the default. Pinned for the same reason as primeline; the repo
+        # also ships sherpa-onnx graphs and a "clean mode" variant, of which
+        # `model_files` fetches nothing.
+        ParakeetModel(
+            id="fluid-speech-pro",
+            title="Fluid Speech Pro",
+            detail="25 languages, auto-detected",
+            repo="FluidVoice-Labs/fluid-speech-pro-onnx",
+            onnx_asr_model="nemo-conformer-tdt",
+            dirname="fluid-speech-pro-onnx",
+            revision="fa588e9f87f1b9ad0ca2e2d8f7eaf84dc3803581",
+            split_weights=True,
+        ),
     )
 }
 
@@ -118,28 +145,27 @@ def parakeet_model(value) -> ParakeetModel:
     return MODELS[DEFAULT_MODEL]
 
 
-def model_files(quantization: str | None) -> tuple[str, ...]:
-    """The files onnx-asr's NeMo TDT loader reads for `quantization` — every
-    registry repo is an export in this one layout (the int8 variant spelled
-    into the name, ``encoder-model.int8.onnx``).
+def model_files(model: ParakeetModel, quantization: str | None) -> tuple[str, ...]:
+    """The files onnx-asr's NeMo TDT loader reads for `model` at
+    `quantization` — every registry repo is an export in this one layout (the
+    int8 variant spelled into the name, ``encoder-model.int8.onnx``).
 
     The fp32 encoder of a 0.6B model is ~2.4 GB, past protobuf's 2 GB cap for
     one .onnx file, so its weights sit in an external-data file beside it —
-    without which the encoder is a stub that fails at session creation.
+    without which the encoder is a stub that fails at session creation. A
+    `split_weights` export does that for every graph of both quantizations.
     """
     suffix = f".{quantization}" if quantization else ""
-    files = [
-        "config.json",
-        "vocab.txt",
-        f"encoder-model{suffix}.onnx",
-        f"decoder_joint-model{suffix}.onnx",
-    ]
-    if not quantization:
+    graphs = [f"encoder-model{suffix}.onnx", f"decoder_joint-model{suffix}.onnx"]
+    files = ["config.json", "vocab.txt", *graphs]
+    if model.split_weights:
+        files.extend(f"{graph}.data" for graph in graphs)
+    elif not quantization:
         files.append("encoder-model.onnx.data")
     return tuple(files)
 
 
-def missing_files(folder, quantization: str | None) -> list[str]:
+def missing_files(model: ParakeetModel, folder, quantization: str | None) -> list[str]:
     """The files of `quantization` that are not (completely) in `folder`.
 
     huggingface_hub only puts a file at its final name once it is complete
@@ -147,7 +173,7 @@ def missing_files(folder, quantization: str | None) -> list[str]:
     the answer."""
     return [
         name
-        for name in model_files(quantization)
+        for name in model_files(model, quantization)
         if not os.path.isfile(os.path.join(str(folder), name))
     ]
 
@@ -178,11 +204,11 @@ def fetch_pinned(model: ParakeetModel, quantization: str | None, path, *, offlin
         folder = snapshot_download(
             model.repo,
             revision=model.revision,
-            allow_patterns=list(model_files(quantization)),
+            allow_patterns=list(model_files(model, quantization)),
             local_dir=path,
             local_files_only=offline,
         )
-    missing = missing_files(folder, quantization)
+    missing = missing_files(model, folder, quantization)
     if missing:
         raise RuntimeError(
             f"The download of the Parakeet model '{model.title}' is incomplete "
@@ -192,8 +218,8 @@ def fetch_pinned(model: ParakeetModel, quantization: str | None, path, *, offlin
     return str(folder)
 
 
-def download_filter(quantization: str | None):
-    """Which files of a registry repo a download of `quantization` fetches.
+def download_filter(model: ParakeetModel, quantization: str | None):
+    """Which files of `model`'s repo a download of `quantization` fetches.
 
     Each repo ships both variants side by side (int8 ≈ 0.7 GB next to fp32 ≈
     2.5 GB), so counting all of it would leave an int8 download stuck at a
@@ -201,7 +227,7 @@ def download_filter(quantization: str | None):
     pinned download asks for `model_files` by name, and onnx-asr's own preset
     download asks for the same set by pattern.
     """
-    wanted = frozenset(model_files(quantization))
+    wanted = frozenset(model_files(model, quantization))
 
     def keep(name: str) -> bool:
         return name in wanted

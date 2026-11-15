@@ -8208,8 +8208,10 @@ def _parakeet_model_registry():
     onnx-asr preset, repo and model-folder name — or every existing
     installation downloads it again. The German fine-tune comes from a third
     party's repo, so it is pinned to one commit and fetched by name: an int8
-    choice must never count, let alone download, the 2.4 GB fp32 weights. An
-    unknown config value runs the default and says so in the log, and the
+    choice must never count, let alone download, the 2.4 GB fp32 weights.
+    Fluid Speech Pro is pinned the same way, but its export keeps every
+    graph's weights in a ``.data`` file — at int8 too — so its file list is
+    its own, while the other two keep exactly theirs. An unknown config value runs the default and says so in the log, and the
     status card, the cache probe and the reload key all follow the selection.
     Offline: nothing here touches the network (the file list below is the
     pinned commit's, copied from the Hub)."""
@@ -8245,6 +8247,15 @@ def _parakeet_model_registry():
     assert german.language == "de"
     # Its own folder: two models in one directory would read each other's files.
     assert german.dirname != default.dirname
+    fluid = parakeet_model("fluid-speech-pro")
+    assert fluid.repo == "FluidVoice-Labs/fluid-speech-pro-onnx"
+    assert fluid.revision == "fa588e9f87f1b9ad0ca2e2d8f7eaf84dc3803581"
+    assert fluid.onnx_asr_model == "nemo-conformer-tdt"
+    assert fluid.language is None  # the same 25 languages as v3, detected
+    assert len({default.dirname, german.dirname, fluid.dirname}) == 3
+    # Only Fluid's export keeps every graph's weights beside it; the other two
+    # must keep exactly the files (and folders) they always had.
+    assert fluid.split_weights and not default.split_weights and not german.split_weights
 
     # The pinned commit's files: each quantization keeps its own variant plus
     # the shared config and vocabulary, and the fp32 encoder its external data.
@@ -8259,8 +8270,8 @@ def _parakeet_model_registry():
         "encoder-model.onnx.data",
         "vocab.txt",
     ]
-    int8 = sorted(name for name in repo_files if download_filter("int8")(name))
-    fp32 = sorted(name for name in repo_files if download_filter(None)(name))
+    int8 = sorted(name for name in repo_files if download_filter(german, "int8")(name))
+    fp32 = sorted(name for name in repo_files if download_filter(german, None)(name))
     assert int8 == [
         "config.json",
         "decoder_joint-model.int8.onnx",
@@ -8275,7 +8286,39 @@ def _parakeet_model_registry():
         "vocab.txt",
     ], fp32
     # What is counted is what is fetched: the pinned download asks for these.
-    assert sorted(model_files("int8")) == int8 and sorted(model_files(None)) == fp32
+    assert sorted(model_files(german, "int8")) == int8
+    assert sorted(model_files(german, None)) == fp32
+    assert model_files(default, "int8") == model_files(german, "int8")
+    assert model_files(default, None) == model_files(german, None)
+
+    # Fluid's pinned commit (copied from the Hub): onnx-asr graphs with their
+    # weights split out at both precisions, plus sherpa-onnx graphs and the
+    # "clean mode" graphs, none of which a download may fetch.
+    fluid_files = [".gitattributes", "LICENSE", "NOTICE", "README.md", "config.json", "vocab.txt"]
+    for graph in ("encoder-model", "decoder_joint-model", "decoder", "joiner"):
+        for variant in ("", ".int8"):
+            fluid_files += [f"{graph}{variant}.onnx", f"{graph}{variant}.onnx.data"]
+            fluid_files.append(f"{graph}.clean{variant}.onnx")
+    fluid_int8 = sorted(name for name in fluid_files if download_filter(fluid, "int8")(name))
+    fluid_fp32 = sorted(name for name in fluid_files if download_filter(fluid, None)(name))
+    assert fluid_int8 == [
+        "config.json",
+        "decoder_joint-model.int8.onnx",
+        "decoder_joint-model.int8.onnx.data",
+        "encoder-model.int8.onnx",
+        "encoder-model.int8.onnx.data",
+        "vocab.txt",
+    ], fluid_int8
+    assert fluid_fp32 == [
+        "config.json",
+        "decoder_joint-model.onnx",
+        "decoder_joint-model.onnx.data",
+        "encoder-model.onnx",
+        "encoder-model.onnx.data",
+        "vocab.txt",
+    ], fluid_fp32
+    assert sorted(model_files(fluid, "int8")) == fluid_int8
+    assert sorted(model_files(fluid, None)) == fluid_fp32
 
     # An unknown value runs the default — logged once per value, because
     # `loaded` asks on every live-preview tick. A missing one is silent.
@@ -8306,17 +8349,32 @@ def _parakeet_model_registry():
         folder = Path(tmp) / german.dirname
         assert not _model_is_cached(german, "int8", tmp)
         folder.mkdir()
-        files = model_files("int8")
+        files = model_files(german, "int8")
         for name in files[:-1]:
             (folder / name).write_bytes(b"x")
         assert not _model_is_cached(german, "int8", tmp)
-        assert missing_files(folder, "int8") == [files[-1]]
+        assert missing_files(german, folder, "int8") == [files[-1]]
         (folder / files[-1]).write_bytes(b"x")
         assert _model_is_cached(german, "int8", tmp)
         assert not _model_is_cached(german, None, tmp)
-        assert "encoder-model.onnx.data" in missing_files(folder, None)
+        assert "encoder-model.onnx.data" in missing_files(german, folder, None)
         # The default model's folder is a different one, still absent.
         assert not _model_is_cached(default, "int8", tmp)
+        # Fluid's int8 graphs without their weight files are stubs, not a
+        # downloaded model.
+        fluid_folder = Path(tmp) / fluid.dirname
+        fluid_folder.mkdir()
+        for name in model_files(german, "int8"):
+            (fluid_folder / name).write_bytes(b"x")
+        assert not _model_is_cached(fluid, "int8", tmp)
+        assert missing_files(fluid, fluid_folder, "int8") == [
+            "encoder-model.int8.onnx.data",
+            "decoder_joint-model.int8.onnx.data",
+        ]
+        for name in model_files(fluid, "int8"):
+            (fluid_folder / name).write_bytes(b"x")
+        assert _model_is_cached(fluid, "int8", tmp)
+        assert not _model_is_cached(fluid, None, tmp)
 
         # The status card names the selected model's repo as what would be
         # downloaded, and an unknown value the default's.
@@ -9436,9 +9494,10 @@ def _download_progress_logic():
 
     # Parakeet ships both quantizations in one repo, so the size of a download
     # is only the variant it actually fetches.
-    from listen_to_me.parakeet_models import download_filter
+    from listen_to_me.parakeet_models import MODELS, download_filter
 
-    int8, fp32 = download_filter("int8"), download_filter(None)
+    v3 = MODELS["parakeet-tdt-0.6b-v3"]
+    int8, fp32 = download_filter(v3, "int8"), download_filter(v3, None)
     assert int8("encoder-model.int8.onnx") and not int8("encoder-model.onnx")
     assert fp32("encoder-model.onnx") and fp32("encoder-model.onnx.data")
     assert not fp32("decoder_joint-model.int8.onnx")

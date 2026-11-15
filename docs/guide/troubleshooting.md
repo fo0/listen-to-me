@@ -63,10 +63,11 @@ Set **Settings → Engine → Backend = Parakeet** to swap Whisper for NVIDIA's
 than even `large-v3-turbo`, with punctuation and capitalization built in. The
 long "processing" pause after a recording all but disappears, even on a CPU.
 
-| Parakeet model (`parakeet_model`)  | Languages                  | Download (int8 / fp32) | Notes                                                                                |
-| ---------------------------------- | -------------------------- | ---------------------- | ------------------------------------------------------------------------------------ |
-| `parakeet-tdt-0.6b-v3` _(default)_ | 25 European, auto-detected | ~640 MB / ~2.4 GB      | NVIDIA's original                                                                    |
-| `parakeet-primeline-de`            | **German only**            | ~640 MB / ~2.4 GB      | primeline's German fine-tune: lower German error rates at the same speed (CC-BY-4.0) |
+| Parakeet model (`parakeet_model`)  | Languages                  | Download (int8 / fp32) | Notes                                                                                                  |
+| ---------------------------------- | -------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| `parakeet-tdt-0.6b-v3` _(default)_ | 25 European, auto-detected | ~640 MB / ~2.4 GB      | NVIDIA's original                                                                                      |
+| `parakeet-primeline-de`            | **German only**            | ~640 MB / ~2.4 GB      | primeline's German fine-tune: lower German error rates at the same speed (CC-BY-4.0)                   |
+| `fluid-speech-pro`                 | 25 European, auto-detected | ~800 MB / ~2.7 GB      | FluidVoice's fine-tune: lower error rates in all 25 languages, about half as fast on a CPU (CC-BY-4.0) |
 
 - The spoken language is **detected automatically** (the German model only
   knows German) — the Whisper model preset, language choice, initial prompt,
@@ -79,9 +80,20 @@ long "processing" pause after a recording all but disappears, even on a CPU.
   against 3.64 % for v3 on its model card's German benchmarks), but it understands
   **German only**. It downloads once, into its own folder, from a pinned
   revision of the ONNX export.
+- **Fluid Speech Pro:** **Settings → Engine → Parakeet model =
+  fluid-speech-pro** runs FluidVoice's fine-tune of v3 — the same 25 languages,
+  detected automatically, with fewer errors in every one of them (German 3.76 %
+  against 4.12 % WER on the Open ASR Leaderboard's multilingual track, 3.52 %
+  against 4.18 % on FLEURS, per its model card). Its int8 variant keeps the
+  arithmetic at full precision, so **on a CPU it takes about twice as long** as
+  v3 (a 13 s dictation: ~1.8 s instead of ~0.9 s on a 4-core test machine) —
+  the reason v3 stays the default. Where that extra time does not matter, it
+  is the more accurate pick. It downloads once, into its own folder,
+  from a pinned revision of the ONNX export.
 - Runs via [ONNX Runtime](https://onnxruntime.ai/): NVIDIA GPUs (CUDA) or any
   CPU; **Device = auto** prefers the GPU. Model precision **int8** (~640 MB
-  download, recommended) or fp32 (~2.4 GB, best with a GPU) — for either model.
+  download, recommended) or fp32 (~2.4 GB, best with a GPU) — for every model
+  (Fluid Speech Pro: ~800 MB / ~2.7 GB).
 - The portable Windows build ships the backend; from source install the extra:
   `pip install -e ".[parakeet]"` (or `pip install "onnx-asr[cpu,hub]"`).
 - **GPU from source:** the `[parakeet]` extra installs the CPU-only
@@ -99,6 +111,14 @@ app downloads the ONNX export
 [OpenVoiceOS/primeline-parakeet-onnx](https://huggingface.co/OpenVoiceOS/primeline-parakeet-onnx)
 by OpenVoiceOS. Both are licensed
 [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).
+
+**Attribution (CC-BY-4.0):** **Fluid Speech Pro by FluidVoice.** Built on
+[NVIDIA Parakeet TDT 0.6B v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
+and [Moondream Parakeet Ultra](https://huggingface.co/moondream/parakeet-ultra).
+The app downloads the ONNX export
+[FluidVoice-Labs/fluid-speech-pro-onnx](https://huggingface.co/FluidVoice-Labs/fluid-speech-pro-onnx)
+of [FluidVoice-Labs/fluid-speech-pro](https://huggingface.co/FluidVoice-Labs/fluid-speech-pro),
+licensed [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/).
 
 ## SSL certificate errors behind a corporate proxy
 
