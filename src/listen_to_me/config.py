@@ -131,6 +131,11 @@ DEFAULTS: dict = {
     # above change when one is accepted and saved. An unknown value counts as
     # auto (autoconfig.normalize_target); the setup wizard always uses auto.
     "autoconfig_target": "auto",
+    # How that recommendation weighs accuracy against speed ("Focus:"):
+    # quality / balanced / speed. Steers the next recommendation only, like
+    # autoconfig_target; an unknown value counts as balanced
+    # (autoconfig.normalize_focus). The setup wizard always uses balanced.
+    "autoconfig_focus": "balanced",
     # sounddevice input device index, null = system default.
     "input_device": None,
     # Hard cap for a single recording.

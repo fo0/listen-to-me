@@ -12,7 +12,8 @@ flowchart TD
         Config[("config.json (DEFAULTS)")]:::database
         Net["netutil — insecure-SSL switch (corporate proxy)"]:::infra
         CpuInfo["cpuinfo — cores, AVX2, CPU name (ctypes, sysfs, registry — never a subprocess)"]:::infra
-        AutoConfig["autoconfig — engine recommendation: Hardware + language + target (auto/cpu/gpu/npu) → config values + reason"]:::backend
+        AutoConfig["autoconfig — engine recommendation: Hardware + language + target (auto/cpu/gpu/npu) + focus (quality/balanced/speed) + live typing → config values + reason"]:::backend
+        AutoConfigTargets["autoconfig_targets — targets and focuses the recommendation takes, why a target is unavailable"]:::backend
         AutoConfigHardware["autoconfig_hardware — reads the hardware_status() dict into Hardware: CUDA, Intel GPU/Arc, NPU, Parakeet, CPU"]:::backend
         AutoConfigText["autoconfig_text — words a recommendation: change lines, download sentence, the confirmation"]:::backend
     end
@@ -141,6 +142,7 @@ flowchart TD
     Settings -->|"hardware_from_status(probe): the recommendation's input, greys out a target without a device"| AutoConfigHardware
     OnboardingEngine -->|"hardware_from_status(probe)"| AutoConfigHardware
     AutoConfig -->|"Hardware"| AutoConfigHardware
+    AutoConfig -->|"normalize_target, normalize_focus, unavailable_reason"| AutoConfigTargets
     Settings -->|"confirm_message() / describe_changes() for the question"| AutoConfigText
     AutoConfigText -->|"Recommendation"| AutoConfig
     AutoConfig -->|"DEFAULT_MODEL, V3_LANGUAGES"| ParakeetModels
@@ -220,6 +222,7 @@ flowchart TD
     click AutoConfig "src/listen_to_me/autoconfig.py"
     click AutoConfigText "src/listen_to_me/autoconfig_text.py"
     click AutoConfigHardware "src/listen_to_me/autoconfig_hardware.py"
+    click AutoConfigTargets "src/listen_to_me/autoconfig_targets.py"
     click Diag "src/listen_to_me/diagnostics.py"
     click Progress "src/listen_to_me/progress.py"
 

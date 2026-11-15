@@ -145,6 +145,17 @@ AUTOCONFIG_TARGETS = [
     ("npu", "NPU"),
 ]
 
+# (config value, label) for "Focus:" below "Optimize for:" — how the
+# recommendation weighs accuracy against speed (autoconfig.recommend's
+# `focus`). Balanced leans towards accuracy as long as dictation and the live
+# features keep up; Quality takes a slower, more accurate model where one
+# exists; Speed takes a lighter one where that buys responsiveness.
+AUTOCONFIG_FOCUSES = [
+    ("quality", "Quality"),
+    ("balanced", "Balanced (recommended)"),
+    ("speed", "Speed"),
+]
+
 # (config value, note in parentheses), MODEL_CHOICES' shape — these dropdowns
 # pick a download too. OpenVINO converts whichever preset is selected, so only
 # the ratio holds; the Parakeet models share one 0.6B architecture (see
