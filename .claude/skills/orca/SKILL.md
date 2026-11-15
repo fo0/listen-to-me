@@ -97,7 +97,7 @@ one of the two and says which; only new work runs plain.
    seats sit above it at any effort; `fable-medium` only for heavy work; `fable-high` only as an exception, with a
    one-line reason in the assignment — a genuinely complex algorithm, or a core feature of the app where no error is
    acceptable (the step up after a failure: _Rules_); `opus-medium` is the one seat below the floor and only watches a
-   pipeline — no merge, no change, no decision. Classify before every spawn; in doubt `opus-high`, not `fable-medium`.
+   pipeline or collects raw data (item 12) — no merge, no change, no decision. Classify before every spawn; in doubt `opus-high`, not `fable-medium`.
    **The seat follows the package, not the objective:** cut the hard core out as a package of its own, so only it
    runs at `fable-high` and the rest at `opus-high` or `fable-medium`. **A fallback only when the model cannot run:**
    a Fable seat that ends on a usage or rate limit, missing access or an unavailable model —
@@ -150,6 +150,20 @@ one of the two and says which; only new work runs plain.
     either way: a cloud container keeps nothing. Earlier with CI only for a check the machine cannot run (another OS, a
     secret, a live service), and then once for that check. Nothing gets cheaper in quality: every step still passes
     the full local chain, and CI still gates the PR.
+12. **Bulk reading runs in stages: collect, evaluate, judge.** Work that reads raw material in bulk — logs,
+    monitoring, CI output, many files — is planned as stages that run one after the other; the independent packages
+    of a stage go out in one message, in the background (items 3 and 5). **Collect** fetches and stores, judging
+    nothing: each package writes its raw data to `tmp/collect-<topic>/` in the workspace that holds the repo — never
+    inside the repo's own tree — and returns paths and counts; a run starts that directory empty and removes it once
+    its result is reported. **Evaluate** reads those files and returns findings with evidence (file:line, count).
+    **Judge** — cause, what follows, what to do — runs once over all evaluations and reads only the evidence lines of
+    a finding from the raw files. Raw data never passes through the orchestrator's context in bulk (item 10).
+    **Each package gets the seat its work needs, never less:** a collection that runs the commands its brief names
+    and stores their output is a watch, `opus-medium`; one that has to choose what to fetch, filter by relevance or
+    read code is already evaluating — `opus-high` at least; evaluation `opus-high`; the judgement on the tier its
+    question calls for by the model table, or the orchestrator's own short unit when the evaluations are small
+    (item 1). In doubt between the watch and `opus-high`, `opus-high` — a cheap stage saves tokens only where it
+    cannot lose a finding.
 
 ## Objective runs — `/orca <objective>`
 
@@ -203,6 +217,9 @@ v1.30.0 removed.
   `.claude/skills/stuck/SKILL.md`.
 - **Results reach the user only through you.** The user sees no subagent report, so pass on what matters. Never
   invent or anticipate a result: an agent still running is reported as running.
+- **Report the start of a long wait.** Right after a wave goes out that waits long or reads in bulk, one short
+  message: what runs now (package and seat), which stages follow, and that the result comes when it is back. Then
+  no polling and no guessed interim state; your own short units go on until a completion wakes you.
 - **Unattended runs** (`CLAUDE_CODE_REMOTE=true`) keep the mode and keep the ban on ending a turn with a question —
   subagents cannot ask either, so the assignment states the assumption it runs under. See `CLAUDE.md` → _Autonomy_.
   An objective run there states its assumption and finishes; it never stops on the decision it cannot get answered.
