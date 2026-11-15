@@ -8889,6 +8889,128 @@ def _engine_recommendation_targets():
         assert Config(path=path)["autoconfig_target"] == "npu"
 
 
+def _engine_recommendation_focus_and_live_typing():
+    """"Focus:" and live typing. Balanced is the auto rule table unchanged.
+    Quality: Whisper's large-v3 on an NVIDIA GPU and Fluid Speech Pro on
+    Parakeet for every language but German (whose fine-tunes stay), the turbo
+    on the CPU from 6 full cores. Speed: the CPU's Whisper model one size
+    down — small, base below 4 full cores, small when the cores are unknown.
+    An efficiency core counts half, so a 2P+8E laptop chip is no turbo CPU at
+    Balanced. Live typing keeps the auto and CPU rules on faster-whisper —
+    never Parakeet or OpenVINO, which cannot type while the user speaks — and
+    an explicit GPU/NPU target keeps its engine but says live typing pauses.
+    Old and hand-edited configs read "balanced"."""
+    from listen_to_me import choices
+    from listen_to_me.autoconfig import FOCUSES, normalize_focus, recommend
+    from listen_to_me.autoconfig_hardware import Hardware, effective_cores
+    from listen_to_me.config import DEFAULTS
+
+    assert FOCUSES == ("quality", "balanced", "speed")
+    assert [label for _value, label in choices.AUTOCONFIG_FOCUSES] == [
+        "Quality",
+        "Balanced (recommended)",
+        "Speed",
+    ]
+    assert DEFAULTS["autoconfig_focus"] == "balanced"
+    for odd in (None, "", "fast", 3, " Balanced "):
+        assert normalize_focus(odd) == "balanced", odd
+    assert normalize_focus(" QUALITY ") == "quality"
+
+    fw_cuda = {"backend": "faster-whisper", "device": "cuda", "compute_type": "auto"}
+    fw_cpu = {"backend": "faster-whisper", "device": "cpu", "compute_type": "auto"}
+    pk = {"backend": "parakeet", "parakeet_quantization": "int8", "device": "cpu"}
+    german_turbo = choices.GERMAN_TURBO_CT2
+    arc = {"openvino": True, "arc_gpu": True, "gpu_name": "Intel Arc A770 Graphics"}
+    strong = {"physical_cores": 8, "performance_cores": 8, "avx2": True, "x86": True}
+    six = {"physical_cores": 6, "performance_cores": 6, "avx2": True, "x86": True}
+    two = {"physical_cores": 2, "performance_cores": 2, "avx2": True, "x86": True}
+    hybrid = {"physical_cores": 10, "performance_cores": 2, "avx2": True, "x86": True}
+
+    assert effective_cores(Hardware(**hybrid)) == 6
+    assert effective_cores(Hardware(physical_cores=10)) == 10  # P-cores unknown
+    assert effective_cores(Hardware()) == 0
+
+    # (hardware, language, focus, live typing, expected values)
+    matrix = [
+        # NVIDIA: Quality takes large-v3 except for German.
+        (Hardware(cuda=True), "en", "quality", False, dict(fw_cuda, model="large-v3")),
+        (Hardware(cuda=True), "auto", "quality", False, dict(fw_cuda, model="large-v3")),
+        (Hardware(cuda=True), "de", "quality", False, dict(fw_cuda, model=german_turbo)),
+        (Hardware(cuda=True), "en", "speed", False, dict(fw_cuda, model="large-v3-turbo")),
+        (Hardware(cuda=True, parakeet=True), "de", "balanced", True,
+         dict(fw_cuda, model=german_turbo)),
+        # Parakeet: Quality takes Fluid Speech Pro except for German.
+        (Hardware(parakeet=True), "en", "quality", False,
+         dict(pk, parakeet_model="fluid-speech-pro")),
+        (Hardware(parakeet=True, **arc), "auto", "quality", False,
+         dict(pk, parakeet_model="fluid-speech-pro")),
+        (Hardware(parakeet=True), "de", "quality", False,
+         dict(pk, parakeet_model="parakeet-primeline-de")),
+        (Hardware(parakeet=True), "en", "speed", False,
+         dict(pk, parakeet_model="parakeet-tdt-0.6b-v3")),
+        # The CPU's Whisper model per focus.
+        (Hardware(**six), "ja", "balanced", False, dict(fw_cpu, model="small")),
+        (Hardware(**six), "ja", "quality", False, dict(fw_cpu, model="large-v3-turbo")),
+        (Hardware(**six), "de", "quality", False, dict(fw_cpu, model=german_turbo)),
+        (Hardware(**strong), "ja", "speed", False, dict(fw_cpu, model="small")),
+        (Hardware(**two), "ja", "speed", False, dict(fw_cpu, model="base")),
+        (Hardware(**two), "ja", "balanced", False, dict(fw_cpu, model="small")),
+        (Hardware(), "ja", "speed", False, dict(fw_cpu, model="small")),  # unknown
+        (Hardware(physical_cores=16, avx2=False, x86=True), "ja", "quality", False,
+         dict(fw_cpu, model="small")),
+        # A hybrid laptop chip: 10 cores, but 6 full ones.
+        (Hardware(**hybrid), "ja", "balanced", False, dict(fw_cpu, model="small")),
+        (Hardware(**hybrid), "ja", "quality", False, dict(fw_cpu, model="large-v3-turbo")),
+        # Live typing: faster-whisper, never Parakeet or OpenVINO on auto.
+        (Hardware(parakeet=True, **strong), "de", "balanced", True,
+         dict(fw_cpu, model=german_turbo)),
+        (Hardware(parakeet=True, **arc, **strong), "en", "balanced", True,
+         dict(fw_cpu, model="large-v3-turbo")),
+        (Hardware(parakeet=True, **two), "de", "balanced", True, dict(fw_cpu, model="small")),
+        (Hardware(parakeet=True, **two), "de", "speed", True, dict(fw_cpu, model="base")),
+    ]
+    for hardware, language, focus, live, expected in matrix:
+        case = (hardware, language, focus, live)
+        rec = recommend(hardware, language, "auto", focus, live)
+        _check_recommendation(rec, case)
+        assert rec.values == expected, (case, rec.values)
+        assert recommend(hardware, language, "auto", focus.upper(), live) == rec, case
+
+    # Balanced is the default, and the auto rule table without live typing.
+    for hardware, language in (
+        (Hardware(parakeet=True), "de"),
+        (Hardware(cuda=True), "en"),
+        (Hardware(**strong), "ja"),
+        (Hardware(parakeet=True, **arc), "auto"),
+    ):
+        rec = recommend(hardware, language)
+        assert recommend(hardware, language, "auto", "balanced", False) == rec
+        assert recommend(hardware, language, "auto", "nonsense", None) == rec
+
+    # The reasons say why.
+    fluid = recommend(Hardware(parakeet=True), "en", "auto", "quality")
+    assert "Fluid Speech Pro" in fluid.reason and fluid.download == "~0.8 GB", fluid
+    large = recommend(Hardware(cuda=True), "en", "auto", "quality")
+    assert "large-v3" in large.reason and large.download == "~3.0 GB", large
+    live = recommend(Hardware(parakeet=True, **strong), "de", "auto", "balanced", True)
+    assert "live typing" in live.reason, live.reason
+    on_cpu = recommend(Hardware(parakeet=True, **two), "de", "cpu", "balanced", True)
+    assert on_cpu.values["backend"] == "faster-whisper", on_cpu
+    assert on_cpu.reason.startswith("You chose the CPU, and live typing"), on_cpu.reason
+    speed = recommend(Hardware(**strong), "ja", "auto", "speed")
+    assert "speed" in speed.reason, speed.reason
+    named = recommend(Hardware(**hybrid), "ja").reason
+    assert "10 cores, 2 of them performance cores" in named, named
+    # An explicit GPU/NPU target keeps its engine and says live typing pauses.
+    on_gpu = recommend(Hardware(parakeet=True, **arc), "en", "gpu", "balanced", True)
+    assert on_gpu.values["backend"] == "openvino", on_gpu
+    assert on_gpu.reason.endswith("pauses with this engine."), on_gpu.reason
+    npu = {"openvino": True, "npu": True}
+    assert "Live typing" in recommend(Hardware(**npu), "en", "npu", "balanced", True).reason
+    assert "Live typing" not in recommend(Hardware(**npu), "en", "npu").reason
+    return f"{len(matrix)} cases"
+
+
 def _check_recommendation(rec, case) -> None:
     """What every recommendation must be, whatever it picked: exactly the
     keys its backend reads, each value a member of the dropdown it lands in —
@@ -13230,6 +13352,25 @@ def _settings_engine_auto_configures_for_this_pc():
             try:
                 assert window.autoconfig_target_combo.currentData() == shown, stored
                 assert window._collect()["autoconfig_target"] == shown, stored
+            finally:
+                window.force_close()
+        # "Focus:" is saved, read back and normalized the same way.
+        window = SettingsWindow(stub)
+        try:
+            window._validate = lambda values: True
+            assert window.autoconfig_focus_combo.currentData() == "balanced"
+            window.autoconfig_focus_combo.setCurrentIndex(
+                window.autoconfig_focus_combo.findData("quality")
+            )
+            assert window._apply_values() and stub.cfg["autoconfig_focus"] == "quality"
+        finally:
+            window.force_close()
+        for stored, shown in ((" Speed", "speed"), ("fast", "balanced")):
+            stub.cfg["autoconfig_focus"] = stored
+            window = SettingsWindow(stub)
+            try:
+                assert window.autoconfig_focus_combo.currentData() == shown, stored
+                assert window._collect()["autoconfig_focus"] == shown, stored
             finally:
                 window.force_close()
 
@@ -17845,6 +17986,7 @@ _LIGHT_CHECKS = [
     ("engine recommendation matrix", _engine_recommendation_matrix),
     ("engine recommendation reads the probe", _engine_recommendation_reads_the_probe),
     ("engine recommendation optimizes for the chosen device", _engine_recommendation_targets),
+    ("engine recommendation weighs focus and live typing", _engine_recommendation_focus_and_live_typing),
     ("help content renders", _help_content_renders),
     ("help page find", _help_page_find),
     ("escape clears a search field", _escape_clears_a_search_field),

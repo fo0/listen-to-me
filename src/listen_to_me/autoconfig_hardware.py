@@ -157,3 +157,15 @@ def hardware_from_status(status) -> Hardware:
     )
     log.debug("hardware for the engine recommendation: %s", hardware)
     return hardware
+
+
+def effective_cores(hardware: Hardware) -> float:
+    """The processor's strength in full cores: an efficiency core of a
+    hybrid CPU does about half a performance core's work, so a 2P+8E laptop
+    chip counts 6, not 10. Without a known performance-core count every
+    physical core counts; 0 = unknown."""
+    physical = hardware.physical_cores
+    performance = hardware.performance_cores
+    if 0 < performance < physical:
+        return performance + (physical - performance) / 2
+    return float(physical)

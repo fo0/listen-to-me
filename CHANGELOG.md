@@ -14,6 +14,23 @@ changes at a glance.
 
 ### Added
 
+- **Focus for Auto-configure.** Settings → Engine → **Focus** next to
+  _Auto-configure for this PC_ weighs accuracy against speed: **Balanced** (the
+  default, as before) leans to accuracy while dictation and the live features
+  keep up; **Quality** takes Whisper large-v3 on an NVIDIA GPU, Fluid Speech
+  Pro on Parakeet and the turbo on a 6-core CPU (German keeps its fine-tunes);
+  **Speed** takes a lighter Whisper model on the CPU. Saved as
+  `autoconfig_focus`.
+
+### Fixed
+
+- **Auto-configure no longer switches live typing off.** With live typing
+  ticked it stays on faster-whisper, the only engine that can type while you
+  speak, instead of picking Parakeet or OpenVINO.
+- **Hybrid laptop CPUs are no longer overrated.** An efficiency core now counts
+  half, so a 2P+8E chip gets `small` instead of the turbo it could not run in
+  real time.
+
 - **Fluid Speech Pro as a third Parakeet model.** Settings → Engine →
   **Parakeet model = fluid-speech-pro** runs FluidVoice's fine-tune of
   Parakeet TDT 0.6B v3: the same 25 languages, detected automatically, with

@@ -311,9 +311,10 @@ class EnginePage(QWizardPage):
         probe answered (or when it failed)."""
         if self._hardware is None:
             return None
-        # No "Optimize for:" here: the wizard always runs the auto rules,
-        # whatever autoconfig_target says.
-        return recommend(self._hardware, self._language())
+        # No "Optimize for:" or "Focus:" here: the wizard always runs the
+        # auto rules at Balanced, whatever autoconfig_target/_focus say. Live
+        # typing still counts — the recommendation must not switch it off.
+        return recommend(self._hardware, self._language(), live_typing=self.cfg["live_typing"])
 
     def is_recommended(self) -> bool:
         return self.recommended_radio.isChecked()

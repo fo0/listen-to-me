@@ -113,6 +113,13 @@ of device: <b>CPU</b> (the processor, even with a graphics card there),
 Intel NPU through OpenVINO, starting with the small model). <b>Auto
 (recommended)</b> is the order above. Choosing one changes no engine setting
 by itself.</li>
+<li><b>Focus</b> weighs accuracy against speed. <b>Balanced (recommended)</b>
+is the order above; <b>Quality</b> takes a slower, more accurate model where
+there is one (Whisper large-v3 on an NVIDIA card, Fluid Speech Pro on
+Parakeet &mdash; German keeps its fine-tunes); <b>Speed</b> a lighter Whisper
+model on the processor.</li>
+<li>With <b>live typing</b> ticked it stays on faster-whisper, the only engine
+that can type while you speak.</li>
 <li>A GPU or NPU no installed engine can use is greyed out, with the reason
 below the list &mdash; for example OpenVINO not installed, or no NPU driver.
 Auto-configure then says why it cannot recommend for it instead of picking

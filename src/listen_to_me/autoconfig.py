@@ -22,9 +22,25 @@ Quality first, in this order:
    OpenVINO with the large turbo on it, int8. The German fine-tune has no
    OpenVINO conversion.
 4. Otherwise faster-whisper on the CPU: the large turbo (German: its German
-   fine-tune) with 8 or more physical cores and AVX2 not known to be missing,
-   else small — a large model on a weaker processor takes longer to
-   transcribe than the dictation took to speak.
+   fine-tune) on a processor worth 8 or more full cores (an efficiency core
+   counts half) with AVX2 not known to be missing, else small — a large model
+   on a weaker processor takes longer to transcribe than the dictation took
+   to speak, and the live preview falls behind.
+
+Live typing types while the user speaks and only faster-whisper can do it
+(its segment timestamps). With it switched on, rules 2 and 3 drop out of the
+auto order — a recommendation that silently switched it off would cost the
+user a feature they chose.
+
+"Focus:" weighs accuracy against speed; Balanced is the order above:
+
+- "quality" → on an NVIDIA GPU Whisper's large-v3 for every language but
+  German (whose fine-tuned turbo stays the best); Parakeet's Fluid Speech Pro
+  for every language but German (primeline stays); the large turbo on the CPU
+  from 6 full cores.
+- "speed" → the CPU's Whisper model one size down: small on a strong
+  processor, base on one with fewer than 4 full cores. Everything else is
+  already the fastest setup of its device.
 
 That is the "auto" target. "Optimize for:" beside the button picks a device
 class instead, and the recommendation then stays on it — never one on another
@@ -41,8 +57,8 @@ A GPU or NPU is only an option when an installed backend reports it;
 `unavailable_reason` says why one is not, and `recommend` raises
 `TargetUnavailable` rather than answer for another class.
 
-The recommendation never names `language`: that is the user's choice and the
-input here, never an output.
+The recommendation never names `language` or `live_typing`: those are the
+user's choices and the input here, never an output.
 
 Qt-free and stdlib-only — pure functions over plain data, so the whole rule
 table is checked headless (selftest "engine recommendation matrix").
@@ -53,13 +69,27 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from .autoconfig_hardware import Hardware
+from .autoconfig_hardware import Hardware, effective_cores
+from .autoconfig_targets import (  # noqa: F401 — re-exported for the UI
+    AUTO,
+    BALANCED,
+    CPU,
+    FOCUSES,
+    GPU,
+    NPU,
+    QUALITY,
+    SPEED,
+    TARGETS,
+    TargetUnavailable,
+    normalize_focus,
+    normalize_target,
+    unavailable_reason,
+)
 from .choices import (
-    AUTOCONFIG_TARGETS,
     GERMAN_TURBO_CT2,
     LANGUAGES,
     MODEL_CHOICES,
-    PARAKEET_QUANTIZATIONS,
+    PARAKEET_MODELS,
 )
 from .parakeet_models import DEFAULT_MODEL as PARAKEET_V3
 from .parakeet_models import V3_LANGUAGES
@@ -68,18 +98,21 @@ PARAKEET_GERMAN = "parakeet-primeline-de"
 TURBO = "large-v3-turbo"
 SMALL = "small"
 
-# Physical cores from which a CPU runs Whisper's large turbo fast enough to
-# dictate with; below it, small.
+# Full cores (`effective_cores`) from which a CPU runs Whisper's large turbo
+# fast enough to dictate with; below it, small. Quality accepts a slower
+# turbo; Speed drops to base below SMALL_MODEL_MIN_CORES.
 LARGE_MODEL_MIN_CORES = 8
+QUALITY_LARGE_MODEL_MIN_CORES = 6
+SMALL_MODEL_MIN_CORES = 4
+LARGE_V3 = "large-v3"
+BASE = "base"
+FLUID = "fluid-speech-pro"
 
 _NO_CUDA = "No usable NVIDIA graphics card found"
 # The lead of a CPU recommendation the user asked for: a GPU may well be
 # there, so it must not say there is none.
 _CPU_CHOSEN = "You chose the CPU"
 
-# The device classes "Optimize for:" offers (choices.AUTOCONFIG_TARGETS).
-AUTO, CPU, GPU, NPU = "auto", "cpu", "gpu", "npu"
-TARGETS = tuple(value for value, _label in AUTOCONFIG_TARGETS)
 
 # The "~1.6 GB" / "~490 MB" inside a choice note.
 _SIZE = re.compile(r"~\s*(\d+(?:\.\d+)?)\s*(MB|GB)\b", re.IGNORECASE)
@@ -95,48 +128,6 @@ class Recommendation:
     reason: str  # one or two plain sentences: what was found, why this engine
     summary: str  # one short line: "Parakeet · German model · CPU"
     download: str  # approximate first-use download: "~0.7 GB"
-
-
-# --------------------------------------------------------------- targets
-
-
-class TargetUnavailable(ValueError):
-    """An explicit target this machine has no usable device for. The message
-    is `unavailable_reason`'s sentence, written for the user."""
-
-
-def normalize_target(target) -> str:
-    """`target` as one of TARGETS, lowercased — "auto" for anything else (a
-    hand-edited config value, None)."""
-    code = str(target or "").strip().lower()
-    return code if code in TARGETS else AUTO
-
-
-def _gpu_usable(hardware: Hardware) -> bool:
-    return hardware.cuda or (hardware.openvino and (hardware.intel_gpu or hardware.arc_gpu))
-
-
-def unavailable_reason(hardware: Hardware, target) -> str:
-    """Why the recommendation cannot optimize for `target` on `hardware`, in
-    one sentence for the user; "" when it can. Auto and the CPU always can;
-    a GPU needs CTranslate2 to reach an NVIDIA card or OpenVINO to list a
-    GPU, an NPU needs OpenVINO to list one — a device no installed backend
-    drives is no option."""
-    target = normalize_target(target)
-    if target == GPU and not _gpu_usable(hardware):
-        if not hardware.openvino:
-            return (
-                "No NVIDIA graphics card usable through CUDA was found, and OpenVINO, the "
-                "engine for Intel graphics, is not installed."
-            )
-        return (
-            "No NVIDIA graphics card usable through CUDA was found, and OpenVINO reports no GPU."
-        )
-    if target == NPU and not (hardware.openvino and hardware.npu):
-        if not hardware.openvino:
-            return "An NPU can only be used through OpenVINO, which is not installed."
-        return "OpenVINO reports no NPU — this PC has none, or its driver is missing."
-    return ""
 
 
 # ------------------------------------------------------------- recommend
@@ -184,10 +175,17 @@ def _parakeet_speaks(code: str) -> bool:
     return not code or code in V3_LANGUAGES
 
 
-def _whisper_gpu(code: str) -> Recommendation:
+def _whisper_gpu(code: str, focus: str = BALANCED) -> Recommendation:
     german = code == "de"
     model = GERMAN_TURBO_CT2 if german else TURBO
-    if german:
+    if focus == QUALITY and not german:
+        model = LARGE_V3
+        reason = (
+            "An NVIDIA graphics card was found, so faster-whisper runs on it with Whisper's "
+            "large-v3 model — its most accurate, slower than the turbo but still quick on a "
+            "graphics card. It needs about 4 GB of graphics memory."
+        )
+    elif german:
         reason = (
             "An NVIDIA graphics card was found, so faster-whisper runs on it with Whisper's "
             "large turbo model fine-tuned for German — the most accurate German setup, at "
@@ -211,12 +209,18 @@ def _whisper_gpu(code: str) -> Recommendation:
     )
 
 
-def _parakeet(code: str, lead: str = _NO_CUDA) -> Recommendation:
+def _parakeet(code: str, lead: str = _NO_CUDA, focus: str = BALANCED) -> Recommendation:
     others = len(V3_LANGUAGES) - 1
     start = f"{lead}, so the fast Parakeet engine runs on your processor"
     if code == "de":
         model, detail = PARAKEET_GERMAN, "German model"
         reason = f"{start} — with the model fine-tuned for German."
+    elif focus == QUALITY:
+        model, detail = FLUID, "Fluid Speech Pro"
+        reason = (
+            f"{start} with Fluid Speech Pro — more accurate in all {len(V3_LANGUAGES)} of its "
+            "languages, at about half the speed of the standard model."
+        )
     elif not code:
         model, detail = PARAKEET_V3, f"{len(V3_LANGUAGES)} languages"
         reason = (
@@ -236,19 +240,34 @@ def _parakeet(code: str, lead: str = _NO_CUDA) -> Recommendation:
         },
         reason=reason,
         summary=f"Parakeet · {detail} · CPU",
-        # The registry models are the same 0.6B network: the size follows
-        # the quantization, not the model. Fluid Speech Pro is never
-        # recommended — its CPU decode takes about twice v3's.
-        download=_note_size(PARAKEET_QUANTIZATIONS, "int8"),
+        # Fluid Speech Pro only with Focus: Quality — its CPU decode takes
+        # about twice v3's (parakeet_models.MODELS). The notes carry the int8
+        # size of each model.
+        download=_note_size(PARAKEET_MODELS, model),
     )
 
 
-def _not_parakeet(hardware: Hardware, code: str) -> str:
-    """The clause that says why an installed Parakeet was passed over — only
-    ever the language, since a covered language would have picked it."""
+_LIVE_TYPING = "live typing, which is on, works only with faster-whisper"
+
+
+def _not_parakeet(hardware: Hardware, code: str, live_typing: bool = False) -> str:
+    """The clause that says why an installed Parakeet (or an Arc GPU) was
+    passed over — the language, else live typing; "" when nothing was."""
     if hardware.parakeet and not _parakeet_speaks(code):
         return f"Parakeet does not understand {_language_name(code) or 'this language'}"
+    if live_typing and (hardware.parakeet or (hardware.openvino and hardware.arc_gpu)):
+        return _LIVE_TYPING
     return ""
+
+
+def _live_typing_note(rec: Recommendation, live_typing: bool) -> Recommendation:
+    """`rec` with a sentence that says live typing stays paused, when it is
+    on and `rec` is no faster-whisper setup — an explicit GPU or NPU target
+    the user picked keeps its engine and learns the price."""
+    if not live_typing or rec.values.get("backend") == "faster-whisper":
+        return rec
+    note = " Live typing, which is on, works only with faster-whisper and pauses with this engine."
+    return Recommendation(rec.values, rec.reason + note, rec.summary, rec.download)
 
 
 def _openvino_arc(hardware: Hardware, code: str, lead: str = "") -> Recommendation:
@@ -302,20 +321,32 @@ def _openvino_small(device: str, name: str, lead: str, why: str, code: str) -> R
     )
 
 
-def _whisper_cpu(hardware: Hardware, code: str, lead: str = _NO_CUDA) -> Recommendation:
+def _whisper_cpu(
+    hardware: Hardware,
+    code: str,
+    lead: str = _NO_CUDA,
+    focus: str = BALANCED,
+    live_typing: bool = False,
+) -> Recommendation:
     german = code == "de"
     # AVX2 only counts on x86, where CTranslate2's fast kernels need it; an
     # ARM CPU has none and runs its own.
     avx2_missing = hardware.avx2 is False and hardware.x86 is not False
     cores = hardware.physical_cores
-    strong = cores >= LARGE_MODEL_MIN_CORES and not avx2_missing
-    model = (GERMAN_TURBO_CT2 if german else TURBO) if strong else SMALL
+    full = effective_cores(hardware)
+    needed = QUALITY_LARGE_MODEL_MIN_CORES if focus == QUALITY else LARGE_MODEL_MIN_CORES
+    strong = focus != SPEED and full >= needed and not avx2_missing
+    # Speed: base on a processor known to be weak; unknown stays small.
+    tiny_cpu = focus == SPEED and 0 < full < SMALL_MODEL_MIN_CORES
+    model = (GERMAN_TURBO_CT2 if german else TURBO) if strong else (BASE if tiny_cpu else SMALL)
 
     # Two sentences: what rules out the faster engines, then what the
     # processor can carry.
-    passed_over = _not_parakeet(hardware, code)
+    passed_over = _not_parakeet(hardware, code, live_typing)
     found = f"{lead}, and {passed_over}." if passed_over else f"{lead}."
     counted = f"{cores} {'core' if cores == 1 else 'cores'}"
+    if 0 < hardware.performance_cores < cores:
+        counted += f", {hardware.performance_cores} of them performance cores"
     processor = "Your processor"
     if cores:
         detail = f"{hardware.cpu_name}, {counted}" if hardware.cpu_name else counted
@@ -323,6 +354,11 @@ def _whisper_cpu(hardware: Hardware, code: str, lead: str = _NO_CUDA) -> Recomme
     if strong:
         tuned = " fine-tuned for German" if german else ""
         verdict = f"{processor} is strong enough for Whisper's large turbo model{tuned}."
+    elif focus == SPEED:
+        verdict = (
+            f"Focused on speed: the {model} model on {processor[0].lower()}{processor[1:]} "
+            "keeps dictation and the live features quick."
+        )
     elif avx2_missing:
         verdict = (
             f"{processor} lacks the AVX2 instructions larger models need to run quickly, so "
@@ -348,20 +384,20 @@ def _whisper_cpu(hardware: Hardware, code: str, lead: str = _NO_CUDA) -> Recomme
     )
 
 
-def _on_cpu(hardware: Hardware, code: str) -> Recommendation:
+def _on_cpu(hardware: Hardware, code: str, focus: str, live_typing: bool) -> Recommendation:
     """Target "cpu": the auto rules for the processor, any GPU or NPU left
     out — and a reason that says it was the user's choice, not that no
     graphics card is there."""
-    if hardware.parakeet and _parakeet_speaks(code):
-        return _parakeet(code, lead=_CPU_CHOSEN)
-    return _whisper_cpu(hardware, code, lead=_CPU_CHOSEN)
+    if hardware.parakeet and _parakeet_speaks(code) and not live_typing:
+        return _parakeet(code, lead=_CPU_CHOSEN, focus=focus)
+    return _whisper_cpu(hardware, code, _CPU_CHOSEN, focus, live_typing)
 
 
-def _on_gpu(hardware: Hardware, code: str) -> Recommendation:
+def _on_gpu(hardware: Hardware, code: str, focus: str) -> Recommendation:
     """Target "gpu": NVIDIA first, else the Intel GPU OpenVINO runs as
     "gpu" — an Arc with the large turbo, any other with the small model."""
     if hardware.cuda:
-        return _whisper_gpu(code)
+        return _whisper_gpu(code, focus)
     if hardware.arc_gpu:
         return _openvino_arc(hardware, code, lead=_NO_CUDA)
     return _openvino_small(
@@ -384,10 +420,17 @@ def _on_npu(hardware: Hardware, code: str) -> Recommendation:
     )
 
 
-def recommend(hardware: Hardware, language, target=AUTO) -> Recommendation:
+def recommend(
+    hardware: Hardware, language, target=AUTO, focus=BALANCED, live_typing=False
+) -> Recommendation:
     """The best engine setup for `hardware` and the dictation `language` (a
     language code; "" or "auto" = auto-detection). Never returns `language`
     among the values.
+
+    `focus` weighs accuracy against speed (FOCUSES, module docstring; an
+    unknown one counts as "balanced"). `live_typing` true keeps the auto and
+    CPU rules on faster-whisper, the only engine that can type while the user
+    speaks; a GPU or NPU target says in its reason that it pauses.
 
     `target` is the device class to optimize for (TARGETS): "auto" runs the
     rules in the order of the module docstring; "cpu", "gpu" and "npu" pick
@@ -396,22 +439,25 @@ def recommend(hardware: Hardware, language, target=AUTO) -> Recommendation:
     `unavailable_reason` first; an unknown target counts as "auto"."""
     code = _language_code(language)
     target = normalize_target(target)
+    focus = normalize_focus(focus)
+    live_typing = live_typing is True
     missing = unavailable_reason(hardware, target)
     if missing:
         raise TargetUnavailable(missing)
     if target == CPU:
-        return _on_cpu(hardware, code)
+        return _on_cpu(hardware, code, focus, live_typing)
     if target == GPU:
-        return _on_gpu(hardware, code)
+        return _live_typing_note(_on_gpu(hardware, code, focus), live_typing)
     if target == NPU:
-        return _on_npu(hardware, code)
+        return _live_typing_note(_on_npu(hardware, code), live_typing)
     if hardware.cuda:
-        return _whisper_gpu(code)
-    if hardware.parakeet and _parakeet_speaks(code):
-        return _parakeet(code)
-    if hardware.openvino and hardware.arc_gpu:
-        return _openvino_arc(hardware, code)
-    return _whisper_cpu(hardware, code)
+        return _whisper_gpu(code, focus)
+    if not live_typing:
+        if hardware.parakeet and _parakeet_speaks(code):
+            return _parakeet(code, focus=focus)
+        if hardware.openvino and hardware.arc_gpu:
+            return _openvino_arc(hardware, code)
+    return _whisper_cpu(hardware, code, focus=focus, live_typing=live_typing)
 
 
 # --------------------------------------------------------------- compare

@@ -55,6 +55,7 @@ from .autoconfig import (
     Recommendation,
     TargetUnavailable,
     changes,
+    normalize_focus,
     normalize_target,
     recommend,
     unavailable_reason,
@@ -69,6 +70,7 @@ from .autoconfig_text import (
     unavailable_text,
 )
 from .choices import (
+    AUTOCONFIG_FOCUSES,
     AUTOCONFIG_TARGETS,
     BACKENDS,
     CLIPBOARD_COPY_MODES,
@@ -835,7 +837,7 @@ class SettingsWindow(QDialog):
             self.backend_combo, self.model_combo, self.language_combo,
             self.device_combo, self.compute_combo, self.ov_device_combo,
             self.ov_precision_combo, self.pk_model_combo, self.pk_quant_combo,
-            self.autoconfig_target_combo,
+            self.autoconfig_target_combo, self.autoconfig_focus_combo,
         ):
             combo.currentIndexChanged.connect(self._clear_autoconfig_status)
 
@@ -1708,6 +1710,25 @@ class SettingsWindow(QDialog):
         sh.addWidget(self.hw_refresh_button)
         sh.addStretch(1)
         sform.addRow("", status_row)
+        # "Focus:" — accuracy against speed, read by the next recommendation
+        # like the target below; it changes no engine field either.
+        self.autoconfig_focus_combo = QComboBox()
+        for value, label in AUTOCONFIG_FOCUSES:
+            self.autoconfig_focus_combo.addItem(label, value)
+        self.autoconfig_focus_combo.setCurrentIndex(
+            self.autoconfig_focus_combo.findData(normalize_focus(self.cfg["autoconfig_focus"]))
+        )
+        self.autoconfig_focus_combo.setToolTip(
+            "How Auto-configure weighs accuracy against speed. Balanced picks the most "
+            "accurate setup that still keeps up with dictation and the live features; "
+            "Quality takes a slower, more accurate model where there is one; Speed a "
+            "lighter one where that makes dictation quicker. Choosing one changes no "
+            "engine setting — press Auto-configure for this PC."
+        )
+        elastic_combo(self.autoconfig_focus_combo)
+        focus_label = QLabel("Focus:")
+        focus_label.setBuddy(self.autoconfig_focus_combo)
+        sform.addRow(focus_label, self.autoconfig_focus_combo)
         # "Optimize for:" and the button it steers, on one row. Choosing a
         # target changes no engine field; the next recommendation reads it.
         target_row = QWidget()
@@ -4956,14 +4977,21 @@ class SettingsWindow(QDialog):
     def _offer_recommendation(self, status: dict) -> Recommendation | None:
         """Recommend for `status` (a hardware_status result), the language
         selected in this window — not the saved one — and the target under
-        "Optimize for:", and compare with the values entered here. Nothing to
+        "Optimize for:" and "Focus:", with live typing as ticked here, and
+        compare with the values entered here. Nothing to
         change says so on the status line; otherwise `_confirm_autoconfig`
         asks before the fields are filled in. A target this PC has no device
         for says why on the status line and recommends nothing — never a
         setup on another device. Returns the recommendation, None for that."""
         target = self._selected_autoconfig_target()
         try:
-            rec = recommend(hardware_from_status(status), self._selected_language(), target)
+            rec = recommend(
+                hardware_from_status(status),
+                self._selected_language(),
+                target,
+                self._selected_autoconfig_focus(),
+                self.chk_live_typing.isChecked(),
+            )
         except TargetUnavailable as exc:
             self._set_autoconfig_status(unavailable_text(target, str(exc)))
             return None
@@ -5060,6 +5088,9 @@ class SettingsWindow(QDialog):
 
     def _selected_autoconfig_target(self) -> str:
         return normalize_target(self.autoconfig_target_combo.currentData())
+
+    def _selected_autoconfig_focus(self) -> str:
+        return normalize_focus(self.autoconfig_focus_combo.currentData())
 
     def _refresh_autoconfig_targets(self, status: dict) -> None:
         """Grey out the targets the probe `status` found no device for, each
@@ -6814,6 +6845,7 @@ class SettingsWindow(QDialog):
             "parakeet_quantization": choice_value(PARAKEET_QUANTIZATIONS, self.pk_quant_combo.currentText()),
             "parakeet_model": choice_value(PARAKEET_MODELS, self.pk_model_combo.currentText()),
             "autoconfig_target": self._selected_autoconfig_target(),
+            "autoconfig_focus": self._selected_autoconfig_focus(),
             "vad_filter": self.chk_vad.isChecked(),
             "history_enabled": self.chk_history_enabled.isChecked(),
             "history_max": int(self.history_max_spin.value()),
