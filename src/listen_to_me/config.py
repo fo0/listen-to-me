@@ -118,8 +118,10 @@ DEFAULTS: dict = {
     # int8 (small + fast on CPU, recommended) or fp32 (most accurate, GPU).
     "parakeet_quantization": "int8",
     # Which Parakeet model the parakeet backend runs: "parakeet-tdt-0.6b-v3"
-    # (NVIDIA's multilingual original, 25 languages) or "parakeet-primeline-de"
-    # (primeline's German fine-tune — more accurate for German, German only).
+    # (NVIDIA's multilingual original, 25 languages), "parakeet-primeline-de"
+    # (primeline's German fine-tune — more accurate for German, German only)
+    # or "fluid-speech-pro" (FluidVoice's fine-tune — more accurate in all 25
+    # languages, about half as fast on a CPU).
     # An unknown value runs the default with a log line — see
     # parakeet_models.MODELS / parakeet_model().
     "parakeet_model": "parakeet-tdt-0.6b-v3",

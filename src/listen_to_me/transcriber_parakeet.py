@@ -64,7 +64,7 @@ def _download_watcher(model: ParakeetModel, quantization: str | None, model_dir,
     folder = model_path(model, model_dir) or hub_cache_dir(model.repo)
     return DownloadWatcher(
         folder,
-        hub_repo_size(model.repo, keep=download_filter(quantization), revision=model.revision),
+        hub_repo_size(model.repo, keep=download_filter(model, quantization), revision=model.revision),
         progress,
         label=f"Downloading {model.title}",
     )
@@ -141,7 +141,7 @@ def _model_is_cached(model: ParakeetModel, quantization: str | None, model_dir) 
         path = model_path(model, model_dir)
         if model.revision is not None:
             folder = path or fetch_pinned(model, quantization, None, offline=True)
-            return not missing_files(folder, quantization)
+            return not missing_files(model, folder, quantization)
         if path is not None:
             return os.path.isdir(path)
         from huggingface_hub import hf_hub_download

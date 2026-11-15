@@ -236,8 +236,9 @@ def _parakeet(code: str, lead: str = _NO_CUDA) -> Recommendation:
         },
         reason=reason,
         summary=f"Parakeet · {detail} · CPU",
-        # Both registry models are the same 0.6B network: the size follows
-        # the quantization, not the model.
+        # The registry models are the same 0.6B network: the size follows
+        # the quantization, not the model. Fluid Speech Pro is never
+        # recommended — its CPU decode takes about twice v3's.
         download=_note_size(PARAKEET_QUANTIZATIONS, "int8"),
     )
 

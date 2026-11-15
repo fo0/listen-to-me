@@ -234,7 +234,8 @@ class EnginePage(QWizardPage):
         self.pk_model_combo.setToolTip(
             "parakeet-tdt-0.6b-v3 is NVIDIA's multilingual original (25 languages, "
             "detected automatically); parakeet-primeline-de is a German fine-tune — "
-            "more accurate for German, but German only."
+            "more accurate for German, but German only; fluid-speech-pro is more "
+            "accurate in all 25 languages, but about half as fast on a CPU."
         )
         form.addRow("Parakeet model:", self.pk_model_combo)
         # Long preset labels must not force the fixed-size wizard wider (see qtutil).
@@ -472,8 +473,8 @@ class EnginePage(QWizardPage):
             return (
                 "Note: Parakeet runs its own models, chosen above, and is not told "
                 "the spoken language from the previous page: parakeet-tdt-0.6b-v3 "
-                "detects it itself (25 European languages), parakeet-primeline-de "
-                "understands German only."
+                "and fluid-speech-pro detect it themselves (25 European languages), "
+                "parakeet-primeline-de understands German only."
             )
         if swapped_out is not None:
             return (

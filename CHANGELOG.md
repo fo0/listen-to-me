@@ -14,6 +14,15 @@ changes at a glance.
 
 ### Added
 
+- **Fluid Speech Pro as a third Parakeet model.** Settings → Engine →
+  **Parakeet model = fluid-speech-pro** runs FluidVoice's fine-tune of
+  Parakeet TDT 0.6B v3: the same 25 languages, detected automatically, with
+  fewer errors in all of them (German 3.76 % against 4.12 % WER on the Open ASR
+  Leaderboard's multilingual track). On a CPU it takes about twice as long as
+  v3, so v3 stays the default and the recommendation; existing settings are
+  untouched. Downloads once (~800 MB at int8) from a pinned revision, into its
+  own folder (CC-BY-4.0, attribution in the
+  [troubleshooting guide](docs/guide/troubleshooting.md#maximum-speed-parakeet-backend)).
 - **Stop a dictation by pausing.** A new option under Settings → Audio,
   **Stop after silence**, ends a toggle-mode microphone recording by itself
   once you have spoken and the microphone has then stayed quiet for the chosen

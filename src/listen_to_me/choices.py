@@ -159,13 +159,19 @@ PARAKEET_QUANTIZATIONS = [
     ("fp32", "most accurate, best with a GPU, ~2.5 GB"),
 ]
 # Keys of parakeet_models.MODELS, which holds where each one downloads
-# from. Both are the same 0.6B architecture, so the size and the speed follow
-# the quantization above, not the model.
+# from. All three are the same 0.6B architecture, so the size follows the
+# quantization above, not the model — but Fluid Speech Pro's int8 is
+# weight-only and decodes about half as fast as the other two on a CPU.
 PARAKEET_MODELS = [
     ("parakeet-tdt-0.6b-v3", "NVIDIA's original — 25 languages, auto-detected, ~0.7 GB int8"),
     (
         "parakeet-primeline-de",
         "German fine-tune by primeline — best German accuracy, German only, ~0.7 GB int8",
+    ),
+    (
+        "fluid-speech-pro",
+        "Fluid Speech Pro by FluidVoice — more accurate in all 25 languages, "
+        "about half as fast on a CPU, ~0.8 GB int8",
     ),
 ]
 

@@ -1644,7 +1644,9 @@ class SettingsWindow(QDialog):
             "multilingual original (25 languages, detected automatically); "
             "parakeet-primeline-de is primeline's German fine-tune of it — "
             "noticeably more accurate for German, but it understands German "
-            "only. Same size and speed; changing this downloads the other model."
+            "only, at the same size and speed. fluid-speech-pro is FluidVoice's "
+            "fine-tune — more accurate in all 25 languages, slightly larger, and "
+            "about half as fast on a CPU. Changing this downloads the other model."
         )
         elastic_combo(self.pk_model_combo)  # long items widen the page
         form.addRow("Parakeet model:", self.pk_model_combo)

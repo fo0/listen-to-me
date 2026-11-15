@@ -269,7 +269,9 @@ Everything Listen To Me does, in detail. The short version is in the
   with automatic CPU fallback whenever a device is unavailable. For maximum
   speed there is a third engine: **Parakeet** (NVIDIA Parakeet TDT via ONNX),
   which transcribes many times faster than Whisper in 25 languages — or, with
-  primeline's German fine-tune of it, even more accurately in German.
+  primeline's German fine-tune of it, even more accurately in German, and with
+  FluidVoice's **Fluid Speech Pro**, more accurately in all 25 languages at
+  about half the CPU speed.
 - **Optional assistant post-processing** — pipe the transcript through any
   OpenAI-compatible API (local **Ollama**, LM Studio, llama.cpp, OpenWebUI, or a
   hosted service) with a **freely editable system prompt** (a sensible default
