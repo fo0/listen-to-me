@@ -13614,11 +13614,15 @@ def _settings_audio_tests_the_microphone_through_the_widget():
             others = (window.model_download_button, window.tx_test_button)
 
             # A run to its verdict, with the other diagnostics held back.
+            # The engine page shows a failure, styled as one (role="error"):
+            # the wait note is no failure, and the failure comes back with it.
+            window._set_diag_status("Transcription test failed: stub", error=True)
             window._diag = _Engine()
             window.mic_test_button.click()
             assert window._diag_busy and window._diag_kind == "mic"
             assert not any(button.isEnabled() for button in others)
             assert window.diag_status.text() == settings_module._DIAG_BUSY_NOTE
+            assert window.diag_status.property("role") == "hint"
             assert not stub.hotkeys.running
             assert window.mic_status.text() == "Recording 3 s — speak now…"
             assert _process_events_until(app, lambda: window.mic_level_bar.value() == 40)
@@ -13626,7 +13630,8 @@ def _settings_audio_tests_the_microphone_through_the_widget():
             assert _process_events_until(app, lambda: not window._diag_busy)
             assert window.mic_status.text() == "Microphone works ✓ — peak level 40 %."
             assert all(button.isEnabled() for button in others + (window.mic_test_button,))
-            assert window.diag_status.text() != settings_module._DIAG_BUSY_NOTE
+            assert window.diag_status.text() == "Transcription test failed: stub"
+            assert window.diag_status.property("role") == "error"
             assert stub.hotkeys.running
             assert calls == [(window._selected_input_device(), 3.0)], calls
             window.mic_test._worker.join(5)
@@ -15210,6 +15215,7 @@ def _gui_construction():
         assert not window._assistant_busy, "a statically invalid config started a request"
         assert window.a_test_button.isEnabled()
         assert "Cannot test" in window.a_test_status.text(), window.a_test_status.text()
+        assert window.a_test_status.property("role") == "error"  # not a muted note
         assert "Microphone dictation" in window.a_test_status.text(), window.a_test_status.text()
 
         # Both outcomes: the reply is shown (an endpoint can answer and still
@@ -15271,6 +15277,7 @@ def _gui_construction():
         assert window.a_test_button.isEnabled()
         assert not window.a_test_cancel_button.isEnabled()
         assert "cancelled" in window.a_test_status.text().lower(), window.a_test_status.text()
+        assert window.a_test_status.property("role") == "hint", "an error style outlived it"
         # Voiced on the button the focus went back to; Cancel is idle again.
         assert window.a_test_button.accessibleDescription() == window.a_test_status.text()
         assert not window.a_test_cancel_button.accessibleDescription()

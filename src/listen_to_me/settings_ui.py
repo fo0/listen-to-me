@@ -1219,6 +1219,20 @@ class SettingsWindow(QDialog):
         return label
 
     @staticmethod
+    def _set_status_error(label: QLabel, error: bool) -> None:
+        """Style a `_hint()`-built status line as a failure (`role="error"`,
+        the danger colour of theme.py) or back as the muted note it was built
+        as — the shape of `widgets.HotkeyCaptureDialog._set_display`. The
+        status helpers call it on every write, so an error style never
+        survives into the next result."""
+        role = "error" if error else "hint"
+        if label.property("role") != role:
+            label.setProperty("role", role)
+            # A dynamic property only restyles once the style re-polishes.
+            label.style().unpolish(label)
+            label.style().polish(label)
+
+    @staticmethod
     def _status_value(text: str) -> QLabel:
         """A wrapping, selectable value label for the status card — device
         names and error messages can be long, and selectable text lets the
@@ -4126,7 +4140,7 @@ class SettingsWindow(QDialog):
             # caret in the offending field, exactly as Save does.
             field, reason = problem
             self._set_assistant_test_status(
-                f"Cannot test “{self._assistant_test_name}” — {reason}."
+                f"Cannot test “{self._assistant_test_name}” — {reason}.", error=True
             )
             if field == "base_url":
                 widget = self.a_url_edit
@@ -4217,14 +4231,17 @@ class SettingsWindow(QDialog):
         if gen != self._assistant_gen:
             return  # detached by Cancel or superseded — see _cancel_assistant_test
         self._end_assistant_test()
-        self._set_assistant_test_status(f"“{self._assistant_test_name}” failed: {message}")
+        self._set_assistant_test_status(
+            f"“{self._assistant_test_name}” failed: {message}", error=True
+        )
 
-    def _set_assistant_test_status(self, text: str) -> None:
+    def _set_assistant_test_status(self, text: str, *, error: bool = False) -> None:
         """Show the assistant test's status and voice it where the focus is:
         on Cancel while the request runs, on Test connection otherwise (both
         hand the focus over, see _test_assistant) — the label below them is
         never read out, as in the microphone test."""
         self.a_test_status.setText(text)
+        self._set_status_error(self.a_test_status, error)
         self.a_test_button.setAccessibleDescription(text)
         self.a_test_cancel_button.setAccessibleDescription(text if self._assistant_busy else "")
 
@@ -4342,10 +4359,18 @@ class SettingsWindow(QDialog):
         if waiting:
             if label.text() != _DIAG_BUSY_NOTE:
                 label.setProperty("_pre_note_text", label.text())
+                # The note is no failure: stash a result's error style with
+                # its text and put both back together.
+                label.setProperty("_pre_note_error", label.property("role") == "error")
                 label.setText(_DIAG_BUSY_NOTE)
+                SettingsWindow._set_status_error(label, False)
         elif label.text() == _DIAG_BUSY_NOTE:
             stashed = label.property("_pre_note_text")
-            label.setText(stashed if isinstance(stashed, str) and stashed else idle_text)
+            restored = isinstance(stashed, str) and bool(stashed)
+            label.setText(stashed if restored else idle_text)
+            SettingsWindow._set_status_error(
+                label, restored and bool(label.property("_pre_note_error"))
+            )
 
     def _begin_diag(self, kind: str) -> tuple[int, threading.Event]:
         """Mark a diagnostic as started; returns its (generation, cancel event).
@@ -4422,13 +4447,14 @@ class SettingsWindow(QDialog):
         if refocus is not None and self.window().focusWidget() is refocus[1]:
             refocus[0].setFocus(Qt.FocusReason.OtherFocusReason)
 
-    def _set_diag_status(self, text: str) -> None:
+    def _set_diag_status(self, text: str, *, error: bool = False) -> None:
         """Show a model check / transcription test status and voice it on
         the buttons the focus moves between (start, Cancel while it runs, see
         _set_diag_busy) — the line below them is never read out, as in the
         microphone test. Not for the byte-progress ticks, which fire several
         times a second and would flood a screen reader."""
         self.diag_status.setText(text)
+        self._set_status_error(self.diag_status, error)
         self.model_download_button.setAccessibleDescription(text)
         self.tx_test_button.setAccessibleDescription(text)
         running = self._diag_busy and self._diag_kind in ("model", "tx")
@@ -4527,7 +4553,7 @@ class SettingsWindow(QDialog):
             return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
-        self._set_diag_status(f"Model download/load failed: {message}")
+        self._set_diag_status(f"Model download/load failed: {message}", error=True)
         self._after_model_diagnostic()
 
     def _after_model_diagnostic(self) -> None:
@@ -4596,7 +4622,8 @@ class SettingsWindow(QDialog):
         else:
             self._set_diag_status(
                 "No speech detected in the test recording — try the microphone "
-                "test on the Audio page."
+                "test on the Audio page.",
+                error=True,
             )
         self._after_model_diagnostic()
 
@@ -4605,7 +4632,7 @@ class SettingsWindow(QDialog):
             return
         self._set_diag_busy(False)
         self.diag_progress.setVisible(False)
-        self._set_diag_status(f"Transcription test failed: {message}")
+        self._set_diag_status(f"Transcription test failed: {message}", error=True)
         self._after_model_diagnostic()
 
     def _mic_test_refusal(self) -> str | None:
@@ -4642,7 +4669,9 @@ class SettingsWindow(QDialog):
             return
         combo = self.hotkey_edit.text().strip()
         if not Hotkeys.validate(combo):
-            self._set_hotkey_test_status("Invalid hotkey — fix the combination first.")
+            self._set_hotkey_test_status(
+                "Invalid hotkey — fix the combination first.", error=True
+            )
             return
         # Pause the app's real listeners so the test press can't start a real
         # recording behind the dialog (same pattern as _capture_hotkey). Both of
@@ -4655,7 +4684,7 @@ class SettingsWindow(QDialog):
         except Exception as exc:
             log.exception("could not register the test hotkey")
             self.app._register_hotkey()
-            self._set_hotkey_test_status(f"Could not listen for the hotkey: {exc}")
+            self._set_hotkey_test_status(f"Could not listen for the hotkey: {exc}", error=True)
             return
         self._hotkey_test = test
         self._hotkey_test_gen += 1
@@ -4684,10 +4713,11 @@ class SettingsWindow(QDialog):
             return
         self._finish_hotkey_test(
             "Nothing detected within 10 s — check the combination, or set it "
-            "via “Change…”."
+            "via “Change…”.",
+            error=True,
         )
 
-    def _finish_hotkey_test(self, message: str) -> None:
+    def _finish_hotkey_test(self, message: str, *, error: bool = False) -> None:
         """Stop the temporary test listener, give the global hotkey back to
         the app and show `message` (also used as the cancel path on close)."""
         test, self._hotkey_test = self._hotkey_test, None
@@ -4705,13 +4735,14 @@ class SettingsWindow(QDialog):
         # Only while the focus still sits where Qt put it (as _end_diag_cooldown).
         if refocus is not None and self.window().focusWidget() is refocus[1]:
             refocus[0].setFocus(Qt.FocusReason.OtherFocusReason)
-        self._set_hotkey_test_status(message)
+        self._set_hotkey_test_status(message, error=error)
 
-    def _set_hotkey_test_status(self, text: str) -> None:
+    def _set_hotkey_test_status(self, text: str, *, error: bool = False) -> None:
         """Show the hotkey test's status and voice it on its button, where
         the focus comes back when the test ends (see _finish_hotkey_test) —
         the label beside it is never read out."""
         self.hotkey_test_status.setText(text)
+        self._set_status_error(self.hotkey_test_status, error)
         self.hotkey_test_button.setAccessibleDescription(text)
 
     def _cancel_diagnostics(self) -> None:
