@@ -15115,7 +15115,7 @@ def _gui_construction():
         window.update_progress.setVisible(True)
         window.update_cancel_button.setVisible(True)
         window._update_busy = True
-        window._end_update_download("Could not apply update: boom")
+        window._end_update_download("Could not apply update: boom", error=True)
         assert window.update_progress.isHidden(), "progress bar survives a failed update"
         assert window.update_cancel_button.isHidden(), "cancel button survives a failed update"
         assert window.update_check_button.isEnabled()
@@ -15127,6 +15127,7 @@ def _gui_construction():
         assert window.update_button.toolTip() == _INSTALL_DISABLED_TIP
         assert not window._update_busy
         assert "Could not apply update" in window.update_status.text()
+        assert window.update_status.property("role") == "error"  # not a muted note
         # …and the outcome is voiced on Check now, where the focus lands once
         # the button is enabled again; Cancel download is gone, so it says
         # nothing (BACKLOG #72 — the status line is never read out).
@@ -15145,6 +15146,8 @@ def _gui_construction():
         cancelled = "Download cancelled — nothing was installed."
         assert window.update_check_button.accessibleDescription() == cancelled
         assert not window.update_cancel_button.accessibleDescription()
+        # A cancel is no failure: the error style of the failed swap is gone.
+        assert window.update_status.property("role") == "hint", "an error style outlived it"
         assert not window._update_busy
 
         # Assistant connection test. It is the only subsystem whose
@@ -16251,9 +16254,12 @@ def _gui_construction():
             _autostart.describe = lambda desired: (False, "⚠ The registered entry is stale.")
             window._refresh_autostart_status()
             assert window.chk_autostart.accessibleDescription() == "⚠ The registered entry is stale."
+            # …and styled as the failure it is, not as the muted note beside it.
+            assert window.autostart_status.property("role") == "error"
             _autostart.describe = lambda desired: (True, "")
             window._refresh_autostart_status()
             assert window.chk_autostart.accessibleDescription() == "", "stale status voiced"
+            assert window.autostart_status.property("role") == "hint", "an error style outlived it"
         finally:
             _autostart.describe = real_describe
 

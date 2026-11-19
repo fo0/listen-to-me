@@ -3445,8 +3445,9 @@ class SettingsWindow(QDialog):
         goes into the tooltip, where its length costs nothing."""
         from . import autostart
 
-        _healthy, text = autostart.describe(self.chk_autostart.isChecked())
+        healthy, text = autostart.describe(self.chk_autostart.isChecked())
         self.autostart_status.setText(text)
+        self._set_status_error(self.autostart_status, not healthy)
         self.autostart_status.setVisible(bool(text))
         # A sibling label is not announced with the checkbox it describes, and
         # this one carries what the checkbox alone cannot show: an entry
@@ -5435,17 +5436,19 @@ class SettingsWindow(QDialog):
         self._update_busy = False
         self._end_update_check()
         self._disable_install_button("The update check failed — run “Check now” again.")
-        self._set_update_status(f"Update check failed: {message}")
+        self._set_update_status(f"Update check failed: {message}", error=True)
 
-    def _set_update_status(self, text: str) -> None:
+    def _set_update_status(self, text: str, *, error: bool = False) -> None:
         """Show an update check / download status and voice it on the
         buttons the focus sits on: Check now, and Cancel download while a
         download runs. The line itself is never read out by a screen reader,
         as with _set_diag_status. Not for the byte-progress ticks of
         _on_update_progress: they fire per 256 KB chunk and would flood a
         screen reader, so the description keeps the "Downloading …" line
-        that started the transfer until its outcome replaces it."""
+        that started the transfer until its outcome replaces it — they never
+        follow an error, so they need no style reset of their own."""
         self.update_status.setText(text)
+        self._set_status_error(self.update_status, error)
         self.update_check_button.setAccessibleDescription(text)
         downloading = not self.update_cancel_button.isHidden()
         self.update_cancel_button.setAccessibleDescription(text if downloading else "")
@@ -5747,13 +5750,13 @@ class SettingsWindow(QDialog):
             updater.apply_update_windows(Path(path))
         except Exception as exc:  # surfaced in the UI
             log.exception("could not apply update")
-            self._end_update_download(f"Could not apply update: {exc}")
+            self._end_update_download(f"Could not apply update: {exc}", error=True)
             return
         self._set_update_status("Update downloaded — restarting…")
         # Quit so the detached swapper can replace the (now unlocked) exe.
         self.app.post("quit")
 
-    def _end_update_download(self, status: str) -> None:
+    def _end_update_download(self, status: str, *, error: bool = False) -> None:
         """Put the page back into its idle state after a download ended badly.
 
         Every non-restarting outcome routes through here — a failed download, a
@@ -5771,10 +5774,10 @@ class SettingsWindow(QDialog):
         # Back to whatever the selected row offers: the list stays usable
         # during a download, and an older row picked meanwhile installs nothing.
         self._sync_install_button(self.update_list.currentRow())
-        self._set_update_status(status)
+        self._set_update_status(status, error=error)
 
     def _on_update_download_failed(self, message: str) -> None:
-        self._end_update_download(f"Download failed: {message}")
+        self._end_update_download(f"Download failed: {message}", error=True)
 
     def _on_update_download_cancelled(self) -> None:
         self._end_update_download("Download cancelled — nothing was installed.")
