@@ -23,7 +23,6 @@ import logging
 import time
 
 from .failed_takes import start_purge
-from .history import start_prune
 from .failed_takes_text import (
     EXPIRED_NOTE,
     KEPT_NOTE,
@@ -35,6 +34,7 @@ from .failed_takes_text import (
     STAYS_NOTE,
     with_note,
 )
+from .history import start_prune
 from .transcriber import is_cuda_library_error
 
 log = logging.getLogger(__name__)

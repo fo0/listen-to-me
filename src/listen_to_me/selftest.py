@@ -7231,7 +7231,7 @@ def _openvino_pipeline_properties():
     under the custom model folder when one is set (the config dir otherwise),
     and an uncreatable cache dir degrades to no properties instead of raising.
     Pure path logic — openvino stays unimported."""
-    from listen_to_me.transcriber_openvino import _pipeline_properties
+    from listen_to_me.openvino_models import _pipeline_properties
 
     assert _pipeline_properties("CPU", None) == {}
     with tempfile.TemporaryDirectory() as tmp:
@@ -7875,7 +7875,8 @@ def _openvino_backend_logic():
     importing openvino/openvino_genai (they stay lazy)."""
     from listen_to_me.config import Config
     from listen_to_me.transcriber import Transcriber, create_transcriber
-    from listen_to_me.transcriber_openvino import OpenVinoTranscriber, openvino_model_repo
+    from listen_to_me.openvino_models import openvino_model_repo
+    from listen_to_me.transcriber_openvino import OpenVinoTranscriber
 
     assert openvino_model_repo("small", "int8") == "OpenVINO/whisper-small-int8-ov"
     assert (
@@ -7920,7 +7921,7 @@ def _openvino_backend_logic():
     # Format pre-check for custom ids: an OpenVINO IR directory passes, a
     # CTranslate2 one is recognized as the wrong format, and anything that
     # can't be listed (no network, private repo) stays permissive (None).
-    from listen_to_me.transcriber_openvino import _looks_like_openvino_model
+    from listen_to_me.openvino_models import _looks_like_openvino_model
 
     with tempfile.TemporaryDirectory() as tmp:
         ir_dir = Path(tmp) / "ir-model"
