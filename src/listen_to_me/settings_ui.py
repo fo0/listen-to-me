@@ -128,7 +128,7 @@ from .mic_test_widget import APP_BUSY_TEXT, CANCELLED, MicTestWidget, app_busy
 # (#196). Importable up here for the same reason `system_audio` is: overlay.py
 # reaches nothing heavy at import time — `audio` keeps numpy behind
 # TYPE_CHECKING, and Qt is already loaded by this module.
-from .overlay import ANCHOR_ICON, PREVIEW_ANCHORS, preview_anchor
+from .overlay import ANCHOR_ICON, ICON_SIZES, PREVIEW_ANCHORS, icon_size, preview_anchor
 from .prompt_window import (
     _CHARS_PER_TOKEN_ESTIMATE,
     PROMPT_TOKEN_BUDGET,
@@ -2431,6 +2431,32 @@ class SettingsWindow(QDialog):
             "icon look like it vanished when it is only buried. Turn off to let windows cover it.",
         )
         cv.addWidget(self.chk_o_on_top)
+        size_row = QWidget()
+        sr = QHBoxLayout(size_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        sr.setSpacing(8)
+        size_label = QLabel("Icon size:")
+        sr.addWidget(size_label)
+        self.icon_size_combo = QComboBox()
+        for value, label in ICON_SIZES:
+            self.icon_size_combo.addItem(label, value)
+        # Selected by the size it resolves to, so a hand-edited value shows the
+        # size the icon is really drawn at (see overlay.icon_size).
+        drawn = icon_size(ocfg.get("size"))
+        self.icon_size_combo.setCurrentIndex(
+            next(
+                (i for i, (value, _label) in enumerate(ICON_SIZES) if icon_size(value) == drawn),
+                0,
+            )
+        )
+        self.icon_size_combo.setToolTip(
+            "How big the floating icon is drawn. Small leaves more of the screen free, "
+            "Large is easier to see and to hit. It stays where you parked it."
+        )
+        elastic_combo(self.icon_size_combo)
+        size_label.setBuddy(self.icon_size_combo)
+        sr.addWidget(self.icon_size_combo, 1)
+        cv.addWidget(size_row)
         # Neither of these two says *where* the text appears: "Show the
         # transcript at" below owns that, and with it set to the mouse pointer
         # a label promising "next to the icon" describes the wrong place — the
@@ -3027,6 +3053,18 @@ class SettingsWindow(QDialog):
         self.history_max_spin.setValue(self._to_int(self.cfg["history_max"], 200))
         self.history_max_spin.setToolTip("How many of the most recent transcripts to keep. Older ones are dropped.")
         form.addRow("Transcripts to keep:", self.history_max_spin)
+        self.history_days_spin = QSpinBox()
+        self.history_days_spin.setRange(0, 3650)
+        self.history_days_spin.setSpecialValueText("Never")
+        self.history_days_spin.setSuffix(" days")
+        self.history_days_spin.setValue(self._to_int(self.cfg["history_days"], 0))
+        self.history_days_spin.setToolTip(
+            "Delete transcripts automatically once they are this many days old — for "
+            "dictations that should not stay on this computer. “Never” keeps them until "
+            "“Transcripts to keep” drops the oldest. Takes effect when you apply it, and "
+            "then hourly while the app runs."
+        )
+        form.addRow("Delete transcripts after:", self.history_days_spin)
         layout.addWidget(top)
 
         layout.addWidget(self._hint(
@@ -6883,6 +6921,7 @@ class SettingsWindow(QDialog):
             "vad_filter": self.chk_vad.isChecked(),
             "history_enabled": self.chk_history_enabled.isChecked(),
             "history_max": int(self.history_max_spin.value()),
+            "history_days": int(self.history_days_spin.value()),
             "update_check_on_start": self.chk_update_on_start.isChecked(),
             "include_prereleases": self.chk_prereleases.isChecked(),
             "insecure_ssl": self.chk_insecure_ssl.isChecked(),
@@ -6908,6 +6947,7 @@ class SettingsWindow(QDialog):
             "overlay": {
                 "enabled": self.chk_o_enabled.isChecked(),
                 "always_on_top": self.chk_o_on_top.isChecked(),
+                "size": self.icon_size_combo.currentData() or "normal",
                 "show_preview": self.chk_o_preview.isChecked(),
                 "live_preview": self.chk_o_live.isChecked(),
                 "preview_seconds": int(self.preview_seconds_spin.value()),

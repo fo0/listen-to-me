@@ -58,7 +58,19 @@ from .voice_mic_widget import VoiceMicWidget
 
 log = logging.getLogger(__name__)
 
-_ICON_SIZE = 64
+_ICON_SIZE = 64  # px of the "normal" size — the only size before overlay.size existed
+# The sizes the icon can be drawn at (config value → px). The animation is
+# vector-drawn and scales from its own reference canvas, so any of these is
+# as sharp as the default; the extremes stay grabbable (small) and leave the
+# screen corner mostly free (large).
+_ICON_PIXELS = {"small": 48, "normal": _ICON_SIZE, "large": 96}
+# (config value, label for the Settings dropdown) — settings_ui reads the list
+# from here so the dropdown can never offer a size the icon does not know.
+ICON_SIZES = [
+    ("small", "Small"),
+    ("normal", "Normal"),
+    ("large", "Large"),
+]
 _DRAG_THRESHOLD = 8  # px of net movement that turns a click into a drag
 _TOGGLE_DEBOUNCE_S = 0.4  # ignore a second click this soon after one (see mouseReleaseEvent)
 _BUBBLE_BG = "#202124"
@@ -224,8 +236,24 @@ def preview_anchor(value) -> str:
     return ANCHOR_ICON
 
 
+def icon_size(value) -> int:
+    """`overlay.size` as the icon's edge length in px — anything unknown is
+    the normal size.
+
+    Same reasoning as `preview_anchor`: config.json is hand-editable and this
+    key's default is a string, so `config._coerce` passes every string
+    through. A value this code cannot draw must cost the setting, never the
+    icon, and the size every install already has is the safe answer. Read
+    only when the settings are applied, so no once-only logging is needed.
+    """
+    if isinstance(value, str) and value in _ICON_PIXELS:
+        return _ICON_PIXELS[value]
+    log.warning("unknown overlay.size %.60r — drawing the icon at the normal size", value)
+    return _ICON_SIZE
+
+
 def icon_bubble_position(
-    icon_x: int, icon_y: int, width: int, height: int, geo
+    icon_x: int, icon_y: int, width: int, height: int, geo, size: int = _ICON_SIZE
 ) -> tuple[int, int]:
     """Where a `width`×`height` bubble goes for an icon at `icon_x`/`icon_y`.
 
@@ -235,9 +263,9 @@ def icon_bubble_position(
     the placement every install has today, so it is pinned by a check against
     the old implementation's own output instead of re-derived by one.
     """
-    x = icon_x + _ICON_SIZE // 2 - width // 2
+    x = icon_x + size // 2 - width // 2
     x = max(geo.left() + 4, min(x, geo.right() - width - 3))
-    y = icon_y + _ICON_SIZE + 8
+    y = icon_y + size + 8
     if y + height > geo.bottom() - 4:
         y = icon_y - height - 8
     y = max(geo.top() + 4, y)
@@ -359,6 +387,11 @@ class _FloatingIcon(QWidget):
         self._dragged = False
         # Monotonic seconds of the last click that was turned into a toggle.
         self._last_toggle = 0.0
+
+    def set_icon_size(self, size: int) -> None:
+        """Resize the window and the animation inside it to `size` px."""
+        self.setFixedSize(size, size)
+        self.mic.setGeometry(0, 0, size, size)
 
     @property
     def dragging(self) -> bool:
@@ -595,6 +628,9 @@ class Overlay:
         self._sync_menu_state()
 
         self.apply_always_on_top()
+        # Before the position is restored: the clamps there keep the whole
+        # icon on its monitor, which depends on how big it is.
+        self.win.set_icon_size(icon_size(app.cfg["overlay"].get("size")))
         self._restore_position()
 
     # ---------------------------------------------------------- placement
@@ -616,12 +652,12 @@ class Overlay:
             screen = self.win.screen() or QGuiApplication.primaryScreen()
         return screen.availableGeometry()
 
-    @staticmethod
-    def _default_corner(geo) -> tuple[int, int]:
+    def _default_corner(self, geo) -> tuple[int, int]:
         """The icon's home position for `geo`: bottom right, clear of the
         taskbar. Shared by the first-run placement and "Reset position", so the
         two can never drift apart."""
-        return geo.right() - _ICON_SIZE - 24, geo.bottom() - _ICON_SIZE - 120
+        size = self.win.width()
+        return geo.right() - size - 24, geo.bottom() - size - 120
 
     def reset_position(self) -> None:
         """Put the icon back in the default corner of the primary screen and
@@ -684,7 +720,8 @@ class Overlay:
         if len(matches) > 1 and x is not None and y is not None:
             # Two monitors of the same model without an EDID serial share an
             # identity; the saved desktop coordinates break the tie.
-            center = QPoint(x + _ICON_SIZE // 2, y + _ICON_SIZE // 2)
+            half = self.win.width() // 2
+            center = QPoint(x + half, y + half)
             for screen in matches:
                 if screen.geometry().contains(center):
                     return screen
@@ -703,13 +740,14 @@ class Overlay:
         x, y = self._saved_int("x"), self._saved_int("y")
         rel_x, rel_y = self._saved_int("rel_x"), self._saved_int("rel_y")
         screen = self._saved_screen(x, y)
+        size = self.win.width()
         if screen is not None and rel_x is not None and rel_y is not None:
             geo = screen.geometry()
             # Clamped to that monitor: a resolution smaller than at save time
             # would otherwise put the icon outside the screen it belongs on.
             self.win.move(
-                max(geo.left(), min(geo.left() + rel_x, geo.right() - _ICON_SIZE)),
-                max(geo.top(), min(geo.top() + rel_y, geo.bottom() - _ICON_SIZE)),
+                max(geo.left(), min(geo.left() + rel_x, geo.right() - size)),
+                max(geo.top(), min(geo.top() + rel_y, geo.bottom() - size)),
             )
             return True
         if x is None or y is None:
@@ -730,8 +768,8 @@ class Overlay:
         # report the position as unhonoured so the caller looks again.
         geo = QGuiApplication.primaryScreen().availableGeometry()
         self.win.move(
-            max(geo.left(), min(x, geo.right() - _ICON_SIZE)),
-            max(geo.top(), min(y, geo.bottom() - _ICON_SIZE)),
+            max(geo.left(), min(x, geo.right() - size)),
+            max(geo.top(), min(y, geo.bottom() - size)),
         )
         return False
 
@@ -818,6 +856,39 @@ class Overlay:
             log.exception("could not change the floating icon's always-on-top state")
         if self._visible_wanted:
             self._reassert()
+
+    def apply_size(self) -> None:
+        """Put the `overlay.size` setting into effect, now.
+
+        The icon grows or shrinks around its own centre, so it stays where the
+        user parked it rather than spreading towards the bottom right, and is
+        then pulled back onto its monitor if the bigger size would hang over
+        an edge. A position the user chose is saved again (the top-left corner
+        moved with the resize); the never-saved first-run corner is recomputed
+        for the new size and stays unsaved, like a first launch leaves it.
+        """
+        size = icon_size(self.app.cfg["overlay"].get("size"))
+        old = self.win.width()
+        if size == old:
+            return
+        ocfg = self.app.cfg["overlay"]
+        saved = ocfg.get("x") is not None and ocfg.get("y") is not None
+        x, y = self.win.x() + (old - size) // 2, self.win.y() + (old - size) // 2
+        self.win.set_icon_size(size)
+        if not saved:
+            geo = QGuiApplication.primaryScreen().availableGeometry()
+            self.win.move(*self._default_corner(geo))
+            self.reposition_bubble()
+            return
+        half = size // 2
+        screen = QGuiApplication.screenAt(QPoint(x + half, y + half)) or self.win.screen()
+        if screen is not None:
+            geo = screen.geometry()
+            x = max(geo.left(), min(x, geo.right() - size))
+            y = max(geo.top(), min(y, geo.bottom() - size))
+        self.win.move(x, y)
+        self.reposition_bubble()
+        self.save_position()
 
     def set_visible(self, visible: bool) -> None:
         self._visible_wanted = bool(visible)
@@ -1058,7 +1129,8 @@ class Overlay:
         if x is None or y is None:
             center = self.win.frameGeometry().center()
         else:
-            center = QPoint(x + _ICON_SIZE // 2, y + _ICON_SIZE // 2)
+            half = self.win.width() // 2
+            center = QPoint(x + half, y + half)
         return any(s.geometry().contains(center) for s in QGuiApplication.screens())
 
     # -------------------------------------------------------------- state
@@ -1382,7 +1454,9 @@ class Overlay:
             # No pointer position to be had: place it at the icon rather than
             # leave it wherever it happened to be.
         geo = self._screen_geometry()
-        self.bubble.move(*icon_bubble_position(self.win.x(), self.win.y(), width, height, geo))
+        self.bubble.move(
+            *icon_bubble_position(self.win.x(), self.win.y(), width, height, geo, self.win.width())
+        )
 
     def tick_cursor_preview(self) -> None:
         """Follow the mouse pointer while a cursor-anchored bubble is up.
@@ -1477,7 +1551,8 @@ class Overlay:
         ocfg = self.app.cfg["overlay"]
         x, y = self.win.x(), self.win.y()
         ocfg["x"], ocfg["y"] = x, y
-        center = QPoint(x + _ICON_SIZE // 2, y + _ICON_SIZE // 2)
+        half = self.win.width() // 2
+        center = QPoint(x + half, y + half)
         screen = QGuiApplication.screenAt(center) or self.win.screen()
         key = _screen_key(screen) if screen is not None else ""
         if key:

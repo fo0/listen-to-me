@@ -86,7 +86,7 @@ Everything Listen To Me does, in detail. The short version is in the
   combination can ever fire (modifier detection is Windows-only; with a hold
   hotkey the feature requires a modifier-free key such as F9 on any platform).
 - **Floating status icon** — a small animated always-on-top icon you can drag
-  anywhere: a wavy equalizer ring that shimmers gently while idle, pulses with
+  anywhere, in one of three sizes (Settings → Overlay → _Icon size_): a wavy equalizer ring that shimmers gently while idle, pulses with
   your live microphone levels while recording, and shows an orange mic glyph
   while transcribing. Click it to start/stop, right-click for a menu — whose
   entries follow the state like the tray menu's do, so the first one says
@@ -189,7 +189,9 @@ Everything Listen To Me does, in detail. The short version is in the
   quotes finds those words as one phrase, and a leading `-` leaves out what
   you do not want (`budget -meeting`, `-2025`) — which keeps long meeting
   recordings, which mention everything, out of a search for a short note.
-  Bounded in size, and easy to switch off or
+  Bounded in size, optionally **deleted after a number of days**
+  (Settings → History → _Delete transcripts after_, off by default) for
+  dictations that should not stay on the computer, and easy to switch off or
   clear (the confirmation names how many transcripts that deletes) — and a
   single transcript you would rather not keep can be deleted on its own,
   without losing the rest. **Export…** saves the listed transcripts

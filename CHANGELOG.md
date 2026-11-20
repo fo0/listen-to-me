@@ -14,6 +14,14 @@ changes at a glance.
 
 ### Added
 
+- **Floating icon size.** Settings → Overlay → **Icon size** draws the floating
+  icon small (48 px), normal (64 px, as before) or large (96 px). It grows or
+  shrinks around the spot it was parked and keeps that place after a restart.
+  Saved as `overlay.size`.
+- **Delete transcripts after a number of days.** Settings → History → **Delete
+  transcripts after** removes transcripts once they reach that age — when you
+  save, at startup and hourly while the app runs. Off (_Never_) by default.
+  Saved as `history_days`.
 - **Focus for Auto-configure.** Settings → Engine → **Focus** next to
   _Auto-configure for this PC_ weighs accuracy against speed: **Balanced** (the
   default, as before) leans to accuracy while dictation and the live features

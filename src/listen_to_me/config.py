@@ -226,6 +226,11 @@ DEFAULTS: dict = {
         # still there but buried, which reads as "it vanished". Off leaves it an
         # ordinary window that other windows may cover.
         "always_on_top": True,
+        # How big the floating icon is drawn: "small" (48 px), "normal"
+        # (64 px, the size it always had) or "large" (96 px). Anything else
+        # degrades to "normal" (see overlay.icon_size): the default is a
+        # string, so _coerce lets every string through.
+        "size": "normal",
         # Briefly show the transcribed text in a bubble after a recording;
         # overlay.preview_anchor below decides where that bubble appears.
         "show_preview": True,
@@ -297,6 +302,10 @@ DEFAULTS: dict = {
     "history_enabled": True,
     # How many of the most recent transcripts to keep.
     "history_max": 200,
+    # Delete transcripts older than this many days (0 = keep them until
+    # history_max trims them). Applied when a transcript is added, when the
+    # settings are saved, at startup and hourly while the app runs.
+    "history_days": 0,
     # In-app updater (checks the GitHub Releases of this repo).
     "update_check_on_start": True,
     "include_prereleases": False,
