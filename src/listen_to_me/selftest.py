@@ -1041,6 +1041,52 @@ def _history_preview_cuts_long_transcripts():
     assert preview_text(None) == ("", False)
 
 
+def _history_deletes_transcripts_by_age():
+    """`history_days` deletes transcripts older than the limit, and only those.
+
+    `prune` drops by the stored time; a time nobody can read is never a reason
+    to delete (the file is hand-editable); 0 days keeps everything; `add`
+    applies the limit as well but never drops the entry it was handed — a
+    retried take is stored at the time it was recorded, which may already be
+    past the limit, and the retry deletes its kept audio once it is stored.
+    An unreadable file is left untouched, like every other writer leaves it.
+    """
+    import json
+
+    from listen_to_me.history import TranscriptHistory
+
+    day = 86400.0
+    now = 1_000 * day
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "history.json"
+        store = TranscriptHistory(path)
+        store.add("ancient", timestamp=now - 40 * day)
+        store.add("last month", timestamp=now - 20 * day)
+        store.add("yesterday", timestamp=now - 1 * day)
+        assert store.prune(now) == 0, "no limit set: nothing may go"
+        # An entry an older build or a hand-edit left without a usable time.
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data.insert(0, {"time": "soon", "text": "undated"})
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+        store.max_age_days = 30
+        assert store.prune(now) == 1
+        assert [e["text"] for e in store.entries()] == ["yesterday", "last month", "undated"]
+        assert store.prune(now) == 0, "a second clean-up has nothing left to do"
+
+        # add() applies the limit to the others, never to the entry itself.
+        store.max_age_days = 7
+        store.add("retried", timestamp=now - 10 * day)
+        texts = [e["text"] for e in store.entries()]
+        assert "retried" in texts, "the retried take must survive its own store"
+        assert "undated" in texts
+
+        # An unreadable file is reported by _load and left alone.
+        path.write_text("{not json", encoding="utf-8")
+        assert store.prune(now) == 0
+        assert path.read_text(encoding="utf-8") == "{not json"
+
+
 def _history_delete_one_entry():
     """Deleting a single transcript removes exactly that one and keeps the
     rest. The row is identified by its own values, never by position: a
@@ -17975,6 +18021,7 @@ _LIGHT_CHECKS = [
     ("history search takes phrases and exclusions", _history_search_takes_phrases_and_exclusions),
     ("history preview cuts long transcripts", _history_preview_cuts_long_transcripts),
     ("history deletes one entry", _history_delete_one_entry),
+    ("history deletes transcripts by age", _history_deletes_transcripts_by_age),
     ("history refuses to overwrite an unreadable file",
      _history_refuses_to_overwrite_an_unreadable_file),
     ("history export format", _history_export_format),

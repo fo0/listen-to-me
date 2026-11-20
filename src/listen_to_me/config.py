@@ -302,6 +302,10 @@ DEFAULTS: dict = {
     "history_enabled": True,
     # How many of the most recent transcripts to keep.
     "history_max": 200,
+    # Delete transcripts older than this many days (0 = keep them until
+    # history_max trims them). Applied when a transcript is added, when the
+    # settings are saved, at startup and hourly while the app runs.
+    "history_days": 0,
     # In-app updater (checks the GitHub Releases of this repo).
     "update_check_on_start": True,
     "include_prereleases": False,

@@ -23,6 +23,7 @@ import logging
 import time
 
 from .failed_takes import start_purge
+from .history import start_prune
 from .failed_takes_text import (
     EXPIRED_NOTE,
     KEPT_NOTE,
@@ -229,7 +230,9 @@ def retry_failed(app, retry: dict, exc: BaseException) -> None:
 def purge_when_due(app, now: float | None = None) -> None:
     """Start the hourly purge of expired takes once it is due — ridden by
     `App._poll` on the main thread every 100 ms, so all it costs there is a
-    clock read; the purge runs on its own thread (`start_purge`).
+    clock read; the purge runs on its own thread (`start_purge`). Transcripts
+    past `history_days` go in the same beat (`start_prune`), for the same
+    reason: a tray app runs for weeks.
 
     The purge at startup alone did not keep "kept for 7 days": a tray app runs
     for weeks, and the listing that purges as well only runs while someone
@@ -243,6 +246,9 @@ def purge_when_due(app, now: float | None = None) -> None:
         return
     app._next_purge = now + PURGE_INTERVAL_S
     start_purge(store)
+    history = getattr(app, "history", None)
+    if history is not None:
+        start_prune(history)
 
 
 def end_retry(app) -> None:

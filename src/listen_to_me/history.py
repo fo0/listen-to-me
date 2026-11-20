@@ -26,6 +26,7 @@ from .config import atomic_write_json
 log = logging.getLogger(__name__)
 
 DEFAULT_MAX_ENTRIES = 200
+_DAY_S = 86400.0
 
 
 class HistoryUnavailable(RuntimeError):
@@ -389,11 +390,59 @@ def _same_time(stored, wanted) -> bool:
         return False
 
 
+def _expired(entry: dict, cutoff: float) -> bool:
+    """Whether `entry` was recorded before `cutoff` (epoch seconds).
+
+    An entry whose time cannot be read is never expired: history.json is
+    hand-editable, and a transcript nobody can date must not be deleted on a
+    guess — the `max_entries` cap still bounds it.
+    """
+    try:
+        return float(entry.get("time")) < cutoff
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 class TranscriptHistory:
-    def __init__(self, path: Path, max_entries: int = DEFAULT_MAX_ENTRIES):
+    def __init__(
+        self, path: Path, max_entries: int = DEFAULT_MAX_ENTRIES, max_age_days: int = 0
+    ):
         self.path = Path(path)
         self.max_entries = max(1, int(max_entries))
+        # Transcripts older than this many days are deleted; 0 keeps them.
+        self.max_age_days = max(0, int(max_age_days))
         self._lock = threading.Lock()
+
+    def _cutoff(self, now: float | None = None) -> float | None:
+        """The epoch time before which a transcript is expired, or None when
+        no age limit is set."""
+        if self.max_age_days <= 0:
+            return None
+        return (time.time() if now is None else now) - self.max_age_days * _DAY_S
+
+    def prune(self, now: float | None = None) -> int:
+        """Delete every transcript older than `max_age_days`; the count deleted.
+
+        Never raises: it runs off a timer and from the settings save, where a
+        history file that cannot be read or written must cost the clean-up,
+        not the caller (`_load` and `_save` log the reason). An unreadable file
+        is left alone, for the reason `add` refuses to write over one.
+        """
+        cutoff = self._cutoff(now)
+        if cutoff is None:
+            return 0
+        with self._lock:
+            try:
+                entries = self._load()
+            except HistoryUnavailable:
+                return 0
+            kept = [e for e in entries if not _expired(e, cutoff)]
+            removed = len(entries) - len(kept)
+            if removed:
+                self._save(kept)
+        if removed:
+            log.info("deleted %d transcript(s) older than %d day(s)", removed, self.max_age_days)
+        return removed
 
     def add(self, text: str, timestamp: float | None = None, *, strict: bool = False) -> bool:
         """Append a transcript; False when blank text or an exact consecutive
@@ -433,6 +482,13 @@ class TranscriptHistory:
             if index and entries[index - 1].get("text") == text:
                 return False
             entries.insert(index, entry)
+            cutoff = self._cutoff()
+            if cutoff is not None:
+                # The new entry is never the one this drops, for the reason
+                # the cap below spares it: a retried take is stored at the
+                # time it was recorded, which may already be past the limit.
+                entries = [e for e in entries if e is entry or not _expired(e, cutoff)]
+                index = next(i for i, e in enumerate(entries) if e is entry)
             excess = len(entries) - self.max_entries
             if excess > 0:
                 # The default path always appends, so for it this is the
@@ -571,3 +627,15 @@ class TranscriptHistory:
             log.exception("could not write transcript history %s", self.path)
             if strict:
                 raise
+
+
+def start_prune(history: TranscriptHistory) -> None:
+    """Run `history.prune()` once on its own thread — for startup and the
+    hourly clean-up, which must not wait on file I/O. A no-op without an age
+    limit, and never raises (`prune` itself does not either)."""
+    if history.max_age_days <= 0:
+        return
+    try:
+        threading.Thread(target=history.prune, name="history-prune", daemon=True).start()
+    except Exception:
+        log.exception("could not start the transcript history clean-up")

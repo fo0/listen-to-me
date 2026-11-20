@@ -51,7 +51,7 @@ from .failed_takes_flow import (
 from .failed_takes_text import RETRY_BUSY, RETRY_GONE, RETRY_UNREADABLE, RETRY_WITHHOLD
 from .fillers import EMPTY_TRANSCRIPT, is_filler
 from .hallucination import implausible_reason
-from .history import TranscriptHistory
+from .history import TranscriptHistory, start_prune
 from .hotkeys import Hotkeys
 from .injector import Injector, ModifierHeldError, sanitize_typed_text
 from .integrations import MuteIntegrations
@@ -915,7 +915,11 @@ class App:
         self.history = TranscriptHistory(
             self.cfg.path.parent / "history.json",
             max_entries=clamp_setting("history_max", self.cfg["history_max"], 10, 5000),
+            max_age_days=clamp_setting("history_days", self.cfg["history_days"], 0, 3650),
         )
+        # Expired transcripts go off the startup path now and hourly from
+        # _poll, together with the expired failed takes (purge_when_due).
+        start_prune(self.history)
         # The audio of takes whose transcription failed, kept for a retry from
         # Settings → History (#363) — machine-local, never in the roaming
         # config folder (see config.failed_takes_dir). Expired ones are purged
@@ -2560,6 +2564,12 @@ class App:
         # may switch a Windows-disabled entry back on (see autostart.sync).
         self._sync_autostart(repair_block=True)
         self.history.max_entries = clamp_setting("history_max", self.cfg["history_max"], 10, 5000)
+        self.history.max_age_days = clamp_setting(
+            "history_days", self.cfg["history_days"], 0, 3650
+        )
+        # Synchronously: the settings window re-renders its History page right
+        # after this returns, and a shortened limit must show there at once.
+        self.history.prune()
         self.tray.set_state(self.state)
         if self.overlay is not None:
             # Order matters: the always-on-top flag rebuilds the native window

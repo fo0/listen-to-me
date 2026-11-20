@@ -3053,6 +3053,18 @@ class SettingsWindow(QDialog):
         self.history_max_spin.setValue(self._to_int(self.cfg["history_max"], 200))
         self.history_max_spin.setToolTip("How many of the most recent transcripts to keep. Older ones are dropped.")
         form.addRow("Transcripts to keep:", self.history_max_spin)
+        self.history_days_spin = QSpinBox()
+        self.history_days_spin.setRange(0, 3650)
+        self.history_days_spin.setSpecialValueText("Never")
+        self.history_days_spin.setSuffix(" days")
+        self.history_days_spin.setValue(self._to_int(self.cfg["history_days"], 0))
+        self.history_days_spin.setToolTip(
+            "Delete transcripts automatically once they are this many days old — for "
+            "dictations that should not stay on this computer. “Never” keeps them until "
+            "“Transcripts to keep” drops the oldest. Takes effect when you apply it, and "
+            "then hourly while the app runs."
+        )
+        form.addRow("Delete transcripts after:", self.history_days_spin)
         layout.addWidget(top)
 
         layout.addWidget(self._hint(
@@ -6909,6 +6921,7 @@ class SettingsWindow(QDialog):
             "vad_filter": self.chk_vad.isChecked(),
             "history_enabled": self.chk_history_enabled.isChecked(),
             "history_max": int(self.history_max_spin.value()),
+            "history_days": int(self.history_days_spin.value()),
             "update_check_on_start": self.chk_update_on_start.isChecked(),
             "include_prereleases": self.chk_prereleases.isChecked(),
             "insecure_ssl": self.chk_insecure_ssl.isChecked(),
