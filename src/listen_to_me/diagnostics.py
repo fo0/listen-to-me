@@ -157,7 +157,7 @@ def model_cache_status(snapshot: dict) -> dict:
     model_dir = snapshot.get("model_dir")
     try:
         if snapshot.get("backend") == "openvino":
-            from .transcriber_openvino import _model_is_cached, openvino_model_repo
+            from .openvino_models import _model_is_cached, openvino_model_repo
 
             repo = openvino_model_repo(model, snapshot.get("openvino_precision") or "int8")
             return {"target": repo, "cached": _model_is_cached(repo, model_dir), "error": None}
