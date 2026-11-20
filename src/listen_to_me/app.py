@@ -2565,6 +2565,7 @@ class App:
             # Order matters: the always-on-top flag rebuilds the native window
             # and hides it, so visibility is (re-)applied afterwards.
             self.overlay.apply_always_on_top()
+            self.overlay.apply_size()
             self.overlay.set_visible(bool(self.cfg["overlay"]["enabled"]))
 
     def _factory_reset(self) -> None:

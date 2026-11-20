@@ -9858,6 +9858,94 @@ def _overlay_position_is_anchored_to_its_monitor():
         overlay_module._screen_key = key
 
 
+def _overlay_icon_size_follows_the_setting():
+    """`overlay.size` resizes the floating icon around the spot it was parked.
+
+    Three halves: the hand-edited value degrades to the normal size instead of
+    leaving the icon undrawable (`overlay.icon_size`); a size change applied
+    from Settings keeps the icon's centre and persists the moved corner, so a
+    restart does not shift it; and the Settings dropdown round-trips the value
+    through `_collect`, the only path to disk, showing a hand-edited value as
+    the size it is really drawn at.
+    """
+    from listen_to_me.overlay import ICON_SIZES, Overlay, icon_size
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    assert [value for value, _label in ICON_SIZES] == ["small", "normal", "large"]
+    assert icon_size("normal") == 64, "the default must stay the size every install had"
+    assert icon_size("small") < 64 < icon_size("large")
+    for junk in ("Large", "huge", "", None, 96, ["large"]):
+        assert icon_size(junk) == 64, repr(junk)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        ocfg = stub.cfg["overlay"]
+        assert ocfg["size"] == "normal"
+        overlay = Overlay(stub)
+        try:
+            assert overlay.win.width() == overlay.win.height() == 64
+            assert overlay.win.mic.width() == 64
+            overlay.win.move(300, 300)
+            overlay.save_position()
+            center = overlay.win.geometry().center()
+
+            ocfg["size"] = "large"
+            overlay.apply_size()
+            assert overlay.win.width() == overlay.win.height() == icon_size("large")
+            assert overlay.win.mic.width() == icon_size("large"), "the animation must fill the icon"
+            assert abs(overlay.win.geometry().center().x() - center.x()) <= 1
+            assert abs(overlay.win.geometry().center().y() - center.y()) <= 1
+            assert (ocfg["x"], ocfg["y"]) == (overlay.win.x(), overlay.win.y()), (
+                "the corner moved with the resize and must be saved"
+            )
+            overlay.apply_size()  # unchanged setting: nothing moves
+            assert (ocfg["x"], ocfg["y"]) == (overlay.win.x(), overlay.win.y())
+
+            # A restart draws it at the saved size, where it was left.
+            restarted = Overlay(stub)
+            try:
+                assert restarted.win.width() == icon_size("large")
+                assert (restarted.win.x(), restarted.win.y()) == (ocfg["x"], ocfg["y"])
+            finally:
+                restarted.destroy()
+
+            # Never moved: the first-run corner is recomputed for the new size
+            # and stays unsaved, like a first launch leaves it.
+            ocfg["x"] = ocfg["y"] = ocfg["screen"] = ocfg["rel_x"] = ocfg["rel_y"] = None
+            ocfg["size"] = "small"
+            overlay.apply_size()
+            assert overlay.win.width() == icon_size("small")
+            from PySide6.QtGui import QGuiApplication
+
+            geo = QGuiApplication.primaryScreen().availableGeometry()
+            assert (overlay.win.x(), overlay.win.y()) == overlay._default_corner(geo)
+            assert ocfg["x"] is None and ocfg["y"] is None
+        finally:
+            overlay.destroy()
+
+        window = SettingsWindow(stub)
+        try:
+            combo = window.icon_size_combo
+            assert [combo.itemData(i) for i in range(combo.count())] == ["small", "normal", "large"]
+            assert combo.currentData() == "small"
+            combo.setCurrentIndex(combo.findData("large"))
+            assert window._collect()["overlay"]["size"] == "large"
+        finally:
+            window.deleteLater()
+            app.processEvents()
+        stub.cfg["overlay"]["size"] = "gigantic"
+        hand_edited = SettingsWindow(stub)
+        try:
+            assert hand_edited.icon_size_combo.currentData() == "normal"
+            assert hand_edited._collect()["overlay"]["size"] == "normal"
+        finally:
+            hand_edited.deleteLater()
+            app.processEvents()
+
+
 def _overlay_preview_anchor_places_the_bubble():
     """Where the transcript bubble is drawn — the pure half of #196.
 
@@ -18010,6 +18098,7 @@ _LIGHT_CHECKS = [
     ("disabled buttons look disabled", _theme_disabled_visible),
     ("voice mic widget", _voice_mic_widget),
     ("overlay position is anchored to its monitor", _overlay_position_is_anchored_to_its_monitor),
+    ("overlay icon size follows the setting", _overlay_icon_size_follows_the_setting),
     ("overlay preview anchor places the bubble", _overlay_preview_anchor_places_the_bubble),
     ("overlay preview follows the pointer", _overlay_preview_follows_the_pointer),
     ("overlay bubble caps a long transcript", _overlay_bubble_caps_a_long_transcript),

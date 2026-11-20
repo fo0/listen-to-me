@@ -86,7 +86,7 @@ Everything Listen To Me does, in detail. The short version is in the
   combination can ever fire (modifier detection is Windows-only; with a hold
   hotkey the feature requires a modifier-free key such as F9 on any platform).
 - **Floating status icon** — a small animated always-on-top icon you can drag
-  anywhere: a wavy equalizer ring that shimmers gently while idle, pulses with
+  anywhere, in one of three sizes (Settings → Overlay → _Icon size_): a wavy equalizer ring that shimmers gently while idle, pulses with
   your live microphone levels while recording, and shows an orange mic glyph
   while transcribing. Click it to start/stop, right-click for a menu — whose
   entries follow the state like the tray menu's do, so the first one says

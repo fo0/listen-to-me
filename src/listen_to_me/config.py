@@ -226,6 +226,11 @@ DEFAULTS: dict = {
         # still there but buried, which reads as "it vanished". Off leaves it an
         # ordinary window that other windows may cover.
         "always_on_top": True,
+        # How big the floating icon is drawn: "small" (48 px), "normal"
+        # (64 px, the size it always had) or "large" (96 px). Anything else
+        # degrades to "normal" (see overlay.icon_size): the default is a
+        # string, so _coerce lets every string through.
+        "size": "normal",
         # Briefly show the transcribed text in a bubble after a recording;
         # overlay.preview_anchor below decides where that bubble appears.
         "show_preview": True,
