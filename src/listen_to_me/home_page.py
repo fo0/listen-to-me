@@ -206,8 +206,8 @@ class _StatCard(QAbstractButton):
             self.click()
             return
         # Every other key is left to the page, as it was while the card was a
-        # frame: QAbstractButton would turn the arrow keys into focus moves,
-        # and they scroll the Home page today.
+        # frame: the arrow keys scroll the Home page, and QAbstractButton's
+        # own handler would turn them into focus moves.
         event.ignore()
 
 

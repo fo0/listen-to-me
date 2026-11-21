@@ -18222,7 +18222,9 @@ def _home_stat_cards_are_buttons():
             frame_labels = [label.geometry() for label in frame.findChildren(QLabel)]
             card_labels = [label.geometry() for label in card.findChildren(QLabel)]
             assert frame_labels == card_labels, (frame_labels, card_labels)
-            assert card_image == frame_image, f"the card no longer renders like its frame at {width}px"
+            assert card_image == frame_image, (
+                f"the card no longer renders like its frame at {width}px"
+            )
             # …and the twin itself is styled: equal renders of two unstyled
             # widgets would pass the line above on nothing.
             middle = card_image.width() // 2
