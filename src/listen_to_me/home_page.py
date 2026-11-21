@@ -21,13 +21,18 @@ import logging
 import time
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (
+    QAbstractButton,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
+    QStyle,
+    QStyleOption,
     QVBoxLayout,
     QWidget,
 )
@@ -111,7 +116,7 @@ _PAUSED_HINT = (
 )
 
 
-class _StatCard(QFrame):
+class _StatCard(QAbstractButton):
     """A clickable at-a-glance card that navigates to a settings page.
 
     It is a real control, not decoration, so it behaves like one: it takes
@@ -120,14 +125,38 @@ class _StatCard(QFrame):
     keyboard user can neither see nor trigger it, and a screen reader
     announces an unnamed frame. The accessible name carries the card's title
     because the visible heading is a sibling label, not a real label relation.
+
+    It is a button to assistive technology as well, which is why this is a
+    QAbstractButton and not the QFrame it looks like: Qt picks a widget's
+    accessible interface by its class, and a frame's reports the role
+    "Border" with nothing to do but "Set Focus" — a screen reader announces a
+    frame and offers no way to press it (WCAG 4.1.2). A button's reports
+    "Button" with a "Press" action, and it is Qt's own C++ object, created and
+    deleted by Qt's accessibility cache. The other way to the same role, a
+    Python QAccessibleWidget handed out by QAccessible.installFactory, was
+    measured and left out (#423): PySide holds a reference to every interface
+    such a factory returns until the application quits, so each card ever
+    built would leak one along with whatever it references, and that the
+    object Qt deletes is one Python still owns is safe only by how the
+    binding happens to be written.
+
+    Everything the frame got from the style sheet is restated here, so the
+    card looks exactly as it did — see the notes in __init__ and paintEvent.
     """
 
     def __init__(self, title: str, on_click):
         super().__init__()
         self.setProperty("card", "stat")
-        self._on_click = on_click
+        # Mouse, keyboard and a screen reader's "Press" all arrive as clicked.
+        self.clicked.connect(lambda: on_click())
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # A button defaults to a fixed height; the card shares its row's
+        # height with its neighbours, as the frame did.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        # The style sheet's 1px border: a QFrame keeps its contents clear of
+        # it on its own, a plain widget has to be told.
+        self.setContentsMargins(1, 1, 1, 1)
         self.setAccessibleName(f"{title} — open in Settings")
         box = QVBoxLayout(self)
         box.setContentsMargins(14, 12, 14, 12)
@@ -149,20 +178,24 @@ class _StatCard(QFrame):
         """Carry what the card currently shows into what a screen reader reads.
 
         The accessible name is the fixed title ("Microphone — open in
-        Settings"); the value and the detail below it are sibling labels of a
-        focusable frame, not a label relation, so a card announced by its name
-        alone never names the microphone, the model or the language it exists
-        to report — the one piece of information the card carries. Called by
+        Settings"); the value and the detail below it are child labels of the
+        card, not a label relation, so a card announced by its name alone
+        never names the microphone, the model or the language it exists to
+        report — the one piece of information the card carries. Called by
         HomePage._refresh_stats after every value it writes.
         """
         parts = (self.value.text().strip(), self.detail.text().strip())
         self.setAccessibleDescription(" — ".join(part for part in parts if part))
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt naming)
-        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
-            self.setFocus(Qt.FocusReason.MouseFocusReason)
-            self._on_click()
-        super().mouseReleaseEvent(event)
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        # QAbstractButton draws nothing itself. This is what Qt's style sheet
+        # reference prescribes for a custom widget: let the style paint the
+        # background and border the QAbstractButton[card="stat"] rules set.
+        option = QStyleOption()
+        option.initFrom(self)
+        painter = QPainter(self)
+        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, self)
+        painter.end()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         # Accepting the event matters as much as handling it: the owning
@@ -170,9 +203,12 @@ class _StatCard(QFrame):
         # its default button (Save) instead of opening the settings page.
         if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
             event.accept()
-            self._on_click()
+            self.click()
             return
-        super().keyPressEvent(event)
+        # Every other key is left to the page, as it was while the card was a
+        # frame: the arrow keys scroll the Home page, and QAbstractButton's
+        # own handler would turn them into focus moves.
+        event.ignore()
 
 
 class HomePage(QWidget):
