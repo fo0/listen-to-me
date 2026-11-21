@@ -14184,6 +14184,75 @@ def _wizard_hotkey_error_follows_the_field():
             _delete_now(app, wizard)
 
 
+def _wizard_asks_before_dropping_choices():
+    """Cancel / Esc in the setup wizard asks first once something would be
+    lost — past the first page, or with the hotkey changed on it — and
+    "Keep setting up" keeps the wizard open. Untouched, it closes at once.
+    The question itself is stood in for (a modal box would block the run),
+    and so is the hotkey parser that Next runs (pynput is not installed on
+    the light run)."""
+    from listen_to_me import onboarding
+
+    app = _ensure_qapp()
+
+    class _FakeHotkeys:
+        @staticmethod
+        def validate(_combo):
+            return True
+
+    real = onboarding.Hotkeys
+    onboarding.Hotkeys = _FakeHotkeys
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        wizard = onboarding.OnboardingWizard(stub.cfg, probe=lambda _snapshot: {})
+        asked: list[bool] = []
+        closed: list[bool] = []
+        answer = [False]
+
+        def confirm() -> bool:
+            asked.append(True)
+            return answer[0]
+
+        wizard._confirm_leave = confirm
+        wizard.rejected.connect(lambda: closed.append(True))
+        try:
+            wizard.engine_page._probe_thread.join(5)
+            wizard.restart()
+            wizard.reject()
+            assert not asked and closed == [True], "an untouched wizard asked first"
+            closed.clear()
+            wizard.restart()
+            wizard.next()
+            assert wizard.currentId() != wizard.startId()
+            wizard.reject()
+            assert asked == [True] and not closed, "Keep setting up closed the wizard"
+            # Back on the first page, the choices made further on still count.
+            wizard.back()
+            assert wizard.currentId() == wizard.startId()
+            wizard.reject()
+            assert len(asked) == 2 and not closed, "going back forgot the progress"
+            answer[0] = True
+            wizard.reject()
+            assert len(asked) == 3 and closed == [True], "Leave setup kept it open"
+
+            fresh = onboarding.OnboardingWizard(stub.cfg, probe=lambda _snapshot: {})
+            fresh_asked: list[bool] = []
+            fresh._confirm_leave = lambda: fresh_asked.append(True) or False
+            try:
+                fresh.engine_page._probe_thread.join(5)
+                fresh.restart()
+                fresh.hotkey_edit.setText("<ctrl>+<shift>+<f9>")
+                fresh.reject()
+                assert fresh_asked == [True], "a changed hotkey was dropped silently"
+            finally:
+                fresh.mic_test.cancel()
+                _delete_now(app, fresh)
+        finally:
+            onboarding.Hotkeys = real
+            wizard.mic_test.cancel()
+            _delete_now(app, wizard)
+
+
 def _app_disposes_the_setup_wizard():
     """App._run_onboarding hands the wizard to Qt for deletion on the GUI
     thread however it ends — Finish, Cancel, or exec() raising. Left to
@@ -18226,6 +18295,7 @@ _LIGHT_CHECKS = [
      _setup_wizard_recommends_the_engine_for_this_pc),
     ("app disposes the setup wizard", _app_disposes_the_setup_wizard),
     ("wizard hotkey error follows the field", _wizard_hotkey_error_follows_the_field),
+    ("wizard asks before dropping choices", _wizard_asks_before_dropping_choices),
     ("system audio picker reads as an output picker",
      _system_audio_picker_reads_as_an_output_picker),
     ("system audio hint names the outputs it cannot record",

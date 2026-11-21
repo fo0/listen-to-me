@@ -19,6 +19,10 @@ page each:
    level check as Settings → Audio.
 5. **Startup behaviour.**
 
+Only **Finish** saves these choices. Once you have moved past the first page
+or changed the hotkey on it, **Cancel**, `Esc` or the close button ask first
+(**Keep setting up** is the default).
+
 Everything it sets (and much more) can be changed later here:
 
 Click the tray icon, or right-click it → **Settings…**
