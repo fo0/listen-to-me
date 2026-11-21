@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -87,6 +88,8 @@ class OnboardingWizard(QWizard):
         self.cfg = cfg
         self._app = app
         self._hotkeys_paused_for_mic = False
+        # Set once the user has moved on from the first page; see reject().
+        self._past_start = False
         self.setWindowTitle(f"Welcome to {APP_NAME}")
         self.setWizardStyle(QWizard.WizardStyle.ClassicStyle)
         self.setOption(QWizard.WizardOption.NoBackButtonOnStartPage, True)
@@ -349,7 +352,9 @@ class OnboardingWizard(QWizard):
             except Exception:
                 log.debug("could not restore the global hotkeys", exc_info=True)
 
-    def _on_page_changed(self, _page_id: int) -> None:
+    def _on_page_changed(self, page_id: int) -> None:
+        if page_id not in (-1, self.startId()):  # -1: restart() resetting
+            self._past_start = True
         if self.currentPage() is not self._audio_page:
             self.mic_test.cancel()
 
@@ -411,6 +416,31 @@ class OnboardingWizard(QWizard):
     def accept(self) -> None:
         self._apply()
         super().accept()
+
+    def reject(self) -> None:
+        """Cancel / Esc / the close button. Once the user has gone past the
+        first page or changed the hotkey on it, a stray Esc used to drop every
+        choice made so far without a word — Finish is the only way they are
+        kept — so ask first. Untouched, the wizard still closes at once."""
+        changed_hotkey = self.hotkey_edit.text().strip() != str(self.cfg["hotkey"]).strip()
+        if (self._past_start or changed_hotkey) and not self._confirm_leave():
+            return
+        super().reject()
+
+    def _confirm_leave(self) -> bool:
+        """Ask whether to leave the setup; "Keep setting up" is the default
+        and what Esc on the question picks, so a double Esc never leaves."""
+        box = QMessageBox(self)
+        box.setWindowTitle(APP_NAME)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setText("Leave the setup?")
+        box.setInformativeText("Your choices here are not saved. Settings can change them later.")
+        leave = box.addButton("Leave setup", QMessageBox.ButtonRole.DestructiveRole)
+        stay = box.addButton("Keep setting up", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(stay)
+        box.setEscapeButton(stay)
+        box.exec()
+        return box.clickedButton() is leave
 
     def done(self, result: int) -> None:
         # Every way the wizard closes — Finish, Cancel, Esc, the close button:

@@ -30,6 +30,17 @@ changes at a glance.
   **Speed** takes a lighter Whisper model on the CPU. Saved as
   `autoconfig_focus`.
 
+### Changed
+
+- **`Ctrl+F` finds a setting.** From any page of the settings window, `Ctrl+F`
+  puts the caret in **Find a setting…** above the sidebar, so an option can be
+  looked up without reaching for the mouse. History and Help keep the key for
+  their own search.
+- **The setup wizard asks before dropping your choices.** Once you have moved
+  past its first page or changed the hotkey, **Cancel**, `Esc` or the close
+  button ask "Leave the setup?" instead of discarding everything picked so far;
+  **Keep setting up** is the default. An untouched wizard still closes at once.
+
 ### Fixed
 
 - **Auto-configure no longer switches live typing off.** With live typing

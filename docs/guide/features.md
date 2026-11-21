@@ -292,7 +292,9 @@ Everything Listen To Me does, in detail. The short version is in the
 - **First-run setup wizard** — the very first launch walks you through the
   essentials (hotkey, language, a speech engine **recommended for this PC** or
   picked by hand, the microphone with a 3-second level test, startup
-  behaviour); everything stays changeable in Settings later.
+  behaviour); everything stays changeable in Settings later. Leaving it
+  after the first page asks first, so a stray `Esc` does not drop the choices
+  made so far.
 - **Autostart with Windows** (configurable; Linux and macOS equivalents
   included). The entry survives updates: the in-app updater keeps the
   executable's path, and if you replace the exe by hand — a manually downloaded

@@ -11617,6 +11617,44 @@ def _settings_can_be_found_by_name():
             window.deleteLater()
 
 
+def _settings_search_takes_ctrl_f():
+    """Ctrl+F puts the caret in "Find a setting" from any page but History and
+    Help, which keep the key for their own find fields — two live shortcuts on
+    one key would fire neither. The key is named in the field's tooltip, and a
+    repeat selects the old term so typing replaces it. Asserted through
+    `activated`, like Ctrl+S: the offscreen platform delivers no window-wide
+    shortcut to a hidden window."""
+    from PySide6.QtGui import QKeySequence
+
+    from listen_to_me.settings_ui import SettingsWindow
+
+    _ensure_qapp()
+    with tempfile.TemporaryDirectory() as tmp:
+        window = SettingsWindow(_StubApp(Path(tmp)))
+        try:
+            shortcut, edit = window.find_setting_shortcut, window.settings_search_edit
+            assert shortcut.key() == QKeySequence(QKeySequence.StandardKey.Find)
+            named = shortcut.key().toString(QKeySequence.SequenceFormat.NativeText)
+            assert named and f"Shortcut: {named}" in edit.toolTip(), edit.toolTip()
+            # Pages whose visit probes nothing (Engine probes the hardware,
+            # Audio enumerates PortAudio, Updates goes online).
+            for title in ("Home", "General", "Overlay"):
+                window._show_page(title)
+                assert shortcut.isEnabled(), f"Ctrl+F does nothing on {title}"
+            for title in ("History", "Help"):
+                window._show_page(title)
+                assert not shortcut.isEnabled(), f"Ctrl+F is ambiguous on {title}"
+            window._show_page("General")
+            assert shortcut.isEnabled(), "leaving Help left Ctrl+F switched off"
+            edit.setText("hotkey")
+            edit.deselect()
+            shortcut.activated.emit()
+            assert window.focusWidget() is edit, window.focusWidget()
+            assert edit.selectedText() == "hotkey", "a repeat Ctrl+F appends to the term"
+        finally:
+            window.deleteLater()
+
+
 def _settings_pages_step_with_ctrl_tab():
     """Ctrl+Tab / Ctrl+PgDown and back step through the sidebar's pages like a
     tabbed dialog's tabs: section headers are skipped and both ends wrap.
@@ -14140,6 +14178,75 @@ def _wizard_hotkey_error_follows_the_field():
             # …and quiet again until the next refusal.
             edit.setText("again wrong")
             assert not error.text()
+        finally:
+            onboarding.Hotkeys = real
+            wizard.mic_test.cancel()
+            _delete_now(app, wizard)
+
+
+def _wizard_asks_before_dropping_choices():
+    """Cancel / Esc in the setup wizard asks first once something would be
+    lost — past the first page, or with the hotkey changed on it — and
+    "Keep setting up" keeps the wizard open. Untouched, it closes at once.
+    The question itself is stood in for (a modal box would block the run),
+    and so is the hotkey parser that Next runs (pynput is not installed on
+    the light run)."""
+    from listen_to_me import onboarding
+
+    app = _ensure_qapp()
+
+    class _FakeHotkeys:
+        @staticmethod
+        def validate(_combo):
+            return True
+
+    real = onboarding.Hotkeys
+    onboarding.Hotkeys = _FakeHotkeys
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        wizard = onboarding.OnboardingWizard(stub.cfg, probe=lambda _snapshot: {})
+        asked: list[bool] = []
+        closed: list[bool] = []
+        answer = [False]
+
+        def confirm() -> bool:
+            asked.append(True)
+            return answer[0]
+
+        wizard._confirm_leave = confirm
+        wizard.rejected.connect(lambda: closed.append(True))
+        try:
+            wizard.engine_page._probe_thread.join(5)
+            wizard.restart()
+            wizard.reject()
+            assert not asked and closed == [True], "an untouched wizard asked first"
+            closed.clear()
+            wizard.restart()
+            wizard.next()
+            assert wizard.currentId() != wizard.startId()
+            wizard.reject()
+            assert asked == [True] and not closed, "Keep setting up closed the wizard"
+            # Back on the first page, the choices made further on still count.
+            wizard.back()
+            assert wizard.currentId() == wizard.startId()
+            wizard.reject()
+            assert len(asked) == 2 and not closed, "going back forgot the progress"
+            answer[0] = True
+            wizard.reject()
+            assert len(asked) == 3 and closed == [True], "Leave setup kept it open"
+
+            fresh = onboarding.OnboardingWizard(stub.cfg, probe=lambda _snapshot: {})
+            fresh_asked: list[bool] = []
+            fresh._confirm_leave = lambda: fresh_asked.append(True) or False
+            try:
+                fresh.engine_page._probe_thread.join(5)
+                fresh.restart()
+                fresh.hotkey_edit.setText("<ctrl>+<shift>+<f9>")
+                fresh.reject()
+                assert fresh_asked == [True], "a changed hotkey was dropped silently"
+            finally:
+                fresh.mic_test.cancel()
+                _delete_now(app, fresh)
         finally:
             onboarding.Hotkeys = real
             wizard.mic_test.cancel()
@@ -18161,6 +18268,7 @@ _LIGHT_CHECKS = [
     ("settings window reopens as it was left", _settings_window_reopens_as_it_was_left),
     ("settings can be found by name", _settings_can_be_found_by_name),
     ("settings pages step with Ctrl+Tab", _settings_pages_step_with_ctrl_tab),
+    ("settings search takes Ctrl+F", _settings_search_takes_ctrl_f),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("transcription is counted", _transcription_is_counted),
     ("too short take explains hold mode", _too_short_take_explains_hold_mode),
@@ -18187,6 +18295,7 @@ _LIGHT_CHECKS = [
      _setup_wizard_recommends_the_engine_for_this_pc),
     ("app disposes the setup wizard", _app_disposes_the_setup_wizard),
     ("wizard hotkey error follows the field", _wizard_hotkey_error_follows_the_field),
+    ("wizard asks before dropping choices", _wizard_asks_before_dropping_choices),
     ("system audio picker reads as an output picker",
      _system_audio_picker_reads_as_an_output_picker),
     ("system audio hint names the outputs it cannot record",

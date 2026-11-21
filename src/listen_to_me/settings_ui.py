@@ -947,6 +947,21 @@ class SettingsWindow(QDialog):
             )
             self.nav.setToolTip(pages_hint)
             self.nav.setAccessibleDescription(pages_hint)
+        # Ctrl+F (Cmd+F on macOS) puts the caret in "Find a setting" from any
+        # field: the field sits above the sidebar, and from inside a page it
+        # was reachable only by mouse or by tabbing back past every control.
+        # History and Help keep the key for their own find fields, so
+        # `_on_page_changed` switches this one off there — two live shortcuts
+        # on one key make Qt fire neither.
+        self.find_setting_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), self)
+        self.find_setting_shortcut.activated.connect(self._focus_settings_search)
+        self._sync_find_setting_shortcut()
+        find_keys = self.find_setting_shortcut.key().toString(QKeySequence.SequenceFormat.NativeText)
+        if find_keys:
+            self.settings_search_edit.setToolTip(
+                self.settings_search_edit.toolTip()
+                + f" Shortcut: {find_keys} (on History and Help it searches that page)."
+            )
         apply_keys = self.apply_shortcut.key().toString(QKeySequence.SequenceFormat.NativeText)
         apply_btn = QPushButton("&Apply")
         apply_btn.setToolTip(
@@ -3511,6 +3526,7 @@ class SettingsWindow(QDialog):
         if index is None:
             return  # a section header, not a page
         self.stack.setCurrentIndex(index)
+        self._sync_find_setting_shortcut()
         # A revealed API key does not outlive the visit to the Assistant page.
         self._set_api_key_shown(False)
         # Home always re-reads config + history — cheap, and it may have gone
@@ -3554,6 +3570,21 @@ class SettingsWindow(QDialog):
         if index == self._updates_index and not self._updates_auto_checked:
             self._updates_auto_checked = True
             self._check_updates()
+
+    def _sync_find_setting_shortcut(self) -> None:
+        """Ctrl+F finds a setting on every page but History and Help, whose
+        page-scoped Ctrl+F opens their own find field. getattr: the sidebar
+        selects its first page before the footer creates the shortcut."""
+        shortcut = getattr(self, "find_setting_shortcut", None)
+        if shortcut is not None:
+            own_find = (self._history_index, self._help_index)
+            shortcut.setEnabled(self.stack.currentIndex() not in own_find)
+
+    def _focus_settings_search(self) -> None:
+        """Ctrl+F: caret in "Find a setting", its text selected — the same
+        replace-on-repeat behaviour as the History and Help find fields."""
+        self.settings_search_edit.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.settings_search_edit.selectAll()
 
     def _show_page(self, title: str) -> None:
         """Switch the sidebar (and with it the stack) to the page `title`."""
