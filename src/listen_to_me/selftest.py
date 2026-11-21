@@ -11617,6 +11617,44 @@ def _settings_can_be_found_by_name():
             window.deleteLater()
 
 
+def _settings_search_takes_ctrl_f():
+    """Ctrl+F puts the caret in "Find a setting" from any page but History and
+    Help, which keep the key for their own find fields — two live shortcuts on
+    one key would fire neither. The key is named in the field's tooltip, and a
+    repeat selects the old term so typing replaces it. Asserted through
+    `activated`, like Ctrl+S: the offscreen platform delivers no window-wide
+    shortcut to a hidden window."""
+    from PySide6.QtGui import QKeySequence
+
+    from listen_to_me.settings_ui import SettingsWindow
+
+    _ensure_qapp()
+    with tempfile.TemporaryDirectory() as tmp:
+        window = SettingsWindow(_StubApp(Path(tmp)))
+        try:
+            shortcut, edit = window.find_setting_shortcut, window.settings_search_edit
+            assert shortcut.key() == QKeySequence(QKeySequence.StandardKey.Find)
+            named = shortcut.key().toString(QKeySequence.SequenceFormat.NativeText)
+            assert named and f"Shortcut: {named}" in edit.toolTip(), edit.toolTip()
+            # Pages whose visit probes nothing (Engine probes the hardware,
+            # Audio enumerates PortAudio, Updates goes online).
+            for title in ("Home", "General", "Overlay"):
+                window._show_page(title)
+                assert shortcut.isEnabled(), f"Ctrl+F does nothing on {title}"
+            for title in ("History", "Help"):
+                window._show_page(title)
+                assert not shortcut.isEnabled(), f"Ctrl+F is ambiguous on {title}"
+            window._show_page("General")
+            assert shortcut.isEnabled(), "leaving Help left Ctrl+F switched off"
+            edit.setText("hotkey")
+            edit.deselect()
+            shortcut.activated.emit()
+            assert window.focusWidget() is edit, window.focusWidget()
+            assert edit.selectedText() == "hotkey", "a repeat Ctrl+F appends to the term"
+        finally:
+            window.deleteLater()
+
+
 def _settings_pages_step_with_ctrl_tab():
     """Ctrl+Tab / Ctrl+PgDown and back step through the sidebar's pages like a
     tabbed dialog's tabs: section headers are skipped and both ends wrap.
@@ -18161,6 +18199,7 @@ _LIGHT_CHECKS = [
     ("settings window reopens as it was left", _settings_window_reopens_as_it_was_left),
     ("settings can be found by name", _settings_can_be_found_by_name),
     ("settings pages step with Ctrl+Tab", _settings_pages_step_with_ctrl_tab),
+    ("settings search takes Ctrl+F", _settings_search_takes_ctrl_f),
     ("tray counts the recording time", _tray_counts_the_recording_time),
     ("transcription is counted", _transcription_is_counted),
     ("too short take explains hold mode", _too_short_take_explains_hold_mode),
