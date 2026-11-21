@@ -32,6 +32,11 @@ changes at a glance.
 
 ### Changed
 
+- **The tray's Microphone entry names the device in use.** Like **Dictation
+  language**, the entry reads "Microphone: USB Headset" (or "Microphone: System
+  default"), so checking the input before a call takes a glance instead of
+  opening the submenu. The name comes from the settings and the last device list
+  the app read; opening the menu never queries the audio system.
 - **`Ctrl+F` finds a setting.** From any page of the settings window, `Ctrl+F`
   puts the caret in **Find a setting…** above the sidebar, so an option can be
   looked up without reaching for the mouse. History and Help keep the key for

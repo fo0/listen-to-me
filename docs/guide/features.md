@@ -242,7 +242,12 @@ Everything Listen To Me does, in detail. The short version is in the
   is one click instead of a walk to the Audio page. A notification names the
   device the next recording uses, and an open settings window follows the
   choice, so saving there can never put the old device back. A switch during a
-  recording applies from the next take.
+  recording applies from the next take. The entry itself names the device in
+  use ("Microphone: USB Headset", or "Microphone: System default"), read from
+  the settings and the device list the app last looked at — opening the menu
+  never asks the audio system, so it cannot hang. Until any list has been read
+  (the Audio page, the Home page, this submenu or a recording), a chosen device
+  shows the plain "Microphone".
 - **Home hub** — the main window opens on a **Home page**: the live recording
   state with a big **Start/Stop** button (red while recording), your hotkey
   shown as key caps, at-a-glance cards for the active engine/model, language

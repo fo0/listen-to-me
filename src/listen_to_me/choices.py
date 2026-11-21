@@ -196,6 +196,46 @@ CLIPBOARD_COPY_MODES = [
 
 SYSTEM_DEFAULT_DEVICE = "System default"
 
+# The input devices the last live enumeration returned, index → name. Read by
+# the tray, whose "Microphone" entry names the configured device every time the
+# menu opens and must never ask PortAudio for it: the enumeration runs on the
+# Qt main thread and can stall, and a menu that hangs on opening is worse than
+# one that names nothing. Written only here, by the two functions below that
+# enumerate anyway (every Audio page, Home page, wizard and tray-submenu list
+# goes through them, and so does every microphone take with a stored index),
+# and replaced as a whole — a rebind, never an in-place edit, so a reader on
+# any thread sees one complete enumeration or the previous one.
+_known_input_devices: dict[int, str] = {}
+
+
+def _remember_input_devices(devices: list[tuple[int, str]]) -> None:
+    global _known_input_devices
+    _known_input_devices = {idx: str(name) for idx, name in devices}
+
+
+def known_input_device_name(device) -> str | None:
+    """The name of the configured input device, from what is already known —
+    never from PortAudio, so it is safe on the Qt main thread at any moment.
+
+    `None` (the default device) is the System default. A stored index gives
+    the name the last enumeration listed it under, or None when nothing has
+    enumerated yet or that index was not in the list — the caller then names
+    no device rather than guessing one. Indices are positional, so the name is
+    as current as that enumeration; every microphone take with a stored index
+    re-enumerates before it opens the stream (`resolve_input_device`). A
+    hand-edited device *name* (sounddevice accepts one) is shown as it is.
+    """
+    if device is None:
+        return SYSTEM_DEFAULT_DEVICE
+    if isinstance(device, bool):
+        return None  # `true` equals 1 in Python and is not a device
+    if isinstance(device, int):
+        return _known_input_devices.get(device)
+    if isinstance(device, str) and device.strip():
+        return device.strip()
+    return None
+
+
 # The recording source of a take: the microphone, or what the computer is
 # playing (#191). app.py, the tray, the floating icon, the Home hub and the
 # assistant profiles all pass these around.
@@ -407,6 +447,7 @@ def resolve_input_device(
         except Exception:
             log.exception("could not check whether the selected microphone still exists")
             return index, None
+        _remember_input_devices(devices)
     if not devices:
         return index, None
     if any(idx == index for idx, _name in devices):
@@ -522,7 +563,9 @@ def input_device_choices(current_index: int | None = None) -> tuple[list[str], s
     try:
         from .audio import list_input_devices
 
-        for idx, name in list_input_devices():
+        devices = list_input_devices()
+        _remember_input_devices(devices)
+        for idx, name in devices:
             entry = f"{idx}: {name}"
             values.append(entry)
             if current_index == idx:
