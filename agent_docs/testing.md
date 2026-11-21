@@ -30,6 +30,7 @@ Existing regression guards worth knowing about, because they lock in real bugs:
 - History rows with a `1e300` timestamp — stored values are untrusted at render time.
 - Replaced History rows end up parentless — detach before `deleteLater`, or ghost widgets keep painting.
 - No settings page is wider than its scroll viewport — one long combo/label item otherwise clips every card at the right edge.
+- `home stat cards are buttons to a screen reader` — the Home cards must report role `Button` with a working "Press" through Qt's own interface (never a Python `QAccessibleWidget` from `QAccessible.installFactory`: PySide keeps those alive until quit and never hands over ownership, #423), render identical to the `QFrame[card="stat"]` they replace, and leave nothing behind when destroyed with the interface cached.
 
 ## Adding a check
 

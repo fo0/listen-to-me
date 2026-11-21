@@ -421,16 +421,23 @@ def _qss(t: dict) -> str:
     QPushButton#heroCancel:hover {{ background: #22ffffff; }}
 
     /* Clickable at-a-glance stat cards + quick-action tiles. */
-    QFrame[card="stat"] {{
+    /* Two widget classes wear this look: the at-a-glance cards are buttons
+       (home_page._StatCard — a QAbstractButton, so a screen reader is told
+       so), the Recent transcripts panel is a plain frame. */
+    QFrame[card="stat"], QAbstractButton[card="stat"] {{
         background: {t["base"]};
         border: 1px solid {t["border"]};
         border-radius: 12px;
     }}
-    QFrame[card="stat"]:hover {{ border: 1px solid {ACCENT}; }}
+    QFrame[card="stat"]:hover, QAbstractButton[card="stat"]:hover {{
+        border: 1px solid {ACCENT};
+    }}
     /* The at-a-glance cards are clickable controls and take keyboard focus —
        ring them like a button (same width, so nothing shifts). */
-    QFrame[card="stat"]:focus {{ border: 1px solid {ACCENT}; }}
-    QFrame[card="stat"] QLabel {{ background: transparent; }}
+    QAbstractButton[card="stat"]:focus {{ border: 1px solid {ACCENT}; }}
+    QFrame[card="stat"] QLabel, QAbstractButton[card="stat"] QLabel {{
+        background: transparent;
+    }}
     QLabel[role="cardTitle"] {{
         color: {t["muted"]};
         font-size: 8.5pt;

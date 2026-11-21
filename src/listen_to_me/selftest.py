@@ -18065,6 +18065,203 @@ def _settings_updates_lists_the_release_history():
             app.processEvents()
 
 
+def _home_stat_cards_are_buttons():
+    """The Home page's at-a-glance cards are buttons to a screen reader — and
+    still look and act like the cards they were (#423).
+
+    A card took focus and opened its Settings page on Space, Enter and a
+    click, but it was a QFrame, and Qt picks the accessible interface by the
+    widget's class: role "Border", one action, "Set Focus". A screen reader
+    announced a frame and offered nothing to press (WCAG 4.1.2). The card is
+    a QAbstractButton now, which is what makes Qt report "Button" with a
+    "Press" action — asserted here on the real Home page, by pressing each
+    card through that interface.
+
+    The interface has to stay Qt's own. The other route to the same role, a
+    Python QAccessibleWidget returned from a QAccessible.installFactory
+    callback, was measured for #423: PySide's factory glue keeps a reference
+    to every interface it hands out until the application quits (900 of 900
+    still alive after their widgets were destroyed) and never transfers
+    ownership, so that Qt's cache deletes an object Python still owns. That
+    ran clean here only because of how shiboken invalidates the wrapper — not
+    something to rest a native object's lifetime on. Hence the ownership
+    assertion, and a round of cards built, pressed and destroyed while their
+    interface is cached, which must leave nothing behind.
+
+    The look is compared against a twin: the frame the card used to be, same
+    property, same contents. A button class draws nothing by itself and keeps
+    no border inset, so both are restated in _StatCard — and the style rule
+    has to name both classes, because the Recent transcripts panel is still a
+    frame wearing it. The twins are never shown: a hidden widget is neither
+    hovered nor focused, wherever the pointer of the machine running this
+    happens to be. The focus ring needs a window that really took the focus,
+    which a build machine may refuse; the check says so instead of failing.
+    """
+    import gc
+    import time
+    import weakref
+
+    import shiboken6
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QAccessible, QColor, QKeyEvent
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+
+    from listen_to_me.home_page import _StatCard
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import ACCENT, apply_theme
+
+    app = _ensure_qapp()
+    apply_theme(app)
+
+    def _button_interface(card):
+        iface = QAccessible.queryAccessibleInterface(card)
+        assert iface is not None, "stat card has no accessible interface"
+        assert iface.role() == QAccessible.Role.Button, iface.role()
+        assert not shiboken6.createdByPython(iface), "the card's interface is a Python object"
+        assert not shiboken6.ownedByPython(iface), "Python owns the card's interface"
+        actions = iface.actionInterface()
+        assert actions is not None, "stat card offers no actions"
+        assert actions.pressAction() in actions.actionNames(), actions.actionNames()
+        return iface, actions
+
+    def _until(done) -> bool:
+        # QAccessibleButton presses through animateClick(): clicked follows
+        # about 100 ms later, off a timer.
+        deadline = time.monotonic() + 3.0
+        while not done() and time.monotonic() < deadline:
+            QTest.qWait(10)
+        return done()
+
+    # --- role, name, description and Press, on the real Home page ----------
+    with tempfile.TemporaryDirectory() as tmp:
+        window = SettingsWindow(_StubApp(Path(tmp)))
+        try:
+            home = window.home
+            targets = (
+                (home.card_model, "Engine"),
+                (home.card_language, "Engine"),
+                (home.card_mic, "Audio"),
+            )
+            for card, page in targets:
+                window._show_page("Home")
+                iface, actions = _button_interface(card)
+                # The explicit name wins over an (empty) button text, and its
+                # "&" is not eaten as a mnemonic marker.
+                name = iface.text(QAccessible.Text.Name)
+                assert name and name == card.accessibleName(), name
+                described = iface.text(QAccessible.Text.Description)
+                assert described and described == card.accessibleDescription(), described
+                actions.doAction(actions.pressAction())
+                assert _until(lambda: window.nav.currentRow() == window._nav_row[page]), (
+                    f"Press on {name!r} did not open {page}"
+                )
+                del iface, actions
+            assert home.card_model.accessibleName() == "Engine & model — open in Settings"
+
+            # Still the card it was for the keyboard: Enter and Space are
+            # asserted in "Qt UI construction"; every other key goes on to the
+            # page (the arrow keys scroll it) instead of moving the focus the
+            # way QAbstractButton's own handler would.
+            for key in (Qt.Key.Key_Down, Qt.Key.Key_Up, Qt.Key.Key_Left, Qt.Key.Key_Right):
+                event = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
+                home.card_mic.keyPressEvent(event)
+                assert not event.isAccepted(), f"the card swallows {key}"
+
+            # The focus ring, where this machine lets the window take focus.
+            window._show_page("Home")
+            window.show()
+            window.activateWindow()
+            card = home.card_mic
+            card.setFocus(Qt.FocusReason.TabFocusReason)
+            app.processEvents()
+            ring_note = ""
+            if card.hasFocus():
+                image = card.grab().toImage()
+                ring = image.pixelColor(image.width() // 2, 0)
+                assert ring == QColor(ACCENT), f"focused card is ringed {ring.name()}"
+            else:
+                ring_note = "focus ring not rendered: the window could not take the focus here"
+            window.hide()
+        finally:
+            _delete_now(app, window)
+
+    # --- the look: identical to the frame it replaces ------------------------
+    def _fill(box, title: str, value: str, detail: str) -> None:
+        for text, role in ((title.upper(), "cardTitle"), (value, "cardValue"), (detail, "hint")):
+            label = QLabel(text)
+            label.setProperty("role", role)
+            label.setWordWrap(role != "cardTitle")
+            box.addWidget(label)
+        box.addStretch(1)
+
+    title, value, detail = "Microphone", "System default", "max. 300 s per recording"
+    host = QWidget()
+    row = QHBoxLayout(host)
+    row.setSpacing(10)
+    frame = QFrame()
+    frame.setProperty("card", "stat")
+    frame_box = QVBoxLayout(frame)
+    frame_box.setContentsMargins(14, 12, 14, 12)
+    frame_box.setSpacing(4)
+    _fill(frame_box, title, value, detail)
+    card = _StatCard(title, lambda: None)
+    card.value.setText(value)
+    card.detail.setText(detail)
+    for widget in (frame, card):
+        widget.setToolTip("Click to change this in Settings.")
+        row.addWidget(widget, 1)
+    try:
+        for width in (640, 420):  # the detail line wraps at the narrow one
+            host.resize(width, 180)
+            frame_image, card_image = frame.grab().toImage(), card.grab().toImage()
+            assert frame.size() == card.size(), (frame.size(), card.size())
+            assert frame.sizeHint() == card.sizeHint(), (frame.sizeHint(), card.sizeHint())
+            assert frame.minimumSizeHint() == card.minimumSizeHint()
+            assert frame.contentsRect() == card.contentsRect()
+            frame_labels = [label.geometry() for label in frame.findChildren(QLabel)]
+            card_labels = [label.geometry() for label in card.findChildren(QLabel)]
+            assert frame_labels == card_labels, (frame_labels, card_labels)
+            assert card_image == frame_image, f"the card no longer renders like its frame at {width}px"
+            # …and the twin itself is styled: equal renders of two unstyled
+            # widgets would pass the line above on nothing.
+            middle = card_image.width() // 2
+            assert card_image.pixelColor(middle, 0) != card_image.pixelColor(middle, 4), (
+                "the card draws no border"
+            )
+    finally:
+        _delete_now(app, host)
+
+    # --- lifetime: build, press, destroy with the interface cached -----------
+    opened: list[int] = []
+    cards = []
+    for index in range(24):
+        card = _StatCard("Language", lambda index=index: opened.append(index))
+        card.value.setText("Auto-detect")
+        card.sync_accessible_description()
+        cards.append(weakref.ref(card))
+        iface, actions = _button_interface(card)
+        actions.doAction(actions.pressAction())
+        if index % 2:
+            # Wait for the press; otherwise the card dies with it pending.
+            assert _until(lambda: opened and opened[-1] == index), index
+        del iface, actions
+        gc.collect()
+        # Python dropped its reference; Qt's cached interface is still there.
+        again = QAccessible.queryAccessibleInterface(card)
+        assert again.role() == QAccessible.Role.Button
+        del again
+        _delete_now(app, card)
+        del card
+        gc.collect()
+    QTest.qWait(150)  # any press still pending would land on a dead card now
+    gc.collect()
+    alive = sum(1 for ref in cards if ref() is not None)
+    assert not alive, f"{alive} of {len(cards)} destroyed cards are still referenced"
+    assert opened == [index for index in range(24) if index % 2], opened
+    return ring_note
+
+
 # --------------------------------------------------------------- runners
 
 
@@ -18304,6 +18501,7 @@ _LIGHT_CHECKS = [
      _save_refuses_an_assistant_profile_with_no_prompt),
     ("settings updates lists the release history",
      _settings_updates_lists_the_release_history),
+    ("home stat cards are buttons to a screen reader", _home_stat_cards_are_buttons),
     ("Qt UI construction", _gui_construction),
 ]
 
