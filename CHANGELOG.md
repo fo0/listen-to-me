@@ -49,6 +49,10 @@ changes at a glance.
 - **Hybrid laptop CPUs are no longer overrated.** An efficiency core now counts
   half, so a 2P+8E chip gets `small` instead of the turbo it could not run in
   real time.
+- **A screen reader announces the Home cards as buttons.** The three
+  at-a-glance cards (engine & model, language, microphone) were announced as a
+  frame with nothing to press. They are now reported as buttons whose press
+  opens the matching Settings page; they look and work as before.
 
 - **Fluid Speech Pro as a third Parakeet model.** Settings → Engine →
   **Parakeet model = fluid-speech-pro** runs FluidVoice's fine-tune of
