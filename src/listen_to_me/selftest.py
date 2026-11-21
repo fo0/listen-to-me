@@ -12122,6 +12122,8 @@ def _tray_switches_the_microphone():
     import json
 
     from listen_to_me import app as app_module
+    from listen_to_me import audio as audio_module
+    from listen_to_me import choices as choices_module
     from listen_to_me import settings_ui as settings_module
     from listen_to_me import tray as tray_module
     from listen_to_me.choices import SYSTEM_DEFAULT_DEVICE
@@ -12198,6 +12200,67 @@ def _tray_switches_the_microphone():
                 actions = tray._mic_menu.actions()
                 assert actions[0].isEnabled() and not actions[1].isEnabled()
                 devices[1:] = ["1: Laptop Microphone", "4: USB Headset", "7: Docking Station Mic"]
+
+                # The entry names the device in use on its own line, re-read
+                # every time the tray menu opens — and never by asking
+                # PortAudio, which can hang the menu on the Qt main thread:
+                # only the config and the names the last enumeration left.
+                saved_known = choices_module._known_input_devices
+                real_list = audio_module.list_input_devices
+                enumerations: list = []
+
+                def _counted_list():
+                    enumerations.append(1)
+                    return [(1, "Laptop Microphone"), (4, "USB Headset")]
+
+                def _mic_title_after_opening() -> str:
+                    tray._menu.aboutToShow.emit()
+                    title = tray._mic_menu.title()
+                    assert tray._mic_menu.menuAction().text() == title
+                    return title
+
+                audio_module.list_input_devices = _counted_list
+                try:
+                    choices_module._known_input_devices = {}
+                    cursors.clear()
+                    stub.cfg["input_device"] = None
+                    assert _mic_title_after_opening() == "Microphone: System default"
+                    # A stored index nothing has enumerated yet: the bare
+                    # title, not a guess and not a query.
+                    stub.cfg["input_device"] = 4
+                    assert _mic_title_after_opening() == "Microphone"
+                    assert not enumerations and not cursors, (enumerations, cursors)
+                    # Any live enumeration (Audio page, Home page, a take's
+                    # device check) leaves the names behind for the next opening.
+                    choices_module.input_device_choices(None)
+                    assert enumerations == [1]
+                    assert _mic_title_after_opening() == "Microphone: USB Headset"
+                    choices_module.resolve_input_device(1)
+                    assert enumerations == [1, 1]
+                    stub.cfg["input_device"] = 1
+                    assert _mic_title_after_opening() == "Microphone: Laptop Microphone"
+                    assert enumerations == [1, 1] and not cursors, (enumerations, cursors)
+                    # A device that has left the list is no longer named.
+                    stub.cfg["input_device"] = 7
+                    assert _mic_title_after_opening() == "Microphone"
+                    # A hand-edited name is shown as it is, its "&" doubled; a
+                    # hand-edited `true` (== 1 in Python) is not device 1.
+                    stub.cfg["input_device"] = "Line In & Mic"
+                    assert _mic_title_after_opening() == "Microphone: Line In && Mic"
+                    stub.cfg["input_device"] = True
+                    assert _mic_title_after_opening() == "Microphone"
+                    # A config that cannot be read names no device at all.
+                    real_cfg = stub.cfg
+                    stub.cfg = {}
+                    try:
+                        assert _mic_title_after_opening() == "Microphone"
+                    finally:
+                        stub.cfg = real_cfg
+                    assert enumerations == [1, 1], enumerations
+                finally:
+                    audio_module.list_input_devices = real_list
+                    choices_module._known_input_devices = saved_known
+                stub.cfg["input_device"] = None
             finally:
                 tray.stop()
 

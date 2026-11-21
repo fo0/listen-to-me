@@ -17,6 +17,7 @@ from .choices import (
     SYSTEM_DEFAULT_DEVICE,
     input_device_choices,
     input_device_from_label,
+    known_input_device_name,
     language_label,
     source_label,
 )
@@ -90,6 +91,8 @@ def _apply_cancel_entry(action, state: str) -> None:
 # The "Dictation language" submenu's own line, which also names the language in
 # use ("Dictation language: German — Deutsch [de]") — see _sync_language_title.
 _LANGUAGE_TITLE = "Dictation language"
+# The same for the "Microphone" submenu ("Microphone: USB Headset") — see
+# _sync_mic_title, which names it without asking PortAudio.
 _MIC_TITLE = "Microphone"
 
 # Shown instead of the language list while the Parakeet backend is selected:
@@ -391,6 +394,12 @@ class Tray:
             "Switch the input device the next recording uses — the same setting "
             "as Settings → Audio → Input device, one click away."
         )
+        # Named on its own line like the language above, and re-read on every
+        # opening for the same reason — but from what is already known, never
+        # from PortAudio: the submenu's own list is the one thing this menu
+        # may wait for, and only once somebody points at it.
+        menu.aboutToShow.connect(self._sync_mic_title)
+        self._sync_mic_title()
 
         self._act_pause = QAction("Pause hotkey", menu)
         self._act_pause.setCheckable(True)
@@ -599,6 +608,8 @@ class Tray:
         # the open tray menu just freezes until the submenu appears.
         with busy_cursor():
             values, selected = input_device_choices(current)
+        # The enumeration just refreshed the names the entry's own line reads.
+        self._sync_mic_title()
         for label in values:
             # "&&": a device named "Line In & Mic" would otherwise lose its "&"
             # to Qt as a mnemonic marker.
@@ -651,6 +662,33 @@ class Tray:
         # A hand-edited, unlisted code comes back verbatim from language_label,
         # and a single "&" in a menu title is swallowed as a mnemonic marker.
         menu.setTitle(f"{_LANGUAGE_TITLE}: {current}".replace("&", "&&"))
+
+    def _sync_mic_title(self) -> None:
+        """Name the input device in use on the "Microphone" entry itself.
+
+        Runs every time the tray menu opens, so a device picked on the Audio
+        page or in the setup wizard shows up just as readily as one picked
+        here. Never enumerates: `known_input_device_name` answers from the
+        config and the names the last enumeration left behind, because a
+        PortAudio query on the Qt main thread can hang the opening menu. The
+        system default needs no lookup and is always named; a stored index no
+        enumeration has listed yet — or a config that cannot be read — leaves
+        the bare title, since naming a microphone the next take may not use
+        would be worse than naming none.
+        """
+        menu = self._mic_menu
+        if menu is None:
+            return
+        try:
+            name = known_input_device_name(self.app.cfg["input_device"])
+        except Exception:
+            log.debug("could not read the input device for the tray menu", exc_info=True)
+            name = None
+        if not name:
+            menu.setTitle(_MIC_TITLE)
+            return
+        # "&&": a single "&" in a menu title is swallowed as a mnemonic marker.
+        menu.setTitle(f"{_MIC_TITLE}: {name}".replace("&", "&&"))
 
     def _open_project_page(self) -> None:
         # The settings footer reports a failed browser launch — the tray entry
