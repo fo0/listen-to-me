@@ -65,7 +65,7 @@ If any fail:
 
 ### 5. Verify scope
 
-Run `git status` and verify no unexpected files are staged (stray `.claude/**`, generated artifacts, `build/`, `dist/`). Revert anything that wasn't the point of the task with `git checkout -- <paths>` before committing.
+Run `git status` and verify no unexpected files are staged (stray `.claude/**`, generated artifacts, `build/`, `dist/`). Revert anything that wasn't the point of the task with `git checkout -- <paths>` before committing. A project skill this work wrote or corrected under `agent_docs/memory_process.md → Project skills` is expected, not reverted.
 
 ### 5b. Context budget check
 
@@ -74,6 +74,10 @@ wc -c CLAUDE.md MEMORY.md SCRATCHPAD.md 2>/dev/null
 ```
 
 Over 14,000 / 16,000 / 8,000 chars → offload per `agent_docs/context_budget.md` **now**, in this commit: move content to `agent_docs/` (or `docs/adr/`, `agent_docs/memory_archive/`) and leave a one-line pointer. Never delete to fit. This is the closure gate that keeps the always-loaded files from drifting — deferring it just moves the cost to every future session.
+
+### 5c. Skill check
+
+`agent_docs/memory_process.md → Project skills` decides, for this work alone. Open it only when the work used a skill and had to deviate from it, renamed a command or path a skill names, or worked a multi-step procedure out; what happens then — unattended included — is stated there, and a skill is written only for a procedure that clears all four threshold points. Most work ends this step with nothing to do, and then the report does not mention it. A skill written, corrected or deleted is named in the report's first line; a deletion's evidence goes into the commit body.
 
 ### 6. Commit uncommitted changes (if any)
 
