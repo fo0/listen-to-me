@@ -144,6 +144,7 @@ from .qtutil import (
     flash_button,
     guard_wheel,
     keep_return_in_field,
+    set_status_error,
     tab_after,
     text_rows_height,
 )
@@ -1235,17 +1236,9 @@ class SettingsWindow(QDialog):
 
     @staticmethod
     def _set_status_error(label: QLabel, error: bool) -> None:
-        """Style a `_hint()`-built status line as a failure (`role="error"`,
-        the danger colour of theme.py) or back as the muted note it was built
-        as — the shape of `widgets.HotkeyCaptureDialog._set_display`. The
-        status helpers call it on every write, so an error style never
-        survives into the next result."""
-        role = "error" if error else "hint"
-        if label.property("role") != role:
-            label.setProperty("role", role)
-            # A dynamic property only restyles once the style re-polishes.
-            label.style().unpolish(label)
-            label.style().polish(label)
+        """Style a `_hint()`-built status line as a failure or back as a hint
+        (qtutil.set_status_error, shared with the microphone test widget)."""
+        set_status_error(label, error)
 
     @staticmethod
     def _status_value(text: str) -> QLabel:

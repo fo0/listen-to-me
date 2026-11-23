@@ -194,6 +194,19 @@ def elastic_label(*labels, min_chars: int = 24) -> None:
         label.setMinimumWidth(min_chars * label.fontMetrics().averageCharWidth())
 
 
+def set_status_error(label, error: bool) -> None:
+    """Style a status line built as a hint (`role="hint"`) as a failure
+    (`role="error"`, the danger colour of theme.py) or back as the muted note
+    — the shape of `widgets.HotkeyCaptureDialog._set_display`. A writer calls
+    it on every write, so an error style never survives into the next result."""
+    role = "error" if error else "hint"
+    if label.property("role") != role:
+        label.setProperty("role", role)
+        # A dynamic property only restyles once the style re-polishes.
+        label.style().unpolish(label)
+        label.style().polish(label)
+
+
 def text_rows_height(widget, rows: int, *, extra: int = 12) -> int:
     """A pixel height that holds `rows` lines of `widget`'s own font.
 

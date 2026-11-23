@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .qtutil import elastic_label
+from .qtutil import elastic_label, set_status_error
 
 log = logging.getLogger(__name__)
 
@@ -243,7 +243,7 @@ class MicTestWidget(QWidget):
             device = self._device()
         except Exception as exc:  # surfaced, never a dead button
             log.exception("could not read the device for the microphone test")
-            self._say(f"Microphone test failed: {exc}")
+            self._say(f"Microphone test failed: {exc}", error=True)
             return False
         self._gen += 1
         gen = self._gen
@@ -304,7 +304,7 @@ class MicTestWidget(QWidget):
         self.finished.emit(CANCELLED)
         return True
 
-    def _say(self, text: str) -> None:
+    def _say(self, text: str, *, error: bool = False) -> None:
         """Show `text` on the status line and voice it on the test button.
 
         The verdict is the whole point of the test, but a status label is
@@ -312,8 +312,10 @@ class MicTestWidget(QWidget):
         back to it, see _settle). The button's accessible description is the
         channel that reaches assistive tech, as for the settings window's
         field statuses. While the clip records, focus is on Cancel (see
-        start), so "speak now" is voiced there too."""
+        start), so "speak now" is voiced there too. `error` styles the line
+        as a failure; every other write puts the muted hint style back."""
         self.status.setText(text)
+        set_status_error(self.status, error)
         self.button.setAccessibleDescription(text)
         self.cancel_button.setAccessibleDescription(text if self._running else "")
 
@@ -349,5 +351,5 @@ class MicTestWidget(QWidget):
         if gen != self._gen or not self._running:
             return
         self._settle()
-        self._say(f"Microphone test failed: {message}")
+        self._say(f"Microphone test failed: {message}", error=True)
         self.finished.emit(FAILED)
