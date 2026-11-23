@@ -70,10 +70,12 @@ Run `git status` and verify no unexpected files are staged (stray `.claude/**`, 
 ### 5b. Context budget check
 
 ```bash
-wc -c CLAUDE.md MEMORY.md SCRATCHPAD.md 2>/dev/null
+wc -c CLAUDE.md MEMORY.md SCRATCHPAD.md README.md 2>/dev/null
 ```
 
 Over 14,000 / 16,000 / 8,000 chars → offload per `agent_docs/context_budget.md` **now**, in this commit: move content to `agent_docs/` (or `docs/adr/`, `agent_docs/memory_archive/`) and leave a one-line pointer. Never delete to fit. This is the closure gate that keeps the always-loaded files from drifting — deferring it just moves the cost to every future session.
+
+`README.md` over 12,000 chars, or this work added reference detail to it → move the reference sections to `docs/` per `agent_docs/context_budget.md → README.md`, in this commit.
 
 ### 5c. Skill check
 

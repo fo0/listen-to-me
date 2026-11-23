@@ -79,13 +79,13 @@ one of the two and says which; only new work runs plain.
    one file and reads nothing the main context does not need afterwards — a git status, a short search, one command,
    a small edit, a file already in context. That one is yours: each subagent pays the always-loaded set again, so a
    unit smaller than that costs more delegated than done. **A change you wrote yourself still gets its `reviewer`**
-   (item 2).
+   (item 2), at the tier item 13 sets.
 2. **Each assignment names a role, from the roster in CLAUDE.md → _Subagents_.** The role is the lens the brief
    frames — `architect`, `implementer`, `reviewer`, `domain`, `product`, `docs`, `security` — and the wave report
    names it. Seat the roles the change actually calls for, never a standing panel and never two agents with the same
    lens: agreement between identical lenses is not evidence. **A code change always seats `reviewer`, and never the
-   agent that wrote it** — a fresh reading beats an author verifying the intent it already holds. A unit that judges
-   no code — a search, a log read, a pipeline watch — applies no lens and names none.
+   agent that wrote it** — a fresh reading beats an author verifying the intent it already holds; item 13 says when
+   it runs. A unit that judges no code — a search, a log read, a pipeline watch — applies no lens and names none.
 3. **The orchestrator keeps five things:** decomposition and assignment · the short units of item 1 ·
    read-only verification of what comes back (`git status`, `git diff`, reading the changed files) · integration and
    its gates (commit, push, `/pr`, `/ci`, `/rollback`, merge, release dispatch) · the report to the user. A gate handed to a
@@ -144,12 +144,16 @@ one of the two and says which; only new work runs plain.
     package calls for (item 4).
 11. **One CI run for the finished work, not one per step.** A push that runs CI — to an open PR or the default
     branch, or any push where the workflows trigger on every branch — spends paid Actions minutes. The steps of a wave
-    or an objective run are gated on the machine — the _Commands_ chain in CLAUDE.md, the checks CI runs too — and
-    committed; a push that runs CI carries the finished work, once. A push that runs nothing (a branch without a PR) is
-    free and keeps the work safe, and a run that stops early — stuck, a decision, a cut-off — pushes what it committed
-    either way: a cloud container keeps nothing. Earlier with CI only for a check the machine cannot run (another OS, a
-    secret, a live service), and then once for that check. Nothing gets cheaper in quality: every step still passes
-    the full local chain, and CI still gates the PR.
+    or an objective run are gated on the machine (item 13) and committed; a push that runs CI carries the finished
+    work, once. A push that runs nothing (a branch without a PR) is free and keeps the work safe, so the PR opens with
+    the finished work, not after the first push. With a PR open already, or where the session's own instructions open
+    one after a push — a cloud session's do — nothing is pushed before the finished work except at a stop or for a
+    check the machine cannot run (below): a run that stops early — stuck, a decision, a cut-off — pushes what it
+    committed either way: a cloud container keeps nothing, and its report names the packages no milestone has reviewed
+    yet. Never `[skip ci]` to save the run: a squash merge carries every commit message into the default branch, and
+    the marker there skips that branch's own workflows. Earlier with CI only for a check the machine cannot run
+    (another OS, a secret, a live service), and then once for that check. Nothing gets cheaper in quality: every line
+    still passes the full local chain and a full review before the push that runs CI, and CI still gates the PR.
 12. **Bulk reading runs in stages: collect, evaluate, judge.** Work that reads raw material in bulk — logs,
     monitoring, CI output, many files — is planned as stages that run one after the other; the independent packages
     of a stage go out in one message, in the background (items 3 and 5). **Collect** fetches and stores, judging
@@ -164,6 +168,18 @@ one of the two and says which; only new work runs plain.
     question calls for by the model table, or the orchestrator's own short unit when the evaluations are small
     (item 1). In doubt between the watch and `opus-high`, `opus-high` — a cheap stage saves tokens only where it
     cannot lose a finding.
+13. **Verification is tiered: the blast radius per package, everything per milestone.** A package is gated on what
+    it can break — here the Markdown format check over the Markdown it changed, and `compileall` plus the Qt smoke
+    for any Python change (no linter, typechecker or test framework: CLAUDE.md → _Commands_) — and committed without
+    a review of its own. A **milestone** is one coherent slice of the work, at the latest every five packages, and
+    always the last package before a push that runs CI; a wave or a step ending is not one by itself. It runs the full
+    _Commands_ chain and one `reviewer` over its combined diff, every category of `agent_docs/review_process.md`,
+    before anything of it goes into a push that runs CI — the push of a stop excepted (item 11). A package that
+    touches build or CI config, dependencies, a shared type or public interface, a migration or generated code, a
+    trust boundary or the `fable-high` core is a milestone of its own — full chain and its `reviewer` at once — and so
+    is one whose blast radius cannot be named. In doubt, full. A scoped check still red after its fix runs the full
+    chain before the next attempt: the break may sit outside the radius. The close stays as it is — the overall
+    review and `/done`.
 
 ## Objective runs — `/orca <objective>`
 
@@ -175,11 +191,13 @@ for. It adds no mechanism: it is the ordering of ones this project already has.
    what survives a compaction; the conversation is not.
 2. **Cut it into steps, each with an observable result** — a check that passes, a file that exists, a command that
    exits 0. A step whose result cannot be observed is not a step, it is a hope.
-3. **Per step: build, then review.** The implementer wave, then a `reviewer` seat that wrote none of it. Verify the
-   diff yourself before the next step starts (contract 8), then commit it — no push that runs CI (contract 11).
+3. **Per step: build, check the blast radius, commit.** The implementer wave, gated on the scoped checks of
+   contract 13 — a step is not a milestone by itself. Verify the diff yourself before the next step starts (contract
+   8), then commit it — no push that runs CI (contract 11). Each milestone adds the full chain and a `reviewer` seat
+   that wrote none of it (contract 13).
 4. **One overall review over the combined diff at the end,** by an agent that wrote none of it. A boundary that
    moved, a duplication spread over two steps, an interface quietly widened in step four — none of that is visible in
-   any single-step review.
+   any single milestone's review.
 5. **Close through `/done`** — the push that runs CI comes here, once (contract 11).
 
 **Three stop conditions end the run rather than bend it:** the same defect three times → `.claude/skills/stuck/SKILL.md` ·
