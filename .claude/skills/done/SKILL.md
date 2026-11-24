@@ -77,6 +77,8 @@ Over 14,000 / 16,000 / 8,000 chars → offload per `agent_docs/context_budget.md
 
 `README.md` over 12,000 chars, or this work added reference detail to it → move the reference sections to `docs/` per `agent_docs/context_budget.md → README.md`, in this commit.
 
+An ADR this work wrote or changed: its file over 8,000 chars (`wc -c`) → move its detail sections per `agent_docs/adr_template.md → Head, details and index`, and its row in `docs/adr/README.md` is current — both in this commit.
+
 ### 5c. Skill check
 
 `agent_docs/memory_process.md → Project skills` decides, for this work alone. Open it only when the work used a skill and had to deviate from it, renamed a command or path a skill names, or worked a multi-step procedure out; what happens then — unattended included — is stated there, and a skill is written only for a procedure that clears all four threshold points. Most work ends this step with nothing to do, and then the report does not mention it. A skill written, corrected or deleted is named in the report's first line; a deletion's evidence goes into the commit body.
