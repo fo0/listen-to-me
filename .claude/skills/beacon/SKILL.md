@@ -3,7 +3,7 @@ name: beacon
 description: Dependency health check + update proposal through the beacon compatibility server. Trigger: /beacon, "check dependencies", "dependency updates", "update deps", or a scheduled/autonomous maintenance run. Starts from beacon-tracked Dependabot proposals when the project is GitHub-connected. Interactive sessions only PROPOSE updates; autonomous runs apply ONLY safe same-major (minor/patch) updates that beacon does not flag.
 ---
 
-<!-- beacon-skill-version: 19dea27489ec -->
+<!-- beacon-skill-version: 60b0a97215eb -->
 
 # beacon — check the stack, propose updates, apply only what is safe
 
@@ -14,27 +14,34 @@ them; ONLY the safe subset when running autonomously.
 
 ## 1 · Verify identity (every run)
 
-- Call `compat_whoami` with `skill_version` = the version on this file’s
-  `beacon-skill-version` line (just below the frontmatter), and confirm it agrees with
-  this repo ("fo0/listen-to-me", i.e. `git remote get-url origin`). Exactly two results are OK:
-  - `project: "fo0/listen-to-me"` — a token bound to THIS project; or
-  - `declares_project: true` — the shared master/onboarding token, bound to no project:
-    then every call below MUST carry `project:"fo0/listen-to-me"` (`repo:` on report/observe),
-    which is what attributes the run. This skill already passes it everywhere.
-- Any other `project` → STOP and tell the user to re-onboard via beacon’s /onboard page;
-  never write under another project’s token.
-- Then read `skill.status` in the same answer — whether THIS file is still current:
-  - `outdated` → call `compat_skill` with `project:"fo0/listen-to-me"`, then:
-    - replace everything above a `## 8 · This repo` section with its `content`
-      verbatim and keep that section verbatim after it (if this file has one);
-    - commit that refresh on its own — only this file, its own commit. Unattended: on the
-      run’s own branch, inside its PR; a run that would open no PR opens one for this
-      file alone (never straight to main). Interactive: propose that one-file commit to
-      the user and keep it out of other work;
-    - tell the user (unattended: note it in the run’s summary or PR), then continue with
-      the NEW file’s instructions, not these.
-  - `current` → continue. `unknown` → `skill_version` did not arrive; call again with it.
-  - No `skill` block at all (an older beacon) → continue as before.
+Call `compat_whoami` with `skill_version` = the version on this file’s
+`beacon-skill-version` line (just below the frontmatter), and confirm it agrees with this
+repo ("fo0/listen-to-me", i.e. `git remote get-url origin`). Exactly two results are OK:
+
+- `project: "fo0/listen-to-me"` — a token bound to THIS project; or
+- `declares_project: true` — the shared master/onboarding token, bound to no project:
+  then every call below MUST carry `project:"fo0/listen-to-me"` (`repo:` on report/observe),
+  which is what attributes the run. This skill already passes it everywhere.
+
+Any other `project` → STOP and tell the user to re-onboard via beacon’s /onboard page;
+never write under another project’s token.
+
+Then read `skill.status` in the same answer — whether THIS file is still current:
+
+- `current` → continue. `unknown` → `skill_version` did not arrive; call again with it.
+- No `skill` block at all (an older beacon) → continue as before.
+
+`outdated` → call `compat_skill` with `project:"fo0/listen-to-me"`, then:
+
+- replace everything above a `## 8 · This repo` section with its `content`
+  verbatim and keep that section verbatim after it, one blank line between (if this file
+  has one);
+- commit that refresh on its own — only this file, its own commit. Unattended: on the
+  run’s own branch, inside its PR; a run that would open no PR opens one for this file
+  alone (never straight to main). Interactive: propose that one-file commit to the user
+  and keep it out of other work;
+- tell the user (unattended: note it in the run’s summary or PR), then continue with the
+  NEW file’s instructions, not these.
 
 ## 2 · Start from tracked proposals (GitHub-connected projects)
 
@@ -62,11 +69,10 @@ them; ONLY the safe subset when running autonomously.
 - Start from the open proposals of step 2 (when present) — that work is already prepared.
 - List further available updates with the ecosystem’s tool (npm: `npm outdated --json`;
   adapt for other ecosystems).
-- Classify every candidate:
-  - **safe** — same-major semver bump (minor/patch) AND beacon flags nothing
-    (`risky`/`broken`) for any affected pair.
-  - **review** — major bump, non-semver tag change, framework/peer-coupled package
-    (react/next/etc.), or beacon flags the target.
+- Classify every candidate as **safe**: a same-major semver bump (minor/patch) AND beacon
+  flags nothing (`risky`/`broken`) for any affected pair.
+- Everything else is **review**: a major bump, a non-semver tag change, a
+  framework/peer-coupled package (react/next/etc.), or beacon flags the target.
 - Validate the intended set with `compat_plan` (`project`, current stack, `changes` as
   `{ecosystem, name, from, to}`): read the per-upgrade `upgrades` verdicts and `conflicts`,
   and prefer `recommendations` when a target lands on risky/broken.
@@ -96,7 +102,9 @@ Apply ONLY the safe class, as one small, reviewable batch:
   project dashboard and auto-marks planned upgrades `applied`.
 - Verified something beacon did not know (an unknown/flagged pair now proven)? Write back
   ONE tight-range `compat_report` rule (`repo:"fo0/listen-to-me"`) for the pair you actually
-  exercised — never blanket-report every routine bump.
+  exercised — never blanket-report every routine bump. Shape: `a` / `b` =
+  `{ecosystem, name, range}` (`version` is accepted as an alias of `range`), `verdict` one of
+  `ok` / `risky` / `broken`.
 - Updates you decided against — or that failed — record with `compat_decide`
   (`project:"fo0/listen-to-me"`, `rejected`/`failed`/`abandoned` + note), so the project
   dashboard shows why.
