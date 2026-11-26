@@ -14,7 +14,7 @@ The shipped stack cannot ask for it. Three measurements taken while building the
 
 **How to re-check all three** (they are the reason this decision can date, and `requirements.txt` pins `sounddevice>=0.5.6` with no ceiling, so pip resolves past the measured version without anyone noticing): the artifact is the Windows wheel `sounddevice-0.5.6-py3-none-win_amd64.whl`, fetched with `pip download sounddevice --no-deps --only-binary :all: --platform win_amd64 --python-version 3.12`. Inside it the binary is `_sounddevice_data/portaudio-binaries/libportaudio64bit.dll` (siblings `libportaudio64bit-asio.dll` and `libportaudioarm64.dll`); the version string is what `strings -a` on that file reports, the export list is a `PaWasapi_[A-Za-z_]+` regex over its raw bytes plus a byte search for `Loopback` in both ASCII and UTF-16LE, and the CFFI declaration is in the `_globals` tuple of `_sounddevice.py` in the same wheel.
 
-Ordering a newer PortAudio is not a small change either: the one-file Windows build ships whatever DLL the wheel carries, so replacing it means carrying and updating a binary of our own in `release.yml`.
+Ordering a newer PortAudio is not a small change either: the one-file Windows build ships whatever DLL the wheel carries, so replacing it means carrying and updating a binary of our own in `release.yml` _(superseded by ADR-0011)_.
 
 ## Consequences
 
@@ -39,7 +39,7 @@ Ordering a newer PortAudio is not a small change either: the one-file Windows bu
 
 ## Alternatives Considered
 
-- **Ship a newer PortAudio DLL in the one-file build** — rejected for now: it puts a hand-maintained native binary into `release.yml` and into the update path, for a platform-specific convenience. Tracked in issue #192.
+- **Ship a newer PortAudio DLL in the one-file build** — rejected for now: it puts a hand-maintained native binary into `release.yml` _(superseded by ADR-0011)_ and into the update path, for a platform-specific convenience. Tracked in issue #192.
 - **Wait for sounddevice to bundle a PortAudio that exports `PaWasapi_IsLoopback`** — not rejected, just not a plan: the CFFI declaration is already there, so the day the wheel catches up this becomes a small additive change. Tracked in issue #192.
 - **Add a `soundcard` dependency behind an optional extra** — it implements WASAPI loopback directly, but it is a second audio stack next to `sounddevice` for one platform's convenience, and a new runtime dependency needs the maintainer's approval (it also bloats the one-file build). Tracked in issue #192.
 - **Fall back to the default input device when no loopback device is found** — rejected outright, and it is the reason `resolve_loopback_device` returns `None` instead: recording the microphone under the label "system audio" produces a transcript the user has every reason to believe came from the meeting.
