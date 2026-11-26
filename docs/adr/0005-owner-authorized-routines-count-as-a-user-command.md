@@ -1,6 +1,6 @@
 # ADR-0005: Owner-authorized routines count as an explicit user command
 
-- **Status:** Accepted — supersedes ADR-0004
+- **Status:** Accepted — supersedes ADR-0004; partly superseded — the workflow file name `release.yml` by ADR-0011
 - **Date:** 2026-08-02
 - **Decider(s):** user
 - **Tags:** security, process, deployment
@@ -35,7 +35,7 @@ The exception applies only when **both** conditions hold:
 ### Negative / Trade-offs — the accepted risk
 
 - **This is a real security regression, accepted knowingly.** The "owner-authorized routine" claim reaches the session as **prompt text**, and the agent cannot cryptographically verify it. A scheduled trigger someone else edited, an instruction injected through an issue body, a PR description, a pasted task description — any text reaching the session from outside the repository — can assert routine status and thereby inherit merge rights. ADR-0003 built an allowlist specifically to close this hole; ADR-0004 closed it by deleting the feature; this ADR reopens it. The trade is **a prompt-injection boundary exchanged for automation throughput**, and the owner has made that trade deliberately.
-- The blast radius is bounded but not small: a merge to `main` is one dispatch away from a published release, and `release.yml` runs with `contents: write` to publish the exe the in-app updater hands to users.
+- The blast radius is bounded but not small: a merge to `main` is one dispatch away from a published release, and `release.yml` _(superseded by ADR-0011)_ runs with `contents: write` to publish the exe the in-app updater hands to users.
 - Verification is **self-reported by the same session** that claims routine status. Whoever can author the prompt can also claim the checks were green. The mitigations below shrink the plausible payload; none of them authenticates the claim.
 - Re-tightening later means writing another superseding ADR and re-editing the same six documents.
 
@@ -44,7 +44,7 @@ The exception applies only when **both** conditions hold:
 - **Non-destructive change sets only** — additive; no history rewrite, no force-push, no repo-settings change, no forced migration.
 - **Verification must be green** — a red `check` job blocks the merge under the `/pr merge` pre-flight, which is unchanged.
 - **Destructive changes stay gated** — explicit interactive user command required, no routine substitute.
-- **Releases stay a separate, deliberate act.** A merge alone publishes nothing: `release.yml` is `workflow_dispatch`-only and a guard job fails any dispatch from a ref other than `main`. A routine that also dispatches must satisfy the same two conditions.
+- **Releases stay a separate, deliberate act.** A merge alone publishes nothing: `release.yml` _(superseded by ADR-0011)_ is `workflow_dispatch`-only and a guard job fails any dispatch from a ref other than `main`. A routine that also dispatches must satisfy the same two conditions.
 - **GitHub Actions stay pinned by commit SHA** (#22), so a merged workflow edit cannot silently pull different third-party code into the release job.
 - Every merge lands as a reviewable commit on `main` — nothing here weakens the audit trail or the ability to revert.
 

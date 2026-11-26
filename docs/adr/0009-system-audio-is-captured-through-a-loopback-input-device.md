@@ -1,6 +1,6 @@
 # ADR-0009: System audio is captured through a loopback input device
 
-- **Status:** Accepted
+- **Status:** Accepted; partly superseded — the workflow file name `release.yml` by ADR-0011
 - **Date:** 2026-09-10
 - **Decider(s):** agent
 - **Tags:** audio, dependencies, packaging, platform
