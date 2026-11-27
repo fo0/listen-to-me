@@ -19,6 +19,11 @@ changes at a glance.
   with, so a dictated chat message or search term arrives as "See you at noon"
   instead of "See you at noon.". An ellipsis, "?" and "!" stay; the history and
   every clipboard copy keep the period. Off by default (`drop_final_period`).
+- **Turn a misheard word into a text replacement from History.** Select the
+  word in a stored transcript, right-click it and pick **Add a text replacement
+  for “…”**: Settings → Engine → _Text replacements_ opens with the rule
+  started and its right-hand side selected, so only the correct spelling is
+  left to type before saving.
 - **Floating icon size.** Settings → Overlay → **Icon size** draws the floating
   icon small (48 px), normal (64 px, as before) or large (96 px). It grows or
   shrinks around the spot it was parked and keeps that place after a restart.

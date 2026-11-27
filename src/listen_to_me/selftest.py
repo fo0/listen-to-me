@@ -5362,6 +5362,111 @@ def _drop_final_period_reaches_only_the_cursor():
         assert take.messages == [], take.messages
 
 
+def _history_word_becomes_replacement_rule():
+    """A word selected in a History transcript turns into a text replacement
+    rule from the row's right-click menu.
+
+    Whisper mis-hears the same word the same way every time, and the History
+    page is where that is seen. The menu keeps Copy and Select all, offers
+    "Add a text replacement for “…”" only for a selection that can be the
+    search side of a rule (punctuation around it trimmed, one line, no "=>"),
+    and the entry opens the Engine page with `word => word` appended and the
+    right-hand side selected — a no-op until the correct spelling is typed, so
+    an early Save cannot delete the word from every transcript. Nothing is
+    saved by the menu itself.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel
+
+    from listen_to_me.app import replacement_rule_for
+    from listen_to_me.settings_ui import SettingsWindow
+    from listen_to_me.theme import apply_theme
+
+    cases = {
+        "cuber netes,": "cuber netes",
+        "  “posgres”. ": "posgres",
+        "#tag": "tag",
+        "two\nlines": None,
+        "a\u2029paragraph": None,
+        "x => y": None,
+        "...": None,
+        "": None,
+        "w" * 81: None,
+        "w" * 80: "w" * 80,
+    }
+    for selected, expected in cases.items():
+        assert replacement_rule_for(selected) == expected, (selected, replacement_rule_for(selected))
+
+    app = _ensure_qapp()
+    apply_theme(app)
+    with tempfile.TemporaryDirectory() as tmp:
+        stub = _StubApp(Path(tmp))
+        stub.history.add("We deploy it with cuber netes, every day.\nAnd posgres too.")
+        window = SettingsWindow(stub)
+        try:
+            window._refresh_history()
+            bodies = [
+                label
+                for label in window._history_inner.findChildren(QLabel)
+                if label.text().startswith("We deploy")
+            ]
+            assert len(bodies) == 1, [label.text() for label in bodies]
+            body = bodies[0]
+            assert body.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+
+            body.setSelection(body.text().index("cuber"), len("cuber netes,"))
+            menu = window._history_text_menu(body)
+            actions = [action for action in menu.actions() if not action.isSeparator()]
+            assert [action.text() for action in actions] == [
+                "Copy",
+                "Select all",
+                "Add a text replacement for “cuber netes”…",
+            ], [action.text() for action in actions]
+            assert all(action.isEnabled() for action in actions)
+            snapshot = dict(window._saved_snapshot)
+
+            window.replacements_edit.setPlainText("posgres => PostgreSQL")
+            actions[2].trigger()
+            assert window.stack.currentIndex() == window._engine_index
+            assert (
+                window.replacements_edit.toPlainText()
+                == "posgres => PostgreSQL\ncuber netes => cuber netes"
+            ), window.replacements_edit.toPlainText()
+            assert window.replacements_edit.textCursor().selectedText() == "cuber netes"
+            assert window.replacements_try_edit.text() == "cuber netes"
+            assert window.replacements_try_result.text().startswith("Unchanged"), (
+                window.replacements_try_result.text()
+            )
+            # Typing replaces the selected right-hand side, and the Try line follows.
+            window.replacements_edit.insertPlainText("Kubernetes")
+            assert window.replacements_edit.toPlainText().endswith("cuber netes => Kubernetes")
+            assert window.replacements_try_result.text() == "Result: Kubernetes"
+            # An unsaved change like any other edit — the menu wrote no config.
+            assert stub.cfg["replacements"] == "", stub.cfg["replacements"]
+            assert window._collect()["replacements"] != snapshot["replacements"]
+
+            # An empty field gets the rule as its first line, no blank line above.
+            window.replacements_edit.setPlainText("")
+            window._add_replacement_rule("posgres")
+            assert window.replacements_edit.toPlainText() == "posgres => posgres"
+
+            # A selection that cannot be a rule (here: across the line
+            # break) leaves the entry disabled.
+            body.setSelection(0, len(body.text()))
+            menu = window._history_text_menu(body)
+            entries = [action for action in menu.actions() if not action.isSeparator()]
+            assert entries[0].isEnabled()
+            assert entries[2].text() == "Add a text replacement…"
+            assert not entries[2].isEnabled()
+            # Select all selects the whole transcript.
+            body.setSelection(0, 0)
+            entries[1].trigger()
+            assert body.selectedText().replace("\u2029", "\n") == body.text()
+        finally:
+            window.deleteLater()
+            app.processEvents()
+
+
 def _clipboard_copy_is_announced():
     """A transcript that ends up on the clipboard says so — and a recording
     never produces two notifications about it.
@@ -18617,6 +18722,7 @@ _LIGHT_CHECKS = [
     ("injector clipboard policy", _injector_clipboard_policy),
     ("append space spaces consecutive takes", _append_space_spaces_consecutive_takes),
     ("drop final period reaches only the cursor", _drop_final_period_reaches_only_the_cursor),
+    ("history word becomes a replacement rule", _history_word_becomes_replacement_rule),
     ("clipboard copy is announced", _clipboard_copy_is_announced),
     ("copy button reports a failure", _copy_button_reports_failure),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
