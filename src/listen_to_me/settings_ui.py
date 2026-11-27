@@ -1373,6 +1373,15 @@ class SettingsWindow(QDialog):
             "the space. The history and any copy on the clipboard stay without it.",
         )
         iv.addWidget(self.chk_append_space)
+        self.chk_drop_period = self._checkbox(
+            "Leave out the final period",
+            self.cfg["drop_final_period"],
+            "Insert a transcript without the period it ends with — for chat messages, "
+            "search boxes and short notes, where a dictated “See you at noon.” should "
+            "arrive as “See you at noon”. An ellipsis, “?” and “!” stay. The history "
+            "and any copy on the clipboard keep the period.",
+        )
+        iv.addWidget(self.chk_drop_period)
         self.chk_live_typing = self._checkbox(
             "Type while you speak (live, experimental)",
             self.cfg["live_typing"],
@@ -6924,6 +6933,7 @@ class SettingsWindow(QDialog):
             "model_dir": self.model_dir_edit.text().strip() or None,
             "injection_mode": "type" if self.rb_type.isChecked() else "paste",
             "append_space": self.chk_append_space.isChecked(),
+            "drop_final_period": self.chk_drop_period.isChecked(),
             "live_typing": self.chk_live_typing.isChecked(),
             "clipboard_copy": self._selected_clipboard_mode(),
             "restore_clipboard": self.chk_restore.isChecked(),

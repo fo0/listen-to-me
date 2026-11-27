@@ -187,6 +187,12 @@ DEFAULTS: dict = {
     # Applies to both injection modes and to the end of live typing; never to
     # the history or a transcript copied to the clipboard for recovery.
     "append_space": False,
+    # Leave out the period Whisper ends a transcript with, so a dictated chat
+    # message or search term does not end in one ("see you at noon."). Only a
+    # single final "." goes — an ellipsis, "?" and "!" stay. Off by default.
+    # Same reach as append_space: what reaches the cursor (both injection
+    # modes and the end of live typing), never the history or a recovery copy.
+    "drop_final_period": False,
     # Experimental: type already-stable parts of the transcript at the cursor
     # WHILE recording instead of waiting for the end. Append-only (never
     # deletes or corrects), always simulated typing (never paste) and plain

@@ -14,6 +14,11 @@ changes at a glance.
 
 ### Added
 
+- **Leave out the final period.** A new option under Settings → General →
+  _Insert text by_ inserts a transcript without the period Whisper ends it
+  with, so a dictated chat message or search term arrives as "See you at noon"
+  instead of "See you at noon.". An ellipsis, "?" and "!" stay; the history and
+  every clipboard copy keep the period. Off by default (`drop_final_period`).
 - **Floating icon size.** Settings → Overlay → **Icon size** draws the floating
   icon small (48 px), normal (64 px, as before) or large (96 px). It grows or
   shrinks around the spot it was parked and keeps that place after a restart.

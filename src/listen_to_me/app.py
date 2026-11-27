@@ -1967,6 +1967,10 @@ class App:
                 rest = sanitize_typed_text(text)
                 if pending:
                     rest = f"{pending} {rest}" if rest else pending
+                # The transcript's end is in this remainder, so its final period
+                # is too — unless every word already went out during the take,
+                # where append-only typing cannot take it back.
+                rest = self.injector.cursor_text(rest)
                 # append_space ends live typing like any other insertion —
                 # also when the whole text already went out during the take.
                 tail = self.injector.trailing_space() if (rest or typed_any) else ""

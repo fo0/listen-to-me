@@ -1701,6 +1701,9 @@ def _filler_take_inserts_nothing():
         def trailing_space(self):
             return ""
 
+        def cursor_text(self, text):
+            return text
+
         def type_plain_blocking(self, text):
             self.typed.append(text)
             return ""
@@ -1939,6 +1942,9 @@ def _withheld_transcript_is_not_inserted():
         def trailing_space(self):
             return ""
 
+        def cursor_text(self, text):
+            return text
+
         def type_plain_blocking(self, typed):
             self.typed.append(typed)
             return ""
@@ -2164,6 +2170,9 @@ def _failed_take_is_kept_and_retried():
 
         def trailing_space(self):
             return ""
+
+        def cursor_text(self, text):
+            return text
 
         def type_plain_blocking(self, text):
             self.typed.append(text)
@@ -2768,6 +2777,9 @@ def _implausible_take_inserts_nothing():
 
         def trailing_space(self):
             return ""
+
+        def cursor_text(self, text):
+            return text
 
         def type_plain_blocking(self, text):
             self.typed.append(text)
@@ -4930,6 +4942,7 @@ def _injector_paste_falls_back_to_typing():
             "restore_clipboard": True,
             "clipboard_copy": "off",
             "append_space": False,
+            "drop_final_period": False,
         }
     )
     injector.insert("recovered text")
@@ -4973,6 +4986,7 @@ def _injector_clipboard_policy():
             "restore_clipboard": True,
             "clipboard_copy": clipboard_copy,
             "append_space": False,
+            "drop_final_period": False,
         }
 
     assert _Injector(_cfg("always")).insert("hello") is True
@@ -5069,6 +5083,7 @@ def _append_space_spaces_consecutive_takes():
             "restore_clipboard": True,
             "clipboard_copy": clipboard_copy,
             "append_space": append_space,
+            "drop_final_period": False,
         }
 
     _Injector(_cfg(True)).insert("First take.")
@@ -5123,6 +5138,9 @@ def _append_space_spaces_consecutive_takes():
 
         def trailing_space(self):
             return self.space
+
+        def cursor_text(self, text):
+            return text
 
         def type_plain_blocking(self, text):
             self.typed.append(text)
@@ -5192,6 +5210,156 @@ def _append_space_spaces_consecutive_takes():
         off = _App(cfg, "", "")
         off._process(audio, _Live(), SOURCE_MIC)
         assert off.injector.typed == [], off.injector.typed
+
+
+def _drop_final_period_reaches_only_the_cursor():
+    """`drop_final_period` takes the one period a transcript ends with off
+    what reaches the cursor — and nothing else.
+
+    Whisper closes every transcript as a sentence; typed into a chat box or a
+    search field that period is one more key to delete. With the option on,
+    paste and simulated typing both lose it, an ellipsis / "?" / "!" stay, a
+    text that would be left empty is kept, and live typing's final flush
+    drops it from the remainder it types. The history and the clipboard copy
+    keep the transcript exactly as recognised, and anything but a real True —
+    the default is off — changes nothing.
+    """
+    from listen_to_me.app import App
+    from listen_to_me.audio import SAMPLE_RATE
+    from listen_to_me.choices import SOURCE_MIC
+    from listen_to_me.config import DEFAULTS, Config
+    from listen_to_me.injector import Injector, drop_final_period
+
+    assert DEFAULTS["drop_final_period"] is False, "a changed transcript is the worse default"
+    cases = {
+        "See you at noon.": "See you at noon",
+        "Two sentences. Like this.": "Two sentences. Like this",
+        "Wait...": "Wait...",
+        "Wait…": "Wait…",
+        "Really?": "Really?",
+        "Stop!": "Stop!",
+        "No period": "No period",
+        ".": ".",
+        " . ": " . ",
+        "Trailing.  ": "Trailing  ",
+        "": "",
+    }
+    for text, expected in cases.items():
+        assert drop_final_period(text) == expected, (text, drop_final_period(text))
+
+    pasted: list[str] = []
+    typed: list[tuple[str, str]] = []
+    copied: list[str] = []
+
+    class _Injector(Injector):
+        def _paste(self, text, keep=False):
+            pasted.append(text)
+            return keep
+
+        def _type(self, text, suffix=""):
+            typed.append((text, suffix))
+
+        def copy_to_clipboard(self, text):
+            copied.append(text)
+            return True
+
+    def _cfg(drop, injection_mode="paste", clipboard_copy="on_failure", space=False):
+        return {
+            "injection_mode": injection_mode,
+            "restore_clipboard": True,
+            "clipboard_copy": clipboard_copy,
+            "append_space": space,
+            "drop_final_period": drop,
+        }
+
+    _Injector(_cfg(True)).insert("See you at noon.")
+    _Injector(_cfg(True, space=True)).insert("See you at noon.")
+    assert pasted == ["See you at noon", "See you at noon "], pasted
+    _Injector(_cfg(True, "type", "always")).insert("See you at noon.")
+    assert typed == [("See you at noon", "")], typed
+    assert copied == ["See you at noon."], "the clipboard copy must keep the period"
+    pasted.clear()
+    typed.clear()
+    for value in (False, "yes", 1, None):
+        _Injector(_cfg(value)).insert("See you at noon.")
+        _Injector(_cfg(value, "type")).insert("See you at noon.")
+    assert pasted == ["See you at noon."] * 4, pasted
+    assert typed == [("See you at noon.", "")] * 4, typed
+
+    # Live typing: the final flush is where the transcript's end goes out.
+    class _LiveInjector:
+        def __init__(self, cfg):
+            self.cfg = cfg
+            self.typed: list[str] = []
+
+        cursor_text = Injector.cursor_text
+
+        def clipboard_mode(self):
+            return "on_failure"
+
+        def trailing_space(self):
+            return ""
+
+        def type_plain_blocking(self, text):
+            self.typed.append(text)
+            return ""
+
+    class _Transcriber:
+        def ensure_loaded(self, notify=None, progress=None):
+            pass
+
+        def transcribe(self, audio, notify=None, progress=None):
+            return "and the rest."
+
+    class _History:
+        def __init__(self):
+            self.stored: list[str] = []
+
+        def add(self, text):
+            self.stored.append(text)
+
+    class _Live:
+        committed_text = "Already typed"
+        committed_frames = 0
+
+        def join(self, timeout=None):
+            pass
+
+        def is_alive(self):
+            return False
+
+        def hand_over(self):
+            return ("", True)
+
+    class _App:
+        _process = App._process
+
+        def __init__(self, cfg):
+            self.cfg = cfg
+            self.transcriber = _Transcriber()
+            self.injector = _LiveInjector(cfg)
+            self.history = _History()
+            self.messages: list[str] = []
+
+        def notify(self, message, force=False):
+            self.messages.append(message)
+
+        def post(self, kind, payload=None):
+            pass
+
+        def progress(self, *args, **kwargs):
+            pass
+
+    audio = [0.0] * SAMPLE_RATE
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = Config(path=Path(tmp) / "config.json")
+        cfg["assistant"]["enabled"] = False
+        cfg["drop_final_period"] = True
+        take = _App(cfg)
+        take._process(audio, _Live(), SOURCE_MIC)
+        assert take.injector.typed == [" and the rest"], take.injector.typed
+        assert take.history.stored == ["Already typed and the rest."], take.history.stored
+        assert take.messages == [], take.messages
 
 
 def _clipboard_copy_is_announced():
@@ -7659,6 +7827,7 @@ def _injector_waits_for_quiet_modifiers():
         "restore_clipboard": True,
         "clipboard_copy": "on_failure",
         "append_space": False,
+        "drop_final_period": False,
     }
 
     def refused(config, text="hello"):
@@ -18447,6 +18616,7 @@ _LIGHT_CHECKS = [
     ("injector paste fallback", _injector_paste_falls_back_to_typing),
     ("injector clipboard policy", _injector_clipboard_policy),
     ("append space spaces consecutive takes", _append_space_spaces_consecutive_takes),
+    ("drop final period reaches only the cursor", _drop_final_period_reaches_only_the_cursor),
     ("clipboard copy is announced", _clipboard_copy_is_announced),
     ("copy button reports a failure", _copy_button_reports_failure),
     ("theme scrollbar contrast", _theme_scrollbar_contrast),
