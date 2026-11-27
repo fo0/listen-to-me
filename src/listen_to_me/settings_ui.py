@@ -1236,12 +1236,6 @@ class SettingsWindow(QDialog):
         return label
 
     @staticmethod
-    def _set_status_error(label: QLabel, error: bool) -> None:
-        """Style a `_hint()`-built status line as a failure or back as a hint
-        (qtutil.set_status_error, shared with the microphone test widget)."""
-        set_status_error(label, error)
-
-    @staticmethod
     def _status_value(text: str) -> QLabel:
         """A wrapping, selectable value label for the status card — device
         names and error messages can be long, and selectable text lets the
@@ -3503,7 +3497,7 @@ class SettingsWindow(QDialog):
 
         healthy, text = autostart.describe(self.chk_autostart.isChecked())
         self.autostart_status.setText(text)
-        self._set_status_error(self.autostart_status, not healthy)
+        set_status_error(self.autostart_status, not healthy)
         self.autostart_status.setVisible(bool(text))
         # A sibling label is not announced with the checkbox it describes, and
         # this one carries what the checkbox alone cannot show: an entry
@@ -4314,7 +4308,7 @@ class SettingsWindow(QDialog):
         hand the focus over, see _test_assistant) — the label below them is
         never read out, as in the microphone test."""
         self.a_test_status.setText(text)
-        self._set_status_error(self.a_test_status, error)
+        set_status_error(self.a_test_status, error)
         self.a_test_button.setAccessibleDescription(text)
         self.a_test_cancel_button.setAccessibleDescription(text if self._assistant_busy else "")
 
@@ -4436,12 +4430,12 @@ class SettingsWindow(QDialog):
                 # its text and put both back together.
                 label.setProperty("_pre_note_error", label.property("role") == "error")
                 label.setText(_DIAG_BUSY_NOTE)
-                SettingsWindow._set_status_error(label, False)
+                set_status_error(label, False)
         elif label.text() == _DIAG_BUSY_NOTE:
             stashed = label.property("_pre_note_text")
             restored = isinstance(stashed, str) and bool(stashed)
             label.setText(stashed if restored else idle_text)
-            SettingsWindow._set_status_error(
+            set_status_error(
                 label, restored and bool(label.property("_pre_note_error"))
             )
 
@@ -4527,7 +4521,7 @@ class SettingsWindow(QDialog):
         microphone test. Not for the byte-progress ticks, which fire several
         times a second and would flood a screen reader."""
         self.diag_status.setText(text)
-        self._set_status_error(self.diag_status, error)
+        set_status_error(self.diag_status, error)
         self.model_download_button.setAccessibleDescription(text)
         self.tx_test_button.setAccessibleDescription(text)
         running = self._diag_busy and self._diag_kind in ("model", "tx")
@@ -4815,7 +4809,7 @@ class SettingsWindow(QDialog):
         the focus comes back when the test ends (see _finish_hotkey_test) —
         the label beside it is never read out."""
         self.hotkey_test_status.setText(text)
-        self._set_status_error(self.hotkey_test_status, error)
+        set_status_error(self.hotkey_test_status, error)
         self.hotkey_test_button.setAccessibleDescription(text)
 
     def _cancel_diagnostics(self) -> None:
@@ -5520,7 +5514,7 @@ class SettingsWindow(QDialog):
         that started the transfer until its outcome replaces it — they never
         follow an error, so they need no style reset of their own."""
         self.update_status.setText(text)
-        self._set_status_error(self.update_status, error)
+        set_status_error(self.update_status, error)
         self.update_check_button.setAccessibleDescription(text)
         downloading = not self.update_cancel_button.isHidden()
         self.update_cancel_button.setAccessibleDescription(text if downloading else "")
@@ -6282,7 +6276,7 @@ class SettingsWindow(QDialog):
         the spelling, opening the Engine page and typing the line by hand.
         Built separately from showing it so the self-test can read the entries.
         """
-        from .app import replacement_rule_for
+        from .app import _MAX_RULE_SELECTION, replacement_rule_for
 
         # Owned by the window, not the row: a finished dictation rebuilds every
         # History row, and a menu parented to a deleted label would go with it
@@ -6308,7 +6302,7 @@ class SettingsWindow(QDialog):
             add.setEnabled(False)
             add.setToolTip(
                 "Select the word that was misheard first — on one line, at most "
-                "80 characters."
+                f"{_MAX_RULE_SELECTION} characters."
             )
             return menu
         shown = heard if len(heard) <= 32 else heard[:32].rstrip() + "…"
