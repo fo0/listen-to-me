@@ -5376,6 +5376,7 @@ def _history_word_becomes_replacement_rule():
     saved by the menu itself.
     """
     from PySide6.QtCore import Qt
+    from PySide6.QtGui import QKeySequence
     from PySide6.QtWidgets import QLabel
 
     from listen_to_me.app import replacement_rule_for
@@ -5422,6 +5423,8 @@ def _history_word_becomes_replacement_rule():
             body.setSelection(body.text().index("cuber"), len("cuber netes,"))
             menu = window._history_text_menu(body)
             actions = [action for action in menu.actions() if not action.isSeparator()]
+            assert actions[0].shortcut().matches(QKeySequence(QKeySequence.StandardKey.Copy))
+            assert actions[1].shortcut().matches(QKeySequence(QKeySequence.StandardKey.SelectAll))
             assert [action.text() for action in actions] == [
                 "Copy",
                 "Select all",

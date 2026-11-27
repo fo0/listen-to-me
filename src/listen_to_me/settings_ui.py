@@ -6292,10 +6292,14 @@ class SettingsWindow(QDialog):
         # Qt hands a selection across a line break back with U+2029 in it;
         # the clipboard gets the line break the transcript really has.
         selected = label.selectedText().replace("\u2029", "\n")
+        # The shortcuts the label's own menu shows beside these two: on the
+        # label they work without the menu, which is what the hint teaches.
         copy = menu.addAction("Copy")
+        copy.setShortcut(QKeySequence(QKeySequence.StandardKey.Copy))
         copy.setEnabled(bool(selected))
         copy.triggered.connect(lambda _checked=False, t=selected: copy_to_clipboard(t))
         select_all = menu.addAction("Select all")
+        select_all.setShortcut(QKeySequence(QKeySequence.StandardKey.SelectAll))
         select_all.triggered.connect(lambda _checked=False: self._select_all_text(label))
         menu.addSeparator()
         heard = replacement_rule_for(selected)
