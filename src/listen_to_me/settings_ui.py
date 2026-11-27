@@ -6276,7 +6276,7 @@ class SettingsWindow(QDialog):
         the spelling, opening the Engine page and typing the line by hand.
         Built separately from showing it so the self-test can read the entries.
         """
-        from .app import replacement_rule_for
+        from .app import _MAX_RULE_SELECTION, replacement_rule_for
 
         # Owned by the window, not the row: a finished dictation rebuilds every
         # History row, and a menu parented to a deleted label would go with it
@@ -6302,7 +6302,7 @@ class SettingsWindow(QDialog):
             add.setEnabled(False)
             add.setToolTip(
                 "Select the word that was misheard first — on one line, at most "
-                "80 characters."
+                f"{_MAX_RULE_SELECTION} characters."
             )
             return menu
         shown = heard if len(heard) <= 32 else heard[:32].rstrip() + "…"
