@@ -34,7 +34,13 @@ Everything Listen To Me does, in detail. The short version is in the
   (Settings → General) keeps sentence-by-sentence dictation into one field from
   sticking together ("…the report.Next sentence") — the history and any
   clipboard copy stay without the space, and it is off by default because a
-  single-line field such as a search box would keep it.
+  single-line field such as a search box would keep it. **Leave out the final
+  period** (same place) inserts "See you at noon." as "See you at noon" — for
+  chat messages and search boxes, where Whisper's closing period is one more
+  key to delete. An ellipsis, "?" and "!" stay (an abbreviation at the very
+  end, such as "usw.", loses its period too), and again the history and the
+  clipboard keep the transcript as it was recognised. With live typing, a
+  period that already went out during the recording stays.
 - **Clipboard safety net** — when the text cannot be inserted into the focused
   window, it is put on the clipboard so one Ctrl+V recovers it. Optionally
   **always** (every transcript stays on the clipboard) or **never**

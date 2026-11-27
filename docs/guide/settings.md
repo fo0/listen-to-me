@@ -169,6 +169,7 @@ The other two have looser guards of their own:
 | `system_audio.bundled_portaudio`                | `true`                        | Windows exe only: use the PortAudio the exe ships (the one built with WASAPI loopback). `false` falls back to the binary inside the `sounddevice` wheel — the way back if a bundled build turns out worse than that one; it costs system-audio recording on Windows and nothing else. No control for it in the settings window, on purpose — see [Recording system audio](system-audio.md) |
 | `injection_mode`                                | `"paste"`                     | Insert via `paste` (clipboard) or `type` (simulated typing)                                                                                                                                                                                                                                                                                                                                |
 | `append_space`                                  | `false`                       | Add one space after every inserted transcript (both modes, and at the end of live typing), so the next dictation into the same field does not stick to it. The history and clipboard copies stay without it                                                                                                                                                                                |
+| `drop_final_period`                             | `false`                       | Insert a transcript without the single period it ends with (both modes, and at the end of live typing) — for chat messages and search boxes. An ellipsis, `?` and `!` stay; the history and clipboard copies keep the period                                                                                                                                                               |
 | `live_typing`                                   | `false`                       | Experimental live typing while recording (faster-whisper only)                                                                                                                                                                                                                                                                                                                             |
 | `clipboard_copy`                                | `"on_failure"`                | Also copy the transcript to the clipboard: `on_failure` (only when inserting at the cursor fails), `always` (every transcript — suppresses `restore_clipboard`) or `off`                                                                                                                                                                                                                   |
 | `restore_clipboard`                             | `true`                        | Restore the previous clipboard content after a paste                                                                                                                                                                                                                                                                                                                                       |
@@ -354,6 +355,14 @@ line ignored: line 4 has no “=>”.`). An arrow typed as `->`, or a rule with
   goes through, minus the assistant, so whether a rule also catches the word
   at the start of a sentence, or leaves a longer word alone, is visible
   without dictating.
+- **Start a rule from the History page** — select the misheard word in a
+  stored transcript, right-click it and pick **Add a text replacement for
+  “…”**. The Engine page opens with `word => word` added to the rules and the
+  right-hand side selected, so typing the correct spelling is all that is
+  left; the Try field already holds the word. The rule is an unsaved change
+  until you save, and as added it changes nothing, so saving before you type
+  cannot delete the word. Punctuation around the selection is left out; a
+  selection across a line break, or longer than 80 characters, is not offered.
 - Not applied while `live_typing` is on: that text is already at the cursor and
   append-only typing cannot take it back.
 

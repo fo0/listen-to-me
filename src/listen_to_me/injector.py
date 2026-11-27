@@ -38,6 +38,22 @@ _INSERT_SETTLE_TIMEOUT_S = 2.0
 _PASTE_READ_WINDOW_S = 0.5
 
 
+def drop_final_period(text: str) -> str:
+    """`text` without the one period it ends with, if it ends with one.
+
+    Whisper closes every transcript as a sentence, which is right for a
+    paragraph and wrong for what is typed into a chat box or a search field.
+    Only a single final "." goes: an ellipsis ("..." or "…") is a statement
+    of its own, and "?" / "!" carry meaning a period does not. Trailing
+    whitespace is kept where it was. A text that would be left with nothing
+    is returned unchanged — a lone "." is not worth inserting nothing for.
+    """
+    body = text.rstrip()
+    if not body.endswith(".") or body.endswith("..") or not body[:-1].strip():
+        return text
+    return body[:-1] + text[len(body):]
+
+
 class ModifierHeldError(RuntimeError):
     """Raised by the insertion paths when a modifier key stayed physically held
     past the settle timeout, so no chord or keystroke was sent. The transcript
@@ -133,6 +149,15 @@ class Injector:
         that still is not exactly True must not add text nobody asked for."""
         return " " if self.cfg["append_space"] is True else ""
 
+    def cursor_text(self, text: str) -> str:
+        """`text` as it goes to the cursor: without its final period when
+        `drop_final_period` is on. `is True` for the reason `trailing_space`
+        gives. The history and every recovery copy keep the transcript as it
+        was recognised — only the insertion is shaped for the target field."""
+        if self.cfg["drop_final_period"] is True:
+            return drop_final_period(text)
+        return text
+
     def insert(self, text: str) -> bool:
         """Insert `text` at the cursor of whatever window has focus.
 
@@ -160,17 +185,19 @@ class Injector:
         # as it is. A kept paste is the one exception — that clipboard holds
         # exactly what was pasted, so pasting it again spaces the same way.
         suffix = self.trailing_space()
+        # The final period goes the same way: only the insertion loses it.
+        shown = self.cursor_text(text)
         on_clipboard = False
         if mode == "type":
-            self._type(text, suffix)
+            self._type(shown, suffix)
         else:
             try:
-                on_clipboard = self._paste(text + suffix, keep=keep)
+                on_clipboard = self._paste(shown + suffix, keep=keep)
             except ModifierHeldError:
                 raise
             except Exception:
                 log.exception("clipboard paste failed — falling back to typing")
-                self._type(text, suffix)
+                self._type(shown, suffix)
                 mode = "type (clipboard unavailable)"
         if keep and not on_clipboard:
             # Typing mode, or a paste that fell back to it: the option promises

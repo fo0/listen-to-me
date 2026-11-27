@@ -138,6 +138,7 @@ from .prompt_window import (
 from .qtutil import (
     busy_cursor,
     clear_on_escape,
+    copy_to_clipboard,
     copy_with_feedback,
     elastic_combo,
     elastic_label,
@@ -1373,6 +1374,15 @@ class SettingsWindow(QDialog):
             "the space. The history and any copy on the clipboard stay without it.",
         )
         iv.addWidget(self.chk_append_space)
+        self.chk_drop_period = self._checkbox(
+            "Leave out the final period",
+            self.cfg["drop_final_period"],
+            "Insert a transcript without the period it ends with — for chat messages, "
+            "search boxes and short notes, where a dictated “See you at noon.” should "
+            "arrive as “See you at noon”. An ellipsis, “?” and “!” stay. The history "
+            "and any copy on the clipboard keep the period.",
+        )
+        iv.addWidget(self.chk_drop_period)
         self.chk_live_typing = self._checkbox(
             "Type while you speak (live, experimental)",
             self.cfg["live_typing"],
@@ -6217,6 +6227,12 @@ class SettingsWindow(QDialog):
         # word as its minimum width, clipping every card on the page. The Home
         # page's recent rows already carry this guard for the same reason.
         elastic_label(body)
+        # Its own context menu: the label's built-in one only copies, and a
+        # misheard word spotted here is exactly what a text replacement fixes.
+        body.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        body.customContextMenuRequested.connect(
+            lambda pos, label=body: self._show_history_text_menu(label, pos)
+        )
         rv.addWidget(body)
         if truncated:
             more_row = QHBoxLayout()
@@ -6238,6 +6254,92 @@ class SettingsWindow(QDialog):
             more_row.addStretch(1)
             rv.addLayout(more_row)
         return row
+
+    def _show_history_text_menu(self, label: QLabel, pos) -> None:
+        """Run `_history_text_menu` at `pos` and drop it afterwards — one menu
+        per right-click would otherwise pile up until the window closes."""
+        menu = self._history_text_menu(label)
+        menu.exec(label.mapToGlobal(pos))
+        menu.deleteLater()
+
+    def _history_text_menu(self, label: QLabel) -> QMenu:
+        """The right-click menu of a History transcript: Copy and Select all,
+        as the label's own menu offers them, plus "Add a text replacement" for
+        the selected word.
+
+        Whisper mis-hears the same word the same way every time, and this page
+        is where that is seen — but turning it into a rule meant remembering
+        the spelling, opening the Engine page and typing the line by hand.
+        Built separately from showing it so the self-test can read the entries.
+        """
+        from .app import replacement_rule_for
+
+        # Owned by the window, not the row: a finished dictation rebuilds every
+        # History row, and a menu parented to a deleted label would go with it
+        # while it is still open.
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        # Qt hands a selection across a line break back with U+2029 in it;
+        # the clipboard gets the line break the transcript really has.
+        selected = label.selectedText().replace("\u2029", "\n")
+        copy = menu.addAction("Copy")
+        copy.setEnabled(bool(selected))
+        copy.triggered.connect(lambda _checked=False, t=selected: copy_to_clipboard(t))
+        select_all = menu.addAction("Select all")
+        select_all.triggered.connect(lambda _checked=False: self._select_all_text(label))
+        menu.addSeparator()
+        heard = replacement_rule_for(selected)
+        if heard is None:
+            add = menu.addAction("Add a text replacement…")
+            add.setEnabled(False)
+            add.setToolTip(
+                "Select the word that was misheard first — on one line, at most "
+                "80 characters."
+            )
+            return menu
+        shown = heard if len(heard) <= 32 else heard[:32].rstrip() + "…"
+        add = menu.addAction(f"Add a text replacement for “{shown}”…".replace("&", "&&"))
+        add.setToolTip(
+            "Opens Settings → Engine → Text replacements with a new rule for this "
+            "word — type how it should be written, then save."
+        )
+        add.triggered.connect(lambda _checked=False, h=heard: self._add_replacement_rule(h))
+        return menu
+
+    @staticmethod
+    def _select_all_text(label: QLabel) -> None:
+        """Select the whole label — unless the row was rebuilt (and the label
+        deleted) while its menu was open, which leaves nothing to select."""
+        try:
+            label.setSelection(0, len(label.text()))
+        except RuntimeError:
+            log.debug("History row was rebuilt before Select all ran")
+
+    def _add_replacement_rule(self, heard: str) -> None:
+        """Append `heard => heard` to the Text replacements field and open it
+        with the right-hand side selected, so typing the correct spelling is
+        all that is left.
+
+        The rule starts as a no-op on purpose: a window saved before anything
+        was typed must not delete the word from every transcript, which is
+        what an empty right-hand side does. The Try field gets the word, so
+        its result line answers what the rule makes of it while it is typed.
+        Nothing is saved here — the field counts as an unsaved change like any
+        other edit.
+        """
+        edit = self.replacements_edit
+        current = edit.toPlainText()
+        separator = "" if not current or current.endswith("\n") else "\n"
+        cursor = edit.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(f"{separator}{heard} => {heard}")
+        end = cursor.position()
+        cursor.setPosition(end - len(heard))
+        cursor.setPosition(end, QTextCursor.MoveMode.KeepAnchor)
+        self.replacements_try_edit.setText(heard)
+        self._go_to_setting("Engine", edit)
+        edit.setTextCursor(cursor)
+        edit.ensureCursorVisible()
 
     @staticmethod
     def _label_history_toggle(button: QPushButton, which: str, *, expanded: bool) -> None:
@@ -6924,6 +7026,7 @@ class SettingsWindow(QDialog):
             "model_dir": self.model_dir_edit.text().strip() or None,
             "injection_mode": "type" if self.rb_type.isChecked() else "paste",
             "append_space": self.chk_append_space.isChecked(),
+            "drop_final_period": self.chk_drop_period.isChecked(),
             "live_typing": self.chk_live_typing.isChecked(),
             "clipboard_copy": self._selected_clipboard_mode(),
             "restore_clipboard": self.chk_restore.isChecked(),

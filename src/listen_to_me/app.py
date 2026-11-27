@@ -655,6 +655,36 @@ def preview_replacements(sample: str, spec: str) -> str:
     return f"Result: {result}"
 
 
+# The longest selection the History page offers to turn into a text
+# replacement. A rule is for a word or a short term Whisper keeps getting
+# wrong; a selected sentence is a copy, not a misheard word.
+_MAX_RULE_SELECTION = 80
+# What a selection is trimmed of before it becomes the search side of a rule:
+# a word selected by double-click or drag usually brings the comma, period or
+# quote next to it along, and whole-word matching would then never fire. "#"
+# too: a rule line that starts with it is a comment.
+_RULE_SELECTION_TRIM = " \t#.,;:!?…\"'“”„‘’‚«»()[]{}"
+
+
+def replacement_rule_for(selected: str) -> str | None:
+    """The search side of a text replacement rule for the text `selected` in a
+    History transcript — None when that selection cannot be one.
+
+    Not a rule: nothing (left) after trimming the punctuation around it, a
+    selection across a line break (a rule is one line), one that contains the
+    "=>" separator (it would split there) or one longer than
+    _MAX_RULE_SELECTION. Qt-free, so the History page's context menu and its
+    self-test share one answer.
+    """
+    text = str(selected or "")
+    if any(ch in text for ch in "\n\r\u2028\u2029"):
+        return None
+    text = " ".join(text.split()).strip(_RULE_SELECTION_TRIM)
+    if not text or "=>" in text or len(text) > _MAX_RULE_SELECTION:
+        return None
+    return text
+
+
 def nothing_to_copy_message(history, history_enabled) -> str:
     """Why "Copy last transcript" has nothing to put on the clipboard.
 
@@ -1967,6 +1997,10 @@ class App:
                 rest = sanitize_typed_text(text)
                 if pending:
                     rest = f"{pending} {rest}" if rest else pending
+                # The transcript's end is in this remainder, so its final period
+                # is too — unless every word already went out during the take,
+                # where append-only typing cannot take it back.
+                rest = self.injector.cursor_text(rest)
                 # append_space ends live typing like any other insertion —
                 # also when the whole text already went out during the take.
                 tail = self.injector.trailing_space() if (rest or typed_any) else ""
