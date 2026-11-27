@@ -357,12 +357,14 @@ line ignored: line 4 has no “=>”.`). An arrow typed as `->`, or a rule with
   without dictating.
 - **Start a rule from the History page** — select the misheard word in a
   stored transcript, right-click it and pick **Add a text replacement for
-  “…”**. The Engine page opens with `word => word` added to the rules and the
-  right-hand side selected, so typing the correct spelling is all that is
-  left; the Try field already holds the word. The rule is an unsaved change
-  until you save, and as added it changes nothing, so saving before you type
-  cannot delete the word. Punctuation around the selection is left out; a
-  selection across a line break, or longer than 80 characters, is not offered.
+  “…”**. From the keyboard: Tab to the transcript, select with Shift and the
+  arrow keys, then press the Menu key or Shift+F10. The Engine page opens with
+  `word => word` added to the rules and the right-hand side selected, so typing
+  the correct spelling is all that is left; the Try field already holds the
+  word. The rule is an unsaved change until you save, and as added it changes
+  nothing, so saving before you type cannot delete the word. Punctuation
+  around the selection is left out; a selection across a line break, or longer
+  than 80 characters, is not offered.
 - Not applied while `live_typing` is on: that text is already at the cursor and
   append-only typing cannot take it back.
 

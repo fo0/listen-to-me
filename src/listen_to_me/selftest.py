@@ -5413,6 +5413,11 @@ def _history_word_becomes_replacement_rule():
             assert len(bodies) == 1, [label.text() for label in bodies]
             body = bodies[0]
             assert body.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+            # The menu acts on the selection, so the keyboard has to be able to
+            # reach the label (Tab) and select in it — Qt's own default for a
+            # keyboard-selectable label is ClickFocus, which Tab skips.
+            assert body.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByKeyboard
+            assert body.focusPolicy() == Qt.FocusPolicy.StrongFocus, body.focusPolicy()
 
             body.setSelection(body.text().index("cuber"), len("cuber netes,"))
             menu = window._history_text_menu(body)
