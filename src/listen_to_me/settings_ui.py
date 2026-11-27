@@ -6220,7 +6220,17 @@ class SettingsWindow(QDialog):
         # something other than the text Copy/Export hand back.
         body.setTextFormat(Qt.TextFormat.PlainText)
         body.setWordWrap(True)
-        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        # Selectable from the keyboard too, and a Tab stop: the context menu
+        # below acts on the selection, so with the mouse flag alone "Add a
+        # text replacement" (and copying part of a transcript) was mouse-only,
+        # and a screen reader could not reach the transcript text by Tab.
+        # Qt gives a keyboard-selectable label only ClickFocus, so the focus
+        # policy has to be raised by hand.
+        body.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+        )
+        body.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         # Arrives with the toggle below: expanding a row swaps in the full
         # transcript, which is exactly where a long unbreakable token (a URL, a
         # dictated hash) turns up — and a wrapping label demands its longest
@@ -6282,10 +6292,14 @@ class SettingsWindow(QDialog):
         # Qt hands a selection across a line break back with U+2029 in it;
         # the clipboard gets the line break the transcript really has.
         selected = label.selectedText().replace("\u2029", "\n")
+        # The shortcuts the label's own menu shows beside these two: on the
+        # label they work without the menu, which is what the hint teaches.
         copy = menu.addAction("Copy")
+        copy.setShortcut(QKeySequence(QKeySequence.StandardKey.Copy))
         copy.setEnabled(bool(selected))
         copy.triggered.connect(lambda _checked=False, t=selected: copy_to_clipboard(t))
         select_all = menu.addAction("Select all")
+        select_all.setShortcut(QKeySequence(QKeySequence.StandardKey.SelectAll))
         select_all.triggered.connect(lambda _checked=False: self._select_all_text(label))
         menu.addSeparator()
         heard = replacement_rule_for(selected)
