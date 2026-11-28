@@ -42,6 +42,10 @@ changes at a glance.
 
 ### Changed
 
+- **Recent transcripts are numbered.** In the tray's and the floating icon's
+  **Recent transcripts** submenu each entry now leads with its number, newest
+  first, and that digit is its access key: with the submenu open, `2` copies
+  the transcript before last without arrowing down to it.
 - **The tray's Microphone entry names the device in use.** Like **Dictation
   language**, the entry reads "Microphone: USB Headset" (or "Microphone: System
   default"), so checking the input before a call takes a glance instead of

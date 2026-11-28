@@ -144,7 +144,9 @@ def transcribing_label(elapsed=None) -> str:
     return f"Transcribing for {format_duration(elapsed)}…"
 
 
-def recent_entry_label(entry: dict, max_chars: int = _RECENT_CHARS) -> str:
+def recent_entry_label(
+    entry: dict, max_chars: int = _RECENT_CHARS, *, number: int | None = None
+) -> str:
     """One menu line for a stored transcript: its text on a single line, elided.
 
     A menu item is one line whatever the dictation did, so the line breaks a
@@ -155,11 +157,21 @@ def recent_entry_label(entry: dict, max_chars: int = _RECENT_CHARS) -> str:
 
     str(): history.json is untrusted input and the store's own normalization
     is not this function's to assume.
+
+    ``number`` (1–9) leads the line with that digit as its access key, the way
+    a "recent files" list is numbered: with the submenu open, pressing ``2``
+    copies the one before last. The menus had no mnemonics at all, so from the
+    keyboard every transcript was reached by arrowing down past the ones above
+    it. Outside 1–9 no key is given rather than one Qt would cut to its first
+    digit.
     """
     text = " ".join(str(entry.get("text", "")).split())
     if len(text) > max_chars:
         text = text[:max_chars].rstrip() + "…"
-    return text.replace("&", "&&")
+    text = text.replace("&", "&&")
+    if number is not None and 1 <= number <= 9:
+        return f"&{number} {text}"
+    return text
 
 
 # The last entry of both "Recent transcripts" submenus. The submenu is bounded
@@ -514,9 +526,9 @@ class Tray:
             empty.setEnabled(False)
             add_history_link(menu, self.app)
             return
-        for entry in entries:
+        for number, entry in enumerate(entries, 1):
             text = str(entry.get("text", ""))
-            action = menu.addAction(recent_entry_label(entry))
+            action = menu.addAction(recent_entry_label(entry, number=number))
             stamp = entry_timestamp(entry)
             # The label is elided and stripped of its line breaks — the tooltip
             # carries when it was dictated, which is how two similar-looking
