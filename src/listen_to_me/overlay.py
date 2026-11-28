@@ -1500,10 +1500,11 @@ class Overlay:
 
         The tray's twin, and deliberately the same behaviour rather than a
         second interpretation of it: newest first, bounded to the same few, one
-        elided line each, the timestamp in the tooltip so two similar-looking
-        dictations can be told apart, and the raw transcript — line breaks and
-        single "&" intact — handed to the same `copy_text` event, and the same
-        closing link to the History page (`add_history_link`).
+        elided line each, numbered as its access key, the timestamp in the
+        tooltip so two similar-looking dictations can be told apart, and the
+        raw transcript — line breaks and single "&" intact — handed to the same
+        `copy_text` event, and the same closing link to the History page
+        (`add_history_link`).
 
         A history that cannot be read says so instead of showing an empty list:
         an app that offers nothing looks exactly like one that stored nothing.
@@ -1526,9 +1527,9 @@ class Overlay:
             empty.setEnabled(False)
             add_history_link(menu, self.app)
             return
-        for entry in entries:
+        for number, entry in enumerate(entries, 1):
             text = str(entry.get("text", ""))
-            action = menu.addAction(recent_entry_label(entry))
+            action = menu.addAction(recent_entry_label(entry, number=number))
             stamp = entry_timestamp(entry)
             action.setToolTip(
                 f"{stamp} — copy this transcript" if stamp else "Copy this transcript"

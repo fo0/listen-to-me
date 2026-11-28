@@ -11494,9 +11494,11 @@ def _overlay_lists_recent_transcripts():
             # _StubApp seeds two transcripts; newest first, as the store hands
             # them over — the same order the tray renders — then a separator
             # and the way to the archive, as on the tray.
+            # Each numbered as its access key, so the keyboard reaches the
+            # one before last with a single digit.
             assert labels == [
-                "An entry with a corrupt timestamp.",
-                "A stored transcript for the self-test.",
+                "&1 An entry with a corrupt timestamp.",
+                "&2 A stored transcript for the self-test.",
                 "",
                 tray_module._HISTORY_LINK_LABEL,
             ], labels
@@ -11511,7 +11513,7 @@ def _overlay_lists_recent_transcripts():
             stub.history.add("Fish & chips\nsecond line " + "long " * 30)
             overlay._fill_recent_menu()
             label = overlay._recent_menu.actions()[0].text()
-            assert label.startswith("Fish && chips second line long"), label
+            assert label.startswith("&1 Fish && chips second line long"), label
             assert "\n" not in label and label.endswith("…"), label
 
             # Clicking one copies that transcript verbatim — line breaks and a
@@ -11528,7 +11530,10 @@ def _overlay_lists_recent_transcripts():
             overlay._fill_recent_menu()
             # The bound plus the separator and the History link under it.
             assert len(overlay._recent_menu.actions()) == tray_module._RECENT_LIMIT + 2
-            assert overlay._recent_menu.actions()[0].text() == "Transcript number 9"
+            assert overlay._recent_menu.actions()[0].text() == "&1 Transcript number 9"
+            assert overlay._recent_menu.actions()[tray_module._RECENT_LIMIT - 1].text() == (
+                f"&{tray_module._RECENT_LIMIT} Transcript number {10 - tray_module._RECENT_LIMIT}"
+            )
 
             stub.history.clear()
             overlay._fill_recent_menu()
@@ -12092,9 +12097,11 @@ def _tray_lists_recent_transcripts():
             labels = [action.text() for action in tray._recent_menu.actions()]
             # _StubApp seeds two transcripts; newest first, as the store hands
             # them over — then a separator and the way to the archive.
+            # Each numbered as its access key, so the keyboard reaches the
+            # one before last with a single digit.
             assert labels == [
-                "An entry with a corrupt timestamp.",
-                "A stored transcript for the self-test.",
+                "&1 An entry with a corrupt timestamp.",
+                "&2 A stored transcript for the self-test.",
                 "",
                 tray_module._HISTORY_LINK_LABEL,
             ], labels
@@ -12109,8 +12116,15 @@ def _tray_lists_recent_transcripts():
             stub.history.add("Fish & chips\nsecond line " + "long " * 30)
             tray._fill_recent_menu()
             label = tray._recent_menu.actions()[0].text()
-            assert label.startswith("Fish && chips second line long"), label
+            assert label.startswith("&1 Fish && chips second line long"), label
             assert "\n" not in label and label.endswith("…"), label
+            # Only 1–9 make an access key; anything else stays unnumbered
+            # rather than handing Qt a key it would cut to its first digit.
+            entry = {"text": "Plain"}
+            assert tray_module.recent_entry_label(entry) == "Plain"
+            assert tray_module.recent_entry_label(entry, number=9) == "&9 Plain"
+            assert tray_module.recent_entry_label(entry, number=10) == "Plain"
+            assert tray_module.recent_entry_label(entry, number=0) == "Plain"
 
             # A running download owns the tooltip and the status line until it
             # reports itself done — the floating icon can be switched off, and
@@ -12142,7 +12156,10 @@ def _tray_lists_recent_transcripts():
             tray._fill_recent_menu()
             # The bound plus the separator and the History link under it.
             assert len(tray._recent_menu.actions()) == tray_module._RECENT_LIMIT + 2
-            assert tray._recent_menu.actions()[0].text() == "Transcript number 9"
+            assert tray._recent_menu.actions()[0].text() == "&1 Transcript number 9"
+            assert tray._recent_menu.actions()[tray_module._RECENT_LIMIT - 1].text() == (
+                f"&{tray_module._RECENT_LIMIT} Transcript number {10 - tray_module._RECENT_LIMIT}"
+            )
 
             stub.history.clear()
             tray._fill_recent_menu()
@@ -16241,6 +16258,39 @@ def _gui_construction():
         finally:
             window._force_close = False
         window._refresh_history()
+
+        # F5 presses Refresh from anywhere on the page — the list does not
+        # follow the file while the window is open. Page-scoped like Ctrl+F,
+        # named on the button, and it reloads through the button's own path,
+        # so the key confirms itself the same way a click does.
+        refresh_shortcuts = [
+            shortcut
+            for shortcut in history_page.findChildren(QShortcut)
+            if shortcut.key() == QKeySequence(QKeySequence.StandardKey.Refresh)
+        ]
+        assert refresh_shortcuts == [window.history_refresh_shortcut], refresh_shortcuts
+        assert (
+            refresh_shortcuts[0].context()
+            == _QtFind.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        refresh_keys = refresh_shortcuts[0].key().toString(
+            QKeySequence.SequenceFormat.NativeText
+        )
+        assert refresh_keys, "StandardKey.Refresh resolved to no key"
+        assert refresh_keys in window._history_refresh_button.toolTip(), (
+            window._history_refresh_button.toolTip()
+        )
+        def _history_row_text() -> str:
+            return " ".join(
+                label.text() for label in window._history_inner.findChildren(QLabel)
+            )
+
+        stub.history.add("Dictated while the window was open")
+        assert "Dictated while the window was open" not in _history_row_text()
+        refresh_shortcuts[0].activated.emit()
+        assert window._history_refresh_button.text() == "Reloaded ✓"
+        assert "Dictated while the window was open" in _history_row_text()
+        stub.history.remove("Dictated while the window was open")
 
         # "Clear history" on an empty history did nothing at all when clicked —
         # a greyed-out button says so instead.
