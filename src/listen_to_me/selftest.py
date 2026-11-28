@@ -16259,6 +16259,39 @@ def _gui_construction():
             window._force_close = False
         window._refresh_history()
 
+        # F5 presses Refresh from anywhere on the page — the list does not
+        # follow the file while the window is open. Page-scoped like Ctrl+F,
+        # named on the button, and it reloads through the button's own path,
+        # so the key confirms itself the same way a click does.
+        refresh_shortcuts = [
+            shortcut
+            for shortcut in history_page.findChildren(QShortcut)
+            if shortcut.key() == QKeySequence(QKeySequence.StandardKey.Refresh)
+        ]
+        assert refresh_shortcuts == [window.history_refresh_shortcut], refresh_shortcuts
+        assert (
+            refresh_shortcuts[0].context()
+            == _QtFind.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        refresh_keys = refresh_shortcuts[0].key().toString(
+            QKeySequence.SequenceFormat.NativeText
+        )
+        assert refresh_keys, "StandardKey.Refresh resolved to no key"
+        assert refresh_keys in window._history_refresh_button.toolTip(), (
+            window._history_refresh_button.toolTip()
+        )
+        def _history_row_text() -> str:
+            return " ".join(
+                label.text() for label in window._history_inner.findChildren(QLabel)
+            )
+
+        stub.history.add("Dictated while the window was open")
+        assert "Dictated while the window was open" not in _history_row_text()
+        refresh_shortcuts[0].activated.emit()
+        assert window._history_refresh_button.text() == "Reloaded ✓"
+        assert "Dictated while the window was open" in _history_row_text()
+        stub.history.remove("Dictated while the window was open")
+
         # "Clear history" on an empty history did nothing at all when clicked —
         # a greyed-out button says so instead.
         class _NoHistory:

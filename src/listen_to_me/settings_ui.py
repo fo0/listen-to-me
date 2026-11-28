@@ -3196,6 +3196,21 @@ class SettingsWindow(QDialog):
         find_shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Find), page)
         find_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         find_shortcut.activated.connect(self._focus_history_filter)
+        # F5 reloads the list, as it does in every browser and file manager —
+        # the page does not follow the history file while it is open, and a
+        # dictation made in the meantime was otherwise one trip to the bottom
+        # of a long list away. Page-scoped like Ctrl+F, and named on the
+        # button it presses.
+        self.history_refresh_shortcut = QShortcut(
+            QKeySequence(QKeySequence.StandardKey.Refresh), page
+        )
+        self.history_refresh_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.history_refresh_shortcut.activated.connect(self._reload_history)
+        refresh_keys = self.history_refresh_shortcut.key().toString(
+            QKeySequence.SequenceFormat.NativeText
+        )
+        if refresh_keys:
+            refresh.setToolTip(f"{refresh.toolTip()} Shortcut: {refresh_keys}.")
 
         return page
 
